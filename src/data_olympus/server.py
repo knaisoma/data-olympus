@@ -84,6 +84,7 @@ def build_app(
     pending_queue_cap: int = 100,
     worktree_idle_sec: int = 3600,
     git_key_path: str = "/tmp/git-key",
+    auth_token: str = "",
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
 
@@ -108,6 +109,7 @@ def build_app(
         pending_queue_cap=pending_queue_cap,
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
+        auth_token=auth_token,
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
@@ -343,7 +345,7 @@ def build_app(
         return resp.model_dump()
 
     from data_olympus.rest_api import register_routes
-    register_routes(app, state)
+    register_routes(app, state, auth_token=auth_token)
     # Attach state for lifespan to discover; not used by tests
     app._dolympus_state = state  # type: ignore[attr-defined]
     return app
@@ -376,6 +378,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         pending_queue_cap=config.pending_queue_cap,
         worktree_idle_sec=config.worktree_idle_sec,
         git_key_path=config.git_key_path,
+        auth_token=config.auth_token,
     )
 
 
