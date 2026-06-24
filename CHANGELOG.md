@@ -12,6 +12,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Optional bearer-token authentication for write routes. Set `KB_AUTH_TOKEN` to a non-empty secret; the server then requires `Authorization: Bearer <token>` on `POST /api/v1/propose/memory`, `POST /api/v1/propose/edit`, `POST /api/v1/resolve/{pending_id}`, and `POST /api/v1/onboarding/bootstrap`. Missing or wrong token returns `401 {"error": "unauthorized"}`. Read routes remain open. Token comparison uses `hmac.compare_digest` to prevent timing attacks. When `KB_AUTH_TOKEN` is empty (the default), behavior is unchanged. The `bin/kb` CLI passes the header automatically when the env var is set.
+
 ## [0.1.0] - Unreleased
 
 ### Added

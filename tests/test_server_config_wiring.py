@@ -1,4 +1,6 @@
-"""Verify that env-driven Config fields actually reach the live app state.
+"""Verify that env-driven Config fields actually reach the live app state and
+that KB_AUTH_TOKEN is threaded through load_config -> build_app_from_config
+into live route enforcement.
 
 Before the fix, main() called build_app() with only four fields; everything
 else was silently dropped and hardcoded defaults were used inside build_app.
@@ -7,15 +9,17 @@ values propagate all the way into _dolympus_state and the pipeline objects.
 """
 from __future__ import annotations
 
+import subprocess
 from typing import TYPE_CHECKING
+
+import httpx
+import pytest
 
 import data_olympus.server as server
 from data_olympus.config import load_config
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 def test_non_default_config_is_threaded_into_app(
@@ -97,3 +101,85 @@ def test_write_block_tiers_reach_blocklist(
 
     # confidence_threshold is threaded too.
     assert state.config.confidence_threshold == 0.7
+
+
+# ---------------------------------------------------------------------------
+# KB_AUTH_TOKEN env wiring: load_config -> build_app_from_config -> routes
+# ---------------------------------------------------------------------------
+
+_ENV_TOKEN = "env-wiring-test-token-xyz987"
+
+_PROPOSE_MEMORY_PAYLOAD = {
+    "text": "env-wiring-check",
+    "tags": [],
+    "source_session": "s",
+    "agent_identity": "claude",
+    "confidence": 0.9,
+}
+
+
+@pytest.fixture()
+def _env_token_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    """App built via load_config() + build_app_from_config() with KB_AUTH_TOKEN set."""
+    kb = tmp_path / "kb"
+    kb.mkdir()
+
+    # Initialise a bare git repo so the write pipeline can commit.
+    env = {
+        "HOME": str(tmp_path),
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@e.com",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@e.com",
+    }
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=str(kb), check=True,
+                   capture_output=True, env=env)
+    subprocess.run(["git", "-C", str(kb), "commit", "--allow-empty", "-m", "init"],
+                   check=True, capture_output=True, env=env)
+
+    monkeypatch.setenv("KB_MAIN_PATH", str(kb))
+    monkeypatch.setenv("KB_INDEX_PATH", str(tmp_path / "kb.db"))
+    monkeypatch.setenv("KB_AUTH_TOKEN", _ENV_TOKEN)
+    monkeypatch.setenv("KB_REMOTE_URL", "dummy")  # non-empty to enable write pipeline
+    monkeypatch.setenv("KB_WORKTREE_ROOT", str(tmp_path / "worktrees"))
+    monkeypatch.setenv("KB_PENDING_ROOT", str(tmp_path / "pending"))
+    monkeypatch.setenv("KB_PUSH_QUEUE_ROOT", str(tmp_path / "push-queue"))
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "t")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "t@e.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "t")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@e.com")
+
+    cfg = load_config()
+    app = server.build_app_from_config(cfg, bootstrap_now=True)
+    return app.streamable_http_app()
+
+
+@pytest.mark.asyncio
+async def test_kb_auth_token_env_write_route_returns_401_without_header(
+    _env_token_app: object,
+) -> None:
+    """KB_AUTH_TOKEN env var must reach route enforcement: no header -> 401."""
+    transport = httpx.ASGITransport(app=_env_token_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/v1/propose/memory", json=_PROPOSE_MEMORY_PAYLOAD)
+    assert resp.status_code == 401
+    assert resp.json() == {"error": "unauthorized"}
+
+
+@pytest.mark.asyncio
+async def test_kb_auth_token_env_write_route_succeeds_with_correct_header(
+    _env_token_app: object,
+) -> None:
+    """KB_AUTH_TOKEN env var must reach route enforcement: correct header -> non-401."""
+    transport = httpx.ASGITransport(app=_env_token_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/propose/memory",
+            headers={"Authorization": f"Bearer {_ENV_TOKEN}"},
+            json=_PROPOSE_MEMORY_PAYLOAD,
+        )
+    assert resp.status_code != 401
+    data = resp.json()
+    assert data.get("status") in ("committed", "pending_confirmation"), (
+        f"Unexpected response body: {data}"
+    )
