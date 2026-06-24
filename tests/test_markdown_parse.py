@@ -1,0 +1,71 @@
+"""Tests for markdown front-matter parsing."""
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import pytest
+
+from data_olympus.markdown_parse import ParsedDoc, parse_file
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+def test_parse_file_with_front_matter(tmp_kb: Path) -> None:
+    path = tmp_kb / "universal" / "foundation" / "STD-U-001-test-policy.md"
+    doc = parse_file(path)
+    assert isinstance(doc, ParsedDoc)
+    assert doc.id == "STD-U-001"
+    assert doc.tier == "T1"
+    assert doc.category == "foundation"
+    assert doc.tags == ["policy", "test"]
+    assert doc.title == "Test Policy"
+    assert "worktree" in doc.body
+    assert doc.path == path
+
+
+def test_parse_file_without_front_matter(tmp_path: Path) -> None:
+    """A markdown file lacking front matter still parses; metadata fields are empty."""
+    p = tmp_path / "no_fm.md"
+    p.write_text("# Heading\n\nBody only.\n")
+    doc = parse_file(p)
+    assert doc.id == ""
+    assert doc.title == ""
+    assert doc.tags == []
+    assert "Body only" in doc.body
+
+
+def test_parse_file_malformed_yaml_is_lenient(tmp_path: Path) -> None:
+    """Malformed front matter is treated as no-front-matter (lenient)."""
+    p = tmp_path / "bad.md"
+    p.write_text("---\nthis is: not: valid: yaml: at: all\n---\n# H\n")
+    doc = parse_file(p)
+    # Should not raise; should return a ParsedDoc with empty metadata.
+    assert doc.id == ""
+    assert doc.body  # body is still extracted (may or may not include the fm block)
+
+
+def test_parse_file_nonexistent_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        parse_file(tmp_path / "nope.md")
+
+
+def test_parse_git_remote_url_present(tmp_path: Path) -> None:
+    p = tmp_path / "x.md"
+    p.write_text(
+        "---\n"
+        "id: PROJECT-example-project\n"
+        "tier: T3\n"
+        "git_remote_url: git@github.com:example-org/example-project.git\n"
+        "---\n"
+        "# Body\n"
+    )
+    doc = parse_file(p)
+    assert doc.git_remote_url == "git@github.com:example-org/example-project.git"
+
+
+def test_parse_git_remote_url_absent_defaults_to_none(tmp_path: Path) -> None:
+    p = tmp_path / "x.md"
+    p.write_text("---\nid: X\n---\n# Body\n")
+    doc = parse_file(p)
+    assert doc.git_remote_url is None

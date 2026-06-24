@@ -1,0 +1,84 @@
+"""`data-olympus` CLI entry point: lint, index, visualize."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from data_olympus.cli.indexgen import regenerate_indexes
+from data_olympus.format import lint_bundle
+from data_olympus.viewer.generator import generate_visualization
+
+
+def _require_dir(path: str) -> bool:
+    if not Path(path).is_dir():
+        print(f"error: {path} is not a directory", file=sys.stderr)
+        return False
+    return True
+
+
+def _cmd_lint(args: argparse.Namespace) -> int:
+    if not _require_dir(args.path):
+        return 1
+    results = lint_bundle(Path(args.path))
+    error_files = 0
+    total_errors = 0
+    for path in sorted(results):
+        findings = results[path]
+        errors = [f for f in findings if f.severity == "error"]
+        warnings = [f for f in findings if f.severity == "warning"]
+        if errors:
+            error_files += 1
+        total_errors += len(errors)
+        for f in errors + warnings:
+            print(f"{path}: {f.severity}: {f.field}: {f.message}")
+    print(f"{total_errors} errors across {error_files} files")
+    return 1 if total_errors else 0
+
+
+def _cmd_index(args: argparse.Namespace) -> int:
+    if not _require_dir(args.path):
+        return 1
+    written = regenerate_indexes(Path(args.path))
+    print(f"wrote {len(written)} index.md file(s)")
+    return 0
+
+
+def _cmd_visualize(args: argparse.Namespace) -> int:
+    if not _require_dir(args.path):
+        return 1
+    root = Path(args.path)
+    out = Path(args.out) if args.out else root / "viz.html"
+    stats = generate_visualization(root, out, name=args.name)
+    print(f"wrote {out} ({stats['nodes']} nodes, {stats['edges']} edges)")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="data-olympus")
+    sub = parser.add_subparsers(dest="command", required=True)
+    p_lint = sub.add_parser("lint", help="validate a bundle's frontmatter")
+    p_lint.add_argument("path", nargs="?", default=".", help="bundle root (default: .)")
+    p_lint.set_defaults(func=_cmd_lint)
+    p_index = sub.add_parser("index", help="regenerate index.md for progressive disclosure")
+    p_index.add_argument("path", nargs="?", default=".", help="bundle root (default: .)")
+    p_index.set_defaults(func=_cmd_index)
+    p_viz = sub.add_parser("visualize", help="render a self-contained HTML graph of the bundle")
+    p_viz.add_argument("path", nargs="?", default=".", help="bundle root (default: .)")
+    p_viz.add_argument(
+        "-o", "--out", default=None, help="output HTML path (default: <root>/viz.html)"
+    )
+    p_viz.add_argument("--name", default=None, help="display name in the viewer header")
+    p_viz.set_defaults(func=_cmd_visualize)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

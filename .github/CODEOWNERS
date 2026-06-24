@@ -1,0 +1,25 @@
+# Code owners for data-olympus.
+# CODEOWNERS precedence: the LAST matching pattern wins, so the admin-only
+# overrides are listed after the wildcard default.
+#
+# Default owner: all paths require admin approval.
+# Once @knaisoma/kn-data-olympus-maintainers has members, broaden the wildcard
+# to that team and keep admin ownership only for the security-sensitive paths
+# listed below.
+*                                          @knaisoma/kn-data-olympus-admins
+
+# Security-sensitive paths: format spec, server, write pipeline, auth, deploy,
+# and CI configuration. These always require admin review regardless of the
+# wildcard default above.
+/SPEC.md                                   @knaisoma/kn-data-olympus-admins
+/src/data_olympus/format/                  @knaisoma/kn-data-olympus-admins
+/src/data_olympus/server.py                @knaisoma/kn-data-olympus-admins
+/src/data_olympus/rest_api.py              @knaisoma/kn-data-olympus-admins
+/src/data_olympus/tools_write.py           @knaisoma/kn-data-olympus-admins
+/src/data_olympus/auth.py                  @knaisoma/kn-data-olympus-admins
+/src/data_olympus/pending.py               @knaisoma/kn-data-olympus-admins
+/src/data_olympus/push_queue.py            @knaisoma/kn-data-olympus-admins
+/src/data_olympus/git_ops.py               @knaisoma/kn-data-olympus-admins
+/deploy/                                   @knaisoma/kn-data-olympus-admins
+/.github/workflows/                        @knaisoma/kn-data-olympus-admins
+/.github/CODEOWNERS                        @knaisoma/kn-data-olympus-admins

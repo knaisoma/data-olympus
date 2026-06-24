@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+# secrets hardening — never commit decrypted secrets or keys
+*.sops.decrypted.yaml
+secret*.yaml
+!**/secret.template.yaml
+*.pem
+id_ed25519*
+id_rsa*

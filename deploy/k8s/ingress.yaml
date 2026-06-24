@@ -1,0 +1,22 @@
+# WARNING: This ingress exposes all routes including write routes
+# (/api/v1/propose/*, /api/v1/resolve, /api/v1/onboarding/bootstrap).
+# The server has no built-in authentication. You MUST protect it with an
+# authenticating reverse proxy or restrict it to a trusted private network
+# before exposing it beyond localhost. See SECURITY.md.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: data-olympus-mcp
+  namespace: data-olympus
+spec:
+  rules:
+    - host: data-olympus.example.com  # replace with your hostname
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: data-olympus-mcp
+                port:
+                  number: 8080

@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: data-olympus-mcp
+  namespace: data-olympus
+spec:
+  serviceName: data-olympus-mcp
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: data-olympus-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-olympus-mcp
+    spec:
+      containers:
+        - name: data-olympus-mcp
+          image: data-olympus:latest  # replace with your registry/image:tag
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: data-olympus-mcp
+          env:
+            - name: KB_GIT_REMOTE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: data-olympus-mcp
+                  key: KB_GIT_REMOTE_URL
+            - name: KB_REMOTE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: data-olympus-mcp
+                  key: KB_GIT_REMOTE_URL
+          volumeMounts:
+            - name: kb-main
+              mountPath: /kb-main
+            - name: kb-worktrees
+              mountPath: /kb-worktrees
+            - name: kb-state
+              mountPath: /state
+            - name: kb-index
+              mountPath: /index
+            - name: git-key
+              mountPath: /etc/git-key-mount
+              subPath: git-key
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1
+              memory: 1Gi
+      volumes:
+        - name: git-key
+          secret:
+            secretName: data-olympus-mcp
+            defaultMode: 0400
+            items:
+              - key: git-key
+                path: git-key
+  volumeClaimTemplates:
+    - metadata:
+        name: kb-main
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 50Gi
+    - metadata:
+        name: kb-worktrees
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 10Gi
+    - metadata:
+        name: kb-state
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 5Gi
+    - metadata:
+        name: kb-index
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 2Gi

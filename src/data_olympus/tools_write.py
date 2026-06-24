@@ -1,0 +1,402 @@
+"""4 MCP write tool functions per spec §3."""
+from __future__ import annotations
+
+import contextlib
+import datetime
+import os
+import re
+import subprocess
+import time
+from typing import TYPE_CHECKING, Any
+
+from data_olympus.audit_trailers import build_commit_message
+from data_olympus.auth import PathBlocklist, is_writable_path
+from data_olympus.models import (
+    PendingEntry,
+    PendingListResponse,
+    ProposeResponse,
+    ResolvePendingResponse,
+)
+from data_olympus.pending import PathLockBusyError, PendingQueue
+
+if TYPE_CHECKING:
+    from data_olympus.audit_log import AuditLog
+    from data_olympus.push_queue import PushQueue
+    from data_olympus.rate_limit import SlidingWindowLimiter
+    from data_olympus.worktrees import WorktreeRegistry
+
+
+def _slugify(text: str) -> str:
+    s = re.sub(r"[^a-z0-9-]+", "-", text.lower()).strip("-")
+    return s[:50] or "memory"
+
+
+def _classify(target_path: str) -> tuple[str, str]:
+    """Reuse index.py's path classification."""
+    from data_olympus.index import _classify_by_path
+    return _classify_by_path(target_path)
+
+
+def _emit_audit(
+    audit_log: AuditLog | None,
+    *,
+    event_type: str,
+    status: str,
+    agent_identity: str | None = None,
+    source_session: str | None = None,
+    target_path: str | None = None,
+    target_tier: str | None = None,
+    confidence: float | None = None,
+    pending_id: str | None = None,
+    commit_sha: str | None = None,
+    reason: str | None = None,
+    remote_addr: str | None = None,
+) -> None:
+    if audit_log is None:
+        return
+    # audit emission is best-effort; don't fail the write
+    with contextlib.suppress(Exception):
+        audit_log.append({
+            "ts": time.time(),
+            "event_type": event_type,
+            "status": status,
+            "agent_identity": agent_identity,
+            "source_session": source_session,
+            "target_path": target_path,
+            "target_tier": target_tier,
+            "confidence": confidence,
+            "pending_id": pending_id,
+            "commit_sha": commit_sha,
+            "reason": reason,
+            "remote_addr": remote_addr,
+        })
+
+
+def kb_propose_memory_fn(
+    *,
+    text: str,
+    tags: list[str],
+    source_session: str,
+    agent_identity: str,
+    confidence: float,
+    confidence_threshold: float,
+    worktrees: WorktreeRegistry,
+    push_queue: PushQueue,
+    pending: PendingQueue,
+    rate_limiter: SlidingWindowLimiter,
+    blocklist: PathBlocklist,
+    remote_addr: str,
+    audit_log: AuditLog | None = None,
+) -> ProposeResponse:
+    """Propose a new memory file at operator/memory/inbox/<date>-<slug>.md.
+
+    Structural rule is satisfied by construction; blocklist still applies.
+    High confidence -> auto-commit + push enqueue. Low -> pending queue.
+    """
+    today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    slug = _slugify(text)
+    target_path = f"operator/memory/inbox/{today}-{slug}.md"
+    audit_base: dict[str, Any] = {
+        "event_type": "propose_memory",
+        "agent_identity": agent_identity,
+        "source_session": source_session,
+        "target_path": target_path,
+        "confidence": confidence,
+        "remote_addr": remote_addr,
+    }
+
+    # 1. Structural rule (cheap).
+    if not is_writable_path(target_path):
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_not_indexable",
+                                   "reason": "not_md_or_excluded"})
+        return ProposeResponse(
+            status="rejected_path_not_indexable",
+            reason="not_md_or_excluded",
+            target_path=target_path,
+        )
+
+    # 2. Policy blocklist.
+    target_tier, _ = _classify(target_path)
+    audit_base["target_tier"] = target_tier
+    if blocklist.blocks(target_path, target_tier):
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_blocked",
+                                   "reason": "tier_blocked"})
+        return ProposeResponse(
+            status="rejected_path_blocked",
+            reason="tier_blocked",
+            target_tier=target_tier,
+            target_path=target_path,
+        )
+
+    # 3. Rate limit.
+    if not rate_limiter.allow(remote_addr=remote_addr, agent_identity=agent_identity):
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_rate_limited"})
+        return ProposeResponse(status="rejected_rate_limited")
+
+    # 4. Render the postimage (front matter + body).
+    postimage = _render_memory(text=text, tags=tags, agent_identity=agent_identity)
+
+    if confidence < confidence_threshold:
+        try:
+            pid = pending.enqueue(
+                proposal_type="memory",
+                target_path=target_path,
+                postimage=postimage,
+                base_commit="HEAD",
+                base_blob_sha=None,
+                target_file_hash=None,
+                meta={
+                    "agent_identity": agent_identity,
+                    "source_session": source_session,
+                    "confidence": confidence,
+                    "tags": tags,
+                },
+            )
+        except PathLockBusyError:
+            _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
+            return ProposeResponse(
+                status="rejected_path_lock_busy",
+                target_path=target_path,
+            )
+        _emit_audit(audit_log, **{**audit_base, "status": "pending_confirmation",
+                                   "pending_id": pid})
+        return ProposeResponse(
+            status="pending_confirmation",
+            pending_id=pid,
+            proposal_text=text,
+            operator_prompt=(
+                f"Proposed memory at {target_path}. Accept (y), edit, or reject (n)?"
+            ),
+        )
+
+    # High confidence: commit + enqueue push.
+    wt = worktrees.get_or_create(
+        source_session=source_session, agent_identity=agent_identity
+    )
+    full_path = os.path.join(wt.path, target_path)
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    with open(full_path, "w", encoding="utf-8") as f:
+        f.write(postimage)
+    subprocess.run(["git", "-C", wt.path, "add", target_path], check=True)
+    subject = f"propose: {target_path}"
+    msg = build_commit_message(
+        subject=subject,
+        source_session=source_session,
+        agent_identity=agent_identity,
+        confidence_original=confidence,
+        operator_confirmed=False,
+        proposal_type="memory",
+        target_tier=target_tier,
+        target_path=target_path,
+    )
+    subprocess.run(["git", "-C", wt.path, "commit", "-m", msg], check=True)
+    sha = subprocess.check_output(
+        ["git", "-C", wt.path, "rev-parse", "HEAD"], text=True,
+    ).strip()
+    push_queue.enqueue(
+        sha=sha,
+        worktree_path=wt.path,
+        meta={"source_session": source_session, "agent_identity": agent_identity},
+    )
+    _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
+    return ProposeResponse(status="committed", commit_sha=sha, push_state="queued")
+
+
+def _render_memory(*, text: str, tags: list[str], agent_identity: str) -> str:
+    fm = ["---"]
+    fm.append(f"created_by: {agent_identity}")
+    fm.append(f"created_at: {datetime.datetime.now(datetime.UTC).isoformat()}")
+    if tags:
+        fm.append("tags: [" + ", ".join(tags) + "]")
+    fm.append("---")
+    return "\n".join(fm) + "\n\n" + text + "\n"
+
+
+def kb_propose_edit_fn(
+    *,
+    target_path: str,
+    postimage: str,
+    base_commit: str,
+    base_blob_sha: str | None,
+    target_file_hash: str | None,
+    reason: str,
+    source_session: str,
+    agent_identity: str,
+    confidence: float,
+    confidence_threshold: float,
+    worktrees: WorktreeRegistry,
+    push_queue: PushQueue,
+    pending: PendingQueue,
+    rate_limiter: SlidingWindowLimiter,
+    blocklist: PathBlocklist,
+    remote_addr: str,
+    audit_log: AuditLog | None = None,
+) -> ProposeResponse:
+    """Propose an edit to an existing (or new) file under target_path."""
+    audit_base: dict[str, Any] = {
+        "event_type": "propose_edit",
+        "agent_identity": agent_identity,
+        "source_session": source_session,
+        "target_path": target_path,
+        "confidence": confidence,
+        "reason": reason,
+        "remote_addr": remote_addr,
+    }
+    if not is_writable_path(target_path):
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_not_indexable"})
+        return ProposeResponse(status="rejected_path_not_indexable",
+                               reason="traversal_or_excluded",
+                               target_path=target_path)
+    target_tier, _ = _classify(target_path)
+    audit_base["target_tier"] = target_tier
+    if blocklist.blocks(target_path, target_tier):
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_blocked"})
+        return ProposeResponse(status="rejected_path_blocked",
+                               reason="tier_blocked",
+                               target_tier=target_tier,
+                               target_path=target_path)
+    if not rate_limiter.allow(remote_addr=remote_addr, agent_identity=agent_identity):
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_rate_limited"})
+        return ProposeResponse(status="rejected_rate_limited")
+
+    if confidence < confidence_threshold:
+        try:
+            pid = pending.enqueue(
+                proposal_type="edit",
+                target_path=target_path,
+                postimage=postimage,
+                base_commit=base_commit,
+                base_blob_sha=base_blob_sha,
+                target_file_hash=target_file_hash,
+                meta={"agent_identity": agent_identity,
+                      "source_session": source_session,
+                      "confidence": confidence,
+                      "reason": reason},
+            )
+        except PathLockBusyError:
+            _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
+            return ProposeResponse(status="rejected_path_lock_busy",
+                                   target_path=target_path)
+        _emit_audit(audit_log, **{**audit_base, "status": "pending_confirmation",
+                                   "pending_id": pid})
+        return ProposeResponse(
+            status="pending_confirmation",
+            pending_id=pid,
+            proposal_text=postimage,
+            operator_prompt=f"Proposed edit to {target_path}. Accept (y), edit, or reject (n)?",
+        )
+
+    wt = worktrees.get_or_create(source_session=source_session, agent_identity=agent_identity)
+    full_path = os.path.join(wt.path, target_path)
+    # Symlink-escape defense (Codex blocker 2 second checkpoint): verify the
+    # resolved path is still inside the worktree.
+    real = os.path.realpath(full_path)
+    if not real.startswith(os.path.realpath(wt.path) + os.sep):
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_symlink_escape"})
+        return ProposeResponse(status="rejected_symlink_escape",
+                               target_path=target_path, resolved_path=real)
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    with open(full_path, "w", encoding="utf-8") as f:
+        f.write(postimage)
+    subprocess.run(["git", "-C", wt.path, "add", target_path], check=True)
+    subject = f"edit: {target_path}"
+    msg = build_commit_message(
+        subject=subject,
+        source_session=source_session,
+        agent_identity=agent_identity,
+        confidence_original=confidence,
+        operator_confirmed=False,
+        proposal_type="edit",
+        target_tier=target_tier,
+        target_path=target_path,
+    )
+    subprocess.run(["git", "-C", wt.path, "commit", "-m", msg], check=True)
+    sha = subprocess.check_output(
+        ["git", "-C", wt.path, "rev-parse", "HEAD"], text=True,
+    ).strip()
+    push_queue.enqueue(sha=sha, worktree_path=wt.path,
+                       meta={"source_session": source_session,
+                             "agent_identity": agent_identity, "reason": reason})
+    _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
+    return ProposeResponse(status="committed", commit_sha=sha, push_state="queued")
+
+
+def kb_resolve_pending_fn(
+    *,
+    pending_id: str,
+    decision: str,
+    edited_text: str | None,
+    worktrees: WorktreeRegistry,
+    push_queue: PushQueue,
+    pending: PendingQueue,
+    source_session: str,
+    agent_identity: str,
+    audit_log: AuditLog | None = None,
+) -> ResolvePendingResponse:
+    audit_base: dict[str, Any] = {
+        "event_type": "resolve",
+        "agent_identity": agent_identity,
+        "source_session": source_session,
+        "pending_id": pending_id,
+    }
+    if decision == "reject":
+        pending.reject(pending_id)
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected"})
+        return ResolvePendingResponse(status="rejected")
+    if decision not in ("approve", "edit"):
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_bad_decision"})
+        return ResolvePendingResponse(status="rejected_bad_decision")
+
+    resolved = pending.approve(pending_id, edited_text=edited_text)
+    target_tier, _ = _classify(resolved.target_path)
+    audit_base["target_path"] = resolved.target_path
+    audit_base["target_tier"] = target_tier
+    try:
+        audit_base["confidence"] = float(resolved.meta.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        audit_base["confidence"] = None
+    wt = worktrees.get_or_create(source_session=source_session,
+                                 agent_identity=agent_identity)
+    full_path = os.path.join(wt.path, resolved.target_path)
+    real = os.path.realpath(full_path)
+    if not real.startswith(os.path.realpath(wt.path) + os.sep):
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_symlink_escape"})
+        return ResolvePendingResponse(status="rejected_symlink_escape")
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    with open(full_path, "w", encoding="utf-8") as f:
+        f.write(resolved.postimage)
+    subprocess.run(["git", "-C", wt.path, "add", resolved.target_path], check=True)
+    subject = f"resolve: {resolved.target_path}"
+    msg = build_commit_message(
+        subject=subject,
+        source_session=resolved.meta.get("source_session", source_session),
+        agent_identity=resolved.meta.get("agent_identity", agent_identity),
+        confidence_original=float(resolved.meta.get("confidence", 0.0)),
+        operator_confirmed=True,
+        proposal_type=resolved.proposal_type,
+        target_tier=target_tier,
+        target_path=resolved.target_path,
+    )
+    subprocess.run(["git", "-C", wt.path, "commit", "-m", msg], check=True)
+    sha = subprocess.check_output(
+        ["git", "-C", wt.path, "rev-parse", "HEAD"], text=True,
+    ).strip()
+    push_queue.enqueue(sha=sha, worktree_path=wt.path, meta={})
+    _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
+    return ResolvePendingResponse(status="committed", commit_sha=sha)
+
+
+def kb_list_pending_fn(*, pending: PendingQueue) -> PendingListResponse:
+    return PendingListResponse(
+        pending=[
+            PendingEntry(
+                pending_id=e["pending_id"],
+                proposal_type=e["proposal_type"],
+                target_path=e["target_path"],
+                confidence=e.get("confidence"),
+                agent_identity=e.get("agent_identity"),
+                created_at=e["created_at"],
+            )
+            for e in pending.list()
+        ]
+    )

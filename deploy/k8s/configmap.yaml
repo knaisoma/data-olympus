@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: data-olympus-mcp
+  namespace: data-olympus
+data:
+  KB_MAIN_PATH: /kb-main
+  KB_INDEX_PATH: /index/kb.db
+  KB_HTTP_PORT: "8080"
+  KB_SYNC_INTERVAL_SEC: "60"
+  KB_STALENESS_DEGRADED_SEC: "600"
+  KB_CONFIDENCE_THRESHOLD: "0.85"
+  KB_PENDING_ROOT: /state/pending
+  KB_PUSH_QUEUE_ROOT: /state/push-queue
+  KB_WORKTREE_ROOT: /kb-worktrees
+  KB_AUDIT_LOG_PATH: /state/audit/events.log
+  KB_RATE_LIMIT_PER_HOUR: "100"
+  KB_PENDING_TIMEOUT_SEC: "86400"
+  KB_PENDING_QUEUE_CAP: "100"
+  KB_WORKTREE_IDLE_SEC: "3600"
+  KB_GIT_KEY_PATH: /tmp/git-key
+  KB_WRITE_BLOCK_TIERS: ""
+  KB_WRITE_BLOCK_PATHS: ""

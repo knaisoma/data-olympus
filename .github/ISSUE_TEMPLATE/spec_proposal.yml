@@ -1,0 +1,57 @@
+name: Spec proposal
+description: Propose a change to the data-olympus format or specification
+labels: [spec]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to propose a change to the OKF-compatible format spec (bundle layout,
+        frontmatter schema, reserved filenames, controlled vocabularies, serving contracts).
+
+        Read `CONTRIBUTING.md` before filing: spec changes require maintainer sign-off on this
+        issue before implementation begins.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One-paragraph description of what you want to change and why.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation and problem statement
+      description: What problem does this change solve? Who is affected and how?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_change
+    attributes:
+      label: Proposed change
+      description: |
+        Describe the change precisely. If it touches the frontmatter schema, show the before/after.
+        If it touches the bundle layout, show directory-tree examples.
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Backward-compatibility and OKF-compatibility impact
+      description: |
+        - Is this change backward-compatible with existing bundles?
+        - Does it remain a valid OKF extension (no fields that conflict with OKF core)?
+        - What migration path exists for bundles authored under the old spec?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches did you consider, and why did you rule them out?
+    validations:
+      required: false

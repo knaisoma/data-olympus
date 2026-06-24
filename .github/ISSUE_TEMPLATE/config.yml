@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/knaisoma/data-olympus/security/advisories/new
+    about: Report a security vulnerability privately via GitHub Security Advisories. Do NOT open a public issue for vulnerabilities.

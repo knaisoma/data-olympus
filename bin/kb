@@ -1,0 +1,798 @@
+#!/usr/bin/env bash
+# kb - data-olympus-mcp client CLI
+#
+# Usage:
+#   kb search QUERY [-o md|json|plain] [--tier T] [--category C] [--limit N] [--no-stale]
+#   kb get ID [-o md|json|plain] [--no-stale]
+#   kb list TIER [CATEGORY] [-o md|json|plain] [--no-stale]
+#   kb outline [-o md|json|plain] [--no-stale]
+#   kb health [-o json|plain]
+#   kb propose memory TEXT [--tags t1,t2] [--confidence 0.9] [--non-interactive]
+#   kb propose edit TARGET_PATH --postimage-file FILE [--reason R] [--confidence 0.9] [--non-interactive]
+#   kb resolve PENDING_ID --decision approve|reject [--edit-text TEXT]
+#   kb pending [-o json|plain]
+#   kb audit [--since EPOCH] [--agent A] [--status S] [--limit N] [-o json|plain]
+#   kb onboarding-check [--workspace W] [--component C] [--workspace-remote-url U] [--component-remote-url U]
+#   kb onboard status <workspace> [<component>]
+#   kb onboard project <workspace>
+#   kb onboard component <workspace> <component>
+#   kb onboard rename <from> <to>
+#
+# Environment:
+#   KB_ENDPOINT        REST endpoint URL (default: http://localhost:8080)
+#   KB_LOCAL_PATH      Local KB checkout for fallback (default: $PWD)
+#   KB_NO_STALE        Set to 1 to refuse fallback and degraded responses (equivalent to --no-stale)
+#   EDITOR/VISUAL      Editor for interactive proposal editing (fallback: vi)
+#
+# Exit codes:
+#   0  success (including default-mode fallback with stderr warning)
+#   1  --no-stale set AND endpoint unreachable; OR REST call failed for a write subcommand
+#   2  --no-stale set AND REST returned degraded:true (HTTP 200 or 503); OR proposal rejected
+#   3  unexpected REST response for a write subcommand
+#  64  usage error (unknown subcommand or bad flags)
+
+set -euo pipefail
+
+KB_ENDPOINT="${KB_ENDPOINT:-http://localhost:8080}"
+KB_LOCAL_PATH="${KB_LOCAL_PATH:-$PWD}"
+KB_NO_STALE="${KB_NO_STALE:-0}"
+
+usage() {
+  sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+  exit 64
+}
+
+if [[ $# -eq 0 ]]; then usage; fi
+
+SUBCMD="$1"; shift
+
+# Default output format per subcommand
+case "$SUBCMD" in
+  search|list|outline|health|pending|audit) FORMAT="json" ;;
+  get) FORMAT="json" ;;
+  *) FORMAT="json" ;;
+esac
+
+NO_STALE=0
+TIER=""
+CATEGORY=""
+LIMIT=20
+POSITIONAL=()
+
+# Honor env var
+if [[ "$KB_NO_STALE" == "1" ]]; then NO_STALE=1; fi
+
+need_value() {
+  local flag="$1" value="${2:-}"
+  if [[ -z "$value" || "${value:0:1}" == "-" ]]; then
+    echo "kb: $flag requires a value" >&2
+    exit 64
+  fi
+}
+
+# Helper: URL-encode a value via Python (more reliable than bash for arbitrary chars).
+# Defined here (before subcommand functions) so the write-side cmd_* functions
+# below can use it without relying on bash late-binding for later definitions.
+url_encode() {
+  python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+}
+
+# Format JSON output (use jq if available). Same rationale as url_encode for
+# the early definition.
+format_json() {
+  if command -v jq >/dev/null 2>&1; then
+    echo "$REST_BODY" | jq .
+  else
+    echo "$REST_BODY"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Write-side helpers + subcommands (Phase 2C-second). These post to the REST
+# write endpoints exposed by data-olympus-mcp. They do NOT use the local
+# fallback: write paths must be intentional and synchronous.
+# ---------------------------------------------------------------------------
+
+# Helper: POST JSON body to a URL. Stores body in $REST_BODY, status in
+# $REST_STATUS. Returns 0 on a successful connection (200/202/4xx all return
+# 0); 1 on connect failure (curl exits non-zero only when the connection
+# itself fails, not on HTTP error).
+do_curl_post() {
+  local url="$1"
+  local body="$2"
+  local tmpfile
+  tmpfile=$(mktemp)
+  if REST_STATUS=$(curl --silent --max-time 10 \
+      -H "Content-Type: application/json" \
+      --data "$body" \
+      --output "$tmpfile" --write-out "%{http_code}" \
+      -X POST "$url" 2>/dev/null); then
+    REST_BODY=$(cat "$tmpfile")
+    rm -f "$tmpfile"
+    return 0
+  fi
+  rm -f "$tmpfile"
+  return 1
+}
+
+# Helper: interactive resolve flow per spec §2.5. Prompts the operator for
+# accept/edit/reject and posts the appropriate /api/v1/resolve/<id> call.
+# Reads /dev/tty so bats and other non-tty harnesses can bypass via
+# --non-interactive. Honors $EDITOR -> $VISUAL -> vi fallback chain.
+interactive_resolve() {
+  local pid="$1"
+  local proposal_text="${2:-}"
+  echo "--- proposal (pending_id=$pid) ---"
+  printf "%s\n" "$proposal_text" | head -30
+  echo "--- end ---"
+  printf "[a]ccept / [e]dit / [r]eject (default: a)? "
+  local answer="a"
+  # If /dev/tty is unavailable (CI, bats), treat as accept.
+  if [[ -r /dev/tty ]]; then
+    read -r answer < /dev/tty || answer="a"
+  fi
+  case "${answer:-a}" in
+    e|E|edit)
+      local tmp editor
+      tmp=$(mktemp -t kb-edit.XXXXXX)
+      printf "%s\n" "$proposal_text" > "$tmp"
+      editor="${EDITOR:-${VISUAL:-vi}}"
+      # shellcheck disable=SC2086  # EDITOR may be a command with args.
+      $editor "$tmp" < /dev/tty || true
+      local edited
+      edited=$(cat "$tmp")
+      rm -f "$tmp"
+      local body
+      body=$(jq -n --arg t "$edited" '{decision: "approve", edited_text: $t}')
+      if do_curl_post "$KB_ENDPOINT/api/v1/resolve/$pid" "$body"; then
+        format_json
+      else
+        echo "kb: resolve POST failed" >&2; exit 1
+      fi
+      ;;
+    r|R|reject)
+      if do_curl_post "$KB_ENDPOINT/api/v1/resolve/$pid" '{"decision": "reject"}'; then
+        format_json
+      else
+        echo "kb: resolve POST failed" >&2; exit 1
+      fi
+      ;;
+    *)
+      if do_curl_post "$KB_ENDPOINT/api/v1/resolve/$pid" '{"decision": "approve"}'; then
+        format_json
+      else
+        echo "kb: resolve POST failed" >&2; exit 1
+      fi
+      ;;
+  esac
+}
+
+# Helper: render a propose-response. Used by both propose memory and
+# propose edit since the response schema is identical.
+handle_propose_response() {
+  local non_interactive="$1"
+  local status pid proposal
+  status=$(echo "$REST_BODY" | jq -r '.status // ""')
+  case "$status" in
+    committed)
+      local sha push
+      sha=$(echo "$REST_BODY" | jq -r '.commit_sha // ""')
+      push=$(echo "$REST_BODY" | jq -r '.push_state // ""')
+      echo "Committed $sha; push $push."
+      ;;
+    pending_confirmation)
+      pid=$(echo "$REST_BODY" | jq -r '.pending_id // ""')
+      proposal=$(echo "$REST_BODY" | jq -r '.proposal_text // ""')
+      if [[ "$non_interactive" == "1" ]]; then
+        echo "Pending $pid; run \`kb resolve $pid --decision approve\` to act."
+      else
+        interactive_resolve "$pid" "$proposal"
+      fi
+      ;;
+    rejected_*)
+      local reason
+      reason=$(echo "$REST_BODY" | jq -r '.reason // ""')
+      echo "Rejected: $status${reason:+ ($reason)}" >&2
+      exit 2
+      ;;
+    *)
+      echo "kb: unexpected response: $REST_BODY" >&2
+      exit 3
+      ;;
+  esac
+}
+
+# Subcommand: kb propose memory TEXT [--tags ...] [--confidence ...] [--non-interactive]
+cmd_propose_memory() {
+  local text="" tags="" confidence="0.9" non_interactive=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tags) need_value "$1" "${2:-}"; tags="$2"; shift 2 ;;
+      --confidence) need_value "$1" "${2:-}"; confidence="$2"; shift 2 ;;
+      --non-interactive) non_interactive=1; shift ;;
+      -h|--help) usage ;;
+      -*) echo "kb: unknown flag $1" >&2; exit 64 ;;
+      *) [[ -z "$text" ]] && text="$1" || { echo "kb: too many positional args" >&2; exit 64; }; shift ;;
+    esac
+  done
+  [[ -z "$text" ]] && { echo "kb: propose memory requires TEXT" >&2; exit 64; }
+  local tags_json
+  tags_json=$(printf "%s" "$tags" | tr ',' '\n' | jq -R . | jq -s 'map(select(. != ""))')
+  local body
+  body=$(jq -n \
+    --arg t "$text" \
+    --argjson tags "$tags_json" \
+    --arg session "${USER:-cli}" \
+    --arg agent "operator-cli" \
+    --arg conf "$confidence" \
+    '{text: $t, tags: $tags, source_session: $session, agent_identity: $agent, confidence: ($conf | tonumber)}')
+  if ! do_curl_post "$KB_ENDPOINT/api/v1/propose/memory" "$body"; then
+    echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2; exit 1
+  fi
+  handle_propose_response "$non_interactive"
+}
+
+# Subcommand: kb propose edit TARGET --postimage-file FILE [--reason ...] [--confidence ...] [--non-interactive]
+cmd_propose_edit() {
+  local target="" postfile="" reason="" confidence="0.9" non_interactive=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --postimage-file) need_value "$1" "${2:-}"; postfile="$2"; shift 2 ;;
+      --reason) need_value "$1" "${2:-}"; reason="$2"; shift 2 ;;
+      --confidence) need_value "$1" "${2:-}"; confidence="$2"; shift 2 ;;
+      --non-interactive) non_interactive=1; shift ;;
+      -h|--help) usage ;;
+      -*) echo "kb: unknown flag $1" >&2; exit 64 ;;
+      *) [[ -z "$target" ]] && target="$1" || { echo "kb: too many positional args" >&2; exit 64; }; shift ;;
+    esac
+  done
+  [[ -z "$target" ]] && { echo "kb: propose edit requires TARGET_PATH" >&2; exit 64; }
+  [[ -z "$postfile" ]] && { echo "kb: propose edit requires --postimage-file" >&2; exit 64; }
+  [[ -r "$postfile" ]] || { echo "kb: cannot read postimage file: $postfile" >&2; exit 64; }
+  local postimage
+  postimage=$(cat "$postfile")
+  local body
+  body=$(jq -n \
+    --arg target "$target" \
+    --arg post "$postimage" \
+    --arg reason "$reason" \
+    --arg session "${USER:-cli}" \
+    --arg agent "operator-cli" \
+    --arg conf "$confidence" \
+    '{target_path: $target, postimage: $post, reason: $reason, source_session: $session, agent_identity: $agent, confidence: ($conf | tonumber)}')
+  if ! do_curl_post "$KB_ENDPOINT/api/v1/propose/edit" "$body"; then
+    echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2; exit 1
+  fi
+  handle_propose_response "$non_interactive"
+}
+
+# Subcommand: kb resolve PENDING_ID --decision approve|reject [--edit-text TEXT]
+cmd_resolve() {
+  local pid="" decision="" edit_text="" edit_text_set=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --decision) need_value "$1" "${2:-}"; decision="$2"; shift 2 ;;
+      --edit-text) need_value "$1" "${2:-}"; edit_text="$2"; edit_text_set=1; shift 2 ;;
+      -h|--help) usage ;;
+      -*) echo "kb: unknown flag $1" >&2; exit 64 ;;
+      *) [[ -z "$pid" ]] && pid="$1" || { echo "kb: too many positional args" >&2; exit 64; }; shift ;;
+    esac
+  done
+  [[ -z "$pid" ]] && { echo "kb: resolve requires PENDING_ID" >&2; exit 64; }
+  case "$decision" in
+    approve|reject) ;;
+    *) echo "kb: --decision must be approve or reject" >&2; exit 64 ;;
+  esac
+  local body
+  if [[ "$decision" == "approve" && "$edit_text_set" == "1" ]]; then
+    body=$(jq -n --arg t "$edit_text" '{decision: "approve", edited_text: $t}')
+  elif [[ "$decision" == "approve" ]]; then
+    body='{"decision": "approve"}'
+  else
+    body='{"decision": "reject"}'
+  fi
+  if ! do_curl_post "$KB_ENDPOINT/api/v1/resolve/$pid" "$body"; then
+    echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2; exit 1
+  fi
+  format_json
+}
+
+# Subcommand: kb pending [-o json|plain]
+cmd_pending() {
+  local fmt="json"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -o|--output) need_value "$1" "${2:-}"; fmt="$2"; shift 2 ;;
+      -h|--help) usage ;;
+      -*) echo "kb: unknown flag $1" >&2; exit 64 ;;
+      *) echo "kb: pending takes no positional args" >&2; exit 64 ;;
+    esac
+  done
+  local tmpfile
+  tmpfile=$(mktemp)
+  if ! curl --silent --max-time 10 --output "$tmpfile" \
+        "$KB_ENDPOINT/api/v1/pending" 2>/dev/null; then
+    rm -f "$tmpfile"
+    echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2; exit 1
+  fi
+  REST_BODY=$(cat "$tmpfile"); rm -f "$tmpfile"
+  if [[ "$fmt" == "plain" ]] && command -v jq >/dev/null 2>&1; then
+    echo "$REST_BODY" | jq -r '.pending[] | "\(.pending_id)\t\(.proposal_type)\t\(.target_path // "-")\t\(.confidence // "-")\t\(.agent_identity // "-")"'
+  else
+    format_json
+  fi
+}
+
+# Subcommand: kb onboarding-check [--workspace W] [--component C] [--workspace-remote-url U] [--component-remote-url U]
+# Lightweight: reads workspace + component from flags (or from CWD via the
+# detect helper when flags are absent), queries the MCP, emits a one-liner
+# reminder when state != onboarded. Designed for SessionStart hooks.
+cmd_onboarding_check() {
+  local workspace="" component="" ws_url="" comp_url=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --workspace) need_value "$1" "${2:-}"; workspace="$2"; shift 2 ;;
+      --component) shift; component="${1:-}"; shift ;;
+      --workspace-remote-url) shift; ws_url="${1:-}"; shift ;;
+      --component-remote-url) shift; comp_url="${1:-}"; shift ;;
+      -h|--help) usage ;;
+      *) echo "kb: unknown arg $1" >&2; exit 64 ;;
+    esac
+  done
+  if [[ -z "$workspace" ]]; then
+    # shellcheck disable=SC1091
+    . "$(dirname "$0")/_kb_detect_workspace.sh"
+    detect_workspace_and_component "$PWD" || exit 0
+    workspace="$WORKSPACE"
+    component="$COMPONENT"
+    ws_url="$WORKSPACE_REMOTE_URL"
+    comp_url="$COMPONENT_REMOTE_URL"
+  fi
+  local q="workspace=$(url_encode "$workspace")"
+  [[ -n "$component" ]] && q="$q&component=$(url_encode "$component")"
+  [[ -n "$ws_url" ]] && q="$q&workspace_remote_url=$(url_encode "$ws_url")"
+  [[ -n "$comp_url" ]] && q="$q&component_remote_url=$(url_encode "$comp_url")"
+  local resp
+  resp=$(curl --silent --max-time 5 "$KB_ENDPOINT/api/v1/onboarding/status?$q" 2>/dev/null) || exit 0
+  [[ -z "$resp" ]] && exit 0
+  local state
+  if command -v jq >/dev/null 2>&1; then
+    state=$(echo "$resp" | jq -r '.state // ""' 2>/dev/null) || exit 0
+  else
+    state=$(python3 -c 'import json,sys
+try:
+    d = json.loads(sys.stdin.read())
+    print(d.get("state", ""))
+except Exception:
+    print("")' <<< "$resp") || exit 0
+  fi
+  case "$state" in
+    onboarded) : ;;
+    absent)
+      if [[ -n "$component" ]]; then
+        echo "[KB] component '$component' in workspace '$workspace' is not onboarded. Run: kb onboard component $workspace $component"
+      else
+        echo "[KB] workspace '$workspace' is not onboarded. Run: kb onboard project $workspace"
+      fi
+      ;;
+    partial)
+      local missing
+      if command -v jq >/dev/null 2>&1; then
+        missing=$(echo "$resp" | jq -r '.missing_files | join(", ")' 2>/dev/null)
+      else
+        missing="(unknown)"
+      fi
+      echo "[KB] workspace '$workspace' onboarded but missing files: $missing"
+      ;;
+    rename_candidate)
+      local cand
+      if command -v jq >/dev/null 2>&1; then
+        cand=$(echo "$resp" | jq -r '.rename_candidates[0].target_workspace // ""' 2>/dev/null)
+      else
+        cand=""
+      fi
+      if [[ -n "$cand" ]]; then
+        echo "[KB] workspace '$workspace' may be a rename of existing '$cand'. Run: kb onboard rename $cand $workspace"
+      else
+        echo "[KB] workspace '$workspace' may be a rename of a known workspace."
+      fi
+      ;;
+    *) : ;;
+  esac
+  exit 0
+}
+
+# Subcommand: kb onboard status <workspace> [<component>]
+# Operator-facing: print full status JSON for the given workspace/component.
+cmd_onboard_status() {
+  local workspace="${1:-}" component="${2:-}"
+  if [[ -z "$workspace" ]]; then
+    echo "kb: usage: kb onboard status <workspace> [<component>]" >&2
+    exit 64
+  fi
+  local q="workspace=$(url_encode "$workspace")"
+  [[ -n "$component" ]] && q="$q&component=$(url_encode "$component")"
+  local tmpfile
+  tmpfile=$(mktemp)
+  if ! curl --silent --max-time 10 --output "$tmpfile" \
+        "$KB_ENDPOINT/api/v1/onboarding/status?$q" 2>/dev/null; then
+    rm -f "$tmpfile"
+    echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2
+    exit 1
+  fi
+  REST_BODY=$(cat "$tmpfile"); rm -f "$tmpfile"
+  format_json
+}
+
+# Subcommand: kb onboard project <workspace>
+# v1 stub: the interactive bootstrap flow (read local docs, propose initial
+# T3 entries via POST /api/v1/onboarding/bootstrap) is deferred. Operators
+# can drive POST /api/v1/onboarding/bootstrap directly until the CLI flow
+# lands in a follow-up.
+cmd_onboard_project() {
+  local workspace="${1:-}"
+  if [[ -z "$workspace" ]]; then
+    echo "kb: usage: kb onboard project <workspace>" >&2
+    exit 64
+  fi
+  cat <<EOF
+Interactive onboarding for workspace '$workspace' is not yet implemented as a
+guided flow. You can drive it directly via the REST API:
+
+Pseudocode:
+  1. Gather local documentation for workspace '$workspace' (README, agent
+     config files, coding standards, .rules/ directory if present).
+  2. Build a files=[] list of {target_path, postimage, reason} entries
+     targeting the projects/$workspace/ prefix in your knowledge-base bundle.
+  3. POST /api/v1/onboarding/bootstrap with:
+       workspace=$workspace
+       workspace_remote_url=<git remote origin of the workspace repo>
+       files=<that list>
+       source_session=<your session id>
+       agent_identity=<your agent identity>
+       confidence=<0.0 to 1.0>
+
+For now:
+  - Use 'kb onboard status $workspace' to see current state and missing files.
+  - The bootstrap endpoint is fully implemented; the interactive CLI flow is
+    a stub and will be completed in a future release.
+EOF
+}
+
+# Subcommand: kb onboard component <workspace> <component>
+# v1 stub: same shape as onboard project; deferred to follow-up.
+cmd_onboard_component() {
+  local workspace="${1:-}" component="${2:-}"
+  if [[ -z "$workspace" || -z "$component" ]]; then
+    echo "kb: usage: kb onboard component <workspace> <component>" >&2
+    exit 64
+  fi
+  cat <<EOF
+Interactive onboarding for component '$component' in workspace '$workspace'
+is operator-driven in 2D v1.
+
+Pseudocode:
+  1. Read local docs at the component checkout (AGENTS.md, .rules/).
+  2. Build a files=[] list under projects/$workspace/components/$component/.
+  3. POST /api/v1/onboarding/bootstrap with workspace=$workspace,
+     component=$component, component_remote_url=<git remote origin>,
+     files=<that list>, ...
+
+For now:
+  - Use 'kb onboard status $workspace $component' to see state + missing files.
+  - See audits/2026-06-01-phase-2d-onboarding-spec.md section 3.1.
+EOF
+}
+
+# Subcommand: kb onboard rename <from> <to>
+# v1 stub: prints the operator-driven git mv hint; not automated in 2D v1.
+cmd_onboard_rename() {
+  local from="${1:-}" to="${2:-}"
+  if [[ -z "$from" || -z "$to" ]]; then
+    echo "kb: usage: kb onboard rename <from> <to>" >&2
+    exit 64
+  fi
+  cat <<EOF
+Rename workspace '$from' -> '$to' is operator-driven in 2D v1.
+
+Pseudocode:
+  1. cd <your-kb-repo>
+  2. git mv projects/$from projects/$to
+  3. Rewrite cross-references in markdown bodies (grep + sed).
+  4. Commit + push; the MCP picks up the rename via git_remote_url match.
+
+Not automated in this slice. The rename_candidate detection in
+'kb onboard status' will surface the match once the rename lands in the KB.
+EOF
+}
+
+# Subcommand: kb audit [--since EPOCH] [--agent A] [--status S] [--limit N] [-o json|plain]
+cmd_audit() {
+  local fmt="json" since="" agent="" status_f="" limit="100"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -o|--output) need_value "$1" "${2:-}"; fmt="$2"; shift 2 ;;
+      --since) need_value "$1" "${2:-}"; since="$2"; shift 2 ;;
+      --agent) need_value "$1" "${2:-}"; agent="$2"; shift 2 ;;
+      --status) need_value "$1" "${2:-}"; status_f="$2"; shift 2 ;;
+      --limit) need_value "$1" "${2:-}"; limit="$2"; shift 2 ;;
+      -h|--help) usage ;;
+      -*) echo "kb: unknown flag $1" >&2; exit 64 ;;
+      *) echo "kb: audit takes no positional args" >&2; exit 64 ;;
+    esac
+  done
+  local url="$KB_ENDPOINT/api/v1/audit?limit=$(url_encode "$limit")"
+  [[ -n "$since" ]] && url="$url&since=$(url_encode "$since")"
+  [[ -n "$agent" ]] && url="$url&agent=$(url_encode "$agent")"
+  [[ -n "$status_f" ]] && url="$url&status=$(url_encode "$status_f")"
+  local tmpfile
+  tmpfile=$(mktemp)
+  if ! curl --silent --max-time 10 --output "$tmpfile" "$url" 2>/dev/null; then
+    rm -f "$tmpfile"
+    echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2; exit 1
+  fi
+  REST_BODY=$(cat "$tmpfile"); rm -f "$tmpfile"
+  if [[ "$fmt" == "plain" ]] && command -v jq >/dev/null 2>&1; then
+    echo "$REST_BODY" | jq -r '.events[] | "\(.ts)\t\(.event_type)\t\(.status)\t\(.agent_identity // "-")\t\(.target_path // "-")\t\(.commit_sha // "-")"'
+  else
+    format_json
+  fi
+}
+
+# Early dispatch for write-side subcommands. These have their own argument
+# parsing (different flags than the read-side commands) so route them BEFORE
+# the generic flag loop below. format_json + url_encode are defined later;
+# we forward-reference them from cmd_* by relying on bash's late binding.
+case "$SUBCMD" in
+  propose)
+    [[ $# -ge 1 ]] || { echo "kb: propose requires subcommand (memory|edit)" >&2; exit 64; }
+    SUB2="$1"; shift
+    case "$SUB2" in
+      memory) cmd_propose_memory "$@"; exit $? ;;
+      edit) cmd_propose_edit "$@"; exit $? ;;
+      *) echo "kb: unknown propose subcommand: $SUB2" >&2; exit 64 ;;
+    esac
+    ;;
+  resolve) cmd_resolve "$@"; exit $? ;;
+  pending) cmd_pending "$@"; exit $? ;;
+  audit) cmd_audit "$@"; exit $? ;;
+  onboarding-check) cmd_onboarding_check "$@"; exit $? ;;
+  onboard)
+    [[ $# -ge 1 ]] || { echo "kb: onboard requires subcommand (status|project|component|rename)" >&2; exit 64; }
+    SUB2="$1"; shift
+    case "$SUB2" in
+      status) cmd_onboard_status "$@"; exit $? ;;
+      project) cmd_onboard_project "$@"; exit $? ;;
+      component) cmd_onboard_component "$@"; exit $? ;;
+      rename) cmd_onboard_rename "$@"; exit $? ;;
+      *) echo "kb: unknown onboard subcommand: $SUB2" >&2; exit 64 ;;
+    esac
+    ;;
+esac
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--output)
+      need_value "$1" "${2:-}"; FORMAT="$2"; shift 2 ;;
+    --tier)
+      need_value "$1" "${2:-}"; TIER="$2"; shift 2 ;;
+    --category)
+      need_value "$1" "${2:-}"; CATEGORY="$2"; shift 2 ;;
+    --limit)
+      need_value "$1" "${2:-}"; LIMIT="$2"; shift 2 ;;
+    --no-stale)
+      NO_STALE=1; shift ;;
+    -h|--help)
+      usage ;;
+    --)
+      shift; POSITIONAL+=("$@"); break ;;
+    -*)
+      echo "kb: unknown flag $1" >&2; exit 64 ;;
+    *)
+      POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+# Validate FORMAT for the current subcommand
+case "$SUBCMD:$FORMAT" in
+  search:json|search:plain) ;;
+  get:json|get:md|get:plain) ;;
+  list:json|list:plain) ;;
+  outline:json|outline:plain) ;;
+  health:json|health:plain) ;;
+  *) echo "kb: invalid -o $FORMAT for $SUBCMD" >&2; exit 64 ;;
+esac
+
+# Helper: run curl. Stores body in $REST_BODY and status in $REST_STATUS. Returns 1 on connect failure.
+# Uses a temp file for body so multi-line bodies containing newlines don't break the split.
+do_curl() {
+  local url="$1"
+  local tmpfile
+  tmpfile=$(mktemp)
+  if REST_STATUS=$(curl --silent --max-time 5 --output "$tmpfile" --write-out "%{http_code}" "$url" 2>/dev/null); then
+    REST_BODY=$(cat "$tmpfile")
+    rm -f "$tmpfile"
+    return 0
+  fi
+  rm -f "$tmpfile"
+  return 1
+}
+
+# Helper: emit a plain-text human-readable summary of a health JSON body.
+format_plain_health() {
+  if command -v jq >/dev/null 2>&1; then
+    echo "$REST_BODY" | jq -r '
+      "commit: \(.kb_commit)
+total_rules: \(.total_rules)
+degraded: \(.degraded)
+last_pull_at: \(.last_git_pull_at // "never")
+staleness_seconds: \(.staleness_seconds // "n/a")
+index_build_status: \(.last_index_build_status)
+pending: \(.pending_count) | push_queue: \(.push_queue_size)"
+    '
+  else
+    echo "$REST_BODY"
+  fi
+}
+
+# Helper: emit a plain-text outline (one line per category).
+format_plain_outline() {
+  if command -v jq >/dev/null 2>&1; then
+    echo "$REST_BODY" | jq -r '.tiers[] | .name as $t | .categories[] | "\($t)\t\(.name)\t\(.count)"'
+  else
+    echo "$REST_BODY"
+  fi
+}
+
+# Helper: detect degraded:true at the TOP-LEVEL of the JSON body. Returns 0 if degraded, 1 otherwise.
+# Uses jq when available for proper JSON-awareness (avoids false positives from nested
+# fields named "degraded"); falls back to a Python check if jq is missing.
+is_degraded() {
+  if command -v jq >/dev/null 2>&1; then
+    echo "$REST_BODY" | jq -e '.degraded == true' >/dev/null 2>&1
+  else
+    python3 -c 'import json,sys
+try:
+    d = json.loads(sys.stdin.read())
+    sys.exit(0 if d.get("degraded") is True else 1)
+except Exception:
+    sys.exit(1)' <<< "$REST_BODY"
+  fi
+}
+
+# Subcommand dispatch
+case "$SUBCMD" in
+  health)
+    if do_curl "$KB_ENDPOINT/api/v1/health"; then
+      # 503 with degraded:true body is the canonical degraded-health response
+      # per spec §2.6. The CLI must NOT treat it as endpoint-unreachable.
+      if is_degraded && [[ "$NO_STALE" -eq 1 ]]; then
+        echo "kb: REST response degraded:true and --no-stale set" >&2
+        exit 2
+      fi
+      if [[ "$FORMAT" == "plain" ]]; then
+        format_plain_health
+      else
+        format_json
+      fi
+    else
+      if [[ "$NO_STALE" -eq 1 ]]; then
+        echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT and --no-stale set" >&2
+        exit 1
+      fi
+      echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT; using local fallback" >&2
+      KB_LOCAL_PATH="$KB_LOCAL_PATH" KB_ENDPOINT="$KB_ENDPOINT" \
+        "$(dirname "$0")/_kb_fallback.py" health | (command -v jq >/dev/null && jq . || cat)
+    fi
+    ;;
+  outline)
+    if do_curl "$KB_ENDPOINT/api/v1/outline"; then
+      if is_degraded && [[ "$NO_STALE" -eq 1 ]]; then
+        echo "kb: REST response degraded:true and --no-stale set" >&2
+        exit 2
+      fi
+      if [[ "$FORMAT" == "plain" ]]; then
+        format_plain_outline
+      else
+        format_json
+      fi
+    else
+      if [[ "$NO_STALE" -eq 1 ]]; then
+        echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT and --no-stale set" >&2
+        exit 1
+      fi
+      echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT; using local fallback" >&2
+      KB_LOCAL_PATH="$KB_LOCAL_PATH" KB_ENDPOINT="$KB_ENDPOINT" \
+        "$(dirname "$0")/_kb_fallback.py" outline | (command -v jq >/dev/null && jq . || cat)
+    fi
+    ;;
+  search)
+    [[ ${#POSITIONAL[@]} -ge 1 ]] || { echo "kb: search requires QUERY" >&2; exit 64; }
+    Q="${POSITIONAL[0]}"
+    # Robust URL encoding for arbitrary characters in query and filters.
+    URL="$KB_ENDPOINT/api/v1/search?q=$(url_encode "$Q")&limit=$LIMIT"
+    [[ -n "$TIER" ]] && URL="$URL&tier=$(url_encode "$TIER")"
+    [[ -n "$CATEGORY" ]] && URL="$URL&category=$(url_encode "$CATEGORY")"
+    if do_curl "$URL"; then
+      if is_degraded && [[ "$NO_STALE" -eq 1 ]]; then
+        echo "kb: REST response degraded:true and --no-stale set" >&2
+        exit 2
+      fi
+      if [[ "$FORMAT" == "plain" ]] && command -v jq >/dev/null 2>&1; then
+        echo "$REST_BODY" | jq -r '.hits[] | "\(.id)\t\(.path)\t\(.title)"'
+      else
+        format_json
+      fi
+    else
+      if [[ "$NO_STALE" -eq 1 ]]; then
+        echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT and --no-stale set" >&2
+        exit 1
+      fi
+      echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT; using local fallback" >&2
+      ARGS=("search" "$Q" "--limit" "$LIMIT")
+      [[ -n "$TIER" ]] && ARGS+=("--tier" "$TIER")
+      [[ -n "$CATEGORY" ]] && ARGS+=("--category" "$CATEGORY")
+      KB_LOCAL_PATH="$KB_LOCAL_PATH" KB_ENDPOINT="$KB_ENDPOINT" \
+        "$(dirname "$0")/_kb_fallback.py" "${ARGS[@]}" | (command -v jq >/dev/null && jq . || cat)
+    fi
+    ;;
+  get)
+    [[ ${#POSITIONAL[@]} -ge 1 ]] || { echo "kb: get requires ID" >&2; exit 64; }
+    ID="${POSITIONAL[0]}"
+    URL="$KB_ENDPOINT/api/v1/get/$(url_encode "$ID")"
+    if do_curl "$URL"; then
+      if [[ "$REST_STATUS" == "404" ]]; then
+        echo "$REST_BODY" >&2; exit 1
+      fi
+      if is_degraded && [[ "$NO_STALE" -eq 1 ]]; then
+        echo "kb: REST response degraded:true and --no-stale set" >&2
+        exit 2
+      fi
+      if [[ "$FORMAT" == "md" ]] && command -v jq >/dev/null 2>&1; then
+        echo "$REST_BODY" | jq -r .content_markdown
+      elif [[ "$FORMAT" == "plain" ]] && command -v jq >/dev/null 2>&1; then
+        echo "$REST_BODY" | jq -r '"\(.id)\t\(.path)\t\(.title)"'
+      else
+        format_json
+      fi
+    else
+      if [[ "$NO_STALE" -eq 1 ]]; then
+        echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT and --no-stale set" >&2
+        exit 1
+      fi
+      echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT; using local fallback" >&2
+      KB_LOCAL_PATH="$KB_LOCAL_PATH" KB_ENDPOINT="$KB_ENDPOINT" \
+        "$(dirname "$0")/_kb_fallback.py" get "$ID" | (command -v jq >/dev/null && jq . || cat)
+    fi
+    ;;
+  list)
+    [[ ${#POSITIONAL[@]} -ge 1 ]] || { echo "kb: list requires TIER" >&2; exit 64; }
+    LTIER="${POSITIONAL[0]}"
+    LCAT="${POSITIONAL[1]:-}"
+    URL="$KB_ENDPOINT/api/v1/list?tier=$(url_encode "$LTIER")"
+    [[ -n "$LCAT" ]] && URL="$URL&category=$(url_encode "$LCAT")"
+    if do_curl "$URL"; then
+      if is_degraded && [[ "$NO_STALE" -eq 1 ]]; then
+        echo "kb: REST response degraded:true and --no-stale set" >&2
+        exit 2
+      fi
+      if [[ "$FORMAT" == "plain" ]] && command -v jq >/dev/null 2>&1; then
+        echo "$REST_BODY" | jq -r '.entries[] | "\(.id)\t\(.path)\t\(.title)"'
+      else
+        format_json
+      fi
+    else
+      if [[ "$NO_STALE" -eq 1 ]]; then
+        echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT and --no-stale set" >&2
+        exit 1
+      fi
+      echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT; using local fallback" >&2
+      ARGS=("list" "$LTIER")
+      [[ -n "$LCAT" ]] && ARGS+=("$LCAT")
+      KB_LOCAL_PATH="$KB_LOCAL_PATH" KB_ENDPOINT="$KB_ENDPOINT" \
+        "$(dirname "$0")/_kb_fallback.py" "${ARGS[@]}" | (command -v jq >/dev/null && jq . || cat)
+    fi
+    ;;
+  *)
+    usage ;;
+esac

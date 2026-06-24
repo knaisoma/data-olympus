@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Acme Example - data-olympus viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: #0f172a; color: #e2e8f0; }
+header { padding: 0.75rem 1rem; background: #1e293b; display: flex; align-items: center; gap: 1rem; border-bottom: 1px solid #334155; flex-shrink: 0; }
+header strong { color: #f8fafc; font-size: 1.1rem; }
+.muted { color: #94a3b8; font-size: 0.85rem; }
+.controls { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-left: auto; }
+.controls input, .controls select, .controls button { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 0.375rem; padding: 0.25rem 0.5rem; font-size: 0.8rem; }
+.controls button:hover { background: #1e293b; cursor: pointer; }
+main { display: flex; flex: 1; overflow: hidden; }
+#graph { flex: 1; background: #0f172a; }
+#detail { width: 360px; overflow-y: auto; background: #1e293b; border-left: 1px solid #334155; padding: 1rem; flex-shrink: 0; }
+.type-chip { display: inline-block; font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 9999px; background: #334155; color: #94a3b8; margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.05em; }
+h1 { font-size: 1.1rem; color: #f8fafc; margin-bottom: 0.2rem; }
+.detail-id { font-size: 0.75rem; color: #64748b; margin-bottom: 0.75rem; font-family: monospace; }
+dl.frontmatter { font-size: 0.82rem; margin-bottom: 0.75rem; }
+dl.frontmatter dt { color: #64748b; margin-top: 0.4rem; }
+dl.frontmatter dd { color: #cbd5e1; }
+hr { border: none; border-top: 1px solid #334155; margin: 0.75rem 0; }
+#detail-body { font-size: 0.85rem; line-height: 1.6; color: #cbd5e1; }
+#detail-body a { color: #60a5fa; }
+#detail-backlinks h2 { font-size: 0.9rem; color: #94a3b8; margin-top: 0.75rem; }
+#detail-backlinks ul { padding-left: 1rem; font-size: 0.82rem; }
+#detail-backlinks li { margin-top: 0.25rem; }
+#detail-backlinks a { color: #60a5fa; text-decoration: none; }
+</style>
+</head>
+<body>
+<header>
+  <strong id="bundle-name"></strong>
+  <span class="muted">data-olympus bundle</span>
+  <div class="controls">
+    <input id="search" type="search" placeholder="Search title / id">
+    <select id="filter-type"><option value="">All types</option></select>
+    <select id="layout">
+      <option value="cose">cose (force)</option>
+      <option value="concentric">concentric</option>
+      <option value="breadthfirst">breadth-first</option>
+      <option value="circle">circle</option>
+      <option value="grid">grid</option>
+    </select>
+    <button id="reset">Reset view</button>
+  </div>
+</header>
+<main>
+  <section id="graph"></section>
+  <section id="detail">
+    <div id="detail-empty" class="muted">Click a node to see details.</div>
+    <article id="detail-content" hidden>
+      <header>
+        <span class="type-chip" id="detail-type"></span>
+        <h1 id="detail-title"></h1>
+        <div class="detail-id" id="detail-id"></div>
+      </header>
+      <dl class="frontmatter">
+        <dt>Description</dt><dd id="detail-desc"></dd>
+      </dl>
+      <hr>
+      <div id="detail-body"></div>
+      <section id="detail-backlinks" hidden>
+        <h2>Cited by</h2>
+        <ul id="backlinks-list"></ul>
+      </section>
+    </article>
+  </section>
+</main>
+<script>
+window.__BUNDLE_DATA__ = {"name": "Acme Example", "nodes": [{"id": "decisions/ADR-001-use-data-olympus", "title": "Adopt data-olympus for the knowledge base", "type": "decision", "description": "Acme stores its knowledge as a data-olympus bundle."}, {"id": "decisions/ADR-002-single-writer-serving", "title": "Use single-writer MCP serving model", "type": "decision", "description": "Acme runs one write-enabled data-olympus MCP replica to prevent concurrent-write races on the knowledge bundle."}, {"id": "projects/acme-app/README", "title": "Acme App", "type": "project", "description": "The flagship Acme application."}, {"id": "projects/acme-app/components/api/README", "title": "Acme App API Component", "type": "project", "description": "Component-level knowledge for the Acme App REST API, including module conventions and deployment notes."}, {"id": "tech-stacks/backend-nestjs/STD-BN-001-module-structure", "title": "NestJS Module Structure", "type": "standard", "description": "Prescribes the directory layout and naming conventions for NestJS modules in Acme backend services."}, {"id": "universal/foundation/STD-U-001-writing-style", "title": "Writing Style", "type": "standard", "description": "How Acme writes clear, agent-readable documentation."}, {"id": "universal/foundation/STD-U-002-code-review", "title": "Code Review Standard", "type": "standard", "description": "Rules for conducting and recording code reviews at Acme so that quality gates are consistent and auditable."}, {"id": "universal/security/STD-U-601-secrets", "title": "Secrets Handling", "type": "standard", "description": "Universal rules for handling credentials, API keys, and other secrets across all Acme projects."}, {"id": "workflows/WF-001-review-flow", "title": "Knowledge Base Review Flow", "type": "workflow", "description": "Step-by-step process for proposing, reviewing, and committing changes to the Acme knowledge bundle."}], "edges": [{"source": "decisions/ADR-001-use-data-olympus", "target": "universal/foundation/STD-U-001-writing-style"}, {"source": "decisions/ADR-002-single-writer-serving", "target": "decisions/ADR-001-use-data-olympus"}, {"source": "decisions/ADR-002-single-writer-serving", "target": "universal/security/STD-U-601-secrets"}, {"source": "projects/acme-app/README", "target": "universal/foundation/STD-U-001-writing-style"}, {"source": "projects/acme-app/components/api/README", "target": "tech-stacks/backend-nestjs/STD-BN-001-module-structure"}, {"source": "projects/acme-app/components/api/README", "target": "projects/acme-app/README"}, {"source": "tech-stacks/backend-nestjs/STD-BN-001-module-structure", "target": "universal/foundation/STD-U-001-writing-style"}, {"source": "universal/foundation/STD-U-002-code-review", "target": "universal/foundation/STD-U-001-writing-style"}, {"source": "workflows/WF-001-review-flow", "target": "universal/foundation/STD-U-002-code-review"}, {"source": "workflows/WF-001-review-flow", "target": "decisions/ADR-002-single-writer-serving"}], "bodies": {"decisions/ADR-001-use-data-olympus": "# Context\nAcme needs a portable, agent-readable knowledge base.\n\n# Decision\nAdopt the data-olympus format and serve it via the single-writer MCP server.\nSee [STD-U-001](/universal/foundation/STD-U-001-writing-style.md).\n\n# Consequences\nKnowledge is version-controlled and queryable by any agent.\n", "decisions/ADR-002-single-writer-serving": "# Context\n\nMultiple agents may propose writes to the knowledge bundle concurrently.\nWithout coordination, concurrent writes can corrupt the git working tree\nor produce conflicting commits.\n\nSee the original adoption decision in [ADR-001](/decisions/ADR-001-use-data-olympus.md).\nThe secrets handling standard in [STD-U-601](/universal/security/STD-U-601-secrets.md)\napplies to the deploy key used by the write pipeline.\n\n# Decision\n\nRun exactly one write-enabled data-olympus MCP replica. That replica holds\nadvisory per-path locks and a durable push queue that serializes outbound\ngit pushes.\n\nRead-only replicas (serving `kb_search`, `kb_get`, `kb_list`, `kb_outline`)\nmay scale horizontally because they do not write.\n\n# Consequences\n\n- No concurrent-write race condition on the bundle.\n- Write throughput is bounded by the single replica, which is acceptable for\n  curated KB workloads where writes are infrequent.\n- The deploy key for the write replica is a sensitive credential and is\n  governed by STD-U-601.\n", "projects/acme-app/README": "# Acme App\nThe flagship application. Built per [STD-U-001](/universal/foundation/STD-U-001-writing-style.md).\n", "projects/acme-app/components/api/README": "# Acme App API Component\n\nThe API component is the primary HTTP surface for the Acme App. It is built\nwith NestJS following the module conventions in\n[STD-BN-001](/tech-stacks/backend-nestjs/STD-BN-001-module-structure.md).\n\nFor project-level context, see the\n[Acme App project overview](/projects/acme-app/README.md).\n\n# Module Layout\n\n```\nsrc/\n  health/\n  auth/\n  users/\n  knowledge/\n```\n\nEach module follows the STD-BN-001 directory layout (module, controller,\nservice, dto/, __tests__/).\n\n# Deployment\n\nThe API is deployed as a single container. Environment variables are injected\nat runtime. No secrets are committed to the repository (see STD-U-601 via the\nproject-level knowledge).\n\n# Key Decisions\n\n- REST over gRPC for external clients (simpler tooling for web consumers).\n- NestJS chosen for its first-class TypeScript support and module system.\n", "tech-stacks/backend-nestjs/STD-BN-001-module-structure": "# Purpose\n\nThis standard defines how NestJS modules are structured in all Acme backend\nservices. It inherits the general writing and documentation principles from\n[STD-U-001](/universal/foundation/STD-U-001-writing-style.md).\n\n# Scope\n\nAll backend services built with NestJS.\n\n# Required Directory Layout\n\nEach feature module lives under `src/<feature>/` and contains:\n\n- `<feature>.module.ts` (module declaration)\n- `<feature>.controller.ts` (HTTP layer)\n- `<feature>.service.ts` (business logic)\n- `<feature>.repository.ts` (data access, if needed)\n- `dto/` (request and response DTOs)\n- `__tests__/` (unit and integration tests co-located with the module)\n\n# Naming Conventions\n\n- File names use kebab-case.\n- Class names use PascalCase matching the file name.\n- Module, controller, and service names end in `Module`, `Controller`,\n  `Service` respectively.\n\n# Why\n\nConsistent structure lets engineers navigate any service without a mental\ncontext switch. Agents can resolve symbols across repositories using the\nsame lookup pattern.\n", "universal/foundation/STD-U-001-writing-style": "# Rule\nWrite in plain language. Prefer structure (headings, lists, tables) over prose.\n\n# Why\nStructured docs are easier for humans and agents to retrieve and act on.\n", "universal/foundation/STD-U-002-code-review": "# Purpose\n\nThis standard defines the mandatory steps for reviewing code at Acme.\nIt builds on the general writing principles in [STD-U-001](/universal/foundation/STD-U-001-writing-style.md).\n\n# Scope\n\nApplies to all engineers and automated agents that submit or review pull requests.\n\n# Rules\n\n- Every pull request requires at least one human approval before merge.\n- Automated agents may leave review comments but may not approve alone.\n- Security-sensitive changes (auth, RLS, PII, secrets) require a second human reviewer.\n- Feedback follows PROBLEM / WHY / BETTER APPROACH / BENEFITS format.\n- Reviewer records verdict as: **Approved**, **Request changes**, or **Comment only**.\n\n# Why\n\nConsistent review criteria reduce merge risk and create an auditable record of\nwhy changes were accepted.\n", "universal/security/STD-U-601-secrets": "# Purpose\n\nThis standard ensures secrets never appear in source control, agent context,\nor log output.\n\n# Scope\n\nApplies to all engineers, automated agents, scripts, and CI/CD pipelines\nat Acme.\n\n# Rules\n\n- Never write credentials, API keys, or passwords to any file tracked by git.\n- Retrieve secrets at runtime from the designated secrets management system,\n  not from environment files committed to the repository.\n- Do not paste secret values into chat sessions, commit messages, PR bodies,\n  or plan documents.\n- Before reading any `.env`, `*secret*`, or `*credentials*` file, confirm\n  the file is not tracked by git (`.gitignore` check).\n- Rotate any secret that was accidentally exposed within 24 hours of detection.\n\n# Why\n\nSecrets committed to source control are effectively public once the repository\nis cloned or leaked. Rotation and runtime retrieval limit blast radius.\n", "workflows/WF-001-review-flow": "# Purpose\n\nThis workflow describes how engineers and agents propose, review, and commit\nchanges to the knowledge bundle. It applies the review criteria from\n[STD-U-002](/universal/foundation/STD-U-002-code-review.md).\n\n# Steps\n\n1. **Propose.** Use `kb propose memory <text>` (new concept) or\n   `kb propose edit <path>` (existing concept) to create a pending entry.\n2. **Review.** A human or designated reviewer reads the diff and the rationale.\n3. **Decide.** Use `kb resolve <pending-id> --decision approve|reject`.\n   - Approved: the MCP commits the change and pushes to the remote.\n   - Rejected: the pending entry is discarded with a reason.\n4. **Confirm.** Run `kb search <topic>` to verify the change is indexed.\n\n# Notes\n\n- Agents operate under the single-writer constraint described in ADR-002\n  (see [ADR-002](/decisions/ADR-002-single-writer-serving.md)).\n- Low-confidence proposals pause in `pending_confirmation` state until a\n  human approves interactively.\n- Emergency rollback: `git revert <sha>` in the bundle repository, then\n  restart the MCP server to rebuild the index.\n"}};
+</script>
+<script>
+(function() {
+  var D = window.__BUNDLE_DATA__;
+  document.getElementById('bundle-name').textContent = D.name || '';
+
+  var backlinks = {};
+  D.edges.forEach(function(e) {
+    if (!backlinks[e.target]) backlinks[e.target] = [];
+    backlinks[e.target].push(e.source);
+  });
+
+  var types = [...new Set(D.nodes.map(function(n) { return n.type; }))].sort();
+  var sel = document.getElementById('filter-type');
+  types.forEach(function(t) {
+    var o = document.createElement('option'); o.value = t; o.textContent = t; sel.appendChild(o);
+  });
+
+  var palette = {"standard":"#3b82f6","decision":"#8b5cf6","workflow":"#10b981","project":"#f59e0b","memory":"#ec4899","reference":"#6b7280"};
+  function nodeColor(t) { return palette[t] || '#94a3b8'; }
+
+  var cy = cytoscape({
+    container: document.getElementById('graph'),
+    elements: [
+      ...D.nodes.map(function(n) {
+        return { data: { id: n.id, label: n.title || n.id, type: n.type, color: nodeColor(n.type) } };
+      }),
+      ...D.edges.map(function(e) {
+        return { data: { id: e.source+'__'+e.target, source: e.source, target: e.target } };
+      })
+    ],
+    style: [
+      { selector: 'node', style: {
+        'background-color': 'data(color)',
+        'label': 'data(label)',
+        'color': '#f8fafc',
+        'font-size': 11,
+        'text-valign': 'bottom',
+        'text-margin-y': 4,
+        'width': 28, 'height': 28
+      } },
+      { selector: 'edge', style: {
+        'line-color': '#334155',
+        'target-arrow-color': '#334155',
+        'target-arrow-shape': 'triangle',
+        'curve-style': 'bezier',
+        'width': 1.5
+      } },
+      { selector: ':selected', style: { 'border-width': 3, 'border-color': '#f8fafc' } }
+    ],
+    layout: { name: 'cose', animate: false }
+  });
+
+  cy.on('tap', 'node', function(evt) {
+    var n = D.nodes.find(function(x) { return x.id === evt.target.id(); });
+    if (!n) return;
+    document.getElementById('detail-empty').hidden = true;
+    var c = document.getElementById('detail-content');
+    c.hidden = false;
+    document.getElementById('detail-type').textContent = n.type;
+    document.getElementById('detail-title').textContent = n.title || n.id;
+    document.getElementById('detail-id').textContent = n.id;
+    document.getElementById('detail-desc').textContent = n.description || '';
+    var body = D.bodies && D.bodies[n.id] || '';
+    var rawHtml = marked.parse ? marked.parse(body) : (typeof marked === 'function' ? marked(body) : body);
+    document.getElementById('detail-body').innerHTML = DOMPurify.sanitize(rawHtml);
+    var bl = document.getElementById('detail-backlinks');
+    var bll = document.getElementById('backlinks-list');
+    var srcs = backlinks[n.id] || [];
+    if (srcs.length) {
+      bl.hidden = false;
+      bll.innerHTML = srcs.map(function(s) {
+        var sn = D.nodes.find(function(x) { return x.id === s; });
+        return '<li><a href="#" data-id="'+s+'">'+(sn ? sn.title : s)+'</a></li>';
+      }).join('');
+    } else { bl.hidden = true; }
+  });
+
+  document.getElementById('detail').addEventListener('click', function(e) {
+    var a = e.target.closest('[data-id]');
+    if (!a) return;
+    e.preventDefault();
+    cy.$('#'+CSS.escape(a.dataset.id)).trigger('tap');
+  });
+
+  document.getElementById('search').addEventListener('input', function(e) {
+    var q = e.target.value.toLowerCase();
+    cy.nodes().forEach(function(n) {
+      var match = !q || n.data('label').toLowerCase().includes(q) || n.id().toLowerCase().includes(q);
+      n.style('opacity', match ? 1 : 0.15);
+    });
+  });
+
+  document.getElementById('filter-type').addEventListener('change', function(e) {
+    var t = e.target.value;
+    cy.nodes().forEach(function(n) {
+      n.style('opacity', !t || n.data('type') === t ? 1 : 0.15);
+    });
+  });
+
+  document.getElementById('layout').addEventListener('change', function(e) {
+    cy.layout({ name: e.target.value, animate: false }).run();
+  });
+
+  document.getElementById('reset').addEventListener('click', function() {
+    cy.fit(); cy.zoom(1);
+  });
+})();
+</script>
+</body>
+</html>

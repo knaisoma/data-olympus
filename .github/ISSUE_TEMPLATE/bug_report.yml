@@ -1,0 +1,65 @@
+name: Bug report
+description: Report a bug in data-olympus
+labels: [bug]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of data-olympus is affected?
+      options:
+        - CLI (data-olympus)
+        - kb client
+        - MCP server
+        - lint
+        - indexer
+        - viewer (visualize)
+        - deploy (Docker / Kubernetes)
+        - spec / format
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: Describe the bug. Include any error messages or unexpected output.
+      placeholder: "When I run `data-olympus lint my-bundle`, I see..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps that reproduce the issue.
+      placeholder: |
+        1. Create a bundle with...
+        2. Run `data-olympus lint ...`
+        3. Observe...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_vs_actual
+    attributes:
+      label: Expected vs actual behavior
+      description: What did you expect, and what happened instead?
+      placeholder: |
+        Expected: lint exits 0
+        Actual: lint exits 1 with "error: ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Fill in the details below.
+      value: |
+        - OS:
+        - Python version (`python --version`):
+        - data-olympus version or commit (`data-olympus --version` or `git rev-parse --short HEAD`):
+    validations:
+      required: true

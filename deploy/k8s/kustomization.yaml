@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: data-olympus
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - service.yaml
+  - ingress.yaml
+  - statefulset.yaml
+  # secret.sops.yaml NOT in resources because kustomize can't decrypt SOPS in
+  # its base flow. The deploy script applies it separately via:
+  #   sops exec-file secret.sops.yaml 'kubectl apply -f {}'
+  # so the plaintext never lands on disk.
