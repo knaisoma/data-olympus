@@ -38,9 +38,15 @@ _HTML_TEMPLATE = (
     "<head>\n"
     '<meta charset="utf-8">\n'
     "<title>__DISPLAY_NAME__ - data-olympus viewer</title>\n"
-    '<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>\n'
-    '<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>\n'
-    '<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js"></script>\n'
+    '<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"'
+    ' integrity="sha384-J7Q85oZE4GJ/e7+n2aOQsLXfDwwfnA8S2nZAL5BpFsfpCF84zQD7LroZ/dMnLgex"'
+    ' crossorigin="anonymous"></script>\n'
+    '<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"'
+    ' integrity="sha384-NNQgBjjuhtXzPmmy4gurS5X7P4uTt1DThyevz4Ua0IVK5+kazYQI1W27JHjbbxQz"'
+    ' crossorigin="anonymous"></script>\n'
+    '<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js"'
+    ' integrity="sha384-Ic7KEGROu37YaruU6NyiYeib7UhjFyDZQ5fzBAji965L75T/4LGk5nzwMEjNGexs"'
+    ' crossorigin="anonymous"></script>\n'
     "<style>\n"
     "* { box-sizing: border-box; margin: 0; padding: 0; }\n"
     "body { font-family: system-ui, sans-serif; display: flex; flex-direction: column;"
