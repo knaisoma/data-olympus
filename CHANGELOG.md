@@ -12,11 +12,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-
-- Optional bearer-token authentication for write routes. Set `KB_AUTH_TOKEN` to a non-empty secret; the server then requires `Authorization: Bearer <token>` on `POST /api/v1/propose/memory`, `POST /api/v1/propose/edit`, `POST /api/v1/resolve/{pending_id}`, and `POST /api/v1/onboarding/bootstrap`. Missing or wrong token returns `401 {"error": "unauthorized"}`. Read routes remain open. Token comparison uses `hmac.compare_digest` to prevent timing attacks. When `KB_AUTH_TOKEN` is empty (the default), behavior is unchanged. The `bin/kb` CLI passes the header automatically when the env var is set.
-
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-06-24
 
 ### Added
 
@@ -37,13 +33,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Single-replica advisory locking and durable push queue to prevent concurrent write races.
 - Per-session worktree isolation for in-flight proposed edits.
 - Health endpoint with degraded/healthy state.
-- No built-in authentication; operators must deploy behind a trusted network or authenticating reverse proxy. See `SECURITY.md` for the recommended deployment model.
+- Optional bearer-token authentication for the write routes via `KB_AUTH_TOKEN`. When set, `POST /api/v1/propose/memory|propose/edit|resolve/{id}|onboarding/bootstrap` require `Authorization: Bearer <token>` (constant-time compared with `hmac.compare_digest`); a missing or wrong token returns `401`. Read routes stay open. When unset (the default), there is no auth. The `bin/kb` CLI sends the header automatically (via a curl config FD, never in argv) when `KB_AUTH_TOKEN` is set. There is otherwise no built-in auth, so operators should still deploy behind a trusted network or authenticating reverse proxy. See `SECURITY.md`.
 
 **`data-olympus` CLI**
 
 - `data-olympus lint <bundle>`: validates bundle conformance against the format spec; exits non-zero on errors (warnings are informational only).
 - `data-olympus index <bundle>`: regenerates `index.md` files for each prefix in the bundle.
-- `data-olympus visualize <bundle>`: produces a Cytoscape-backed HTML graph of document relationships and cross-links (adapted from OKF visualizer approach).
+- `data-olympus visualize <bundle>`: produces a self-contained Cytoscape-backed HTML graph of document relationships and cross-links (adapted from the OKF visualizer). Bundle markdown is sanitized with DOMPurify and the CDN scripts are pinned with SubResource Integrity (SRI) hashes.
 
 **`kb` bash REST client (`bin/kb`)**
 
