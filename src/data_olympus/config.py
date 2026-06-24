@@ -28,6 +28,7 @@ class Config:
     worktree_idle_sec: int = 3600
     git_key_path: str = "/tmp/git-key"
     audit_log_path: str = "/state/audit/events.log"
+    auth_token: str = ""
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -52,6 +53,7 @@ def load_config() -> Config:
     worktree_idle_sec = int(os.getenv("KB_WORKTREE_IDLE_SEC", "3600"))
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
     audit_log_path = os.getenv("KB_AUDIT_LOG_PATH", "/state/audit/events.log")
+    auth_token = os.getenv("KB_AUTH_TOKEN", "")
     return Config(
         kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
         kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
@@ -71,4 +73,5 @@ def load_config() -> Config:
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
         audit_log_path=audit_log_path,
+        auth_token=auth_token,
     )
