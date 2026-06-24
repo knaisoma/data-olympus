@@ -36,6 +36,7 @@ set -euo pipefail
 KB_ENDPOINT="${KB_ENDPOINT:-http://localhost:8080}"
 KB_LOCAL_PATH="${KB_LOCAL_PATH:-$PWD}"
 KB_NO_STALE="${KB_NO_STALE:-0}"
+KB_AUTH_TOKEN="${KB_AUTH_TOKEN:-}"
 
 usage() {
   sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -102,8 +103,13 @@ do_curl_post() {
   local body="$2"
   local tmpfile
   tmpfile=$(mktemp)
+  local auth_args=()
+  if [[ -n "$KB_AUTH_TOKEN" ]]; then
+    auth_args=(-H "Authorization: Bearer $KB_AUTH_TOKEN")
+  fi
   if REST_STATUS=$(curl --silent --max-time 10 \
       -H "Content-Type: application/json" \
+      "${auth_args[@]}" \
       --data "$body" \
       --output "$tmpfile" --write-out "%{http_code}" \
       -X POST "$url" 2>/dev/null); then
