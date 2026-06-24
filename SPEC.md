@@ -210,6 +210,11 @@ The serving transport MUST be streamable HTTP (not stdio). The MCP endpoint is `
 - Consumers MUST tolerate broken links (links to non-existent files).
 - A frontmatter block that contains a YAML syntax error is a parse failure; the document is non-conformant and MUST be reported as an error by `kb lint`.
 
+**`kb lint` skips the following paths automatically:**
+
+- **Vendor/VCS/meta directories:** `.git`, `__pycache__`, `.venv`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `node_modules`, `.github`, `.worktrees`, `archive`, `_archive`, `to-delete`, `test-fixtures`, `cli-fixtures`. Any `.md` file whose path passes through one of these directory names is not validated.
+- **Root-level repo-meta files:** `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `CHANGELOG.md`, `NOTICE.md`, `LICENSE.md`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` — **only when they sit directly at the bundle root**. The same filename in a subdirectory (e.g. `projects/acme-app/README.md`) is a legitimate concept document and is still validated.
+
 **`kb lint` severity levels:**
 
 - `error`: missing required field, invalid enum value, or YAML parse failure. Blocks CI.
