@@ -2,6 +2,7 @@
 so MCP + REST share one Starlette/uvicorn process."""
 from __future__ import annotations
 
+import hmac
 from typing import TYPE_CHECKING
 
 from starlette.responses import JSONResponse
@@ -49,8 +50,31 @@ def _degraded_response(health: HealthResponse) -> JSONResponse:
     return JSONResponse(body, status_code=503)
 
 
-def register_routes(app: FastMCP, state: ServerState) -> None:
-    """Mount 5 GET routes under /api/v1/ on the FastMCP app."""
+def _check_auth(request: Request, auth_token: str) -> JSONResponse | None:
+    """Return a 401 JSONResponse if auth_token is set and the request does not
+    supply a matching ``Authorization: Bearer <token>`` header. Uses
+    hmac.compare_digest for constant-time comparison.
+
+    Returns None when auth is satisfied (token empty, or header matches).
+    """
+    if not auth_token:
+        return None
+    header = request.headers.get("Authorization", "")
+    prefix = "Bearer "
+    if not header.startswith(prefix):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    supplied = header[len(prefix):]
+    if not hmac.compare_digest(supplied.encode(), auth_token.encode()):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return None
+
+
+def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> None:
+    """Mount REST routes under /api/v1/ on the FastMCP app.
+
+    Write routes require a valid ``Authorization: Bearer <token>`` header when
+    ``auth_token`` is non-empty. Read routes are always open.
+    """
 
     @app.custom_route("/api/v1/health", methods=["GET"])
     async def health(_request: Request) -> JSONResponse:
@@ -111,6 +135,8 @@ def register_routes(app: FastMCP, state: ServerState) -> None:
 
     @app.custom_route("/api/v1/propose/memory", methods=["POST"])
     async def propose_memory(request: Request) -> JSONResponse:
+        if (denied := _check_auth(request, auth_token)) is not None:
+            return denied
         body = await request.json()
         assert state.worktrees is not None
         assert state.push_queue is not None
@@ -137,6 +163,8 @@ def register_routes(app: FastMCP, state: ServerState) -> None:
 
     @app.custom_route("/api/v1/propose/edit", methods=["POST"])
     async def propose_edit(request: Request) -> JSONResponse:
+        if (denied := _check_auth(request, auth_token)) is not None:
+            return denied
         body = await request.json()
         assert state.worktrees is not None
         assert state.push_queue is not None
@@ -167,6 +195,8 @@ def register_routes(app: FastMCP, state: ServerState) -> None:
 
     @app.custom_route("/api/v1/resolve/{pending_id}", methods=["POST"])
     async def resolve_pending(request: Request) -> JSONResponse:
+        if (denied := _check_auth(request, auth_token)) is not None:
+            return denied
         pid = request.path_params["pending_id"]
         body = await request.json()
         assert state.worktrees is not None
@@ -219,6 +249,8 @@ def register_routes(app: FastMCP, state: ServerState) -> None:
 
     @app.custom_route("/api/v1/onboarding/bootstrap", methods=["POST"])
     async def onboarding_bootstrap(request: Request) -> JSONResponse:
+        if (denied := _check_auth(request, auth_token)) is not None:
+            return denied
         body = await request.json()
         assert state.worktrees is not None
         assert state.push_queue is not None
