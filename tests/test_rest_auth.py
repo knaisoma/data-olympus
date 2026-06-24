@@ -45,7 +45,7 @@ def authed_app(tmp_kb, tmp_index_path, tmp_path):
         write_block_paths=[],
         auth_token=TOKEN,
     )
-    return app.streamable_http_app()
+    return app.http_app()
 
 
 @pytest.fixture
@@ -71,7 +71,7 @@ def open_app(tmp_kb, tmp_index_path, tmp_path):
         write_block_paths=[],
         # auth_token omitted — defaults to ""
     )
-    return app.streamable_http_app()
+    return app.http_app()
 
 
 @pytest.fixture(autouse=True)

@@ -151,7 +151,7 @@ def _env_token_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
 
     cfg = load_config()
     app = server.build_app_from_config(cfg, bootstrap_now=True)
-    return app.streamable_http_app()
+    return app.http_app()
 
 
 @pytest.mark.asyncio

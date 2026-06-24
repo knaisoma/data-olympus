@@ -22,8 +22,8 @@ def http_app(tmp_kb: Path, tmp_path: Path):
         staleness_degraded_sec=600,
         bootstrap_now=True,
     )
-    # FastMCP exposes the underlying HTTP app via streamable_http_app
-    return app.streamable_http_app()
+    # FastMCP 3.x exposes the underlying Starlette HTTP app via http_app()
+    return app.http_app()
 
 
 @pytest.mark.asyncio
@@ -136,7 +136,7 @@ async def test_rest_health_returns_503_when_index_build_failed(
     state.last_index_error = "duplicate id STD-U-007"
     state.last_index_conflicts = [{"id": "STD-U-007", "paths": ["a", "b"]}]
 
-    http_app = app.streamable_http_app()
+    http_app = app.http_app()
     transport = httpx.ASGITransport(app=http_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/v1/health")
@@ -162,7 +162,7 @@ async def test_rest_health_returns_503_when_no_pull_recorded(
     state = app._dolympus_state  # type: ignore[attr-defined]
     state.last_git_pull_at = None  # simulate "never pulled"
 
-    http_app = app.streamable_http_app()
+    http_app = app.http_app()
     transport = httpx.ASGITransport(app=http_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/v1/health")
@@ -188,7 +188,7 @@ def _make_degraded_app(tmp_kb: Path, tmp_path: Path):
     state = app._dolympus_state  # type: ignore[attr-defined]
     state.last_index_build_status = "failed"
     state.last_index_error = "duplicate id STD-U-007"
-    return app.streamable_http_app()
+    return app.http_app()
 
 
 @pytest.mark.asyncio
