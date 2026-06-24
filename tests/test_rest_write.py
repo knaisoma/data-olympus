@@ -31,7 +31,7 @@ def http_app(tmp_kb, tmp_index_path, tmp_path):
         write_block_tiers=[],
         write_block_paths=[],
     )
-    return app.streamable_http_app()
+    return app.http_app()
 
 
 @pytest.fixture(autouse=True)
