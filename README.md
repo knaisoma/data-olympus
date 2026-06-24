@@ -1,6 +1,6 @@
 # data-olympus
 
-data-olympus is a governance-grade knowledge-base format and server for agent workforces. It is an OKF-compatible profile (a conformant extension of the [Open Knowledge Format](https://google.github.io/open-knowledge-format/)) with governance extensions (stable `id`, controlled `type`/`status`/`tier` fields, `supersedes` chains) plus a single-writer MCP server and a CLI. The result is a git-native, version-controlled document graph of engineering standards, architectural decisions, and project knowledge that agents and humans can read, search, and extend without any proprietary service.
+data-olympus is a governance-grade knowledge-base format and server for agent workforces. It is an OKF-compatible profile (a conformant extension of the [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)) with governance extensions (stable `id`, controlled `type`/`status`/`tier` fields, `supersedes` chains) plus a single-writer MCP server and a CLI. The result is a git-native, version-controlled document graph of engineering standards, architectural decisions, and project knowledge that agents and humans can read, search, and extend without any proprietary service.
 
 **Status: pre-release (v0.1).**
 
