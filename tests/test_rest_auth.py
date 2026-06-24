@@ -3,9 +3,10 @@
 Coverage:
 - When auth_token is set, write POSTs with no Authorization header return 401.
 - When auth_token is set, write POSTs with the wrong token return 401.
-- When auth_token is set, write POSTs with the correct Bearer token succeed.
+- When auth_token is set, write POSTs with the correct Bearer token succeed
+  (parameterized over all four write routes).
 - When auth_token is empty (default), write POSTs with no header still work
-  (backward-compat).
+  (backward-compat; parameterized over all four write routes).
 - Read routes (GET) are never gated regardless of auth_token.
 """
 from __future__ import annotations
@@ -281,3 +282,94 @@ async def test_search_read_open_when_auth_token_set(authed_app) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/v1/search?q=test")
     assert resp.status_code != 401
+
+
+# ---------------------------------------------------------------------------
+# Helpers for parameterized write-route coverage
+# ---------------------------------------------------------------------------
+
+# Each entry: (route, payload).
+# For resolve we use a nonexistent id — server returns non-401 (e.g. 404).
+# For onboarding/bootstrap an empty files list is valid enough to pass auth.
+_WRITE_ROUTES = [
+    (
+        "/api/v1/propose/memory",
+        {"text": "param-test", "tags": [], "source_session": "s",
+         "agent_identity": "claude", "confidence": 0.9},
+    ),
+    (
+        "/api/v1/propose/edit",
+        {
+            "target_path": "projects/foo/bar.md",
+            "postimage": "# x",
+            "base_commit": "HEAD",
+            "base_blob_sha": None,
+            "target_file_hash": None,
+            "reason": "test",
+            "source_session": "s",
+            "agent_identity": "claude",
+            "confidence": 0.9,
+        },
+    ),
+    (
+        "/api/v1/resolve/nonexistent-param-id",
+        {"decision": "approve"},
+    ),
+    (
+        "/api/v1/onboarding/bootstrap",
+        {
+            "workspace": "param-ws",
+            "files": [],
+            "source_session": "s",
+            "agent_identity": "claude",
+            "confidence": 0.9,
+        },
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Parameterized: correct token → not 401 (all four write routes)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route,payload", _WRITE_ROUTES)
+async def test_correct_token_not_401_on_write_routes(authed_app, route, payload) -> None:
+    """A correct Bearer token must not be rejected (not 401) on any write route.
+
+    Uses raise_app_exceptions=False so that business-logic errors (e.g.
+    resolve on a nonexistent pending id) surface as 5xx responses rather than
+    propagating as Python exceptions — the test only cares that the auth gate
+    did not fire (not 401).
+    """
+    transport = httpx.ASGITransport(app=authed_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            route,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json=payload,
+        )
+    assert resp.status_code != 401, (
+        f"Expected non-401 with correct token on {route}, got {resp.status_code}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Parameterized: no auth_token set → write routes open (all four)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route,payload", _WRITE_ROUTES)
+async def test_open_app_write_routes_no_header_not_401(open_app, route, payload) -> None:
+    """When auth_token is empty, write routes must not return 401 (backward-compat).
+
+    Uses raise_app_exceptions=False for the same reason as the correct-token
+    parameterized test: business-logic errors for resolve/bootstrap surface as
+    5xx, not 401, which is the desired outcome.
+    """
+    transport = httpx.ASGITransport(app=open_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(route, json=payload)
+    assert resp.status_code != 401, (
+        f"Expected open (non-401) on {route} without auth_token, got {resp.status_code}"
+    )

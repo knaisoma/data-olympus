@@ -103,13 +103,16 @@ do_curl_post() {
   local body="$2"
   local tmpfile
   tmpfile=$(mktemp)
-  local auth_args=()
+  # Build auth argument: when KB_AUTH_TOKEN is set, pass the Authorization
+  # header via a curl config on a process-substitution FD so the token is
+  # NOT exposed in process arguments (visible via `ps`).
+  local auth_k_arg=()
   if [[ -n "$KB_AUTH_TOKEN" ]]; then
-    auth_args=(-H "Authorization: Bearer $KB_AUTH_TOKEN")
+    auth_k_arg=(-K <(printf 'header = "Authorization: Bearer %s"\n' "$KB_AUTH_TOKEN"))
   fi
   if REST_STATUS=$(curl --silent --max-time 10 \
       -H "Content-Type: application/json" \
-      "${auth_args[@]}" \
+      "${auth_k_arg[@]}" \
       --data "$body" \
       --output "$tmpfile" --write-out "%{http_code}" \
       -X POST "$url" 2>/dev/null); then
