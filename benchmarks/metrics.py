@@ -6,7 +6,10 @@ set of concept ids that correctly answer the query.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def recall_at_k(ranked: Sequence[str], gold: set[str], *, k: int) -> float:
