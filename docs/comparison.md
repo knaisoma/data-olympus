@@ -82,6 +82,26 @@ On **exact** queries, data-olympus (recall=0.858) trails BM25 (recall=1.000). BM
 
 Overall, data-olympus recall (0.502) is competitive with BM25 (0.554) while spending ~26% fewer tokens (281 vs 382 per query), and it is the only keyword method that avoids serving superseded knowledge (staleness 0.000 vs BM25 0.050). It does not beat dense retrieval on paraphrase queries, and does not claim to.
 
+### Governance ablation: does `applies_when` trigger metadata help?
+
+This is the question that matters for the governance use case (coding-intent → governing-rule). A separate ablation runs a synthetic governance corpus (18 docs, distinct curated `applies_when` triggers, supersession pairs, plus distractor topics with no governing rule) through 65 stratified scenario queries, toggling one lever at a time. The corpus is built so the trigger terms do **not** appear in the doc body, and a held-out `paraphrase_uncovered` stratum uses intent phrasings that share **no** term with any trigger, so the test cannot flatter the metadata. Numbers are copied from [`benchmarks/governance_results/ablation.md`](../benchmarks/governance_results/ablation.md); regenerate with `python -m benchmarks.generate_governance_artifacts`.
+
+| Config | trigger_covered recall | paraphrase_uncovered (held-out) | negative FP rate | ALL recall | tokens/query |
+|---|---|---|---|---|---|
+| fts-no-metadata | 0.867 | 0.429 | 1.000 | 0.523 | 307 |
+| fts+description | 0.867 | 0.452 | 1.000 | 0.538 | 305 |
+| **fts+applies_when** | **1.000** | 0.452 | 1.000 | **0.569** | 306 |
+| bm25-baseline | 1.000 | 0.405 | 1.000 | 0.538 | 664 |
+
+What the ablation honestly shows:
+
+- **`applies_when` helps, modestly here, more at scale.** On trigger-covered intents it lifts recall from 0.867 to **1.000** (+0.133), fixing the cases where the model's tool/intent term is *not* already in the doc's prose; overall recall rises +0.046 over body-only FTS, at roughly half BM25's tokens. The gain is modest in *this* corpus because it is small (top-5 of 18 docs is easy, so body-only FTS already does well via the topic name in the title); on a larger KB, body-only recall degrades and the `applies_when` advantage is expected to widen. That scale sensitivity is a known limitation of this 18-doc benchmark.
+- **It cannot bridge true paraphrases.** On the held-out `paraphrase_uncovered` stratum, `applies_when` adds **+0.000** (0.452, same as no-metadata). When the query shares no term with any trigger, curated metadata cannot help; that is dense/semantic-retrieval territory, and the benchmark shows it plainly rather than hiding it.
+- **`description` alone barely moves recall** (+0.015 overall); the trigger list is the lever that matters.
+- **No method abstains.** Every config has a **100% false-positive rate on negative queries** (queries with no governing rule): they always return something. For a governance tool, surfacing an irrelevant rule as if it governs is a real weakness; an abstention / confidence threshold is open follow-up work.
+
+The honest summary: curated `applies_when` triggers are the right primary mechanism for governance retrieval (deterministic, auditable, no drift), they help and never hurt, and they pair with the token and staleness advantages above; but they do not replace semantic retrieval for unanticipated phrasings, and abstention on out-of-scope queries is unsolved.
+
 ---
 
 ## Per-tool comparison
