@@ -499,6 +499,37 @@ def test_list_with_remote_url_returns_only_entries_with_url(tmp_kb, tmp_index_pa
     assert len(urls) >= 2
 
 
+def test_search_filters_by_status(status_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    hits = idx.search("caching", limit=10, status="active")
+    assert {h.id for h in hits} == {"STD-NEW"}, (
+        f"status=active must exclude superseded/accepted; got {[h.id for h in hits]}"
+    )
+
+
+def test_search_filters_by_type(status_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    hits = idx.search("caching", limit=10, doc_type="decision")
+    assert {h.id for h in hits} == {"DEC-1"}
+
+
+def test_search_hit_carries_status_and_type(status_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    hits = idx.search("caching", limit=10, doc_type="decision")
+    assert hits[0].status == "accepted"
+    assert hits[0].doc_type == "decision"
+
+
+def test_search_no_status_filter_returns_all_matches(status_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    hits = idx.search("caching", limit=10)
+    assert {h.id for h in hits} == {"STD-OLD", "STD-NEW", "DEC-1"}
+
+
 def test_docs_table_has_status_and_type_columns(tmp_kb: Path, tmp_index_path: Path) -> None:
     import sqlite3
     idx = Index(tmp_index_path)

@@ -141,6 +141,8 @@ class SearchHit:
     title: str
     snippet: str
     score: float
+    status: str = ""
+    doc_type: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,11 +330,10 @@ class Index:
         limit: int = 20,
         tier: str | None = None,
         category: str | None = None,
+        status: str | None = None,
+        doc_type: str | None = None,
     ) -> list[SearchHit]:
-        """FTS5 search across title, tags, body. Optional tier/category filters."""
-        # FTS5 treats unquoted dashes/dots/colons as operators or column references,
-        # which is wrong for KB lookups that include rule ids like "STD-U-002".
-        # Wrap the user-supplied query as an exact-phrase, doubling any embedded quotes.
+        """FTS5 search across title, tags, body. Optional tier/category/status/type filters."""
         safe_query = '"' + query.replace('"', '""') + '"'
         conn = self._connect()
         try:
@@ -344,12 +345,20 @@ class Index:
             if category:
                 where.append("docs.category = ?")
                 params.append(category)
+            if status:
+                where.append("docs.status = ?")
+                params.append(status)
+            if doc_type:
+                where.append("docs.type = ?")
+                params.append(doc_type)
             params.append(limit)
             sql = f"""
                 SELECT
                     fts.id AS id,
                     docs.path AS path,
                     COALESCE(docs.title, '') AS title,
+                    COALESCE(docs.status, '') AS status,
+                    COALESCE(docs.type, '') AS doc_type,
                     snippet(fts, 3, '[', ']', '...', 16) AS snippet,
                     bm25(fts) AS score
                 FROM fts
@@ -366,6 +375,8 @@ class Index:
                     title=r["title"],
                     snippet=r["snippet"],
                     score=float(r["score"]),
+                    status=r["status"],
+                    doc_type=r["doc_type"],
                 )
                 for r in rows
             ]
