@@ -169,6 +169,8 @@ class IndexedDoc:
     last_modified_source: str
     source_commit: str
     git_remote_url: str | None = None
+    status: str = ""
+    doc_type: str = ""
 
 
 class DuplicateIdError(ValueError):
@@ -389,7 +391,7 @@ class Index:
         try:
             row = conn.execute(
                 """
-                SELECT id, path, title, tier, category, tags, content_markdown,
+                SELECT id, path, title, tier, category, status, type, tags, content_markdown,
                        last_modified, last_modified_source, git_remote_url
                 FROM docs WHERE id = ?
                 """,
@@ -416,6 +418,8 @@ class Index:
             last_modified_source=row["last_modified_source"] or "",
             source_commit=source_commit,
             git_remote_url=row["git_remote_url"],
+            status=row["status"] or "",
+            doc_type=row["type"] or "",
         )
 
     def list(self, *, tier: str, category: str | None = None) -> list[dict[str, str]]:

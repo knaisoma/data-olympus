@@ -499,6 +499,15 @@ def test_list_with_remote_url_returns_only_entries_with_url(tmp_kb, tmp_index_pa
     assert len(urls) >= 2
 
 
+def test_get_returns_status_and_type(status_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    doc = idx.get("STD-NEW")
+    assert doc is not None
+    assert doc.status == "active"
+    assert doc.doc_type == "standard"
+
+
 def test_search_filters_by_status(status_kb: Path, tmp_index_path: Path) -> None:
     idx = Index(tmp_index_path)
     idx.build(status_kb, source_commit="x")
