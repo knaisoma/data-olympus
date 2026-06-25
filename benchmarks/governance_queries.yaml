@@ -1,0 +1,388 @@
+- text: I am using openpyxl and xlsxwriter
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_NEW_EXCEL_EXPORT
+  current_id: GOV_NEW_EXCEL_EXPORT
+  stale_id: ''
+- text: How should I handle spreadsheet workbook?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_EXCEL_EXPORT
+  current_id: GOV_NEW_EXCEL_EXPORT
+  stale_id: ''
+- text: What is the approved approach for cell formulas?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_EXCEL_EXPORT
+  current_id: GOV_NEW_EXCEL_EXPORT
+  stale_id: ''
+- text: Looking for guidance on write to excel file.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_EXCEL_EXPORT
+  current_id: GOV_NEW_EXCEL_EXPORT
+  stale_id: ''
+- text: What is the current governing rule for excel-export?
+  stratum: supersession
+  gold_ids:
+  - GOV_NEW_EXCEL_EXPORT
+  - GOV_OLD_EXCEL_EXPORT
+  current_id: GOV_NEW_EXCEL_EXPORT
+  stale_id: GOV_OLD_EXCEL_EXPORT
+- text: I am using force-push and --force
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_FORCE_PUSH
+  current_id: GOV_FORCE_PUSH
+  stale_id: ''
+- text: How should I handle overwrite remote history?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_FORCE_PUSH
+  current_id: GOV_FORCE_PUSH
+  stale_id: ''
+- text: What is the approved approach for rewrite the branch?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_FORCE_PUSH
+  current_id: GOV_FORCE_PUSH
+  stale_id: ''
+- text: Looking for guidance on undo a published commit.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_FORCE_PUSH
+  current_id: GOV_FORCE_PUSH
+  stale_id: ''
+- text: I am using nestjs module and feature module
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_MODULE_STRUCTURE
+  current_id: GOV_MODULE_STRUCTURE
+  stale_id: ''
+- text: How should I handle organize the backend?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_MODULE_STRUCTURE
+  current_id: GOV_MODULE_STRUCTURE
+  stale_id: ''
+- text: What is the approved approach for where to put services?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_MODULE_STRUCTURE
+  current_id: GOV_MODULE_STRUCTURE
+  stale_id: ''
+- text: Looking for guidance on project layout.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_MODULE_STRUCTURE
+  current_id: GOV_MODULE_STRUCTURE
+  stale_id: ''
+- text: I am using secrets manager and vault
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_SECRETS_HANDLING
+  current_id: GOV_SECRETS_HANDLING
+  stale_id: ''
+- text: How should I handle store passwords?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_SECRETS_HANDLING
+  current_id: GOV_SECRETS_HANDLING
+  stale_id: ''
+- text: What is the approved approach for keep api keys safe?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_SECRETS_HANDLING
+  current_id: GOV_SECRETS_HANDLING
+  stale_id: ''
+- text: Looking for guidance on protect sensitive config.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_SECRETS_HANDLING
+  current_id: GOV_SECRETS_HANDLING
+  stale_id: ''
+- text: I am using flyway and alembic
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_DATABASE_MIGRATIONS
+  current_id: GOV_DATABASE_MIGRATIONS
+  stale_id: ''
+- text: How should I handle change the database schema?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_DATABASE_MIGRATIONS
+  current_id: GOV_DATABASE_MIGRATIONS
+  stale_id: ''
+- text: What is the approved approach for add a column?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_DATABASE_MIGRATIONS
+  current_id: GOV_DATABASE_MIGRATIONS
+  stale_id: ''
+- text: Looking for guidance on rename a table.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_DATABASE_MIGRATIONS
+  current_id: GOV_DATABASE_MIGRATIONS
+  stale_id: ''
+- text: I am using pydantic and zod
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_INPUT_VALIDATION
+  current_id: GOV_INPUT_VALIDATION
+  stale_id: ''
+- text: How should I handle check user input?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_INPUT_VALIDATION
+  current_id: GOV_INPUT_VALIDATION
+  stale_id: ''
+- text: What is the approved approach for sanitize request data?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_INPUT_VALIDATION
+  current_id: GOV_INPUT_VALIDATION
+  stale_id: ''
+- text: Looking for guidance on validate form fields.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_INPUT_VALIDATION
+  current_id: GOV_INPUT_VALIDATION
+  stale_id: ''
+- text: I am using jwt and access token
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_NEW_AUTH_TOKENS
+  current_id: GOV_NEW_AUTH_TOKENS
+  stale_id: ''
+- text: How should I handle user login session?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_AUTH_TOKENS
+  current_id: GOV_NEW_AUTH_TOKENS
+  stale_id: ''
+- text: What is the approved approach for keep a user logged in?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_AUTH_TOKENS
+  current_id: GOV_NEW_AUTH_TOKENS
+  stale_id: ''
+- text: Looking for guidance on authenticate api calls.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_AUTH_TOKENS
+  current_id: GOV_NEW_AUTH_TOKENS
+  stale_id: ''
+- text: What is the current governing rule for auth-tokens?
+  stratum: supersession
+  gold_ids:
+  - GOV_NEW_AUTH_TOKENS
+  - GOV_OLD_AUTH_TOKENS
+  current_id: GOV_NEW_AUTH_TOKENS
+  stale_id: GOV_OLD_AUTH_TOKENS
+- text: I am using structlog and pino
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_LOGGING
+  current_id: GOV_LOGGING
+  stale_id: ''
+- text: How should I handle record events?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_LOGGING
+  current_id: GOV_LOGGING
+  stale_id: ''
+- text: What is the approved approach for write application logs?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_LOGGING
+  current_id: GOV_LOGGING
+  stale_id: ''
+- text: Looking for guidance on audit trail.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_LOGGING
+  current_id: GOV_LOGGING
+  stale_id: ''
+- text: I am using slo and error budget
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_ERROR_BUDGETS
+  current_id: GOV_ERROR_BUDGETS
+  stale_id: ''
+- text: How should I handle how much downtime is acceptable?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_ERROR_BUDGETS
+  current_id: GOV_ERROR_BUDGETS
+  stale_id: ''
+- text: What is the approved approach for reliability target?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_ERROR_BUDGETS
+  current_id: GOV_ERROR_BUDGETS
+  stale_id: ''
+- text: Looking for guidance on uptime goal.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_ERROR_BUDGETS
+  current_id: GOV_ERROR_BUDGETS
+  stale_id: ''
+- text: I am using canary deploy and traffic split
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_CANARY_ROLLOUTS
+  current_id: GOV_CANARY_ROLLOUTS
+  stale_id: ''
+- text: How should I handle release to a small group first?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_CANARY_ROLLOUTS
+  current_id: GOV_CANARY_ROLLOUTS
+  stale_id: ''
+- text: What is the approved approach for gradual rollout?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_CANARY_ROLLOUTS
+  current_id: GOV_CANARY_ROLLOUTS
+  stale_id: ''
+- text: Looking for guidance on test in production.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_CANARY_ROLLOUTS
+  current_id: GOV_CANARY_ROLLOUTS
+  stale_id: ''
+- text: I am using circuit breaker and half-open state
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_CIRCUIT_BREAKERS
+  current_id: GOV_CIRCUIT_BREAKERS
+  stale_id: ''
+- text: How should I handle stop calling a failing service?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_CIRCUIT_BREAKERS
+  current_id: GOV_CIRCUIT_BREAKERS
+  stale_id: ''
+- text: What is the approved approach for handle downstream outages?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_CIRCUIT_BREAKERS
+  current_id: GOV_CIRCUIT_BREAKERS
+  stale_id: ''
+- text: I am using kafka partition and message ordering
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_MESSAGE_ORDERING
+  current_id: GOV_MESSAGE_ORDERING
+  stale_id: ''
+- text: How should I handle ensure messages arrive in order?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_MESSAGE_ORDERING
+  current_id: GOV_MESSAGE_ORDERING
+  stale_id: ''
+- text: What is the approved approach for process events sequentially?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_MESSAGE_ORDERING
+  current_id: GOV_MESSAGE_ORDERING
+  stale_id: ''
+- text: I am using sigterm and drain connections
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_NEW_GRACEFUL_SHUTDOWN
+  current_id: GOV_NEW_GRACEFUL_SHUTDOWN
+  stale_id: ''
+- text: How should I handle stop the app cleanly?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_GRACEFUL_SHUTDOWN
+  current_id: GOV_NEW_GRACEFUL_SHUTDOWN
+  stale_id: ''
+- text: What is the approved approach for finish in-flight requests before exiting?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_GRACEFUL_SHUTDOWN
+  current_id: GOV_NEW_GRACEFUL_SHUTDOWN
+  stale_id: ''
+- text: What is the current governing rule for graceful-shutdown?
+  stratum: supersession
+  gold_ids:
+  - GOV_NEW_GRACEFUL_SHUTDOWN
+  - GOV_OLD_GRACEFUL_SHUTDOWN
+  current_id: GOV_NEW_GRACEFUL_SHUTDOWN
+  stale_id: GOV_OLD_GRACEFUL_SHUTDOWN
+- text: I am using liveness probe and readiness probe
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_HEALTH_CHECKS
+  current_id: GOV_HEALTH_CHECKS
+  stale_id: ''
+- text: How should I handle is the service up?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_HEALTH_CHECKS
+  current_id: GOV_HEALTH_CHECKS
+  stale_id: ''
+- text: What is the approved approach for kubernetes pod restart?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_HEALTH_CHECKS
+  current_id: GOV_HEALTH_CHECKS
+  stale_id: ''
+- text: Looking for guidance on load balancer check.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_HEALTH_CHECKS
+  current_id: GOV_HEALTH_CHECKS
+  stale_id: ''
+- text: I am using idempotency key and deduplication id
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_IDEMPOTENCY
+  current_id: GOV_IDEMPOTENCY
+  stale_id: ''
+- text: How should I handle duplicate request?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_IDEMPOTENCY
+  current_id: GOV_IDEMPOTENCY
+  stale_id: ''
+- text: What is the approved approach for safe to retry?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_IDEMPOTENCY
+  current_id: GOV_IDEMPOTENCY
+  stale_id: ''
+- text: Looking for guidance on send twice.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_IDEMPOTENCY
+  current_id: GOV_IDEMPOTENCY
+  stale_id: ''
+- text: What is the team standard for microservice naming?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for test naming conventions?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for ui color palette?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for sprint ceremony schedule?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for team offsite planning?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
