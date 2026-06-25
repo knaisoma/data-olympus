@@ -173,3 +173,19 @@ def test_kb_get_fn_returns_status_and_type(status_kb: Path, tmp_index_path: Path
     resp = kb_get_fn(idx=idx, id="DEC-1")
     assert resp.status == "accepted"
     assert resp.type == "decision"
+
+
+def test_kb_get_fn_returns_applies_when_and_description(tmp_path: Path, tmp_index_path: Path) -> None:
+    from data_olympus.index import Index
+    from data_olympus.tools_read import kb_get_fn
+    kb = tmp_path / "kb"
+    (kb / "universal" / "foundation").mkdir(parents=True)
+    (kb / "universal" / "foundation" / "STD-XL.md").write_text(
+        "---\nid: STD-XL\ntier: T1\ntype: standard\nstatus: active\n"
+        "applies_when: [openpyxl, excel]\ndescription: Prefer xlsxwriter.\n---\n# B\n"
+    )
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="x")
+    resp = kb_get_fn(idx=idx, id="STD-XL")
+    assert resp.applies_when == ["openpyxl", "excel"]
+    assert resp.description == "Prefer xlsxwriter."

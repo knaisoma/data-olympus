@@ -137,6 +137,8 @@ def kb_get_fn(*, idx: Index, id: str) -> GetResponse:
         status=doc.status,
         type=doc.doc_type,
         tags=list(doc.tags),
+        applies_when=list(doc.applies_when),
+        description=doc.description,
         content_markdown=doc.content_markdown,
         last_modified=doc.last_modified,
         last_modified_source=doc.last_modified_source,

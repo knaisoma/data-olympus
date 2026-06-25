@@ -6,7 +6,7 @@ import os
 import sqlite3
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from data_olympus.markdown_parse import parse_file
@@ -181,6 +181,8 @@ class IndexedDoc:
     git_remote_url: str | None = None
     status: str = ""
     doc_type: str = ""
+    applies_when: list[str] = field(default_factory=list)
+    description: str = ""
 
 
 class DuplicateIdError(ValueError):
@@ -432,7 +434,8 @@ class Index:
         try:
             row = conn.execute(
                 """
-                SELECT id, path, title, tier, category, status, type, tags, content_markdown,
+                SELECT id, path, title, tier, category, status, type, tags,
+                       applies_when, description, content_markdown,
                        last_modified, last_modified_source, git_remote_url
                 FROM docs WHERE id = ?
                 """,
@@ -447,6 +450,7 @@ class Index:
         finally:
             conn.close()
         tags = [t for t in (row["tags"] or "").split() if t]
+        applies_when = [t for t in (row["applies_when"] or "").split() if t]
         return IndexedDoc(
             id=row["id"],
             path=row["path"],
@@ -461,6 +465,8 @@ class Index:
             git_remote_url=row["git_remote_url"],
             status=row["status"] or "",
             doc_type=row["type"] or "",
+            applies_when=applies_when,
+            description=row["description"] or "",
         )
 
     def list(self, *, tier: str, category: str | None = None) -> list[dict[str, str]]:
