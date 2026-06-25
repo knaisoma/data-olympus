@@ -12,11 +12,14 @@ current_id, and stale_id (None when no supersession).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
-from benchmarks.corpus_model import CorpusManifest
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from benchmarks.corpus_model import CorpusManifest
 
 # Fixed synonym map for base topics. Used by the semantic category to produce
 # paraphrases with minimal literal overlap with the concept body.

@@ -7,9 +7,12 @@ under controlled, reproducible conditions.
 from __future__ import annotations
 
 import random
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from benchmarks.corpus_model import Concept, CorpusManifest, TopicRecord
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 TOPICS = [
     "caching", "retries", "pagination", "rate-limiting", "idempotency",
