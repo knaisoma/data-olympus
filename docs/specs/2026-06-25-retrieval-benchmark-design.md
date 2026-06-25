@@ -1,0 +1,214 @@
+# Design: retrieval benchmark for accuracy and token cost
+
+**Date:** 2026-06-25
+**Status:** Draft (design approved, pending spec review)
+**Topic:** A reproducible, retrieval-only benchmark that measures whether serving
+knowledge through data-olympus (selective loading) saves tokens and improves
+retrieval accuracy versus the alternatives a team would otherwise use.
+
+---
+
+## 1. The question this benchmark answers
+
+Does serving a governed markdown KB through data-olympus, with selective loading
+(`outline` map, then filtered `kb_search`, then targeted `kb_get`), deliver a
+measurable benefit over the obvious alternatives, on two axes:
+
+- **Token cost**: how many context tokens are spent to put the right answer in
+  front of the model.
+- **Retrieval accuracy**: does the method surface the correct and *current*
+  concept, and does it avoid surfacing superseded knowledge as if it were
+  current.
+
+The benchmark must be able to return a **negative** result. If selective loading
+does not save tokens or does not improve accuracy on some category, the
+benchmark reports that plainly. A benchmark that only ever flatters the tool is
+worthless for the decision the operator actually wants to make ("is this worth
+asking people to adopt").
+
+## 2. Non-goals
+
+- **Not an end-to-end answer-quality benchmark.** We measure retrieval payloads
+  and retrieval correctness, not a live model's final prose answer. End-to-end
+  grading is nondeterministic, costs API tokens, and cannot be reproduced
+  exactly by an outside reader. It may be added as a separate opt-in layer
+  later; it is out of scope here.
+- **Not a claim about real-world KBs.** The corpus is synthetic-at-scale. We
+  report what the benchmark measures over that corpus, and we say so.
+- **Not a semantic-search competition.** data-olympus search is full-text with
+  metadata filters. On synonym/paraphrase queries we expect vector RAG to win,
+  and the benchmark is designed to surface that, not hide it.
+
+## 3. Integrity guardrails (load-bearing, not optional)
+
+We author both the tool and its benchmark, over a corpus we design. That is a
+conflict of interest. These guardrails are what make the numbers trustworthy
+instead of marketing:
+
+1. **Pre-registration.** Corpus composition (counts per tier/type/status) and
+   the metric definitions in this document are fixed *before* the harness is run
+   for record. Changing them after seeing results requires an explicit note in
+   the results report explaining what changed and why.
+2. **Adversarial categories.** The query set MUST include a synonym/semantic
+   category where data-olympus is expected to lose to vector RAG. If any method
+   wins every category, that is treated as a benchmark-design bug, not a result.
+3. **Published and re-runnable.** The harness, the corpus, the corpus generator,
+   the query set with gold labels, and the per-category results all ship in the
+   repo. Anyone can re-run and contest the numbers.
+4. **Report losses.** The results report breaks down per category and states
+   where data-olympus is worse, not only where it is better.
+
+## 4. Methods under test
+
+Each method receives the same query string and returns a **retrieval payload**:
+the text that would be placed into the model's context. The payload is what we
+tokenize and what we score for correctness. Five methods:
+
+- **`data-olympus`** (the selective-loading pattern under test). Realistic hook
+  usage: load the directory `outline` once as a cheap session map, then call the
+  real `kb_search` with a `status: active` filter, then `kb_get` the top-ranked
+  concept. Payload = outline + top-N search snippets + the one retrieved concept
+  body. Uses the actual `src/` search backend, not a reimplementation.
+- **`whole-bundle-dump`**. The entire corpus concatenated into context. The "put
+  it all in AGENTS.md / the system prompt" baseline. Zero dependencies.
+- **`grep-read-files`**. Keyword grep over the corpus, then read each whole
+  matched file. What a vanilla coding agent does with no MCP. Zero dependencies.
+- **`vector-rag-topk`**. Local offline embedding model, fixed-size chunking,
+  retrieve top-k chunks by cosine similarity. The semantic comparator and the
+  primary staleness comparator. Adds an embedding dependency (optional extra).
+- **`bm25-topk`**. Lexical chunk search, top-k by BM25 score, no structured
+  filters. Isolates the added value of status/tier/type filtering and
+  progressive disclosure over naive search. Zero heavyweight dependencies.
+
+### Per-method knobs (pre-registered defaults)
+
+- Top-N search snippets for data-olympus: **5**.
+- Top-k chunks for `vector-rag-topk` and `bm25-topk`: **5**.
+- Chunk size / overlap for the two chunked methods: **512 tokens / 64 overlap**.
+- `grep-read-files`: case-insensitive match on the query's content terms; all
+  matched files included (no cap), to model the naive worst case honestly.
+
+## 5. Corpus design
+
+Synthetic, committed to the repo, generated by a committed deterministic
+generator (fixed seed) so reviewers can both read the output and regenerate it.
+
+- **Scale:** ~250 concept files. Enough that `whole-bundle-dump` is genuinely
+  expensive and the token-savings curve has room to separate.
+- **Composition (pre-registered targets):**
+  - Tiers spread across `T1`, `T2`, `T3`, `T4`, `meta`.
+  - Types spread across `standard`, `decision`, `workflow`, `project`,
+    `reference`, `memory`.
+  - **~15% of concepts carry a supersession chain:** a `superseded` predecessor
+    paired with the `active` concept that replaced it, linked via
+    `supersedes` / `superseded_by`, with deliberately overlapping body text so a
+    naive retriever is genuinely tempted to return the stale one.
+  - A subset of concepts cross-link to model graph queries.
+- **Conformance:** the generated corpus passes `data-olympus lint` with no
+  errors (it is a valid bundle), so the data-olympus method exercises the real
+  indexer.
+- **Honesty label:** documented in the corpus README as synthetic-at-scale,
+  generated, not drawn from any real KB.
+
+## 6. Query set design
+
+Pre-registered, committed with gold labels (the concept `id`(s) that correctly
+and currently answer each query). Balanced across categories so the aggregate is
+fair, and deliberately including a category we expect to lose:
+
+- **Exact lookup** (~25 queries). Term overlaps the target concept. Expected
+  data-olympus / BM25 strength.
+- **Synonym / semantic** (~25 queries). Query uses paraphrase/synonyms with low
+  literal term overlap. **Expected vector-RAG win, data-olympus loss.** Included
+  on purpose.
+- **Status-sensitive / staleness** (~25 queries). "What is the *current* rule
+  for X" where X has a superseded predecessor. Tests staleness avoidance.
+- **Graph / supersession** (~15 queries). "What replaced ADR-…",
+  "what supersedes …". Tests the supersession chain.
+
+Gold labels are authored against the generator's known structure, not by running
+any method (no method's output seeds the gold set).
+
+## 7. Metrics
+
+Per query, aggregated per method and **per category** (the per-category split is
+mandatory; the headline aggregate alone hides the losing cases).
+
+- **Tokens** — retrieval payload size via a real tokenizer. Default
+  `tiktoken` `cl100k_base`, run offline and deterministically. Documented
+  explicitly as an *approximation* of Claude's tokenizer (Anthropic's exact
+  tokenizer is not fully public offline). Optional secondary: Anthropic
+  `count_tokens` when an API key is present, reported alongside but never the
+  default.
+- **Recall@k** — is the gold concept's text present in the payload.
+- **Precision** — signal-to-noise: fraction of the payload that is the relevant
+  concept vs. filler. (For chunked methods, precision@k over retrieved chunks.)
+- **nDCG / MRR** — ranking quality where the method produces a ranking.
+- **Staleness error rate** — on status-sensitive and graph queries: 1 if the
+  payload surfaces a `superseded`/`deprecated` concept at or above the current
+  one (or includes it with no status signal while the current one is also
+  present), else 0. data-olympus with the `status: active` filter is expected
+  near 0; dump/grep/RAG/BM25 are expected higher. This is the signature
+  differentiator.
+- **Token-vs-corpus-size curve** — re-run the whole suite over corpus subsets of
+  growing size (for example 25, 50, 100, 250 concepts) and plot mean tokens per
+  query per method. Savings only appear at scale; a curve is more honest than a
+  single headline ratio.
+
+## 8. Harness architecture
+
+- **Location:** `benchmarks/` in the repo.
+  - `benchmarks/corpus/` — the generated bundle (committed).
+  - `benchmarks/generate_corpus.py` — deterministic generator (committed).
+  - `benchmarks/queries.yaml` — query set + gold labels (committed).
+  - `benchmarks/methods/` — one module per method, each exposing
+    `retrieve(query) -> payload`.
+  - `benchmarks/run.py` — runs all methods over all queries, emits results.
+  - `benchmarks/results/` — committed results report (table + curve data) and
+    the figure.
+- **Determinism / offline:** no network at run time. The one exception is the
+  first-run download of the pinned embedding model for `vector-rag-topk`;
+  pinned by name + revision and gated behind an optional dependency extra
+  (`pip install -e '.[bench]'`). Methods with zero heavy deps run without it.
+- **Reproducibility:** pinned deps, fixed seeds, committed corpus and results.
+  A `make bench` / documented command re-runs end to end. A reduced run is
+  wired into CI to catch harness rot (not to gate on absolute numbers).
+
+## 9. Outputs and how they reach users
+
+- A **results report** under `benchmarks/results/` with the per-category table,
+  the staleness rates, and the token-vs-size curve, including an explicit
+  "where data-olympus loses" subsection.
+- A new **"Quantified comparison"** section appended to
+  [docs/comparison.md](../comparison.md) that cites the benchmark numbers and
+  links to the harness, sitting alongside the existing qualitative comparison
+  and "Honest weaknesses" section. The prose claims in that doc become
+  numbers a reader can re-derive.
+
+## 10. Risks and open questions
+
+- **Synthetic corpus realism.** Generated content may make retrieval easier or
+  harder than a real KB. Mitigation: realistic templates, overlapping
+  supersession bodies, and the honesty label. The token-vs-size *curve* and the
+  *relative* method ordering are more robust to this than absolute values.
+- **Tokenizer proxy.** `tiktoken` is not Claude's exact tokenizer. Mitigation:
+  documented as an approximation; relative comparisons across methods use the
+  same tokenizer so the ratio is fair even if absolute counts drift.
+- **RAG configuration sensitivity.** Chunk size / k / embedding model choice
+  swing RAG's numbers. Mitigation: pre-registered defaults, and the config is
+  committed so a critic can re-run with their own settings.
+- **Open:** exact corpus size (250 is the working target; may adjust during
+  generation if lint or scale issues appear, recorded in the results report per
+  guardrail 1).
+
+## 11. Acceptance criteria
+
+- Harness runs offline (zero-dep methods) with one documented command and emits
+  the per-category results table + token curve.
+- Corpus is lint-clean, ~250 concepts, with the pre-registered supersession
+  fraction.
+- Query set is committed with gold labels and includes the adversarial
+  synonym/semantic category.
+- Results report includes an explicit "where data-olympus loses" subsection.
+- `docs/comparison.md` gains a "Quantified comparison" section citing the
+  numbers and linking to the harness.
