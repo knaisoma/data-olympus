@@ -175,7 +175,9 @@ def test_kb_get_fn_returns_status_and_type(status_kb: Path, tmp_index_path: Path
     assert resp.type == "decision"
 
 
-def test_kb_get_fn_returns_applies_when_and_description(tmp_path: Path, tmp_index_path: Path) -> None:
+def test_kb_get_fn_returns_applies_when_and_description(
+    tmp_path: Path, tmp_index_path: Path
+) -> None:
     from data_olympus.index import Index
     from data_olympus.tools_read import kb_get_fn
     kb = tmp_path / "kb"
