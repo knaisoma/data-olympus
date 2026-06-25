@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS docs (
     category TEXT,
     status TEXT,
     type TEXT,
+    applies_when TEXT,
+    description TEXT,
     title TEXT,
     tags TEXT,
     content_markdown TEXT,
@@ -34,6 +36,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
     id UNINDEXED,
     title,
     tags,
+    applies_when,
+    description,
     body,
     tokenize='porter unicode61'
 );
@@ -46,7 +50,7 @@ CREATE TABLE IF NOT EXISTS meta (
 # Informational only; recorded in the meta table for observability. Rebuild
 # is guaranteed by bootstrap_now=True calling Index.build() unconditionally
 # on container start, not by a version-mismatch check.
-_SCHEMA_VERSION = "4"
+_SCHEMA_VERSION = "5"
 
 
 _PATH_RULES: tuple[tuple[str, str, str], ...] = (
@@ -270,19 +274,22 @@ class Index:
                 final_tier = doc.tier or path_tier
                 final_category = doc.category or path_category
                 tags_str = " ".join(doc.tags)
+                applies_when_str = " ".join(doc.applies_when)
                 last_modified, lm_source = self._git_last_modified(kb_root, rel)
                 content_markdown = md.read_text(encoding="utf-8")
                 conn.execute(
-                    "INSERT INTO docs (id, path, tier, category, status, type, title, tags, "
+                    "INSERT INTO docs (id, path, tier, category, status, type, "
+                    "applies_when, description, title, tags, "
                     "content_markdown, last_modified, last_modified_source, git_remote_url) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (doc_id, str(rel), final_tier, final_category, doc.status, doc.doc_type,
-                     doc.title, tags_str, content_markdown, last_modified, lm_source,
-                     doc.git_remote_url),
+                     applies_when_str, doc.description, doc.title, tags_str, content_markdown,
+                     last_modified, lm_source, doc.git_remote_url),
                 )
                 conn.execute(
-                    "INSERT INTO fts (id, title, tags, body) VALUES (?, ?, ?, ?)",
-                    (doc_id, doc.title, tags_str, doc.body),
+                    "INSERT INTO fts (id, title, tags, applies_when, description, body) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (doc_id, doc.title, tags_str, applies_when_str, doc.description, doc.body),
                 )
                 count += 1
             now = time.time()
@@ -371,7 +378,7 @@ class Index:
                     COALESCE(docs.title, '') AS title,
                     COALESCE(docs.status, '') AS status,
                     COALESCE(docs.type, '') AS doc_type,
-                    snippet(fts, 3, '[', ']', '...', 16) AS snippet,
+                    snippet(fts, 5, '[', ']', '...', 16) AS snippet,
                     bm25(fts) AS score
                 FROM fts
                 JOIN docs ON docs.id = fts.id

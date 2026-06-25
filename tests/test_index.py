@@ -127,7 +127,7 @@ def test_index_records_schema_version(tmp_kb: Path, tmp_index_path: Path) -> Non
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     conn.close()
     assert row is not None
-    assert row[0] == "4", f"schema_version must be '4' after status/type columns; got {row[0]!r}"
+    assert row[0] == "5", f"schema_version must be '5' after applies_when/description columns; got {row[0]!r}"
 
 
 def test_path_classification_T1_for_standards(tmp_kb: Path, tmp_index_path: Path) -> None:
@@ -606,3 +606,34 @@ def test_search_empty_query_returns_empty(tmp_kb: Path, tmp_index_path: Path) ->
     idx.build(tmp_kb, source_commit="x")
     assert idx.search("   ", limit=10) == []
     assert idx.search("", limit=10) == []
+
+
+def test_fts_indexes_applies_when_and_description(tmp_path: Path, tmp_index_path: Path) -> None:
+    kb = tmp_path / "kb"
+    (kb / "universal" / "foundation").mkdir(parents=True)
+    (kb / "universal" / "foundation" / "STD-XL.md").write_text(
+        "---\nid: STD-XL\ntier: T1\ntype: standard\nstatus: active\n"
+        "applies_when: [openpyxl, insert_cols, spreadsheet]\n"
+        "description: Prefer xlsxwriter for new Excel files.\n---\n"
+        "# Excel standard\n\nUse the documented Excel approach.\n"
+    )
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="x")
+    # A query term that appears ONLY in applies_when must retrieve the doc.
+    hits = idx.search("openpyxl", limit=10)
+    assert any(h.id == "STD-XL" for h in hits), "applies_when trigger must be searchable"
+    # A query term that appears ONLY in description must retrieve the doc.
+    hits2 = idx.search("xlsxwriter", limit=10)
+    assert any(h.id == "STD-XL" for h in hits2), "description must be searchable"
+
+
+def test_docs_table_has_applies_when_and_description_columns(
+    tmp_kb: Path, tmp_index_path: Path
+) -> None:
+    import sqlite3
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    conn = sqlite3.connect(tmp_index_path)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(docs)").fetchall()}
+    conn.close()
+    assert {"applies_when", "description"} <= cols
