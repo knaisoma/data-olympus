@@ -71,7 +71,7 @@ def test_parse_git_remote_url_absent_defaults_to_none(tmp_path: Path) -> None:
     assert doc.git_remote_url is None
 
 
-def test_parse_file_extracts_status_and_type(tmp_path):
+def test_parse_file_extracts_status_and_type(tmp_path: Path) -> None:
     from data_olympus.markdown_parse import parse_file
     p = tmp_path / "x.md"
     p.write_text(
@@ -82,7 +82,7 @@ def test_parse_file_extracts_status_and_type(tmp_path):
     assert doc.doc_type == "standard"
 
 
-def test_parse_file_status_and_type_default_empty(tmp_path):
+def test_parse_file_status_and_type_default_empty(tmp_path: Path) -> None:
     from data_olympus.markdown_parse import parse_file
     p = tmp_path / "y.md"
     p.write_text("# No front matter\n")

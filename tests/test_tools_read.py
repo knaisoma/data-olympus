@@ -154,7 +154,7 @@ def test_kb_get_git_remote_url_null_when_absent(tmp_kb: Path, tmp_index_path: Pa
     assert resp.git_remote_url is None
 
 
-def test_kb_search_fn_filters_by_status(status_kb, tmp_index_path):
+def test_kb_search_fn_filters_by_status(status_kb: Path, tmp_index_path: Path) -> None:
     from data_olympus.index import Index
     from data_olympus.tools_read import kb_search_fn
     idx = Index(tmp_index_path)
@@ -165,7 +165,7 @@ def test_kb_search_fn_filters_by_status(status_kb, tmp_index_path):
     assert resp.hits[0].type == "standard"
 
 
-def test_kb_get_fn_returns_status_and_type(status_kb, tmp_index_path):
+def test_kb_get_fn_returns_status_and_type(status_kb: Path, tmp_index_path: Path) -> None:
     from data_olympus.index import Index
     from data_olympus.tools_read import kb_get_fn
     idx = Index(tmp_index_path)
