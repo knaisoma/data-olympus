@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from benchmarks.corpus_gen import generate_corpus
+
+if TYPE_CHECKING:
+    from pathlib import Path
 from benchmarks.methods.base import RetrievalResult
 from benchmarks.methods.bm25 import Bm25Method
 from benchmarks.methods.data_olympus import DataOlympusMethod
