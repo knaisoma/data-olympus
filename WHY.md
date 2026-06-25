@@ -40,6 +40,12 @@ or the earlier decision that should govern that choice, and it does so with enou
 structure that the agent can treat the answer as authoritative rather than
 optional.
 
+A small example of what that looks like. An agent is wiring up a new service and
+reaches for the first HTTP client it knows. Before it writes the import, it checks
+data-olympus, which returns the standard your team accepted last quarter naming a
+different client, along with the older decision it superseded that explains why.
+The agent uses the right one, and nobody had to remember to put it in the prompt.
+
 It is not a code-search or reference-finding tool, and it does not try to be.
 Tools like LSP, grep, and Sourcegraph already answer "where is this used" and
 "show me this symbol" very well, and we are happy to leave that to them. The
@@ -58,6 +64,24 @@ The whole knowledge base is a directory of markdown files with YAML frontmatter,
 kept in git. There is no database, no proprietary schema, and nothing to lock you
 in. A human can read and author a document with no SDK, and so can an agent. Every
 change is an ordinary commit, so review is review and history is `git log`.
+
+## What you actually get
+
+data-olympus is three pieces that work together.
+
+- **The format.** A bundle of markdown files with YAML frontmatter, kept in git.
+  This is the source of truth, readable and authorable with no special tooling.
+- **An MCP server.** It serves the bundle to your coding agents. You can run it
+  locally just for yourself, or deploy it once and point your whole team's agents
+  at the same endpoint. Every write goes through a single-writer pipeline that
+  gives each agent session its own git worktree, so several people's agents can
+  read and propose changes at the same time without colliding.
+- **A CLI.** A small `kb` client over the same API for the shell and for scripts,
+  plus the `data-olympus` commands to lint, index, and visualize a bundle.
+
+Wiring it into an agent is mostly a matter of registering the MCP endpoint, a few
+lines in a coding agent's config, so the knowledge base shows up as something the
+agent can query and propose to while it works.
 
 ## The differentiators, and why they matter
 
@@ -94,14 +118,20 @@ can reproduce and audit.
 
 ## How this relates to OKF
 
-Google's Open Knowledge Format is the parent specification, and data-olympus is a
-conformant, OKF-compatible profile of it. In practice that means every
-data-olympus bundle is a valid OKF bundle that any OKF consumer can read, while a
-bundle produced by the OKF tooling can be imported and, once it carries our
-governance fields, governed by our tools. We did not want to build something
-beside the standard. If OKF becomes a common way to
-structure knowledge bases, and we think it is a sensible one, we would rather
-build on it.
+By the time Google published the Open Knowledge Format, we had been running our
+own format internally for months. Reading the OKF spec was a slightly strange
+experience, because it was close to what we had independently landed on: the same
+instinct to keep engineering decisions as plain markdown in git and serve them to
+agents. That convergence is what made the decision to open up easy. Rather than
+keep maintaining a private format that happened to resemble OKF, or build
+something positioned against it, we made data-olympus a conformant, OKF-compatible
+profile and put our governance work on top of the standard instead of beside it.
+If OKF becomes a common way to structure knowledge bases, and we think it is a
+sensible one, we would rather build on it than around it.
+
+In practice that compatibility means every data-olympus bundle is a valid OKF
+bundle that any OKF consumer can read, while a bundle produced by the OKF tooling
+can be imported and, once it carries our governance fields, governed by our tools.
 
 The natural question is then why use data-olympus rather than OKF directly. OKF
 defines a deliberately minimal required set (an `id`, a `type`, a `spec_version`)
@@ -187,4 +217,9 @@ If any of the frustration at the top of this page sounded familiar, we would lov
 for you to try it, tell us where it falls short, and, if you are so inclined,
 contribute. The quickstart in [`docs/quickstart.md`](docs/quickstart.md) is the
 fastest way in, [`SPEC.md`](SPEC.md) is the format in full, and the issues and
-discussions on the repository are open. Thank you for reading this far.
+discussions on the repository are open. It is Apache-2.0, and the whole knowledge
+base is just your own git repository, so there is nothing to lock you in and
+nothing to walk back if you try it and move on.
+
+Thank you for reading this far. We hope it helps your team and its agents stay on
+the same page. Happy vibe coding.
