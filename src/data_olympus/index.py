@@ -6,7 +6,7 @@ import os
 import sqlite3
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from data_olympus.markdown_parse import parse_file
@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS docs (
     path TEXT NOT NULL,
     tier TEXT,
     category TEXT,
+    status TEXT,
+    type TEXT,
+    applies_when TEXT,
+    description TEXT,
     title TEXT,
     tags TEXT,
     content_markdown TEXT,
@@ -32,6 +36,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
     id UNINDEXED,
     title,
     tags,
+    applies_when,
+    description,
     body,
     tokenize='porter unicode61'
 );
@@ -44,8 +50,14 @@ CREATE TABLE IF NOT EXISTS meta (
 # Informational only; recorded in the meta table for observability. Rebuild
 # is guaranteed by bootstrap_now=True calling Index.build() unconditionally
 # on container start, not by a version-mismatch check.
-_SCHEMA_VERSION = "3"
+_SCHEMA_VERSION = "5"
 
+
+# fts column order (excluding the UNINDEXED id at position 0).
+_FTS_MATCH_COLUMNS: tuple[str, ...] = ("title", "tags", "applies_when", "description", "body")
+# bm25 weights, one per declared fts column INCLUDING the UNINDEXED id at index 0.
+# Title and applies_when are weighted highest; body lowest. Tune in D2.
+_DEFAULT_BM25_WEIGHTS: tuple[float, ...] = (0.0, 10.0, 5.0, 10.0, 4.0, 1.0)
 
 _PATH_RULES: tuple[tuple[str, str, str], ...] = (
     # T1 Universal, applies to every project, every stack.
@@ -139,6 +151,8 @@ class SearchHit:
     title: str
     snippet: str
     score: float
+    status: str = ""
+    doc_type: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +179,10 @@ class IndexedDoc:
     last_modified_source: str
     source_commit: str
     git_remote_url: str | None = None
+    status: str = ""
+    doc_type: str = ""
+    applies_when: list[str] = field(default_factory=list)
+    description: str = ""
 
 
 class DuplicateIdError(ValueError):
@@ -264,18 +282,22 @@ class Index:
                 final_tier = doc.tier or path_tier
                 final_category = doc.category or path_category
                 tags_str = " ".join(doc.tags)
+                applies_when_str = " ".join(doc.applies_when)
                 last_modified, lm_source = self._git_last_modified(kb_root, rel)
                 content_markdown = md.read_text(encoding="utf-8")
                 conn.execute(
-                    "INSERT INTO docs (id, path, tier, category, title, tags, "
+                    "INSERT INTO docs (id, path, tier, category, status, type, "
+                    "applies_when, description, title, tags, "
                     "content_markdown, last_modified, last_modified_source, git_remote_url) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (doc_id, str(rel), final_tier, final_category, doc.title, tags_str,
-                     content_markdown, last_modified, lm_source, doc.git_remote_url),
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (doc_id, str(rel), final_tier, final_category, doc.status, doc.doc_type,
+                     applies_when_str, doc.description, doc.title, tags_str, content_markdown,
+                     last_modified, lm_source, doc.git_remote_url),
                 )
                 conn.execute(
-                    "INSERT INTO fts (id, title, tags, body) VALUES (?, ?, ?, ?)",
-                    (doc_id, doc.title, tags_str, doc.body),
+                    "INSERT INTO fts (id, title, tags, applies_when, description, body) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (doc_id, doc.title, tags_str, applies_when_str, doc.description, doc.body),
                 )
                 count += 1
             now = time.time()
@@ -325,30 +347,65 @@ class Index:
         limit: int = 20,
         tier: str | None = None,
         category: str | None = None,
+        status: str | None = None,
+        doc_type: str | None = None,
+        columns: list[str] | None = None,
+        column_weights: tuple[float, ...] | None = None,
     ) -> list[SearchHit]:
-        """FTS5 search across title, tags, body. Optional tier/category filters."""
-        # FTS5 treats unquoted dashes/dots/colons as operators or column references,
-        # which is wrong for KB lookups that include rule ids like "STD-U-002".
-        # Wrap the user-supplied query as an exact-phrase, doubling any embedded quotes.
-        safe_query = '"' + query.replace('"', '""') + '"'
+        """FTS5 search with column-weighted bm25.
+
+        Quote each whitespace term individually and OR them together. Quoting
+        per-term keeps FTS5 from treating dashes/dots/colons inside a term
+        (e.g. "STD-U-002") as operators, while OR lets multi-word natural-
+        language queries match on any term (ranked by bm25) instead of
+        requiring a verbatim phrase. Doubling embedded quotes prevents a term
+        from breaking out of its phrase, so user input cannot inject FTS
+        operators.
+
+        `columns` restricts which fts columns are matched (for ablation); default
+        matches all. `column_weights` overrides bm25 weights (one per declared
+        fts column incl. the UNINDEXED id at index 0); default boosts
+        title/applies_when, deprioritizes body.
+        """
+        terms = query.split()
+        if not terms:
+            return []
+        quoted = " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
+        if columns:
+            unknown = [c for c in columns if c not in _FTS_MATCH_COLUMNS]
+            if unknown:
+                raise ValueError(f"unknown fts column(s): {unknown}")
+            match_query = "{" + " ".join(columns) + "} : (" + quoted + ")"
+        else:
+            match_query = quoted
+        weights = column_weights if column_weights is not None else _DEFAULT_BM25_WEIGHTS
+        bm25_expr = "bm25(fts, " + ", ".join(repr(float(w)) for w in weights) + ")"
         conn = self._connect()
         try:
             where = ["fts MATCH ?"]
-            params: list[object] = [safe_query]
+            params: list[object] = [match_query]
             if tier:
                 where.append("docs.tier = ?")
                 params.append(tier)
             if category:
                 where.append("docs.category = ?")
                 params.append(category)
+            if status:
+                where.append("docs.status = ?")
+                params.append(status)
+            if doc_type:
+                where.append("docs.type = ?")
+                params.append(doc_type)
             params.append(limit)
             sql = f"""
                 SELECT
                     fts.id AS id,
                     docs.path AS path,
                     COALESCE(docs.title, '') AS title,
-                    snippet(fts, 3, '[', ']', '...', 16) AS snippet,
-                    bm25(fts) AS score
+                    COALESCE(docs.status, '') AS status,
+                    COALESCE(docs.type, '') AS doc_type,
+                    snippet(fts, 5, '[', ']', '...', 16) AS snippet,
+                    {bm25_expr} AS score
                 FROM fts
                 JOIN docs ON docs.id = fts.id
                 WHERE {' AND '.join(where)}
@@ -363,6 +420,8 @@ class Index:
                     title=r["title"],
                     snippet=r["snippet"],
                     score=float(r["score"]),
+                    status=r["status"],
+                    doc_type=r["doc_type"],
                 )
                 for r in rows
             ]
@@ -375,7 +434,8 @@ class Index:
         try:
             row = conn.execute(
                 """
-                SELECT id, path, title, tier, category, tags, content_markdown,
+                SELECT id, path, title, tier, category, status, type, tags,
+                       applies_when, description, content_markdown,
                        last_modified, last_modified_source, git_remote_url
                 FROM docs WHERE id = ?
                 """,
@@ -390,6 +450,7 @@ class Index:
         finally:
             conn.close()
         tags = [t for t in (row["tags"] or "").split() if t]
+        applies_when = [t for t in (row["applies_when"] or "").split() if t]
         return IndexedDoc(
             id=row["id"],
             path=row["path"],
@@ -402,6 +463,10 @@ class Index:
             last_modified_source=row["last_modified_source"] or "",
             source_commit=source_commit,
             git_remote_url=row["git_remote_url"],
+            status=row["status"] or "",
+            doc_type=row["type"] or "",
+            applies_when=applies_when,
+            description=row["description"] or "",
         )
 
     def list(self, *, tier: str, category: str | None = None) -> list[dict[str, str]]:

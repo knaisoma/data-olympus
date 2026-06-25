@@ -54,6 +54,8 @@ class SearchHitModel(BaseModel):
     title: str
     snippet: str
     score: float
+    status: str = ""
+    type: str = ""
 
 
 class SearchResponse(BaseModel):
@@ -73,7 +75,11 @@ class GetResponse(BaseModel):
     title: str
     tier: str
     category: str
+    status: str = ""
+    type: str = ""
     tags: list[str]
+    applies_when: list[str] = []
+    description: str = ""
     content_markdown: str
     last_modified: str
     last_modified_source: str

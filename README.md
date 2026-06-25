@@ -2,6 +2,8 @@
 
 data-olympus is a governance-grade knowledge-base format and server for agent workforces. It is an OKF-compatible profile (a conformant extension of the [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)) with governance extensions (stable `id`, controlled `type`/`status`/`tier` fields, `supersedes` chains) plus a single-writer MCP server and a CLI. The result is a git-native, version-controlled document graph of engineering standards, architectural decisions, and project knowledge that agents and humans can read, search, and extend without any proprietary service.
 
+It governs *decisions*, not code. When an agent is about to make a choice (a library, a pattern, a migration), data-olympus surfaces the established standard or decision that should govern that choice. It is deliberately **not** a code-search, reference-finding, or "where is X used" tool: LSP, grep, and Sourcegraph already do that well. The retrieval task it targets is coding-intent to governing-rule, and it helps where current model interaction during vibe-coding is weakest: keeping the model aligned to patterns the team has already established as correct.
+
 **Status: pre-release (v0.1).**
 
 ## Why

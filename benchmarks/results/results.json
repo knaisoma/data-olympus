@@ -1,0 +1,300 @@
+{
+  "tokenizer": "simple",
+  "rag_included": false,
+  "rows": [
+    {
+      "method": "bm25",
+      "category": "ALL",
+      "mean_tokens": 381.976,
+      "recall": 0.554,
+      "precision": 0.11049854563794234,
+      "ndcg": 0.5345464876785728,
+      "mrr": 0.5276666666666666,
+      "staleness": 0.05,
+      "n": 500
+    },
+    {
+      "method": "bm25",
+      "category": "exact",
+      "mean_tokens": 513.84,
+      "recall": 1.0,
+      "precision": 0.196256262855464,
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "staleness": 0,
+      "n": 225
+    },
+    {
+      "method": "bm25",
+      "category": "graph",
+      "mean_tokens": 553.76,
+      "recall": 1.0,
+      "precision": 0.20901272719001163,
+      "ndcg": 0.6309297535714575,
+      "mrr": 0.5,
+      "staleness": 1,
+      "n": 25
+    },
+    {
+      "method": "bm25",
+      "category": "semantic",
+      "mean_tokens": 214.64,
+      "recall": 0.008888888888888889,
+      "precision": 0.0017777777777777779,
+      "ndcg": 0.006666666666666667,
+      "mrr": 0.005925925925925926,
+      "staleness": 0,
+      "n": 225
+    },
+    {
+      "method": "bm25",
+      "category": "status",
+      "mean_tokens": 529.44,
+      "recall": 1.0,
+      "precision": 0.21865181986965943,
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "staleness": 0,
+      "n": 25
+    },
+    {
+      "method": "data-olympus",
+      "category": "ALL",
+      "mean_tokens": 281.206,
+      "recall": 0.502,
+      "precision": 0.14647490319089398,
+      "ndcg": 0.4956706238522279,
+      "mrr": 0.4936333333333333,
+      "staleness": 0,
+      "n": 500
+    },
+    {
+      "method": "data-olympus",
+      "category": "exact",
+      "mean_tokens": 344.0444444444444,
+      "recall": 0.8577777777777778,
+      "precision": 0.2497488973049695,
+      "ndcg": 0.8577777777777778,
+      "mrr": 0.8577777777777778,
+      "staleness": 0,
+      "n": 225
+    },
+    {
+      "method": "data-olympus",
+      "category": "graph",
+      "mean_tokens": 383.28,
+      "recall": 1.0,
+      "precision": 0.30143482256525916,
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "staleness": 0,
+      "n": 25
+    },
+    {
+      "method": "data-olympus",
+      "category": "semantic",
+      "mean_tokens": 193.04,
+      "recall": 0.035555555555555556,
+      "precision": 0.010720133667502088,
+      "ndcg": 0.02149027522717304,
+      "mrr": 0.016962962962962964,
+      "staleness": 0,
+      "n": 225
+    },
+    {
+      "method": "data-olympus",
+      "category": "status",
+      "mean_tokens": 407.08,
+      "recall": 1.0,
+      "precision": 0.28384196250037624,
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "staleness": 0,
+      "n": 25
+    },
+    {
+      "method": "grep-read",
+      "category": "ALL",
+      "mean_tokens": 7322.832,
+      "recall": 0.244,
+      "precision": 0.0459372708671638,
+      "ndcg": 0.14454972992086315,
+      "mrr": 0.14521755356196914,
+      "staleness": 0,
+      "n": 500
+    },
+    {
+      "method": "grep-read",
+      "category": "exact",
+      "mean_tokens": 1022.4,
+      "recall": 0.52,
+      "precision": 0.099665853187681,
+      "ndcg": 0.3081173592957875,
+      "mrr": 0.30373047939714604,
+      "staleness": 0,
+      "n": 225
+    },
+    {
+      "method": "grep-read",
+      "category": "graph",
+      "mean_tokens": 25560,
+      "recall": 0.0,
+      "precision": 0.0045258215962441315,
+      "ndcg": 0.0,
+      "mrr": 0.013440618767911063,
+      "staleness": 0,
+      "n": 25
+    },
+    {
+      "method": "grep-read",
+      "category": "semantic",
+      "mean_tokens": 9570.56,
+      "recall": 0.022222222222222223,
+      "precision": 0.0014112328290732047,
+      "ndcg": 0.013104262750575076,
+      "mrr": 0.01598839101436065,
+      "staleness": 0,
+      "n": 225
+    },
+    {
+      "method": "grep-read",
+      "category": "status",
+      "mean_tokens": 25560,
+      "recall": 0.0,
+      "precision": 0.0045258215962441315,
+      "ndcg": 0.0,
+      "mrr": 0.013440618767911063,
+      "staleness": 0,
+      "n": 25
+    },
+    {
+      "method": "whole-dump",
+      "category": "ALL",
+      "mean_tokens": 25560,
+      "recall": 0.02,
+      "precision": 0.004,
+      "ndcg": 0.011793836475517568,
+      "mrr": 0.024553999190984263,
+      "staleness": 0,
+      "n": 500
+    },
+    {
+      "method": "whole-dump",
+      "category": "exact",
+      "mean_tokens": 25560,
+      "recall": 0.022222222222222223,
+      "precision": 0.003941575378195097,
+      "ndcg": 0.013104262750575076,
+      "mrr": 0.025788819237992398,
+      "staleness": 0,
+      "n": 225
+    },
+    {
+      "method": "whole-dump",
+      "category": "graph",
+      "mean_tokens": 25560,
+      "recall": 0.0,
+      "precision": 0.0045258215962441315,
+      "ndcg": 0.0,
+      "mrr": 0.013440618767911063,
+      "staleness": 0,
+      "n": 25
+    },
+    {
+      "method": "whole-dump",
+      "category": "semantic",
+      "mean_tokens": 25560,
+      "recall": 0.022222222222222223,
+      "precision": 0.003941575378195097,
+      "ndcg": 0.013104262750575076,
+      "mrr": 0.025788819237992398,
+      "staleness": 0,
+      "n": 225
+    },
+    {
+      "method": "whole-dump",
+      "category": "status",
+      "mean_tokens": 25560,
+      "recall": 0.0,
+      "precision": 0.0045258215962441315,
+      "ndcg": 0.0,
+      "mrr": 0.013440618767911063,
+      "staleness": 0,
+      "n": 25
+    }
+  ],
+  "curve": {
+    "data-olympus": [
+      [
+        25,
+        156.25
+      ],
+      [
+        50,
+        170.875
+      ],
+      [
+        100,
+        207.375
+      ],
+      [
+        250,
+        229.25
+      ]
+    ],
+    "whole-dump": [
+      [
+        25,
+        2208
+      ],
+      [
+        50,
+        4684
+      ],
+      [
+        100,
+        9836
+      ],
+      [
+        250,
+        25560
+      ]
+    ],
+    "grep-read": [
+      [
+        25,
+        50
+      ],
+      [
+        50,
+        125
+      ],
+      [
+        100,
+        217
+      ],
+      [
+        250,
+        490.5
+      ]
+    ],
+    "bm25": [
+      [
+        25,
+        140
+      ],
+      [
+        50,
+        215
+      ],
+      [
+        100,
+        296
+      ],
+      [
+        250,
+        325.25
+      ]
+    ]
+  }
+}

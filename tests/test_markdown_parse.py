@@ -69,3 +69,58 @@ def test_parse_git_remote_url_absent_defaults_to_none(tmp_path: Path) -> None:
     p.write_text("---\nid: X\n---\n# Body\n")
     doc = parse_file(p)
     assert doc.git_remote_url is None
+
+
+def test_parse_file_extracts_status_and_type(tmp_path: Path) -> None:
+    from data_olympus.markdown_parse import parse_file
+    p = tmp_path / "x.md"
+    p.write_text(
+        "---\nid: STD-1\ntier: T1\ntype: standard\nstatus: active\n---\n# Body\n"
+    )
+    doc = parse_file(p)
+    assert doc.status == "active"
+    assert doc.doc_type == "standard"
+
+
+def test_parse_file_status_and_type_default_empty(tmp_path: Path) -> None:
+    from data_olympus.markdown_parse import parse_file
+    p = tmp_path / "y.md"
+    p.write_text("# No front matter\n")
+    doc = parse_file(p)
+    assert doc.status == ""
+    assert doc.doc_type == ""
+
+
+def test_parse_file_extracts_applies_when_list(tmp_path: Path) -> None:
+    p = tmp_path / "x.md"
+    p.write_text(
+        "---\nid: STD-1\ntier: T1\napplies_when:\n  - openpyxl\n  - insert_cols\n"
+        "description: Use xlsxwriter for new Excel files.\n---\n# Body\n"
+    )
+    doc = parse_file(p)
+    assert doc.applies_when == ["openpyxl", "insert_cols"]
+    assert doc.description == "Use xlsxwriter for new Excel files."
+
+
+def test_parse_file_applies_when_inline_list(tmp_path: Path) -> None:
+    p = tmp_path / "y.md"
+    p.write_text("---\nid: STD-2\ntier: T1\napplies_when: [excel, xlsx]\n---\n# B\n")
+    doc = parse_file(p)
+    assert doc.applies_when == ["excel", "xlsx"]
+
+
+def test_parse_file_applies_when_and_description_default_empty(tmp_path: Path) -> None:
+    p = tmp_path / "z.md"
+    p.write_text("---\nid: STD-3\ntier: T1\n---\n# B\n")
+    doc = parse_file(p)
+    assert doc.applies_when == []
+    assert doc.description == ""
+
+
+def test_parse_file_multiline_description(tmp_path: Path) -> None:
+    p = tmp_path / "m.md"
+    p.write_text(
+        "---\nid: STD-4\ntier: T1\ndescription: >\n  First line\n  second line.\n---\n# B\n"
+    )
+    doc = parse_file(p)
+    assert "First line second line." in doc.description

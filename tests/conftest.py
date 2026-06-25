@@ -134,3 +134,27 @@ def tmp_git_kb(tmp_kb: Path) -> Path:
 def tmp_index_path(tmp_path: Path) -> Path:
     """A path for a sqlite index that does not yet exist."""
     return tmp_path / "index.db"
+
+
+@pytest.fixture
+def status_kb(tmp_path: Path) -> Path:
+    """A KB with status/type frontmatter and a supersession pair, all matching
+    the word 'caching', so status/type filters can be exercised."""
+    kb = tmp_path / "status-kb"
+    d = kb / "universal" / "foundation"
+    d.mkdir(parents=True)
+    (d / "STD-OLD.md").write_text(
+        "---\nid: STD-OLD\ntier: T1\ntype: standard\nstatus: superseded\n"
+        "superseded_by: STD-NEW\n---\n# Caching rule\n\nOld caching guidance.\n"
+    )
+    (d / "STD-NEW.md").write_text(
+        "---\nid: STD-NEW\ntier: T1\ntype: standard\nstatus: active\n"
+        "supersedes: STD-OLD\n---\n# Caching rule\n\nCurrent caching guidance.\n"
+    )
+    decisions = kb / "decisions"
+    decisions.mkdir(parents=True)
+    (decisions / "DEC-1.md").write_text(
+        "---\nid: DEC-1\ntier: decisions\ntype: decision\nstatus: accepted\n"
+        "---\n# Caching decision\n\nWe chose caching.\n"
+    )
+    return kb

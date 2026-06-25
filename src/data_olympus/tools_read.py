@@ -92,10 +92,14 @@ def kb_search_fn(
     limit: int = 20,
     tier: str | None = None,
     category: str | None = None,
+    status: str | None = None,
+    doc_type: str | None = None,
 ) -> SearchResponse:
     if limit > 100:
         limit = 100
-    hits = idx.search(query, limit=limit, tier=tier, category=category)
+    hits = idx.search(
+        query, limit=limit, tier=tier, category=category, status=status, doc_type=doc_type
+    )
     health = idx.health()
     return SearchResponse(
         query=query,
@@ -106,6 +110,8 @@ def kb_search_fn(
                 title=h.title,
                 snippet=h.snippet,
                 score=h.score,
+                status=h.status,
+                type=h.doc_type,
             )
             for h in hits
         ],
@@ -128,7 +134,11 @@ def kb_get_fn(*, idx: Index, id: str) -> GetResponse:
         title=doc.title,
         tier=doc.tier,
         category=doc.category,
+        status=doc.status,
+        type=doc.doc_type,
         tags=list(doc.tags),
+        applies_when=list(doc.applies_when),
+        description=doc.description,
         content_markdown=doc.content_markdown,
         last_modified=doc.last_modified,
         last_modified_source=doc.last_modified_source,

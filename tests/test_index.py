@@ -127,7 +127,9 @@ def test_index_records_schema_version(tmp_kb: Path, tmp_index_path: Path) -> Non
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     conn.close()
     assert row is not None
-    assert row[0] == "3", f"schema_version must be '3' for slice 2C; got {row[0]!r}"
+    assert row[0] == "5", (
+        f"schema_version must be '5' after applies_when/description columns; got {row[0]!r}"
+    )
 
 
 def test_path_classification_T1_for_standards(tmp_kb: Path, tmp_index_path: Path) -> None:
@@ -497,3 +499,194 @@ def test_list_with_remote_url_returns_only_entries_with_url(tmp_kb, tmp_index_pa
     # Fixture has git_remote_url on T3 + T4 entries.
     urls = [e["git_remote_url"] for e in entries if e.get("git_remote_url")]
     assert len(urls) >= 2
+
+
+def test_get_returns_status_and_type(status_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    doc = idx.get("STD-NEW")
+    assert doc is not None
+    assert doc.status == "active"
+    assert doc.doc_type == "standard"
+
+
+def test_search_filters_by_status(status_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    hits = idx.search("caching", limit=10, status="active")
+    assert {h.id for h in hits} == {"STD-NEW"}, (
+        f"status=active must exclude superseded/accepted; got {[h.id for h in hits]}"
+    )
+
+
+def test_search_filters_by_type(status_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    hits = idx.search("caching", limit=10, doc_type="decision")
+    assert {h.id for h in hits} == {"DEC-1"}
+
+
+def test_search_hit_carries_status_and_type(status_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    hits = idx.search("caching", limit=10, doc_type="decision")
+    assert hits[0].status == "accepted"
+    assert hits[0].doc_type == "decision"
+
+
+def test_search_no_status_filter_returns_all_matches(status_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    hits = idx.search("caching", limit=10)
+    assert {h.id for h in hits} == {"STD-OLD", "STD-NEW", "DEC-1"}
+
+
+def test_docs_table_has_status_and_type_columns(tmp_kb: Path, tmp_index_path: Path) -> None:
+    import sqlite3
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    conn = sqlite3.connect(tmp_index_path)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(docs)").fetchall()}
+    conn.close()
+    assert {"status", "type"} <= cols, f"missing status/type columns; got {cols}"
+
+
+def test_build_populates_status_and_type(tmp_path: Path, tmp_index_path: Path) -> None:
+    import sqlite3
+    kb = tmp_path / "kb"
+    (kb / "universal" / "foundation").mkdir(parents=True)
+    (kb / "universal" / "foundation" / "STD-S.md").write_text(
+        "---\nid: STD-S\ntier: T1\ntype: standard\nstatus: active\n---\n# Body about caching\n"
+    )
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="x")
+    conn = sqlite3.connect(tmp_index_path)
+    row = conn.execute("SELECT status, type FROM docs WHERE id='STD-S'").fetchone()
+    conn.close()
+    assert row == ("active", "standard"), f"status/type not populated; got {row}"
+
+
+# ---- NL query / OR-of-terms fix ----
+
+
+def test_search_multiword_nl_query_retrieves(status_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    # Previously this exact-phrase query matched nothing; now OR-of-terms retrieves.
+    hits = idx.search("current rule for caching", limit=10)
+    ids = {h.id for h in hits}
+    assert "STD-NEW" in ids, f"NL query must retrieve the caching concept; got {ids}"
+
+
+def test_search_multiword_composes_with_status_filter(
+    status_kb: Path, tmp_index_path: Path,
+) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    hits = idx.search("current rule for caching", limit=10, status="active")
+    assert {h.id for h in hits} == {"STD-NEW"}, "status=active must still filter NL-query results"
+
+
+def test_search_or_semantics_matches_any_term(tmp_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    # 'worktree' is in STD-U-001/tooling; 'disagreement' is in STD-U-007.
+    hits = idx.search("worktree disagreement", limit=10)
+    ids = {h.id for h in hits}
+    assert "STD-U-001" in ids and "STD-U-007" in ids, f"OR must match either term; got {ids}"
+
+
+def test_search_single_term_id_lookup_still_works(tmp_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    hits = idx.search("STD-U-002", limit=10)
+    assert any(h.id == "STD-U-002" for h in hits)
+
+
+def test_search_empty_query_returns_empty(tmp_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    assert idx.search("   ", limit=10) == []
+    assert idx.search("", limit=10) == []
+
+
+def test_fts_indexes_applies_when_and_description(tmp_path: Path, tmp_index_path: Path) -> None:
+    kb = tmp_path / "kb"
+    (kb / "universal" / "foundation").mkdir(parents=True)
+    (kb / "universal" / "foundation" / "STD-XL.md").write_text(
+        "---\nid: STD-XL\ntier: T1\ntype: standard\nstatus: active\n"
+        "applies_when: [openpyxl, insert_cols, spreadsheet]\n"
+        "description: Prefer xlsxwriter for new Excel files.\n---\n"
+        "# Excel standard\n\nUse the documented Excel approach.\n"
+    )
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="x")
+    # A query term that appears ONLY in applies_when must retrieve the doc.
+    hits = idx.search("openpyxl", limit=10)
+    assert any(h.id == "STD-XL" for h in hits), "applies_when trigger must be searchable"
+    # A query term that appears ONLY in description must retrieve the doc.
+    hits2 = idx.search("xlsxwriter", limit=10)
+    assert any(h.id == "STD-XL" for h in hits2), "description must be searchable"
+
+
+def test_docs_table_has_applies_when_and_description_columns(
+    tmp_kb: Path, tmp_index_path: Path
+) -> None:
+    import sqlite3
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    conn = sqlite3.connect(tmp_index_path)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(docs)").fetchall()}
+    conn.close()
+    assert {"applies_when", "description"} <= cols
+
+
+def _excel_governance_kb(tmp_path: Path) -> Path:
+    kb = tmp_path / "kb"
+    d = kb / "universal" / "foundation"
+    d.mkdir(parents=True)
+    (d / "STD-XL.md").write_text(
+        "---\nid: STD-XL\ntier: T1\ntype: standard\nstatus: active\n"
+        "applies_when: [openpyxl, insert_cols, excel]\n"
+        "description: Prefer xlsxwriter for new Excel files.\n---\n"
+        "# Excel standard\n\nGuidance about spreadsheets.\n"
+    )
+    (d / "STD-LOG.md").write_text(
+        "---\nid: STD-LOG\ntier: T1\ntype: standard\nstatus: active\n"
+        "applies_when: [logging, structured-logs]\n"
+        "description: Use structured logging.\n---\n"
+        "# Logging\n\nopenpyxl is mentioned once here in passing.\n"
+    )
+    return kb
+
+
+def test_applies_when_match_outranks_incidental_body_match(
+    tmp_path: Path, tmp_index_path: Path
+) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(_excel_governance_kb(tmp_path), source_commit="x")
+    hits = idx.search("openpyxl", limit=5)
+    assert hits[0].id == "STD-XL", (
+        "a doc whose applies_when trigger matches must outrank a doc with only an "
+        f"incidental body mention; got {[h.id for h in hits]}"
+    )
+
+
+def test_search_columns_ablation_restricts_match(tmp_path: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(_excel_governance_kb(tmp_path), source_commit="x")
+    # Restrict matching to body only: the applies_when-only trigger 'insert_cols'
+    # appears in no body, so nothing matches.
+    body_only = idx.search("insert_cols", limit=5, columns=["body"])
+    assert body_only == []
+    # Default (all columns) retrieves via applies_when.
+    full = idx.search("insert_cols", limit=5)
+    assert any(h.id == "STD-XL" for h in full)
+
+
+def test_search_rejects_unknown_column(tmp_path: Path, tmp_index_path: Path) -> None:
+    import pytest
+    idx = Index(tmp_index_path)
+    idx.build(_excel_governance_kb(tmp_path), source_commit="x")
+    with pytest.raises(ValueError, match="unknown fts column"):
+        idx.search("excel", limit=5, columns=["title", "bogus"])
