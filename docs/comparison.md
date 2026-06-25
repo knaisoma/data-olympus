@@ -4,7 +4,7 @@
 
 data-olympus is a governance-grade knowledge-base **format** (an OKF-compatible profile with governance extensions) plus a single-writer MCP server and a CLI. The format adds a controlled vocabulary on top of the Open Knowledge Format's minimal `type` field: a stable `id`, required `status` and `tier` fields, a `supersedes`/`superseded_by` chain for decisions, and a normative cross-linking convention. The result is a git-native, human and agent readable document graph that can be served directly to an agent workforce.
 
-The system is optimized for one specific job: a small team of agents (and humans) curating engineering standards, architectural decisions, and project knowledge as version-controlled markdown. It is not a general data catalog, not a vector store, and not a wiki platform. Understanding that scope is the clearest lens for reading the comparisons below.
+The system is optimized for one specific job: a small team of agents (and humans) curating engineering standards, architectural decisions, and project knowledge as version-controlled markdown. It is not a general data catalog, not a vector store, and not a wiki platform. It is also deliberately not a code-search, reference-finding, or "where is X used" tool (LSP, grep, and Sourcegraph own that, and it does not compete with them). The retrieval task it targets is **coding-intent to governing-rule**: surfacing the established standard or decision that should govern a choice the model is about to make. Understanding that scope is the clearest lens for reading the comparisons below.
 
 ---
 

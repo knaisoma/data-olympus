@@ -16,6 +16,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `kb_search` and `kb_get` now support and return `status` and `type`, making the
   documented "filter by status / tier / type" capability real (index schema v4).
+- Retrieval now indexes `applies_when` trigger metadata and `description` with
+  column-weighted ranking, improving coding-intent to governing-rule matching
+  (index schema v5). `kb_get` returns both fields.
 
 ### Fixed
 
