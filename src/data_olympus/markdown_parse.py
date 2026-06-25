@@ -25,6 +25,8 @@ class ParsedDoc:
     title: str = ""
     body: str = ""
     git_remote_url: str | None = None
+    status: str = ""
+    doc_type: str = ""
 
 
 def _parse_front_matter(raw: str) -> dict[str, str | list[str]]:
@@ -86,4 +88,6 @@ def parse_file(path: Path) -> ParsedDoc:
         title=str(fm.get("title", "")),
         body=body,
         git_remote_url=git_remote_url,
+        status=str(fm.get("status", "")),
+        doc_type=str(fm.get("type", "")),
     )
