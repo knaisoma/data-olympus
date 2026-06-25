@@ -127,7 +127,9 @@ def test_index_records_schema_version(tmp_kb: Path, tmp_index_path: Path) -> Non
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     conn.close()
     assert row is not None
-    assert row[0] == "5", f"schema_version must be '5' after applies_when/description columns; got {row[0]!r}"
+    assert row[0] == "5", (
+        f"schema_version must be '5' after applies_when/description columns; got {row[0]!r}"
+    )
 
 
 def test_path_classification_T1_for_standards(tmp_kb: Path, tmp_index_path: Path) -> None:
@@ -637,3 +639,54 @@ def test_docs_table_has_applies_when_and_description_columns(
     cols = {r[1] for r in conn.execute("PRAGMA table_info(docs)").fetchall()}
     conn.close()
     assert {"applies_when", "description"} <= cols
+
+
+def _excel_governance_kb(tmp_path: Path) -> Path:
+    kb = tmp_path / "kb"
+    d = kb / "universal" / "foundation"
+    d.mkdir(parents=True)
+    (d / "STD-XL.md").write_text(
+        "---\nid: STD-XL\ntier: T1\ntype: standard\nstatus: active\n"
+        "applies_when: [openpyxl, insert_cols, excel]\n"
+        "description: Prefer xlsxwriter for new Excel files.\n---\n"
+        "# Excel standard\n\nGuidance about spreadsheets.\n"
+    )
+    (d / "STD-LOG.md").write_text(
+        "---\nid: STD-LOG\ntier: T1\ntype: standard\nstatus: active\n"
+        "applies_when: [logging, structured-logs]\n"
+        "description: Use structured logging.\n---\n"
+        "# Logging\n\nopenpyxl is mentioned once here in passing.\n"
+    )
+    return kb
+
+
+def test_applies_when_match_outranks_incidental_body_match(
+    tmp_path: Path, tmp_index_path: Path
+) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(_excel_governance_kb(tmp_path), source_commit="x")
+    hits = idx.search("openpyxl", limit=5)
+    assert hits[0].id == "STD-XL", (
+        "a doc whose applies_when trigger matches must outrank a doc with only an "
+        f"incidental body mention; got {[h.id for h in hits]}"
+    )
+
+
+def test_search_columns_ablation_restricts_match(tmp_path: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(_excel_governance_kb(tmp_path), source_commit="x")
+    # Restrict matching to body only: the applies_when-only trigger 'insert_cols'
+    # appears in no body, so nothing matches.
+    body_only = idx.search("insert_cols", limit=5, columns=["body"])
+    assert body_only == []
+    # Default (all columns) retrieves via applies_when.
+    full = idx.search("insert_cols", limit=5)
+    assert any(h.id == "STD-XL" for h in full)
+
+
+def test_search_rejects_unknown_column(tmp_path: Path, tmp_index_path: Path) -> None:
+    import pytest
+    idx = Index(tmp_index_path)
+    idx.build(_excel_governance_kb(tmp_path), source_commit="x")
+    with pytest.raises(ValueError, match="unknown fts column"):
+        idx.search("excel", limit=5, columns=["title", "bogus"])

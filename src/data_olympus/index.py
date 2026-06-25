@@ -53,6 +53,12 @@ CREATE TABLE IF NOT EXISTS meta (
 _SCHEMA_VERSION = "5"
 
 
+# fts column order (excluding the UNINDEXED id at position 0).
+_FTS_MATCH_COLUMNS: tuple[str, ...] = ("title", "tags", "applies_when", "description", "body")
+# bm25 weights, one per declared fts column INCLUDING the UNINDEXED id at index 0.
+# Title and applies_when are weighted highest; body lowest. Tune in D2.
+_DEFAULT_BM25_WEIGHTS: tuple[float, ...] = (0.0, 10.0, 5.0, 10.0, 4.0, 1.0)
+
 _PATH_RULES: tuple[tuple[str, str, str], ...] = (
     # T1 Universal, applies to every project, every stack.
     ("universal/foundation/",       "T1", "foundation"),
@@ -341,19 +347,37 @@ class Index:
         category: str | None = None,
         status: str | None = None,
         doc_type: str | None = None,
+        columns: list[str] | None = None,
+        column_weights: tuple[float, ...] | None = None,
     ) -> list[SearchHit]:
-        """FTS5 search across title, tags, body. Optional tier/category/status/type filters."""
-        # Quote each whitespace term individually and OR them together. Quoting
-        # per-term keeps FTS5 from treating dashes/dots/colons inside a term
-        # (e.g. "STD-U-002") as operators, while OR lets multi-word natural-
-        # language queries match on any term (ranked by bm25) instead of
-        # requiring a verbatim phrase. Doubling embedded quotes prevents a term
-        # from breaking out of its phrase, so user input cannot inject FTS
-        # operators.
+        """FTS5 search with column-weighted bm25.
+
+        Quote each whitespace term individually and OR them together. Quoting
+        per-term keeps FTS5 from treating dashes/dots/colons inside a term
+        (e.g. "STD-U-002") as operators, while OR lets multi-word natural-
+        language queries match on any term (ranked by bm25) instead of
+        requiring a verbatim phrase. Doubling embedded quotes prevents a term
+        from breaking out of its phrase, so user input cannot inject FTS
+        operators.
+
+        `columns` restricts which fts columns are matched (for ablation); default
+        matches all. `column_weights` overrides bm25 weights (one per declared
+        fts column incl. the UNINDEXED id at index 0); default boosts
+        title/applies_when, deprioritizes body.
+        """
         terms = query.split()
         if not terms:
             return []
-        match_query = " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
+        quoted = " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
+        if columns:
+            unknown = [c for c in columns if c not in _FTS_MATCH_COLUMNS]
+            if unknown:
+                raise ValueError(f"unknown fts column(s): {unknown}")
+            match_query = "{" + " ".join(columns) + "} : (" + quoted + ")"
+        else:
+            match_query = quoted
+        weights = column_weights if column_weights is not None else _DEFAULT_BM25_WEIGHTS
+        bm25_expr = "bm25(fts, " + ", ".join(repr(float(w)) for w in weights) + ")"
         conn = self._connect()
         try:
             where = ["fts MATCH ?"]
@@ -379,7 +403,7 @@ class Index:
                     COALESCE(docs.status, '') AS status,
                     COALESCE(docs.type, '') AS doc_type,
                     snippet(fts, 5, '[', ']', '...', 16) AS snippet,
-                    bm25(fts) AS score
+                    {bm25_expr} AS score
                 FROM fts
                 JOIN docs ON docs.id = fts.id
                 WHERE {' AND '.join(where)}
