@@ -38,10 +38,15 @@ class GovQuery:
 # Paraphrase template expansions
 # ---------------------------------------------------------------------------
 
-def _trigger_query(topic: str, covered_terms: list[str]) -> str:
-    """Build a trigger-covered scenario query using a trigger term."""
-    term = covered_terms[0]  # use the first trigger term for simplicity
-    return f"I am working with {term} on the {topic} task"
+def _trigger_query(covered_terms: list[str]) -> str:
+    """Build a trigger-covered query from trigger terms ONLY (no topic name).
+
+    The gold doc's body and title do not contain the trigger terms, so the doc
+    is reachable only via its applies_when metadata. This isolates the marginal
+    value of indexing applies_when over body-only FTS.
+    """
+    terms = covered_terms[:2]
+    return "I am using " + " and ".join(terms)
 
 
 # Pre-built, intent-only sentences per intent phrase.
@@ -90,7 +95,7 @@ def build_governance_queries(manifest: GovCorpusManifest) -> list[GovQuery]:
     for _i, topic in enumerate(manifest.topics):
         # --- trigger_covered ---
         if topic.covered_terms:
-            tq = _trigger_query(topic.topic, topic.covered_terms)
+            tq = _trigger_query(topic.covered_terms)
             queries.append(GovQuery(
                 text=tq,
                 stratum="trigger_covered",

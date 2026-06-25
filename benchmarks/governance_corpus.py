@@ -11,7 +11,6 @@ construction (drawn from fully separate lists per topic). Tests assert this.
 """
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -150,20 +149,26 @@ class GovCorpusManifest:
 # Document body helpers
 # ---------------------------------------------------------------------------
 
-def _body(topic: str, covered_terms: list[str], qualifier: str) -> str:
-    """Build a doc body that contains the covered trigger terms but NOT the
-    uncovered intent phrasings (which are held out for the paraphrase stratum).
+def _body(topic: str, qualifier: str) -> str:
+    """Build a doc body that describes the governance rule in prose WITHOUT
+    repeating the applies_when trigger terms.
+
+    The triggers live only in the applies_when frontmatter, so the benchmark
+    fairly measures whether indexing applies_when (vs body-only FTS) improves
+    retrieval. This mirrors reality: a standard's prose describes the recommended
+    approach, while the curated triggers list the intents/tools that should
+    activate the rule (often the to-avoid options, which the prose need not name).
     """
-    triggers_inline = ", ".join(covered_terms[:3])
     return (
         f"# {topic} ({qualifier})\n\n"
-        f"This document governs the {qualifier} rules for {topic}. "
-        f"Applies when working with: {triggers_inline}.\n\n"
-        f"## Guidance\n\n"
-        f"- Follow the documented {topic} pattern.\n"
-        f"- Use the approved tools ({triggers_inline}) as described.\n"
-        f"- Record exceptions to the {topic} rule in the project decision log.\n"
-        f"- Review this document before starting a {topic} implementation.\n"
+        f"This document records the {qualifier} governance decision for the "
+        f"{topic} area. It states the recommended approach, the rationale behind "
+        f"it, and how to request an exception.\n\n"
+        f"## Decision\n\n"
+        f"- Adopt the documented pattern for this area.\n"
+        f"- Prefer the recommended approach over ad-hoc alternatives.\n"
+        f"- Record any deviation in the project decision record.\n"
+        f"- Consult this page before related work begins.\n"
     )
 
 
@@ -237,18 +242,17 @@ def generate_governance_corpus(
     from pathlib import Path as _Path
     dest = _Path(dest)
 
-    rng = random.Random(seed)
     topic_keys = list(_GOV_TOPICS.keys())
 
     concepts: list[Concept] = []
     topic_records: list[GovTopicRecord] = []
 
-    count = 0
-    topic_idx = 0
-    while count < n:
-        key = topic_keys[topic_idx % len(topic_keys)]
-        suffix = topic_idx // len(topic_keys)
-        topic_key = key if suffix == 0 else f"{key}-{suffix}"
+    # Unique topics only (no suffix repeats): each governing doc covers a
+    # distinct topic with a distinct trigger vocabulary, so a trigger-only query
+    # identifies exactly one gold doc. n caps the number of topics used.
+    n_topics = min(n, len(topic_keys))
+    for topic_idx, key in enumerate(topic_keys[:n_topics]):
+        topic_key = key
 
         trigger_vocab, intent_vocab = _GOV_TOPICS[key]
         # Guarantee disjointness: the two lists come from the fixed table which
@@ -260,15 +264,17 @@ def generate_governance_corpus(
         doc_type = _TYPES[topic_idx % len(_TYPES)]
         status = _STATUSES[doc_type]
 
-        make_pair = rng.random() < _SUPERSEDE_FRACTION and count + 1 < n
+        # Deterministic supersession pairs by position (seed shifts the phase),
+        # so a fixed fraction of topics always have a superseded predecessor.
+        make_pair = ((topic_idx + seed) % 6 == 0)
 
         if make_pair:
             old_id = f"GOV-OLD-{topic_key}".upper().replace("-", "_")
             new_id = f"GOV-NEW-{topic_key}".upper().replace("-", "_")
             directory = _DIR_FOR_TIER[tier]
 
-            old_body = _body(topic_key, covered, "previous")
-            new_body = _body(topic_key, covered, "current")
+            old_body = _body(topic_key, "previous")
+            new_body = _body(topic_key, "current")
 
             old_concept = Concept(
                 id=old_id,
@@ -315,11 +321,10 @@ def generate_governance_corpus(
                 new_body,
                 extra_fields=[f"supersedes: {old_id}"],
             )
-            count += 2
         else:
             doc_id = f"GOV-{topic_key}".upper().replace("-", "_")
             directory = _DIR_FOR_TIER[tier]
-            body = _body(topic_key, covered, "current")
+            body = _body(topic_key, "current")
 
             concepts.append(Concept(
                 id=doc_id,
@@ -346,9 +351,6 @@ def generate_governance_corpus(
                 covered,
                 body,
             )
-            count += 1
-
-        topic_idx += 1
 
     return GovCorpusManifest(
         concepts=concepts,

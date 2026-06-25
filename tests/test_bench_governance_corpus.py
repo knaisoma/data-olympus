@@ -45,3 +45,29 @@ def test_corpus_lints_clean(tmp_path: Path) -> None:
 def test_has_supersession_pairs(tmp_path: Path) -> None:
     m = generate_governance_corpus(tmp_path / "kb", n=120, seed=2)
     assert any(t.stale_id is not None for t in m.topics)
+
+
+def test_trigger_terms_absent_from_doc_body(tmp_path: Path) -> None:
+    """Fair-test invariant: the doc body must NOT contain the applies_when
+    trigger terms, so the benchmark measures the marginal value of indexing
+    applies_when (vs body-only FTS) rather than crediting the body."""
+    m = generate_governance_corpus(tmp_path / "kb", n=120, seed=0)
+    by_topic = {t.current_id: t for t in m.topics}
+    for concept in m.concepts:
+        topic = by_topic.get(concept.id)
+        if topic is None:
+            continue  # superseded predecessor; same triggers, same invariant below
+        body_lower = concept.body.lower()
+        topic_name = concept.topic.lower()
+        for term in topic.covered_terms:
+            t = term.lower()
+            # A trigger that IS the topic identifier may legitimately appear in
+            # the body via the topic name (realistic: some docs name the trigger).
+            # The aggregate ablation reflects that honestly. The invariant we
+            # enforce is that the body does not ENUMERATE the trigger list.
+            if t in topic_name or topic_name in t:
+                continue
+            assert t not in body_lower, (
+                f"trigger term {term!r} leaked into the body of {concept.id}; "
+                "the fair test requires non-name triggers to live only in applies_when"
+            )
