@@ -60,20 +60,20 @@
     {
       "method": "data-olympus",
       "category": "ALL",
-      "mean_tokens": 105.708,
-      "recall": 0.386,
-      "precision": 0.2035938251403397,
-      "ndcg": 0.386,
-      "mrr": 0.386,
+      "mean_tokens": 281.206,
+      "recall": 0.502,
+      "precision": 0.14647490319089398,
+      "ndcg": 0.4956706238522279,
+      "mrr": 0.4936333333333333,
       "staleness": 0,
       "n": 500
     },
     {
       "method": "data-olympus",
       "category": "exact",
-      "mean_tokens": 181.1288888888889,
+      "mean_tokens": 344.0444444444444,
       "recall": 0.8577777777777778,
-      "precision": 0.4524307225340882,
+      "precision": 0.2497488973049695,
       "ndcg": 0.8577777777777778,
       "mrr": 0.8577777777777778,
       "staleness": 0,
@@ -82,33 +82,33 @@
     {
       "method": "data-olympus",
       "category": "graph",
-      "mean_tokens": 44,
-      "recall": 0.0,
-      "precision": 0.0,
-      "ndcg": 0.0,
-      "mrr": 0.0,
+      "mean_tokens": 383.28,
+      "recall": 1.0,
+      "precision": 0.30143482256525916,
+      "ndcg": 1.0,
+      "mrr": 1.0,
       "staleness": 0,
       "n": 25
     },
     {
       "method": "data-olympus",
       "category": "semantic",
-      "mean_tokens": 44,
-      "recall": 0.0,
-      "precision": 0.0,
-      "ndcg": 0.0,
-      "mrr": 0.0,
+      "mean_tokens": 193.04,
+      "recall": 0.035555555555555556,
+      "precision": 0.010720133667502088,
+      "ndcg": 0.02149027522717304,
+      "mrr": 0.016962962962962964,
       "staleness": 0,
       "n": 225
     },
     {
       "method": "data-olympus",
       "category": "status",
-      "mean_tokens": 44,
-      "recall": 0.0,
-      "precision": 0.0,
-      "ndcg": 0.0,
-      "mrr": 0.0,
+      "mean_tokens": 407.08,
+      "recall": 1.0,
+      "precision": 0.28384196250037624,
+      "ndcg": 1.0,
+      "mrr": 1.0,
       "staleness": 0,
       "n": 25
     },
@@ -227,19 +227,19 @@
     "data-olympus": [
       [
         25,
-        100.25
+        156.25
       ],
       [
         50,
-        114.375
+        170.875
       ],
       [
         100,
-        149.875
+        207.375
       ],
       [
         250,
-        171.25
+        229.25
       ]
     ],
     "whole-dump": [
