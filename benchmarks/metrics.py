@@ -57,3 +57,27 @@ def staleness_error(ranked: Sequence[str], *, current_id: str, stale_id: str) ->
     if pos_stale == inf:
         return 0
     return 1 if pos_stale <= pos_current else 0
+
+
+def governance_miss_rate(
+    ranked_per_query: list[Sequence[str]], gold_per_query: list[set[str]], *, k: int
+) -> float:
+    """Fraction of queries with NO gold concept in the top-k. The headline
+    governance failure: the agent gets no governing rule."""
+    if not ranked_per_query:
+        return 0.0
+    misses = 0
+    for ranked, gold in zip(ranked_per_query, gold_per_query, strict=True):
+        if not gold or not (set(ranked[:k]) & gold):
+            misses += 1
+    return misses / len(ranked_per_query)
+
+
+def false_positive_rate(retrieved_counts_on_negatives: list[int]) -> float:
+    """For negative queries (no governing rule exists), the fraction that
+    returned anything at all. A governance tool should abstain on these."""
+    if not retrieved_counts_on_negatives:
+        return 0.0
+    return sum(1 for c in retrieved_counts_on_negatives if c > 0) / len(
+        retrieved_counts_on_negatives
+    )
