@@ -19,6 +19,11 @@ dev = [
     "ruff>=0.7",
     "mypy>=1.13",
 ]
+bench = [
+    "tiktoken>=0.8",
+    "sentence-transformers>=3.0",
+    "numpy>=1.26",
+]
 
 [project.scripts]
 data-olympus-mcp = "data_olympus.server:main"
@@ -46,4 +51,4 @@ python_version = "3.13"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-ra -q"
-pythonpath = ["src"]
+pythonpath = ["src", "."]
