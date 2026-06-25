@@ -37,11 +37,11 @@ Methodology: a synthetic corpus of 250 concepts (deterministic, `seed=0`) was ge
 | bm25 | status | 529.4 | 1.000 | 0.219 | 1.000 | 1.000 | 0.000 | 25 |
 | bm25 | graph | 553.8 | 1.000 | 0.209 | 0.631 | 0.500 | 1.000 | 25 |
 | bm25 | ALL | 382.0 | 0.554 | 0.110 | 0.535 | 0.528 | 0.050 | 500 |
-| data-olympus | exact | 181.1 | 0.858 | 0.452 | 0.858 | 0.858 | 0.000 | 225 |
-| data-olympus | semantic | 44.0 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 225 |
-| data-olympus | status | 44.0 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 25 |
-| data-olympus | graph | 44.0 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 25 |
-| data-olympus | ALL | 105.7 | 0.386 | 0.204 | 0.386 | 0.386 | 0.000 | 500 |
+| data-olympus | exact | 344.0 | 0.858 | 0.250 | 0.858 | 0.858 | 0.000 | 225 |
+| data-olympus | semantic | 193.0 | 0.036 | 0.011 | 0.021 | 0.017 | 0.000 | 225 |
+| data-olympus | status | 407.1 | 1.000 | 0.284 | 1.000 | 1.000 | 0.000 | 25 |
+| data-olympus | graph | 383.3 | 1.000 | 0.301 | 1.000 | 1.000 | 0.000 | 25 |
+| data-olympus | ALL | 281.2 | 0.502 | 0.146 | 0.496 | 0.494 | 0.000 | 500 |
 | grep-read | exact | 1022.4 | 0.520 | 0.100 | 0.308 | 0.304 | 0.000 | 225 |
 | grep-read | semantic | 9570.6 | 0.022 | 0.001 | 0.013 | 0.016 | 0.000 | 225 |
 | grep-read | status | 25560.0 | 0.000 | 0.005 | 0.000 | 0.013 | 0.000 | 25 |
@@ -59,28 +59,28 @@ Mean payload tokens per method as corpus grows (curve computed on a query sample
 
 | Corpus Size | bm25 | data-olympus | grep-read | whole-dump |
 |-------------|------|--------------|-----------|------------|
-| 25 | 140.0 | 100.2 | 50.0 | 2208.0 |
-| 50 | 215.0 | 114.4 | 125.0 | 4684.0 |
-| 100 | 296.0 | 149.9 | 217.0 | 9836.0 |
-| 250 | 325.2 | 171.2 | 490.5 | 25560.0 |
+| 25 | 140.0 | 156.2 | 50.0 | 2208.0 |
+| 50 | 215.0 | 170.9 | 125.0 | 4684.0 |
+| 100 | 296.0 | 207.4 | 217.0 | 9836.0 |
+| 250 | 325.2 | 229.2 | 490.5 | 25560.0 |
 
 data-olympus scales sub-linearly because its payload is outline + top-hit snippets + one full document body, independent of corpus size. whole-dump grows linearly with every file added.
 
 ### Staleness avoidance
 
-data-olympus staleness rate = 0.000, BM25 = 0.050, grep-read and whole-dump = 0.000. This headline both understates and overstates, so read it carefully:
+This is data-olympus's clearest accuracy differentiator, and it is genuinely demonstrated (not an artifact of retrieving nothing):
 
-- **BM25's 0.050 is the real failure the filter is meant to prevent.** It comes entirely from the `graph` category (staleness=1.000 there, see the per-category table). The query "what replaced the previous \<topic\> guidance" lexically matches the *superseded* concept's body, so BM25 ranks the stale document first. A `status: active` filter is exactly what avoids this.
-- **data-olympus's 0.000 is a genuine win only on `exact` queries**, where it actually retrieves and the filter drops the superseded concept. On `status`/`graph` its 0.000 is *vacuous*: it retrieves nothing (recall=0.000), so it trivially cannot surface a stale document — the same reason grep-read and whole-dump score 0.000.
-- **The differentiator is real but currently masked.** Because `Index.search()` matches the whole query as a single exact FTS phrase, data-olympus retrieves no hits on the natural-language `status`/`graph` queries where it would otherwise demonstrate the filter advantage. Relaxing phrase-only matching (tracked as a follow-up) is expected to convert these vacuous 0.000s into genuine wins.
+- **BM25 staleness rate = 0.050**, driven entirely by the `graph` category (staleness=1.000 there, see the per-category table). The query "what replaced the previous \<topic\> guidance" lexically matches the *superseded* concept's body, so BM25 ranks the stale document first. Plain keyword search has no notion of lifecycle.
+- **data-olympus staleness rate = 0.000**, and on `status`/`graph` this is a real result, not a vacuous one: data-olympus retrieves the relevant concepts (recall=1.000 on both categories) and the `status: active` filter excludes the superseded one, so the stale document never reaches the agent. Same queries, same corpus, opposite outcome from BM25.
+- grep-read and whole-dump also score 0.000, but for the hollow reason that their ranked lists never surface a concept high enough to trigger the metric on these queries.
 
 ### Where data-olympus loses
 
-On **semantic** (paraphrase) queries, data-olympus achieves recall=0.000, ndcg=0.000. This is the category where dense vector search has the largest advantage; paraphrases lack keyword overlap, so the FTS index returns no hits. BM25 also fails here (recall=0.009). Both grep-read and whole-dump score recall=0.022 on semantic, but only because whole-dump returns every document and grep-read happens to match on very broad terms, giving them a small recall floor that is not practically useful. Vector-RAG (not included in this run due to absent `[bench]` deps) is expected to win decisively on the `semantic` category.
+On **semantic** (paraphrase) queries, data-olympus achieves recall=0.036, ndcg=0.021. Paraphrases lack the keyword overlap the FTS index relies on, so every keyword method does poorly here (BM25 0.009, grep-read 0.022, whole-dump 0.022); none is practically useful. This is the category where dense retrieval has the largest advantage, and **vector-RAG (not included in this run, `[bench]` deps absent) is expected to win decisively**. It is data-olympus's genuine weakness: full-text search cannot follow synonyms.
 
-On **status and graph** queries, data-olympus scores recall=0.000. The query phrasing ("current rule for \<topic\>", "what replaced the previous \<topic\> guidance") does not match the synthetic corpus titles literally, so the FTS index finds no hits. BM25 achieves recall=1.000 on both status and graph for topics where the exact topic word appears in the query text.
+On **exact** queries, data-olympus (recall=0.858) trails BM25 (recall=1.000). BM25 ranks chunks by TF-IDF over full bodies, while data-olympus ranks by SQLite FTS5 bm25 over its indexed surface; the gap is the cost of the lighter index.
 
-On **exact** queries, data-olympus (recall=0.858) trails BM25 (recall=1.000). Both use keyword matching, but BM25 over chunks scores higher because it ranks by TF-IDF weight over the full document body, while the data-olympus FTS index ranks by SQLite FTS5 BM25 over a smaller indexed text surface.
+Overall, data-olympus recall (0.502) is competitive with BM25 (0.554) while spending ~26% fewer tokens (281 vs 382 per query), and it is the only keyword method that avoids serving superseded knowledge (staleness 0.000 vs BM25 0.050). It does not beat dense retrieval on paraphrase queries, and does not claim to.
 
 ---
 
