@@ -576,7 +576,9 @@ def test_search_multiword_nl_query_retrieves(status_kb: Path, tmp_index_path: Pa
     assert "STD-NEW" in ids, f"NL query must retrieve the caching concept; got {ids}"
 
 
-def test_search_multiword_composes_with_status_filter(status_kb: Path, tmp_index_path: Path) -> None:
+def test_search_multiword_composes_with_status_filter(
+    status_kb: Path, tmp_index_path: Path,
+) -> None:
     idx = Index(tmp_index_path)
     idx.build(status_kb, source_commit="x")
     hits = idx.search("current rule for caching", limit=10, status="active")
