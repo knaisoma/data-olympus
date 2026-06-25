@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS docs (
     path TEXT NOT NULL,
     tier TEXT,
     category TEXT,
+    status TEXT,
+    type TEXT,
     title TEXT,
     tags TEXT,
     content_markdown TEXT,
@@ -44,7 +46,7 @@ CREATE TABLE IF NOT EXISTS meta (
 # Informational only; recorded in the meta table for observability. Rebuild
 # is guaranteed by bootstrap_now=True calling Index.build() unconditionally
 # on container start, not by a version-mismatch check.
-_SCHEMA_VERSION = "3"
+_SCHEMA_VERSION = "4"
 
 
 _PATH_RULES: tuple[tuple[str, str, str], ...] = (
@@ -267,11 +269,12 @@ class Index:
                 last_modified, lm_source = self._git_last_modified(kb_root, rel)
                 content_markdown = md.read_text(encoding="utf-8")
                 conn.execute(
-                    "INSERT INTO docs (id, path, tier, category, title, tags, "
+                    "INSERT INTO docs (id, path, tier, category, status, type, title, tags, "
                     "content_markdown, last_modified, last_modified_source, git_remote_url) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (doc_id, str(rel), final_tier, final_category, doc.title, tags_str,
-                     content_markdown, last_modified, lm_source, doc.git_remote_url),
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (doc_id, str(rel), final_tier, final_category, doc.status, doc.doc_type,
+                     doc.title, tags_str, content_markdown, last_modified, lm_source,
+                     doc.git_remote_url),
                 )
                 conn.execute(
                     "INSERT INTO fts (id, title, tags, body) VALUES (?, ?, ?, ?)",

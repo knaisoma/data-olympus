@@ -127,7 +127,7 @@ def test_index_records_schema_version(tmp_kb: Path, tmp_index_path: Path) -> Non
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     conn.close()
     assert row is not None
-    assert row[0] == "3", f"schema_version must be '3' for slice 2C; got {row[0]!r}"
+    assert row[0] == "4", f"schema_version must be '4' after status/type columns; got {row[0]!r}"
 
 
 def test_path_classification_T1_for_standards(tmp_kb: Path, tmp_index_path: Path) -> None:
@@ -497,3 +497,28 @@ def test_list_with_remote_url_returns_only_entries_with_url(tmp_kb, tmp_index_pa
     # Fixture has git_remote_url on T3 + T4 entries.
     urls = [e["git_remote_url"] for e in entries if e.get("git_remote_url")]
     assert len(urls) >= 2
+
+
+def test_docs_table_has_status_and_type_columns(tmp_kb: Path, tmp_index_path: Path) -> None:
+    import sqlite3
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    conn = sqlite3.connect(tmp_index_path)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(docs)").fetchall()}
+    conn.close()
+    assert {"status", "type"} <= cols, f"missing status/type columns; got {cols}"
+
+
+def test_build_populates_status_and_type(tmp_path: Path, tmp_index_path: Path) -> None:
+    import sqlite3
+    kb = tmp_path / "kb"
+    (kb / "universal" / "foundation").mkdir(parents=True)
+    (kb / "universal" / "foundation" / "STD-S.md").write_text(
+        "---\nid: STD-S\ntier: T1\ntype: standard\nstatus: active\n---\n# Body about caching\n"
+    )
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="x")
+    conn = sqlite3.connect(tmp_index_path)
+    row = conn.execute("SELECT status, type FROM docs WHERE id='STD-S'").fetchone()
+    conn.close()
+    assert row == ("active", "standard"), f"status/type not populated; got {row}"
