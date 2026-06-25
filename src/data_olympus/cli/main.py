@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from data_olympus.cli.indexgen import regenerate_indexes
-from data_olympus.format import lint_bundle
+from data_olympus.format import discover_bundle_files, lint_files
 from data_olympus.viewer.generator import generate_visualization
 
 
@@ -21,7 +21,12 @@ def _require_dir(path: str) -> bool:
 def _cmd_lint(args: argparse.Namespace) -> int:
     if not _require_dir(args.path):
         return 1
-    results = lint_bundle(Path(args.path))
+    root = Path(args.path)
+    linted = discover_bundle_files(root)
+    if not linted:
+        print(f"error: no concept files to lint under {root}", file=sys.stderr)
+        return 1
+    results = lint_files(linted)
     error_files = 0
     total_errors = 0
     for path in sorted(results):
@@ -33,7 +38,7 @@ def _cmd_lint(args: argparse.Namespace) -> int:
         total_errors += len(errors)
         for f in errors + warnings:
             print(f"{path}: {f.severity}: {f.field}: {f.message}")
-    print(f"{total_errors} errors across {error_files} files")
+    print(f"{total_errors} errors across {error_files} files ({len(linted)} linted)")
     return 1 if total_errors else 0
 
 

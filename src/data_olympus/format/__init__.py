@@ -2,7 +2,7 @@
 
 from .document import Document
 from .frontmatter import parse_frontmatter
-from .lint import lint_bundle
+from .lint import discover_bundle_files, lint_bundle, lint_files
 from .validate import Finding, validate_document
 
 __all__ = [
@@ -11,4 +11,6 @@ __all__ = [
     "parse_frontmatter",
     "validate_document",
     "lint_bundle",
+    "discover_bundle_files",
+    "lint_files",
 ]
