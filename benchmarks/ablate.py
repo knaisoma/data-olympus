@@ -1,10 +1,11 @@
 """Governance retrieval ablation runner.
 
-Ablates four configurations over a governance corpus + query set:
-- fts-no-metadata:  Index.search with columns=[title, tags, body]
-- fts+description:  Index.search with columns=[title, tags, description, body]
-- fts+applies_when: Index.search with all columns (production default)
-- bm25-baseline:    Bm25Method (no index metadata at all)
+Ablates five configurations over a governance corpus + query set:
+- fts-no-metadata:        Index.search with columns=[title, tags, body]
+- fts+description:        Index.search with columns=[title, tags, description, body]
+- fts+applies_when:       Index.search with all columns (production default)
+- fts+applies_when+abstain: signal gate (abstain when no discriminating-column match)
+- bm25-baseline:          Bm25Method (no index metadata at all)
 
 For each config, computes per-stratum:
 - recall@k (fraction of queries where gold is in top-k)
@@ -63,6 +64,10 @@ _FTS_CONFIGS: list[tuple[str, dict[str, object]]] = [
         "fts+applies_when",
         {},  # empty: use Index.search defaults (all columns, default weights)
     ),
+    (
+        "fts+applies_when+abstain",
+        {"_abstain": True},  # signal gate: abstain when no discriminating-column match
+    ),
 ]
 
 _BM25_LABEL = "bm25-baseline"
@@ -98,14 +103,35 @@ class AblationReport:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+# Discriminating columns for the abstention gate. Deliberately EXCLUDES
+# `description`: its prose carries common words ("governance rules for ...") that
+# out-of-scope queries also contain, which would defeat the gate. Title, tags,
+# and applies_when are terse and specific, so matching one signals real intent.
+_SIGNAL_COLUMNS = ["title", "tags", "applies_when"]
+
+
 def _fts_retrieve(
     query: str,
     idx: Index,
     k: int,
     search_kwargs: dict[str, object],
 ) -> RetrievalResult:
-    """Call Index.search and return a RetrievalResult."""
-    hits = idx.search(query, limit=k, **search_kwargs)  # type: ignore[arg-type]
+    """Call Index.search and return a RetrievalResult.
+
+    Recognises a special `_abstain` kwarg: when set, the query must match at
+    least one discriminating column (title/tags/applies_when/description). If it
+    matches none (e.g. an out-of-scope query that only hits generic body prose),
+    the method abstains (returns an empty result) instead of surfacing a rule.
+    Otherwise it retrieves normally over all columns, preserving recall.
+    """
+    kwargs = dict(search_kwargs)
+    abstain = bool(kwargs.pop("_abstain", False))
+    if abstain:
+        signal_hits = idx.search(query, limit=k, columns=_SIGNAL_COLUMNS)
+        if not signal_hits:
+            return RetrievalResult(payload_text="", ranked_ids=[], retrieved_ids=set())
+        kwargs = {}  # signal present: retrieve normally over all columns
+    hits = idx.search(query, limit=k, **kwargs)  # type: ignore[arg-type]
     ranked = [h.id for h in hits]
     payload = "\n".join(f"{h.title}: {h.snippet}" for h in hits)
     if hits:

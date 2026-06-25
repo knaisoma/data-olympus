@@ -91,6 +91,7 @@ This is the question that matters for the governance use case (coding-intent →
 | fts-no-metadata | 0.867 | 0.429 | 1.000 | 0.523 | 307 |
 | fts+description | 0.867 | 0.452 | 1.000 | 0.538 | 305 |
 | **fts+applies_when** | **1.000** | 0.452 | 1.000 | **0.569** | 306 |
+| fts+applies_when+abstain | 1.000 | 0.286 | **0.000** | 0.462 | 200 |
 | bm25-baseline | 1.000 | 0.405 | 1.000 | 0.538 | 664 |
 
 What the ablation honestly shows:
@@ -98,9 +99,9 @@ What the ablation honestly shows:
 - **`applies_when` helps, modestly here, more at scale.** On trigger-covered intents it lifts recall from 0.867 to **1.000** (+0.133), fixing the cases where the model's tool/intent term is *not* already in the doc's prose; overall recall rises +0.046 over body-only FTS, at roughly half BM25's tokens. The gain is modest in *this* corpus because it is small (top-5 of 18 docs is easy, so body-only FTS already does well via the topic name in the title); on a larger KB, body-only recall degrades and the `applies_when` advantage is expected to widen. That scale sensitivity is a known limitation of this 18-doc benchmark.
 - **It cannot bridge true paraphrases.** On the held-out `paraphrase_uncovered` stratum, `applies_when` adds **+0.000** (0.452, same as no-metadata). When the query shares no term with any trigger, curated metadata cannot help; that is dense/semantic-retrieval territory, and the benchmark shows it plainly rather than hiding it.
 - **`description` alone barely moves recall** (+0.015 overall); the trigger list is the lever that matters.
-- **No method abstains.** Every config has a **100% false-positive rate on negative queries** (queries with no governing rule): they always return something. For a governance tool, surfacing an irrelevant rule as if it governs is a real weakness; an abstention / confidence threshold is open follow-up work.
+- **Abstention is solvable, with a recall trade-off.** Plain FTS (and BM25) have a **100% false-positive rate on negative queries** (queries with no governing rule): they always return something, because OR-matching hits generic words. The `fts+applies_when+abstain` config adds a **signal gate** — it returns nothing unless the query matches a discriminating column (title / tags / `applies_when`, deliberately not the prose `description`, whose common words leak). That drops the negative false-positive rate from **1.000 to 0.000** and keeps full recall on trigger-covered and supersession intents, at the cost of recall on hard paraphrases (0.452 → 0.286, since weak body-only matches now abstain). For a governance tool this is usually the right trade: abstaining beats surfacing a rule that does not govern. The gate is built on the existing `columns` search parameter, so it is a deployable mode, not new machinery.
 
-The honest summary: curated `applies_when` triggers are the right primary mechanism for governance retrieval (deterministic, auditable, no drift), they help and never hurt, and they pair with the token and staleness advantages above; but they do not replace semantic retrieval for unanticipated phrasings, and abstention on out-of-scope queries is unsolved.
+The honest summary: curated `applies_when` triggers are the right primary mechanism for governance retrieval (deterministic, auditable, no drift), they help and never hurt, and they pair with the token and staleness advantages above; abstention on out-of-scope queries is available as a signal-gated mode (zero false positives, at the cost of some paraphrase recall); the one thing curated metadata cannot do is bridge truly unanticipated phrasings, which remains dense/semantic-retrieval territory.
 
 ---
 

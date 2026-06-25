@@ -21,6 +21,11 @@ k=5. Four configs: fts-no-metadata, fts+description, fts+applies_when (productio
 | fts+applies_when | supersession | 1.000 | 1.000 | 0.000 | 0.000 | 350.0 | 3 |
 | fts+applies_when | negative | 0.000 | 0.000 | 1.000 | 1.000 | 296.0 | 5 |
 | fts+applies_when | ALL | 0.569 | 0.478 | 0.431 | 0.000 | 306.2 | 65 |
+| fts+applies_when+abstain | trigger_covered | 1.000 | 1.000 | 0.000 | 0.000 | 299.8 | 15 |
+| fts+applies_when+abstain | paraphrase_uncovered | 0.286 | 0.246 | 0.714 | 0.000 | 177.9 | 42 |
+| fts+applies_when+abstain | supersession | 1.000 | 1.000 | 0.000 | 0.000 | 350.0 | 3 |
+| fts+applies_when+abstain | negative | 0.000 | 0.000 | 1.000 | 0.000 | 0.0 | 5 |
+| fts+applies_when+abstain | ALL | 0.462 | 0.436 | 0.538 | 0.000 | 200.3 | 65 |
 | bm25-baseline | trigger_covered | 1.000 | 1.000 | 0.000 | 0.000 | 663.1 | 15 |
 | bm25-baseline | paraphrase_uncovered | 0.405 | 0.260 | 0.595 | 0.000 | 659.6 | 42 |
 | bm25-baseline | supersession | 1.000 | 1.000 | 0.000 | 0.000 | 684.0 | 3 |
@@ -41,6 +46,7 @@ On `paraphrase_uncovered` queries (held-out intent phrasings with NO trigger ter
 - **fts-no-metadata**: 1.000 false-positive rate on 5 negative queries (returned anything at all when no governing rule exists).
 - **fts+description**: 1.000 false-positive rate on 5 negative queries (returned anything at all when no governing rule exists).
 - **fts+applies_when**: 1.000 false-positive rate on 5 negative queries (returned anything at all when no governing rule exists).
+- **fts+applies_when+abstain**: 0.000 false-positive rate on 5 negative queries (returned anything at all when no governing rule exists).
 - **bm25-baseline**: 1.000 false-positive rate on 5 negative queries (returned anything at all when no governing rule exists).
 
 _A governance tool should ideally abstain (return nothing) on queries with no governing rule. FP rate = 0.0 means perfect abstention; 1.0 means always returned results._

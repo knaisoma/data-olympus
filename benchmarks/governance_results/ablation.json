@@ -152,6 +152,56 @@
       "n": 65
     },
     {
+      "config": "fts+applies_when+abstain",
+      "stratum": "negative",
+      "recall": 0.0,
+      "mrr": 0.0,
+      "miss_rate": 1.0,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 0,
+      "n": 5
+    },
+    {
+      "config": "fts+applies_when+abstain",
+      "stratum": "paraphrase_uncovered",
+      "recall": 0.2857142857142857,
+      "mrr": 0.24603174603174602,
+      "miss_rate": 0.7142857142857143,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 177.85714285714286,
+      "n": 42
+    },
+    {
+      "config": "fts+applies_when+abstain",
+      "stratum": "supersession",
+      "recall": 1.0,
+      "mrr": 1.0,
+      "miss_rate": 0.0,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 350,
+      "n": 3
+    },
+    {
+      "config": "fts+applies_when+abstain",
+      "stratum": "trigger_covered",
+      "recall": 1.0,
+      "mrr": 1.0,
+      "miss_rate": 0.0,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 299.8,
+      "n": 15
+    },
+    {
+      "config": "fts+applies_when+abstain",
+      "stratum": "ALL",
+      "recall": 0.46153846153846156,
+      "mrr": 0.4358974358974359,
+      "miss_rate": 0.5384615384615384,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 200.26153846153846,
+      "n": 65
+    },
+    {
       "config": "bm25-baseline",
       "stratum": "negative",
       "recall": 0.0,
