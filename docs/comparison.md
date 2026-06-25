@@ -191,6 +191,36 @@ adr-tools is a shell-script convention for creating and linking Markdown ADRs. L
 
 ---
 
+## Comparison with 2026 agent-memory and spec-driven tools
+
+Two cohorts of products were heavily marketed through late 2025 and early 2026 in the "get the right context/governance in front of the agent" space. The general categories (RAG/vector memory, agent-context conventions) are covered above; this section drills into the specific trending products. It is dated on purpose: the landscape moves fast, figures below are as of mid-2026, and several rest on vendor primary sources (flagged inline).
+
+### Agent memory / knowledge layers (Cognee, Zep/Graphiti, and peers)
+
+[Cognee](https://github.com/topoteretes/cognee) (Apache-2.0; a [$7.5M seed led by Pebblebed, early 2026](https://www.cognee.ai/blog/cognee-news/cognee-raises-seven-million-five-hundred-thousand-dollars-seed)) unifies relational, vector, and graph storage into one engine via an ECL (Extract, Cognify, Load) pipeline, and its "memify" layer self-tunes the knowledge graph through feedback loops that reweight edges with use. [Zep/Graphiti](https://github.com/getzep/graphiti) (Apache-2.0, ~28k stars) is a temporal knowledge-graph engine over graph databases (Neo4j / FalkorDB / Neptune) using embeddings and hybrid semantic + BM25 + graph retrieval, consumable via SDK, MCP, and REST. Mem0, Letta (ex-MemGPT), and Supermemory are funded entrants in the same category; this comparison did not independently verify their capabilities, so they are named but not characterized.
+
+**Where data-olympus is better (and why):** these systems are self-mutating — Cognee's memify reweights the graph with use, and Graphiti continuously integrates new interactions. data-olympus knowledge is the opposite: curated, human-reviewed, and changed only through a propose/pending/commit pipeline, so retrieval is reproducible and auditable, with controlled `status`/`tier`/`type` vocabularies and `supersedes` chains a self-tuning store does not provide.
+
+**Where they are better:** semantic and temporal recall over large, heterogeneous, unstructured data, and memory that adapts to usage automatically. data-olympus search is full-text (it does share a BM25 component with Graphiti) and deliberately omits the embedding and graph layers these tools are built on.
+
+**Where that is a deliberate decision:** data-olympus positions semantic recall as complementary RAG's job; these products are essentially that layer.
+
+**Where they are complementary:** run a memory layer for evolving, semantic, episodic recall and data-olympus for the stable, governed engineering rules that must not drift. Different category, largely complementary.
+
+### Spec-driven coding tools (AWS Kiro, GitHub Spec Kit, Tessl)
+
+These drive code forward from authored specs (spec → plan → tasks → code) rather than retrieving a governing rule for a coding intent, and each persists its governance as versioned, git-native markdown — the closest structural match to data-olympus. [AWS Kiro](https://kiro.dev/) is an agentic IDE/CLI whose [steering files](https://kiro.dev/docs/steering/) are reviewed markdown with a four-mode inclusion model (Always / conditional `fileMatch` / Manual / Auto-matched against the request) — the nearest analog to data-olympus's `applies_when` triggers. [GitHub Spec Kit](https://github.com/github/spec-kit/blob/main/spec-driven.md) runs a Specify → Plan → Tasks pipeline and keeps a versioned [`constitution.md`](https://github.com/github/spec-kit/blob/main/templates/commands/constitution.md) of engineering principles enforced through a "Constitution Check" gate. [Tessl](https://tessl.io/blog/tessl-launches-spec-driven-framework-and-registry/) (Snyk founder Guy Podjarny; ~$125M raised) makes the spec the durable primary artifact and ships a Spec Registry of (vendor-claimed) 10,000+ library specs.
+
+**Where data-olympus is better (and why):** its write path is a system-enforced single-writer propose/pending/commit pipeline, whereas Kiro and Spec Kit treat human review as a recommended practice, not an enforced gate (Kiro's CLI docs note no mandatory approval gate, and spec-kit issue #2459 shows `/implement` does not even load `constitution.md`). data-olympus also provides coding-intent → governing-rule full-text retrieval with signal-gated abstention, controlled vocabularies, `supersedes` chains, and cross-project scope; the spec tools' governance is per-feature/per-workspace and, for Kiro, vendor-hosted.
+
+**Where they are better:** forward enforcement and generation. Spec Kit's constitution actively gates spec generation, and Kiro and Tessl drive end-to-end build-to-code (Tessl regenerates code from the spec). data-olympus retrieves the governing rule but does not generate or gate code — that forward pipeline is out of scope.
+
+**Where they are complementary:** data-olympus standards can populate Kiro steering or a Spec Kit constitution; those tools gate generation while data-olympus answers "what rule governs this choice" at coding time. They are the nearest neighbors to data-olympus, but overlap only on the narrow governing-standards sliver and are otherwise a different workflow.
+
+**Synthesis.** The memory layers are a different category and almost entirely complementary (semantic, mutating recall vs governed, deterministic standards). The spec-driven tools are the nearest neighbors and partly competitive on the governing-standards sliver (Kiro steering, Spec Kit constitution), but their enforcement is forward spec-generation/gating, not coding-intent → governing-rule retrieval, so they too are mostly complementary. None occupies data-olympus's exact niche: a vendor-neutral, deterministic, auditable, cross-project KB that answers "what did we already decide that governs this choice."
+
+---
+
 ## Honest weaknesses
 
 These are the areas where data-olympus is currently weakest, separate from deliberate scope decisions:
