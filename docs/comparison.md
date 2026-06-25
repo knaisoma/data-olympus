@@ -68,7 +68,11 @@ data-olympus scales sub-linearly because its payload is outline + top-hit snippe
 
 ### Staleness avoidance
 
-data-olympus staleness rate = 0.000 (status filter excludes superseded concepts from search results). BM25 staleness rate = 0.050 (keyword match surfaces old and new concepts indiscriminately, relying on rank to sort them out). grep-read and whole-dump = 0.000 for a different reason: their ranked lists do not surface any concept high enough to trigger the staleness metric on most queries.
+data-olympus staleness rate = 0.000, BM25 = 0.050, grep-read and whole-dump = 0.000. This headline both understates and overstates, so read it carefully:
+
+- **BM25's 0.050 is the real failure the filter is meant to prevent.** It comes entirely from the `graph` category (staleness=1.000 there, see the per-category table). The query "what replaced the previous \<topic\> guidance" lexically matches the *superseded* concept's body, so BM25 ranks the stale document first. A `status: active` filter is exactly what avoids this.
+- **data-olympus's 0.000 is a genuine win only on `exact` queries**, where it actually retrieves and the filter drops the superseded concept. On `status`/`graph` its 0.000 is *vacuous*: it retrieves nothing (recall=0.000), so it trivially cannot surface a stale document — the same reason grep-read and whole-dump score 0.000.
+- **The differentiator is real but currently masked.** Because `Index.search()` matches the whole query as a single exact FTS phrase, data-olympus retrieves no hits on the natural-language `status`/`graph` queries where it would otherwise demonstrate the filter advantage. Relaxing phrase-only matching (tracked as a follow-up) is expected to convert these vacuous 0.000s into genuine wins.
 
 ### Where data-olympus loses
 
