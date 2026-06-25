@@ -192,12 +192,15 @@ any method (no method's output seeds the gold set).
 Per query, aggregated per method and **per category** (the per-category split is
 mandatory; the headline aggregate alone hides the losing cases).
 
-- **Tokens** — retrieval payload size via a real tokenizer. Default
-  `tiktoken` `cl100k_base`, run offline and deterministically. Documented
-  explicitly as an *approximation* of Claude's tokenizer (Anthropic's exact
-  tokenizer is not fully public offline). Optional secondary: Anthropic
-  `count_tokens` when an API key is present, reported alongside but never the
-  default.
+- **Tokens** — retrieval payload size. To keep the core harness zero-heavy-dep
+  and reproducible in CI, the **default** counter is a simple deterministic
+  tokenizer (regex word/punctuation split), and **`tiktoken` `cl100k_base` is an
+  optional precision upgrade** (in the `[bench]` extra) for counts closer to a
+  real BPE tokenizer. Every method is counted with the *same* tokenizer, so the
+  headline claim is the **ratio** (e.g. "data-olympus uses X% of whole-dump's
+  tokens"), which is robust to tokenizer choice; absolute counts are reported as
+  secondary and labeled with which tokenizer produced them. Documented as an
+  approximation of Claude's tokenizer either way.
 - **Recall@k** — is the gold concept's text present in the payload.
 - **Precision** — signal-to-noise: fraction of the payload that is the relevant
   concept vs. filler. (For chunked methods, precision@k over retrieved chunks.)
