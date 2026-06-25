@@ -152,3 +152,24 @@ def test_kb_get_git_remote_url_null_when_absent(tmp_kb: Path, tmp_index_path: Pa
     idx.build(tmp_kb, source_commit="test")
     resp = kb_get_fn(idx=idx, id="STD-U-001")
     assert resp.git_remote_url is None
+
+
+def test_kb_search_fn_filters_by_status(status_kb, tmp_index_path):
+    from data_olympus.index import Index
+    from data_olympus.tools_read import kb_search_fn
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    resp = kb_search_fn(idx=idx, query="caching", status="active")
+    assert {h.id for h in resp.hits} == {"STD-NEW"}
+    assert resp.hits[0].status == "active"
+    assert resp.hits[0].type == "standard"
+
+
+def test_kb_get_fn_returns_status_and_type(status_kb, tmp_index_path):
+    from data_olympus.index import Index
+    from data_olympus.tools_read import kb_get_fn
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    resp = kb_get_fn(idx=idx, id="DEC-1")
+    assert resp.status == "accepted"
+    assert resp.type == "decision"

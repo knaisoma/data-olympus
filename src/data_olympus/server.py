@@ -175,13 +175,17 @@ def build_app(
         limit: int = 20,
         tier: str | None = None,
         category: str | None = None,
+        status: str | None = None,
+        doc_type: str | None = None,
     ) -> dict[str, object]:
         """Full-text search across the KB.
 
-        Optional tier/category filters. Returns ranked hits with snippets.
+        Optional tier/category/status/type filters (status e.g. 'active',
+        doc_type e.g. 'decision'). Returns ranked hits with snippets.
         """
         resp = kb_search_fn(
-            idx=state.idx, query=query, limit=limit, tier=tier, category=category
+            idx=state.idx, query=query, limit=limit, tier=tier, category=category,
+            status=status, doc_type=doc_type,
         )
         return resp.model_dump()
 
