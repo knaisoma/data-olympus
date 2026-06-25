@@ -562,3 +562,45 @@ def test_build_populates_status_and_type(tmp_path: Path, tmp_index_path: Path) -
     row = conn.execute("SELECT status, type FROM docs WHERE id='STD-S'").fetchone()
     conn.close()
     assert row == ("active", "standard"), f"status/type not populated; got {row}"
+
+
+# ---- NL query / OR-of-terms fix ----
+
+
+def test_search_multiword_nl_query_retrieves(status_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    # Previously this exact-phrase query matched nothing; now OR-of-terms retrieves.
+    hits = idx.search("current rule for caching", limit=10)
+    ids = {h.id for h in hits}
+    assert "STD-NEW" in ids, f"NL query must retrieve the caching concept; got {ids}"
+
+
+def test_search_multiword_composes_with_status_filter(status_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(status_kb, source_commit="x")
+    hits = idx.search("current rule for caching", limit=10, status="active")
+    assert {h.id for h in hits} == {"STD-NEW"}, "status=active must still filter NL-query results"
+
+
+def test_search_or_semantics_matches_any_term(tmp_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    # 'worktree' is in STD-U-001/tooling; 'disagreement' is in STD-U-007.
+    hits = idx.search("worktree disagreement", limit=10)
+    ids = {h.id for h in hits}
+    assert "STD-U-001" in ids and "STD-U-007" in ids, f"OR must match either term; got {ids}"
+
+
+def test_search_single_term_id_lookup_still_works(tmp_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    hits = idx.search("STD-U-002", limit=10)
+    assert any(h.id == "STD-U-002" for h in hits)
+
+
+def test_search_empty_query_returns_empty(tmp_kb: Path, tmp_index_path: Path) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    assert idx.search("   ", limit=10) == []
+    assert idx.search("", limit=10) == []

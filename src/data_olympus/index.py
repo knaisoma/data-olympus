@@ -336,11 +336,21 @@ class Index:
         doc_type: str | None = None,
     ) -> list[SearchHit]:
         """FTS5 search across title, tags, body. Optional tier/category/status/type filters."""
-        safe_query = '"' + query.replace('"', '""') + '"'
+        # Quote each whitespace term individually and OR them together. Quoting
+        # per-term keeps FTS5 from treating dashes/dots/colons inside a term
+        # (e.g. "STD-U-002") as operators, while OR lets multi-word natural-
+        # language queries match on any term (ranked by bm25) instead of
+        # requiring a verbatim phrase. Doubling embedded quotes prevents a term
+        # from breaking out of its phrase, so user input cannot inject FTS
+        # operators.
+        terms = query.split()
+        if not terms:
+            return []
+        match_query = " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
         conn = self._connect()
         try:
             where = ["fts MATCH ?"]
-            params: list[object] = [safe_query]
+            params: list[object] = [match_query]
             if tier:
                 where.append("docs.tier = ?")
                 params.append(tier)
