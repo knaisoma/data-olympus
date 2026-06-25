@@ -26,6 +26,29 @@ benchmark reports that plainly. A benchmark that only ever flatters the tool is
 worthless for the decision the operator actually wants to make ("is this worth
 asking people to adopt").
 
+## 1.1 Scope: two sequenced parts
+
+A code audit during planning found that the `status`-aware retrieval this
+benchmark relies on **is not implemented**. The served FTS index
+(`src/data_olympus/index.py`) stores only `tier` and `category` (the latter
+derived from path), not `status` or `type`; `Index.search()` cannot filter on
+`status`/`type`; and the indexer's parser (`parse_file`, `ParsedDoc` in
+`markdown_parse.py`) never extracts those fields. Yet `README.md` and
+`docs/comparison.md` both advertise "filter by status / tier / type". The claim
+is false at the code level today.
+
+The work therefore splits into two sequenced parts, each producing working,
+tested software on its own:
+
+- **Part A (prerequisite): status/type retrieval filtering.** Make the
+  documented capability real: parse `status`/`type`, index them, add filter
+  parameters to `search()` and the `kb_search` MCP tool, surface them in
+  responses, and correct the two docs. Covered by §4a; planned and executed
+  before Part B.
+- **Part B: the retrieval benchmark.** Everything else in this document. Its
+  `data-olympus` method depends on Part A's `status` filter, so Part B is
+  planned against Part A's landed API, not a speculative one.
+
 ## 2. Non-goals
 
 - **Not an end-to-end answer-quality benchmark.** We measure retrieval payloads
@@ -66,9 +89,10 @@ tokenize and what we score for correctness. Five methods:
 
 - **`data-olympus`** (the selective-loading pattern under test). Realistic hook
   usage: load the directory `outline` once as a cheap session map, then call the
-  real `kb_search` with a `status: active` filter, then `kb_get` the top-ranked
-  concept. Payload = outline + top-N search snippets + the one retrieved concept
-  body. Uses the actual `src/` search backend, not a reimplementation.
+  real `kb_search` with a `status: active` filter (the filter built in Part A,
+  see §4a), then `kb_get` the top-ranked concept. Payload = outline + top-N
+  search snippets + the one retrieved concept body. Uses the actual `src/`
+  search backend, not a reimplementation.
 - **`whole-bundle-dump`**. The entire corpus concatenated into context. The "put
   it all in AGENTS.md / the system prompt" baseline. Zero dependencies.
 - **`grep-read-files`**. Keyword grep over the corpus, then read each whole
@@ -87,6 +111,40 @@ tokenize and what we score for correctness. Five methods:
 - Chunk size / overlap for the two chunked methods: **512 tokens / 64 overlap**.
 - `grep-read-files`: case-insensitive match on the query's content terms; all
   matched files included (no cap), to model the naive worst case honestly.
+
+## 4a. Part A prerequisite: status/type retrieval filtering
+
+Make the documented "filter by status / tier / type" capability real. Without
+it, the `data-olympus` method cannot avoid superseded concepts and the staleness
+differentiator is unmeasurable. The change threads through six layers:
+
+- **Parser** (`markdown_parse.py`): add `status` and `doc_type` fields to
+  `ParsedDoc`; populate them from frontmatter in `parse_file`. (`doc_type` not
+  `type`, to avoid shadowing the Python builtin; it carries the `type`
+  frontmatter value.)
+- **Index schema** (`index.py`): add `status TEXT` and `type TEXT` columns to the
+  `docs` table; bump `_SCHEMA_VERSION` to `"4"`.
+- **Build** (`index.py:build`): write `doc.status` and `doc.doc_type` into the
+  new columns.
+- **Search** (`index.py:search`): add optional `status: str | None` and
+  `doc_type: str | None` parameters; append `docs.status = ?` /
+  `docs.type = ?` WHERE clauses when provided.
+- **MCP tool** (`tools_read.py:kb_search_fn`): add `status` and `doc_type`
+  pass-through parameters.
+- **Responses** (`models.py`, `index.py`): add `status` and `type` to
+  `SearchHitModel`, `GetResponse`, and `IndexedDoc`, so the capability is
+  "queryable without post-processing" as the README claims, and visible in
+  results.
+
+Doc corrections in the same part:
+
+- `README.md:13` and `docs/comparison.md:15`: keep the "filter by
+  status/tier/type" claim (now true), and the benchmark, once Part B lands,
+  cites the measured staleness result next to it.
+
+Existing-test impact to fix in Part A: `tests/test_index.py`
+`test_index_records_schema_version` asserts the version is `"3"`; update to
+`"4"`. No doc-count assertions change (new columns, no new rows).
 
 ## 5. Corpus design
 
@@ -203,6 +261,15 @@ mandatory; the headline aggregate alone hides the losing cases).
 
 ## 11. Acceptance criteria
 
+**Part A (prerequisite):**
+- `parse_file` extracts `status` and `type`; the index has `status`/`type`
+  columns; `Index.search()` filters on both; `kb_search` exposes them; responses
+  include them.
+- `kb lint` and the full existing test suite pass (with the schema-version
+  assertion updated to `"4"`).
+- New tests prove status/type filtering returns only matching concepts.
+
+**Part B (benchmark):**
 - Harness runs offline (zero-dep methods) with one documented command and emits
   the per-category results table + token curve.
 - Corpus is lint-clean, ~250 concepts, with the pre-registered supersession
