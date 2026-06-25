@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from data_olympus.format import lint_bundle
+from data_olympus.format import discover_bundle_files, lint_bundle
+from data_olympus.format.validate import RESERVED
 
 
 def test_lint_bundle_reports_only_nonconformant_files(tmp_path: Path):
@@ -132,3 +133,84 @@ def test_lint_bundle_archive_and_github_zero_findings_combined(tmp_path: Path):
     for path in results:
         for part in path.parts:
             assert part not in skipped_dirs, f"Unexpected finding under skipped dir: {path}"
+
+
+# ---------------------------------------------------------------------------
+# File discovery (the count that proves the gate actually linted something)
+# ---------------------------------------------------------------------------
+
+
+def _repo_example_bundle() -> Path:
+    """The shipped example-bundle that the CI dogfood step lints."""
+    return Path(__file__).resolve().parents[1] / "example-bundle"
+
+
+def test_discover_bundle_files_returns_every_concept_file(tmp_path: Path):
+    (tmp_path / "a.md").write_text(_GOOD_FM, encoding="utf-8")
+    nested = tmp_path / "universal" / "foundation"
+    nested.mkdir(parents=True)
+    (nested / "b.md").write_text(_GOOD_FM, encoding="utf-8")
+
+    files = discover_bundle_files(tmp_path)
+
+    assert set(files) == {tmp_path / "a.md", nested / "b.md"}
+
+
+def test_discover_bundle_files_applies_skip_logic(tmp_path: Path):
+    (tmp_path / "keep.md").write_text(_GOOD_FM, encoding="utf-8")
+    (tmp_path / "README.md").write_text(_GOOD_FM, encoding="utf-8")  # root meta -> skipped
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    (archive / "old.md").write_text(_GOOD_FM, encoding="utf-8")  # skip dir
+
+    assert discover_bundle_files(tmp_path) == [tmp_path / "keep.md"]
+
+
+def test_discover_bundle_files_empty_when_nothing_to_lint(tmp_path: Path):
+    # Files exist on disk but every one is skipped: discovery must report zero
+    # so the CLI can fail instead of false-greening.
+    (tmp_path / "README.md").write_text(_GOOD_FM, encoding="utf-8")
+    gh = tmp_path / ".github"
+    gh.mkdir()
+    (gh / "CODEOWNERS.md").write_text(_GOOD_FM, encoding="utf-8")
+
+    assert discover_bundle_files(tmp_path) == []
+
+
+def test_discover_bundle_files_excludes_reserved_files(tmp_path: Path):
+    # Reserved files are exempt from the concept schema and can never produce a
+    # finding, so they must not be counted as lintable; a concept doc beside
+    # them must still be discovered.
+    (tmp_path / "index.md").write_text("# generated index\n", encoding="utf-8")
+    (tmp_path / "log.md").write_text("# log\n", encoding="utf-8")
+    (tmp_path / "STD-A.md").write_text(_GOOD_FM, encoding="utf-8")
+
+    assert discover_bundle_files(tmp_path) == [tmp_path / "STD-A.md"]
+
+
+def test_example_bundle_discovery_matches_concept_files():
+    """Regression for the false-green CI gate: linting the shipped example-bundle
+    must discover every concept file and nothing reserved. The bundle has no
+    skip-dirs and no root-meta files, so discovery == all '*.md' minus reserved
+    names. If the skip/path logic ever silently swallows the subtree, the count
+    drops to zero and this fails loudly instead of passing as '0 errors across
+    0 files'.
+    """
+    bundle = _repo_example_bundle()
+    files = discover_bundle_files(bundle)
+    expected = [p for p in sorted(bundle.rglob("*.md")) if p.name not in RESERVED]
+
+    assert files == expected
+    assert len(files) > 0, "example-bundle discovery matched zero concept files"
+    assert all(p.name not in RESERVED for p in files)
+
+
+def test_example_bundle_is_conformant():
+    """The shipped example-bundle must stay schema-conformant (zero error-severity
+    findings) so the dogfood gate is green for the right reason, not because the
+    walk found nothing.
+    """
+    bundle = _repo_example_bundle()
+    results = lint_bundle(bundle)
+    errors = [f for findings in results.values() for f in findings if f.severity == "error"]
+    assert errors == [], f"example-bundle is not conformant: {errors}"

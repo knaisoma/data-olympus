@@ -74,14 +74,18 @@ and is described in `SPEC.md`, but you can adapt it to your context.
 uv run data-olympus lint <your-bundle-dir>
 ```
 
-Expected output when the bundle is conformant:
+Expected output when the bundle is conformant (the trailing count is how many
+concept files were linted; `N` is the number of concept docs in your bundle):
 
 ```
-0 errors across 0 files
+0 errors across 0 files (N linted)
 ```
 
 The linter checks required frontmatter fields, controlled-vocabulary values,
 and reserved-file constraints. Fix any reported errors before proceeding.
+`lint` exits non-zero when it finds no concept files to lint (for example, an
+empty or mis-pathed bundle), so a clean pass always means real files were
+checked.
 
 ## 4. Generate navigation and graph
 
