@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from benchmarks.governance_corpus import generate_governance_corpus
 from data_olympus.index import Index
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_corpus_is_deterministic(tmp_path: Path) -> None:

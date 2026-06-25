@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from benchmarks.governance_corpus import generate_governance_corpus
 from benchmarks.governance_queries import build_governance_queries
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_covers_all_strata(tmp_path: Path) -> None:
