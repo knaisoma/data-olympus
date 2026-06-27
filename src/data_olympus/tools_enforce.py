@@ -11,6 +11,7 @@ from data_olympus.models import (
     ComplianceResponse,
     ConsultResponse,
     GateCheckResponse,
+    RecordEventResponse,
 )
 from data_olympus.tools_read import kb_search_fn
 
@@ -125,3 +126,29 @@ def kb_compliance_fn(
         bucket = by_agent.setdefault(who, {})
         bucket[et] = bucket.get(et, 0) + 1
     return ComplianceResponse(counts=counts, by_agent=by_agent)
+
+
+RECORDABLE_EVENT_TYPES = ("gate_bypass", "gate_degraded")
+
+
+def kb_record_event_fn(
+    *,
+    audit_log: AuditLog,
+    event_type: str,
+    workspace: str,
+    agent_identity: str,
+    source_session: str,
+    reason: str,
+    now: float,
+) -> RecordEventResponse:
+    """Append a client-reported enforcement event (gate_bypass / gate_degraded)
+    to the audit log. Rejects any other event type so clients cannot forge
+    consult/gate_allow/gate_block rows."""
+    if event_type not in RECORDABLE_EVENT_TYPES:
+        raise ValueError(f"event_type must be one of {RECORDABLE_EVENT_TYPES}")
+    audit_log.append({
+        "ts": now, "event_type": event_type, "status": event_type,
+        "agent_identity": agent_identity, "source_session": source_session,
+        "target_path": workspace, "reason": reason,
+    })
+    return RecordEventResponse(recorded=True, event_type=event_type)

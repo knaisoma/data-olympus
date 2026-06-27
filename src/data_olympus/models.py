@@ -212,6 +212,13 @@ class ComplianceResponse(BaseModel):
     by_agent: dict[str, dict[str, int]] = {}
 
 
+class RecordEventResponse(BaseModel):
+    """kb_record_event response."""
+
+    recorded: bool
+    event_type: str
+
+
 class RenameCandidateModel(BaseModel):
     target_tier: str
     target_workspace: str

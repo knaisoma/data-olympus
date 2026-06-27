@@ -90,6 +90,7 @@ def build_app(
     worktree_idle_sec: int = 3600,
     git_key_path: str = "/tmp/git-key",
     auth_token: str = "",
+    ledger_path: str | None = None,
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
 
@@ -121,7 +122,8 @@ def build_app(
     config = Config(**config_kwargs)  # type: ignore[arg-type]
     idx = Index(kb_index_path)
     git = GitOps(kb_main_path)
-    state = ServerState(idx=idx, git=git, config=config)
+    ledger = ConsultationLedger(path=ledger_path)
+    state = ServerState(idx=idx, git=git, config=config, ledger=ledger)
 
     if config.kb_remote_url:
         worktrees = WorktreeRegistry(git=git, worktree_root=config.worktree_root)
@@ -402,6 +404,26 @@ def build_app(
         resp = kb_compliance_fn(audit_log=state.audit_log, since=since, agent=agent)
         return resp.model_dump()
 
+    @app.tool()
+    def kb_record_event(
+        event_type: str, workspace: str, agent_identity: str,
+        source_session: str, reason: str = "",
+    ) -> dict[str, object]:
+        """Record a gate_bypass or gate_degraded enforcement event in the audit."""
+        if state.audit_log is None:
+            return {"recorded": False, "event_type": event_type}
+        import time as _time
+
+        from data_olympus.tools_enforce import kb_record_event_fn
+        try:
+            resp = kb_record_event_fn(
+                audit_log=state.audit_log, event_type=event_type,
+                workspace=workspace, agent_identity=agent_identity,
+                source_session=source_session, reason=reason, now=_time.time())
+        except ValueError as e:
+            return {"recorded": False, "error": str(e)}
+        return resp.model_dump()
+
     from data_olympus.rest_api import register_routes
     register_routes(app, state, auth_token=auth_token)
     # Attach state for lifespan to discover; not used by tests
@@ -437,6 +459,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         worktree_idle_sec=config.worktree_idle_sec,
         git_key_path=config.git_key_path,
         auth_token=config.auth_token,
+        ledger_path=config.ledger_path,
     )
 
 
