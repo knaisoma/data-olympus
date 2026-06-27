@@ -234,6 +234,50 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
                           agent=agent, status=status_filter, limit=limit)
         return JSONResponse(resp.model_dump())
 
+    @app.custom_route("/api/v1/consult", methods=["POST"])
+    async def consult(request: Request) -> JSONResponse:
+        import time as _time
+
+        from data_olympus.tools_enforce import kb_consult_fn
+        body = await request.json()
+        resp = kb_consult_fn(
+            idx=state.idx, classifier=state.classifier, ledger=state.ledger,
+            workspace=body["workspace"], intent=body.get("intent", ""),
+            source_session=body["source_session"],
+            agent_identity=body.get("agent_identity", "unknown"),
+            ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
+            audit_log=state.audit_log,
+        )
+        return JSONResponse(resp.model_dump())
+
+    @app.custom_route("/api/v1/gate/check", methods=["POST"])
+    async def gate_check(request: Request) -> JSONResponse:
+        import time as _time
+
+        from data_olympus.tools_enforce import kb_gate_check_fn
+        body = await request.json()
+        resp = kb_gate_check_fn(
+            classifier=state.classifier, ledger=state.ledger,
+            workspace=body["workspace"], session_id=body["session_id"],
+            tool_name=body.get("tool_name", ""),
+            action_path=body.get("action_path"),
+            action_diff=body.get("action_diff", ""),
+            now=_time.time(), ttl_sec=state.config.consult_ttl_sec,
+            audit_log=state.audit_log,
+        )
+        return JSONResponse(resp.model_dump())
+
+    @app.custom_route("/api/v1/compliance", methods=["GET"])
+    async def compliance(request: Request) -> JSONResponse:
+        if state.audit_log is None:
+            return JSONResponse({"counts": {}, "by_agent": {}})
+        from data_olympus.tools_enforce import kb_compliance_fn
+        qp = request.query_params
+        since = float(qp["since"]) if qp.get("since") else None
+        agent = qp.get("agent")
+        resp = kb_compliance_fn(audit_log=state.audit_log, since=since, agent=agent)
+        return JSONResponse(resp.model_dump())
+
     @app.custom_route("/api/v1/onboarding/status", methods=["GET"])
     async def onboarding_status(request: Request) -> JSONResponse:
         from data_olympus.tools_onboarding import kb_onboarding_status_fn
