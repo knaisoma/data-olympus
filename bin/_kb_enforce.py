@@ -322,6 +322,40 @@ class InstructionsProvider:
         return 0 if ok else 1
 
 
+class UnsupportedProvider:
+    """A documented-unsupported provider stub. The agent has no local hook,
+    instructions, or MCP surface we can wire, so install/uninstall/doctor report
+    the reason to stderr and exit non-zero (69 == EX_UNAVAILABLE); status reports
+    unsupported but exits 0 (querying state is not itself a failure).
+    """
+
+    tier = "unsupported"
+
+    def __init__(self, name: str, reason: str) -> None:
+        self.name = name
+        self._reason = reason
+
+    def default_target(self) -> Path:
+        return Path("/dev/null")
+
+    def _report(self) -> int:
+        print(f"{self.name}: unsupported -- {self._reason}", file=sys.stderr)
+        return 69  # EX_UNAVAILABLE
+
+    def install(self, _target: Path) -> int:
+        return self._report()
+
+    def uninstall(self, _target: Path) -> int:
+        return self._report()
+
+    def status(self, _target: Path) -> int:
+        print(f"{self.name}: unsupported -- {self._reason}")
+        return 0
+
+    def doctor(self, _target: Path) -> int:
+        return self._report()
+
+
 def registry() -> dict:
     return {
         "claude-code": _claude_provider(),
@@ -338,6 +372,10 @@ def registry() -> dict:
             "copilot-cli", Path(os.path.expanduser("~/.copilot/copilot-instructions.md"))),
         "copilot-ide": InstructionsProvider(
             "copilot-ide", Path(".github/copilot-instructions.md")),
+        "antigravity": UnsupportedProvider(
+            "antigravity",
+            "no documented local hook/instructions/MCP surface as of 2026-06; "
+            "revisit when Google publishes an extensibility API"),
     }
 
 
