@@ -1,6 +1,8 @@
 """ConsultationLedger optional JSON-file persistence."""
 from __future__ import annotations
 
+import json
+
 from data_olympus.enforce_policy import ConsultationLedger
 
 
@@ -24,3 +26,17 @@ def test_corrupt_file_degrades_to_empty(tmp_path) -> None:
     path.write_text("{ not json")
     led = ConsultationLedger(path=str(path))  # must not crash
     assert led.is_fresh(session_id="s", workspace="w", now=1.0, ttl_sec=300) is False
+
+
+def test_writes_are_atomic_and_leave_no_temp(tmp_path) -> None:
+    path = tmp_path / "ledger.json"
+    led = ConsultationLedger(path=str(path))
+    for i in range(5):
+        led.record(session_id=f"s{i}", workspace="proj", rule_ids=[f"R{i}"], now=float(i))
+    # File is valid JSON and reloads correctly via a fresh ledger.
+    json.loads(path.read_text())
+    led2 = ConsultationLedger(path=str(path))
+    for i in range(5):
+        assert led2.is_fresh(session_id=f"s{i}", workspace="proj", now=float(i), ttl_sec=300)
+    # No leftover temp file from the atomic write dance.
+    assert not list(tmp_path.glob(".ledger-*.tmp"))

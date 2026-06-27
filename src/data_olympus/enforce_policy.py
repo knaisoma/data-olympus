@@ -3,11 +3,13 @@ in-memory consultation ledger. Pure and dependency-free so it is unit-testable
 without a FastMCP server."""
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import json
 import logging
 import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 
 # Keyword signals that a user prompt is a governed code/architectural decision.
@@ -146,9 +148,20 @@ class ConsultationLedger:
              "consulted_at": e.consulted_at, "rule_ids": e.rule_ids}
             for (s, w), e in self._entries.items()
         ]
-        os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
-        with open(self._path, "w", encoding="utf-8") as f:
-            json.dump(rows, f)
+        d = os.path.dirname(self._path) or "."
+        os.makedirs(d, exist_ok=True)
+        # Atomic write: serialize to a temp file in the same directory, then
+        # os.replace() over the target so a crash/full-disk mid-write cannot
+        # truncate or corrupt the existing ledger.
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".ledger-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(rows, f)
+            os.replace(tmp, self._path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
 
     def record(
         self, *, session_id: str, workspace: str, rule_ids: list[str], now: float
