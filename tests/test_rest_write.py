@@ -76,6 +76,81 @@ async def test_rest_propose_edit_rejects_traversal(http_app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rest_propose_edit_missing_base_commit_returns_400(http_app) -> None:
+    """A missing required field must yield a clean 400, never a 500/KeyError.
+
+    Regression: the handler accessed body["base_commit"] directly, so a body
+    without it raised KeyError -> HTTP 500 with a plain-text "Internal Server
+    Error" that the kb CLI then fed to jq, aborting with a parse error.
+    """
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/propose/edit",
+            json={
+                "target_path": "universal/foundation/STD-U-001.md",
+                "postimage": "x",
+                # base_commit intentionally omitted
+                "reason": "test", "source_session": "s",
+                "agent_identity": "claude", "confidence": 0.9,
+            },
+        )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert "base_commit" in f"{body.get('error', '')} {body.get('message', '')}"
+
+
+@pytest.mark.asyncio
+async def test_rest_propose_edit_null_base_commit_returns_400(http_app) -> None:
+    """An explicit JSON null for a required field is treated as missing -> 400,
+    not passed through as None (which would crash deeper in the write path)."""
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/propose/edit",
+            json={"target_path": "universal/foundation/STD-U-001.md",
+                  "postimage": "x", "base_commit": None,
+                  "reason": "t", "source_session": "s",
+                  "agent_identity": "claude", "confidence": 0.9},
+        )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert "base_commit" in f"{body.get('error', '')} {body.get('message', '')}"
+
+
+@pytest.mark.asyncio
+async def test_rest_propose_edit_non_numeric_confidence_returns_400(http_app) -> None:
+    """A non-numeric confidence yields a clean 400, not a 500 from float()."""
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/propose/edit",
+            json={"target_path": "universal/foundation/STD-U-001.md",
+                  "postimage": "x", "base_commit": "HEAD",
+                  "reason": "t", "source_session": "s",
+                  "agent_identity": "claude", "confidence": "high"},
+        )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert "confidence" in f"{body.get('error', '')} {body.get('message', '')}"
+
+
+@pytest.mark.asyncio
+async def test_rest_propose_memory_missing_text_returns_400(http_app) -> None:
+    """propose/memory must also 400 (not 500) on a missing required field."""
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/propose/memory",
+            json={"tags": [], "source_session": "s",
+                  "agent_identity": "claude", "confidence": 0.9},
+        )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert "text" in f"{body.get('error', '')} {body.get('message', '')}"
+
+
+@pytest.mark.asyncio
 async def test_rest_list_pending_returns_entries(http_app) -> None:
     transport = httpx.ASGITransport(app=http_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

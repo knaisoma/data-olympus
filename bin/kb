@@ -110,9 +110,13 @@ do_curl_post() {
   if [[ -n "$KB_AUTH_TOKEN" ]]; then
     auth_k_arg=(-K <(printf 'header = "Authorization: Bearer %s"\n' "$KB_AUTH_TOKEN"))
   fi
+  # NOTE: expand auth_k_arg with the ${arr[@]+"${arr[@]}"} idiom, not a bare
+  # "${arr[@]}". Under `set -u`, expanding an EMPTY array as "${arr[@]}" aborts
+  # with "unbound variable" on bash < 4.4 (incl. macOS's system bash 3.2). The
+  # idiom expands to nothing when the array is empty and is safe on all bashes.
   if REST_STATUS=$(curl --silent --max-time 10 \
       -H "Content-Type: application/json" \
-      "${auth_k_arg[@]}" \
+      ${auth_k_arg[@]+"${auth_k_arg[@]}"} \
       --data "$body" \
       --output "$tmpfile" --write-out "%{http_code}" \
       -X POST "$url" 2>/dev/null); then
@@ -122,6 +126,23 @@ do_curl_post() {
   fi
   rm -f "$tmpfile"
   return 1
+}
+
+# Helper: fetch the KB's current commit from /api/v1/health, to use as the
+# base_commit of an edit proposal. Echoes the sha on success, empty on failure.
+# Writes never fall back to another endpoint, so this targets the primary
+# $KB_ENDPOINT only (consistent with the rest of the write path). Defined here,
+# before the write-subcommand dispatch, because the GET-side do_curl helper is
+# defined later in the file and is not yet available when cmd_propose_edit runs.
+kb_fetch_base_commit() {
+  local tmpfile sha=""
+  tmpfile=$(mktemp)
+  if curl --silent --max-time 10 --output "$tmpfile" \
+       "$KB_ENDPOINT/api/v1/health" 2>/dev/null; then
+    sha=$(jq -r '.kb_commit // ""' < "$tmpfile" 2>/dev/null) || sha=""
+  fi
+  rm -f "$tmpfile"
+  printf '%s' "$sha"
 }
 
 # Helper: interactive resolve flow per spec §2.5. Prompts the operator for
@@ -180,6 +201,15 @@ interactive_resolve() {
 # propose edit since the response schema is identical.
 handle_propose_response() {
   local non_interactive="$1"
+  # Guard: the response must be a JSON OBJECT. A plain-text 5xx ("Internal
+  # Server Error"), an empty body, or any non-object JSON would otherwise be
+  # piped to jq below and abort the script with an opaque "jq: parse error".
+  # Surface a clean, actionable diagnostic with the HTTP status and raw body
+  # instead. (Valid object bodies, including 4xx rejected_* responses, pass.)
+  if ! echo "$REST_BODY" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    echo "kb: server error ${REST_STATUS:-?}: ${REST_BODY:-<empty response>}" >&2
+    exit 1
+  fi
   local status pid proposal
   status=$(echo "$REST_BODY" | jq -r '.status // ""')
   case "$status" in
@@ -260,15 +290,29 @@ cmd_propose_edit() {
   [[ -r "$postfile" ]] || { echo "kb: cannot read postimage file: $postfile" >&2; exit 64; }
   local postimage
   postimage=$(cat "$postfile")
+  # The server REQUIRES base_commit on /api/v1/propose/edit. We send the KB's
+  # current commit (from /api/v1/health). NOTE: this is the server's HEAD at
+  # submit time, not necessarily the commit the postimage was diffed against;
+  # the server stores it but does not yet enforce a stale-edit (CAS) check on
+  # resolve, so this satisfies the contract without guaranteeing conflict
+  # detection. base_blob_sha / target_file_hash are optional server-side (treated
+  # as None when absent), so they are intentionally omitted.
+  local base_commit
+  base_commit=$(kb_fetch_base_commit)
+  if [[ -z "$base_commit" ]]; then
+    echo "kb: could not determine base_commit (GET $KB_ENDPOINT/api/v1/health failed or returned no kb_commit)" >&2
+    exit 1
+  fi
   local body
   body=$(jq -n \
     --arg target "$target" \
     --arg post "$postimage" \
+    --arg base "$base_commit" \
     --arg reason "$reason" \
     --arg session "${USER:-cli}" \
     --arg agent "operator-cli" \
     --arg conf "$confidence" \
-    '{target_path: $target, postimage: $post, reason: $reason, source_session: $session, agent_identity: $agent, confidence: ($conf | tonumber)}')
+    '{target_path: $target, postimage: $post, base_commit: $base, reason: $reason, source_session: $session, agent_identity: $agent, confidence: ($conf | tonumber)}')
   if ! do_curl_post "$KB_ENDPOINT/api/v1/propose/edit" "$body"; then
     echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2; exit 1
   fi

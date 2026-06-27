@@ -4,7 +4,11 @@
 # routes (propose/resolve) and the new GET routes (pending/audit).
 
 setup_file() {
-  REPO_ROOT="$(cd "$(dirname "${BATS_TEST_FILENAME}")/../../.." && pwd)"
+  # tests/ sits ONE level below the repo root in this repo, so the root is the
+  # parent of the bats file's directory. (The original `../../..` was carried
+  # over from the company-knowledge layout where these lived under
+  # tools/data-olympus-mcp/tests/, and resolved to $HOME here.)
+  REPO_ROOT="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)"
   export REPO_ROOT
   export FIXTURE_DIR="${BATS_TEST_FILENAME%/*}/cli-fixtures"
   export KB="${REPO_ROOT}/bin/kb"
@@ -59,6 +63,35 @@ teardown() {
 @test "kb propose edit missing postimage-file errors" {
   run "$KB" propose edit "universal/foundation/STD-U-001.md" --non-interactive
   [ "$status" -eq 64 ]
+}
+
+@test "kb propose edit sends base_commit (strict mock rejects absent OR wrong value)" {
+  # The mock 400s with rejected_missing_base_commit when base_commit is absent,
+  # and rejected_wrong_base_commit when it != the health commit "abc1234". A
+  # 'Committed' result therefore proves the CLI fetched /api/v1/health and sent
+  # that exact commit as base_commit (guards both presence AND value).
+  tmpfile=$(mktemp -t kb-bats-edit.XXXXXX)
+  echo "edited content" > "$tmpfile"
+  run "$KB" propose edit "universal/foundation/STD-U-001.md" \
+    --postimage-file "$tmpfile" --confidence 0.95 --non-interactive
+  rm -f "$tmpfile"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Committed"* ]]
+  [[ "$output" != *"rejected_missing_base_commit"* ]]
+}
+
+@test "kb propose edit surfaces a non-JSON server error cleanly (no jq crash)" {
+  # Sentinel target makes the mock return a plain-text HTTP 500. The CLI must
+  # print a clean 'server error' diagnostic and exit non-zero, NOT abort by
+  # piping the non-JSON body into jq (the original 'jq: parse error' failure).
+  tmpfile=$(mktemp -t kb-bats-edit.XXXXXX)
+  echo "edited content" > "$tmpfile"
+  run "$KB" propose edit "trigger/server-error.md" \
+    --postimage-file "$tmpfile" --confidence 0.95 --non-interactive
+  rm -f "$tmpfile"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"server error"* ]]
+  [[ "$output" != *"parse error"* ]]
 }
 
 @test "kb resolve approve" {

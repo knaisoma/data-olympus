@@ -5,7 +5,10 @@
 #   state="absent"    for any other workspace
 
 setup_file() {
-  REPO_ROOT="$(cd "$(dirname "${BATS_TEST_FILENAME}")/../../.." && pwd)"
+  # This file lives at tests/bats/, two levels below the repo root, so the root
+  # is dir/../.. (the original `../../..` resolved outside the repo; see the
+  # note in tests/test_kb_cli_write.bats).
+  REPO_ROOT="$(cd "$(dirname "${BATS_TEST_FILENAME}")/../.." && pwd)"
   export REPO_ROOT
   export FIXTURE_DIR="${BATS_TEST_FILENAME%/*}/../cli-fixtures"
   export KB="${REPO_ROOT}/bin/kb"
