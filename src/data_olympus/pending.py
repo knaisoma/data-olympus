@@ -1,6 +1,6 @@
 """Pending queue: full postimage + CAS metadata + same-path lock.
 
-Per spec §2.5 rev 2: low-confidence proposals enter the pending queue rather
+Low-confidence proposals enter the pending queue rather
 than committing immediately. The operator approves or rejects (or edits the
 text and approves). On approve, the resolved record carries enough metadata
 for the caller to commit it cleanly through the audit-trailer pipeline.

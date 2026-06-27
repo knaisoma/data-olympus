@@ -120,7 +120,7 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
     @app.custom_route("/api/v1/health", methods=["GET"])
     async def health(_request: Request) -> JSONResponse:
         resp = _build_health(state)
-        # Per spec §2.6 + §2.7: degraded health responses MUST return 503 so the
+        # Degraded health responses MUST return 503 so the
         # CLI's --no-stale contract (exit 2 on HTTP 200 or 503 degraded) is meaningful.
         status = 503 if resp.degraded else 200
         return JSONResponse(resp.model_dump(), status_code=status)

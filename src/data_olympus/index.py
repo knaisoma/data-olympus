@@ -59,7 +59,15 @@ _FTS_MATCH_COLUMNS: tuple[str, ...] = ("title", "tags", "applies_when", "descrip
 # Title and applies_when are weighted highest; body lowest. Tune in D2.
 _DEFAULT_BM25_WEIGHTS: tuple[float, ...] = (0.0, 10.0, 5.0, 10.0, 4.0, 1.0)
 
-_PATH_RULES: tuple[tuple[str, str, str], ...] = (
+# Generic, deployment-neutral default taxonomy. A deployment with a different
+# directory layout supplies its own table at runtime via KB_TAXONOMY_PATH (a
+# JSON file holding a list of [prefix, tier, category] triples). The two
+# prefixes "tech-stacks/" and "projects/" are classified dynamically (see
+# _classify_by_path), so any stack or project name is covered without an
+# enumerated allow-list.
+# NOTE: bin/_kb_fallback.py mirrors this default and the same KB_TAXONOMY_PATH
+# loader. If you change one, change the other.
+_DEFAULT_PATH_RULES: tuple[tuple[str, str, str], ...] = (
     # T1 Universal, applies to every project, every stack.
     ("universal/foundation/",       "T1", "foundation"),
     ("universal/quality/",          "T1", "quality"),
@@ -69,30 +77,44 @@ _PATH_RULES: tuple[tuple[str, str, str], ...] = (
     ("universal/api/",              "T1", "api"),
     ("universal/services/",         "T1", "services"),
 
-    # T2 Stack-specific, applies only when a project uses this stack.
-    ("tech-stacks/backend-nestjs/",    "T2", "stack:backend-nestjs"),
-    ("tech-stacks/backend-fastify/",   "T2", "stack:backend-fastify"),
-    ("tech-stacks/frontend-react/",    "T2", "stack:frontend-react"),
-    ("tech-stacks/frontend-flutter/",  "T2", "stack:frontend-flutter"),
-    ("tech-stacks/project-setup/",     "T2", "stack:project-setup"),
+    # T2 Stack-specific, classified dynamically: tech-stacks/<stack>/...
+    ("tech-stacks/",                 "T2", "stack"),
 
-    # Meta tiers (unchanged semantics, kept distinct from T1-T4).
+    # Meta tiers (kept distinct from T1-T4).
     ("decisions/",                   "decisions", "decisions"),
     ("workflows/",                   "workflows", "workflows"),
-    ("operator/agent-overrides/",    "operator",  "agent-overrides"),
-    ("operator/memory/inbox/",       "operator",  "memory-inbox"),
-    ("operator/memory/accepted/",    "operator",  "memory-accepted"),
-    ("operator/",                    "operator",  "operator"),
+    ("memory/inbox/",                "memory",    "memory-inbox"),
+    ("memory/accepted/",             "memory",    "memory-accepted"),
+    ("memory/",                      "memory",    "memory"),
     ("tooling/",                     "tooling",   "tooling"),
-    ("audits/",                      "audits",    "audits"),
-    ("plans/",                       "plans",     "plans"),
-    ("workforce/",                   "workforce", "workforce"),
     ("templates/",                   "templates", "templates"),
 
     # T3 / T4 catch-all (project tree). The classifier post-processes
     # this hit; see _classify_by_path for the T3 vs T4 distinction.
     ("projects/",                    "T3", "project"),
 )
+
+
+def _load_path_rules() -> tuple[tuple[str, str, str], ...]:
+    """Return the active taxonomy: KB_TAXONOMY_PATH JSON if set, else default.
+
+    The JSON must be a list of ``[prefix, tier, category]`` triples. A malformed
+    file raises ValueError rather than silently misclassifying every document.
+    """
+    path = os.environ.get("KB_TAXONOMY_PATH", "").strip()
+    if not path:
+        return _DEFAULT_PATH_RULES
+    import json
+    from pathlib import Path as _Path
+    data = json.loads(_Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, list) or not all(
+        isinstance(r, (list, tuple)) and len(r) == 3 for r in data
+    ):
+        raise ValueError(
+            f"KB_TAXONOMY_PATH={path!r} must be a JSON list of "
+            f"[prefix, tier, category] triples"
+        )
+    return tuple((str(r[0]), str(r[1]), str(r[2])) for r in data)
 
 
 _EXCLUDED_DIR_NAMES: frozenset[str] = frozenset({
@@ -114,15 +136,23 @@ def _is_excluded(rel_path: Path) -> bool:
     return any(part in _EXCLUDED_DIR_NAMES for part in rel_path.parts)
 
 
-def _classify_by_path(rel_path: str) -> tuple[str, str]:
+def _classify_by_path(
+    rel_path: str,
+    rules: tuple[tuple[str, str, str], ...] | None = None,
+) -> tuple[str, str]:
     """Return (tier, category) inferred from the relative path.
 
-    Returns ('meta', 'meta') if no rule matches.
+    Returns ('meta', 'meta') if no rule matches. ``rules`` defaults to the
+    active taxonomy (KB_TAXONOMY_PATH or the built-in default); the indexer
+    loads it once and passes it in to avoid re-reading per document.
     Within projects/, distinguishes T4 component paths from T3 project paths
     by looking for the literal 'components' segment after the project name.
+    tech-stacks/<stack>/... is classified dynamically as stack:<stack>.
     """
+    if rules is None:
+        rules = _load_path_rules()
     norm = rel_path.replace("\\", "/")
-    for prefix, tier, category in _PATH_RULES:
+    for prefix, tier, category in rules:
         if norm.startswith(prefix):
             if prefix == "projects/":
                 parts = norm.split("/")
@@ -138,6 +168,11 @@ def _classify_by_path(rel_path: str) -> tuple[str, str]:
                     # like projects/example-project/ this is a no-op.
                     name = parts[1].removesuffix(".md")
                     return "T3", f"project:{name}"
+            if prefix == "tech-stacks/":
+                parts = norm.split("/")
+                # tech-stacks/<stack>/<file>... -> stack:<stack>
+                if len(parts) >= 2 and parts[1]:
+                    return tier, f"{category}:{parts[1].removesuffix('.md')}"
             return tier, category
     return "meta", "meta"
 
@@ -201,7 +236,7 @@ def _derive_id_from_path(rel: Path) -> str:
 
     Joins the path parts (without the .md extension) with `-` so:
       AGENTS.md                                 -> AGENTS
-      operator/AGENTS.md                        -> operator-AGENTS
+      tooling/AGENTS.md                         -> tooling-AGENTS
       decisions/index.md                        -> decisions-index
       projects/example-project/coding-agents-preferences/README.md
         -> projects-example-project-coding-agents-preferences-README
@@ -274,11 +309,12 @@ class Index:
         try:
             conn.executescript(_SCHEMA)
             count = 0
+            path_rules = _load_path_rules()
             for md in files_to_index:
                 rel = md.relative_to(kb_root)
                 doc = parse_file(md)
                 doc_id = doc.id or _derive_id_from_path(rel)
-                path_tier, path_category = _classify_by_path(str(rel))
+                path_tier, path_category = _classify_by_path(str(rel), path_rules)
                 final_tier = doc.tier or path_tier
                 final_category = doc.category or path_category
                 tags_str = " ".join(doc.tags)

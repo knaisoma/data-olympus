@@ -91,7 +91,7 @@ format_json() {
 }
 
 # ---------------------------------------------------------------------------
-# Write-side helpers + subcommands (Phase 2C-second). These post to the REST
+# Write-side helpers + subcommands. These post to the REST
 # write endpoints exposed by data-olympus-mcp. They do NOT use the local
 # fallback: write paths must be intentional and synchronous.
 # ---------------------------------------------------------------------------
@@ -147,7 +147,7 @@ kb_fetch_base_commit() {
   printf '%s' "$sha"
 }
 
-# Helper: interactive resolve flow per spec §2.5. Prompts the operator for
+# Helper: interactive resolve flow. Prompts the operator for
 # accept/edit/reject and posts the appropriate /api/v1/resolve/<id> call.
 # Reads /dev/tty so bats and other non-tty harnesses can bypass via
 # --non-interactive. Honors $EDITOR -> $VISUAL -> vi fallback chain.
@@ -524,7 +524,7 @@ cmd_onboard_component() {
   fi
   cat <<EOF
 Interactive onboarding for component '$component' in workspace '$workspace'
-is operator-driven in 2D v1.
+is operator-driven in v1.
 
 Pseudocode:
   1. Read local docs at the component checkout (AGENTS.md, .rules/).
@@ -540,7 +540,7 @@ EOF
 }
 
 # Subcommand: kb onboard rename <from> <to>
-# v1 stub: prints the operator-driven git mv hint; not automated in 2D v1.
+# v1 stub: prints the operator-driven git mv hint; not automated in v1.
 cmd_onboard_rename() {
   local from="${1:-}" to="${2:-}"
   if [[ -z "$from" || -z "$to" ]]; then
@@ -548,7 +548,7 @@ cmd_onboard_rename() {
     exit 64
   fi
   cat <<EOF
-Rename workspace '$from' -> '$to' is operator-driven in 2D v1.
+Rename workspace '$from' -> '$to' is operator-driven in v1.
 
 Pseudocode:
   1. cd <your-kb-repo>
@@ -732,7 +732,7 @@ case "$SUBCMD" in
   health)
     if do_curl "$KB_ENDPOINT/api/v1/health"; then
       # 503 with degraded:true body is the canonical degraded-health response
-      # per spec §2.6. The CLI must NOT treat it as endpoint-unreachable.
+      # A degraded 503 is a valid response. The CLI must NOT treat it as endpoint-unreachable.
       if is_degraded && [[ "$NO_STALE" -eq 1 ]]; then
         echo "kb: REST response degraded:true and --no-stale set" >&2
         exit 2

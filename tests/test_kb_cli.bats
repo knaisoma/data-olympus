@@ -43,7 +43,7 @@ teardown() {
 @test "kb get STD-U-007 -o md prints raw markdown" {
   run "$KB" get STD-U-007 -o md
   [ "$status" -eq 0 ]
-  [[ "$output" == *"PROBLEM / WHY / BETTER APPROACH / BENEFITS"* ]]
+  [[ "$output" == *"Example review standard body."* ]]
   [[ "$output" != *'"content_markdown"'* ]]  # md mode, not json
 }
 

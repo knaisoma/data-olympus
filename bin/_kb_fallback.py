@@ -41,9 +41,9 @@ _EXCLUDED = {".git", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv",
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _LIST_RE = re.compile(r"^\[(.*)\]$")
 
-# Mirror of src/data_olympus/index.py _PATH_RULES.
-# If you update one, update the other. See SPEC.md for the tier model.
-_PATH_RULES: list[tuple[str, str, str]] = [
+# Mirror of src/data_olympus/index.py _DEFAULT_PATH_RULES and its
+# KB_TAXONOMY_PATH loader. If you update one, update the other. See SPEC.md.
+_DEFAULT_PATH_RULES: list[tuple[str, str, str]] = [
     # T1 Universal, applies to every project, every stack.
     ("universal/foundation/",       "T1", "foundation"),
     ("universal/quality/",          "T1", "quality"),
@@ -53,24 +53,16 @@ _PATH_RULES: list[tuple[str, str, str]] = [
     ("universal/api/",              "T1", "api"),
     ("universal/services/",         "T1", "services"),
 
-    # T2 Stack-specific, applies only when a project uses this stack.
-    ("tech-stacks/backend-nestjs/",    "T2", "stack:backend-nestjs"),
-    ("tech-stacks/backend-fastify/",   "T2", "stack:backend-fastify"),
-    ("tech-stacks/frontend-react/",    "T2", "stack:frontend-react"),
-    ("tech-stacks/frontend-flutter/",  "T2", "stack:frontend-flutter"),
-    ("tech-stacks/project-setup/",     "T2", "stack:project-setup"),
+    # T2 Stack-specific, classified dynamically: tech-stacks/<stack>/...
+    ("tech-stacks/",                 "T2", "stack"),
 
-    # Meta tiers (unchanged semantics, kept distinct from T1-T4).
+    # Meta tiers (kept distinct from T1-T4).
     ("decisions/",                   "decisions", "decisions"),
     ("workflows/",                   "workflows", "workflows"),
-    ("operator/agent-overrides/",    "operator",  "agent-overrides"),
-    ("operator/memory/inbox/",       "operator",  "memory-inbox"),
-    ("operator/memory/accepted/",    "operator",  "memory-accepted"),
-    ("operator/",                    "operator",  "operator"),
+    ("memory/inbox/",                "memory",    "memory-inbox"),
+    ("memory/accepted/",             "memory",    "memory-accepted"),
+    ("memory/",                      "memory",    "memory"),
     ("tooling/",                     "tooling",   "tooling"),
-    ("audits/",                      "audits",    "audits"),
-    ("plans/",                       "plans",     "plans"),
-    ("workforce/",                   "workforce", "workforce"),
     ("templates/",                   "templates", "templates"),
 
     # T3 / T4 catch-all (project tree). The classifier post-processes
@@ -79,15 +71,36 @@ _PATH_RULES: list[tuple[str, str, str]] = [
 ]
 
 
+def _load_path_rules() -> list[tuple[str, str, str]]:
+    """Active taxonomy: KB_TAXONOMY_PATH JSON if set, else the default.
+
+    The JSON must be a list of [prefix, tier, category] triples; a malformed
+    file raises ValueError rather than silently misclassifying every document.
+    """
+    path = os.environ.get("KB_TAXONOMY_PATH", "").strip()
+    if not path:
+        return _DEFAULT_PATH_RULES
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, list) or not all(
+        isinstance(r, (list, tuple)) and len(r) == 3 for r in data
+    ):
+        raise ValueError(
+            f"KB_TAXONOMY_PATH={path!r} must be a JSON list of "
+            f"[prefix, tier, category] triples"
+        )
+    return [(str(r[0]), str(r[1]), str(r[2])) for r in data]
+
+
 def _classify(rel: str) -> tuple[str, str]:
     """Return (tier, category) inferred from the relative path.
 
     Returns ('meta', 'meta') if no rule matches.
     Within projects/, distinguishes T4 component paths from T3 project paths
     by looking for the literal 'components' segment after the project name.
+    tech-stacks/<stack>/... is classified dynamically as stack:<stack>.
     """
     norm = rel.replace("\\", "/")
-    for prefix, tier, category in _PATH_RULES:
+    for prefix, tier, category in _load_path_rules():
         if norm.startswith(prefix):
             if prefix == "projects/":
                 parts = norm.split("/")
@@ -103,6 +116,11 @@ def _classify(rel: str) -> tuple[str, str]:
                     # like projects/example-project/ this is a no-op.
                     name = parts[1].removesuffix(".md")
                     return "T3", f"project:{name}"
+            if prefix == "tech-stacks/":
+                parts = norm.split("/")
+                # tech-stacks/<stack>/<file>... -> stack:<stack>
+                if len(parts) >= 2 and parts[1]:
+                    return tier, f"{category}:{parts[1].removesuffix('.md')}"
             return tier, category
     return "meta", "meta"
 

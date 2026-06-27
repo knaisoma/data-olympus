@@ -60,7 +60,7 @@ def test_outline_returns_tier_and_category_counts(tmp_kb: Path, tmp_index_path: 
     # Under tier model v2 the fixture spans all four content tiers plus meta
     # tiers (decisions, workflows, operator, tooling).
     tier_names = {t["name"] for t in outline}
-    expected_tiers = {"T1", "T2", "T3", "T4", "decisions", "workflows", "operator", "tooling"}
+    expected_tiers = {"T1", "T2", "T3", "T4", "decisions", "workflows", "memory", "tooling"}
     assert expected_tiers.issubset(tier_names), (
         f"missing tiers in outline; got {tier_names}, expected superset of {expected_tiers}"
     )
@@ -155,10 +155,10 @@ def test_path_classification_decisions(tmp_kb: Path, tmp_index_path: Path) -> No
     idx.build(tmp_kb, source_commit="x")
     conn = sqlite3.connect(tmp_index_path)
     row = conn.execute(
-        "SELECT tier, category FROM docs WHERE id = 'GDEC-008'"
+        "SELECT tier, category FROM docs WHERE id = 'DEC-001'"
     ).fetchone()
     conn.close()
-    # GDEC-008 has front matter `tier: decisions` already; this verifies path
+    # DEC-001 has front matter `tier: decisions` already; this verifies path
     # derivation doesn't override existing front matter.
     assert row == ("decisions", "decisions")
 
@@ -182,10 +182,10 @@ def test_path_classification_operator_agent_overrides(tmp_kb: Path, tmp_index_pa
     idx.build(tmp_kb, source_commit="x")
     conn = sqlite3.connect(tmp_index_path)
     row = conn.execute(
-        "SELECT tier, category FROM docs WHERE path LIKE 'operator/agent-overrides/%'"
+        "SELECT tier, category FROM docs WHERE path LIKE 'memory/accepted/%'"
     ).fetchone()
     conn.close()
-    assert row == ("operator", "agent-overrides")
+    assert row == ("memory", "memory-accepted")
 
 
 def test_path_classification_tooling(tmp_kb: Path, tmp_index_path: Path) -> None:
@@ -406,7 +406,7 @@ def test_duplicate_id_aborts_build(tmp_path: Path, tmp_index_path: Path) -> None
     assert row == ("ok",), f"previous index must remain; got {row}"
 
 
-# ---- 2C-zero: classification under tier model v2 (GDEC-017) ----
+# ---- classification under the tier model ----
 
 
 def test_classify_universal_foundation() -> None:
@@ -590,8 +590,8 @@ def test_search_multiword_composes_with_status_filter(
 def test_search_or_semantics_matches_any_term(tmp_kb: Path, tmp_index_path: Path) -> None:
     idx = Index(tmp_index_path)
     idx.build(tmp_kb, source_commit="x")
-    # 'worktree' is in STD-U-001/tooling; 'disagreement' is in STD-U-007.
-    hits = idx.search("worktree disagreement", limit=10)
+    # 'worktree' is in STD-U-001/tooling; 'findings' is in STD-U-007.
+    hits = idx.search("worktree findings", limit=10)
     ids = {h.id for h in hits}
     assert "STD-U-001" in ids and "STD-U-007" in ids, f"OR must match either term; got {ids}"
 

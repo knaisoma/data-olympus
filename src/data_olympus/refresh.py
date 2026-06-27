@@ -1,5 +1,5 @@
 """Periodic git pull + index rebuild loop. Runs as an asyncio task inside the
-main server process; no sidecar (single owner of git state per Phase 2 spec §2.2)."""
+main server process; no sidecar (single owner of git state)."""
 from __future__ import annotations
 
 import asyncio

@@ -89,7 +89,7 @@ def kb_bootstrap_project_fn(
             rejected_paths=[],
         )
 
-    # For 2D-onboarding v1: simplified atomic-commit path.
+    # For onboarding v1: simplified atomic-commit path.
     # Validate every file via is_writable_path + blocklist before any side effects.
     from data_olympus.auth import is_writable_path
     from data_olympus.index import _classify_by_path
@@ -118,7 +118,7 @@ def kb_bootstrap_project_fn(
 
     if confidence < confidence_threshold:
         # Low confidence: enqueue ALL files as a single pending bundle.
-        # For 2D-onboarding v1, we enqueue them one-by-one (the pending queue
+        # For onboarding v1, we enqueue them one-by-one (the pending queue
         # supports per-file entries; resolving "all" is the operator's choice).
         # Future: native bundle support in PendingQueue.
         pending_ids = []

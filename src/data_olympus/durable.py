@@ -1,6 +1,6 @@
 """Crash-safe filesystem primitives used by push queue, pending queue, locks.
 
-Sequence per the spec §2.4:
+Sequence:
   write_to_tmp -> fsync_tmp -> os.replace(tmp, target) -> fsync_parent_dir
 """
 from __future__ import annotations

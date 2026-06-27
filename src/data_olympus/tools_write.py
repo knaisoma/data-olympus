@@ -1,4 +1,4 @@
-"""4 MCP write tool functions per spec §3."""
+"""4 MCP write tool functions."""
 from __future__ import annotations
 
 import contextlib
@@ -29,6 +29,17 @@ if TYPE_CHECKING:
 def _slugify(text: str) -> str:
     s = re.sub(r"[^a-z0-9-]+", "-", text.lower()).strip("-")
     return s[:50] or "memory"
+
+
+def _memory_inbox_prefix() -> str:
+    """Directory prefix new memory proposals are written under.
+
+    Defaults to the generic ``memory/inbox/``; a deployment with a different
+    layout overrides it via KB_MEMORY_INBOX_PREFIX (a trailing slash is
+    normalized in).
+    """
+    prefix = os.environ.get("KB_MEMORY_INBOX_PREFIX", "memory/inbox/").strip()
+    return prefix if prefix.endswith("/") else prefix + "/"
 
 
 def _classify(target_path: str) -> tuple[str, str]:
@@ -88,14 +99,14 @@ def kb_propose_memory_fn(
     remote_addr: str,
     audit_log: AuditLog | None = None,
 ) -> ProposeResponse:
-    """Propose a new memory file at operator/memory/inbox/<date>-<slug>.md.
+    """Propose a new memory file under the memory inbox prefix as <date>-<slug>.md.
 
     Structural rule is satisfied by construction; blocklist still applies.
     High confidence -> auto-commit + push enqueue. Low -> pending queue.
     """
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     slug = _slugify(text)
-    target_path = f"operator/memory/inbox/{today}-{slug}.md"
+    target_path = f"{_memory_inbox_prefix()}{today}-{slug}.md"
     audit_base: dict[str, Any] = {
         "event_type": "propose_memory",
         "agent_identity": agent_identity,

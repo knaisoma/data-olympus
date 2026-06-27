@@ -27,7 +27,7 @@ def test_separate_buckets_per_remote_addr() -> None:
 
 
 def test_separate_buckets_per_agent_identity() -> None:
-    """This is fair-use accounting per the honest framing in spec §5.2.
+    """This is fair-use accounting (honest framing).
     Distinct cooperative agents on the same IP each get their own bucket.
     A misbehaving agent CAN multiply quota by varying agent_identity; that
     is the accepted residual risk."""

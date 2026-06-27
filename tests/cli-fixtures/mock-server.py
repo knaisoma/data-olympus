@@ -14,13 +14,13 @@ Read routes:
     GET /api/v1/list?tier=T1&category=foundation -> list-t1-foundation.json
     GET /api/v1/list                    -> 400 {"error":"missing_tier"}
     GET /api/v1/search?q=worktree       -> search-worktree.json
-    GET /api/v1/pending                 -> canned pending list (2C-second)
-    GET /api/v1/audit                   -> canned audit events (2C-second)
-    GET /api/v1/onboarding/status       -> synthetic status (2D-onboarding):
+    GET /api/v1/pending                 -> canned pending list
+    GET /api/v1/audit                   -> canned audit events
+    GET /api/v1/onboarding/status       -> synthetic status:
                                             state=onboarded for workspace=example-project,
                                             state=absent for any other workspace.
 
-Write routes (2C-second):
+Write routes:
     POST /api/v1/propose/memory         -> committed if confidence>=0.85,
                                             pending_confirmation otherwise
     POST /api/v1/propose/edit           -> same shape as memory
@@ -91,7 +91,7 @@ class Handler(BaseHTTPRequestHandler):
                             {
                                 "pending_id": "p1",
                                 "proposal_type": "memory",
-                                "target_path": "operator/memory/inbox/x.md",
+                                "target_path": "memory/inbox/x.md",
                                 "confidence": 0.4,
                                 "agent_identity": "claude",
                                 "created_at": 1700000000.0,
@@ -132,7 +132,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "event_type": "propose_memory",
                                 "status": "committed",
                                 "agent_identity": "claude",
-                                "target_path": "operator/memory/inbox/x.md",
+                                "target_path": "memory/inbox/x.md",
                                 "commit_sha": "abc1234",
                             }
                         ],

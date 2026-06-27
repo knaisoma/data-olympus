@@ -1,26 +1,36 @@
 """Structural rule (always applies, not configurable) + policy blocklist
 (operator-configurable, empty by default).
 
-Per spec §2.8 rev 2:
+Rules:
 - Structural rule rejects: empty, NUL, absolute, traversal, non-md, non-indexed,
   structurally-excluded. Normalization happens BEFORE prefix match.
 - Policy blocklist consists of tier names (e.g. {"T1"}) and fnmatch globs
-  (e.g. ["decisions/GDEC-008-*.md"]).
+  (e.g. ["decisions/ADR-008-*.md"]).
 
-Per operator decision 2026-06-01: both blocklists default to empty (allow-by-default
-modulo the structural rule).
+By default both blocklists are empty (allow-by-default modulo the structural rule).
 """
 from __future__ import annotations
 
 import fnmatch
+import os
 from pathlib import PurePosixPath
 
-INDEXED_PREFIXES: tuple[str, ...] = (
+# Generic, deployment-neutral default. A deployment with extra top-level
+# directories supplies its own writable set via KB_INDEXED_PREFIXES (a
+# comma-separated list), which replaces this default wholesale.
+DEFAULT_INDEXED_PREFIXES: tuple[str, ...] = (
     "universal/", "tech-stacks/", "projects/",
-    "decisions/", "workflows/", "operator/",
-    "tooling/", "audits/", "plans/",
-    "workforce/", "templates/",
+    "decisions/", "workflows/", "memory/",
+    "tooling/", "templates/",
 )
+
+
+def indexed_prefixes() -> tuple[str, ...]:
+    """Active writable prefixes: KB_INDEXED_PREFIXES if set, else default."""
+    raw = os.environ.get("KB_INDEXED_PREFIXES", "").strip()
+    if not raw:
+        return DEFAULT_INDEXED_PREFIXES
+    return tuple(s.strip() for s in raw.split(",") if s.strip())
 
 STRUCTURALLY_EXCLUDED: frozenset[str] = frozenset({
     ".git", ".worktrees", ".ruff_cache", "__pycache__",
@@ -46,13 +56,13 @@ def _normalize_target_path(raw: str) -> str | None:
 
 
 def is_writable_path(target_path: str) -> bool:
-    """Structural rule. Independent of operator policy."""
+    """Structural rule. Independent of policy blocklist."""
     canonical = _normalize_target_path(target_path)
     if canonical is None:
         return False
     if not canonical.endswith(".md"):
         return False
-    return any(canonical.startswith(p) for p in INDEXED_PREFIXES)
+    return any(canonical.startswith(p) for p in indexed_prefixes())
 
 
 class PathBlocklist:

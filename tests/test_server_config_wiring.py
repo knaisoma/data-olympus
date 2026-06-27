@@ -32,7 +32,7 @@ def test_non_default_config_is_threaded_into_app(
     monkeypatch.setenv("KB_INDEX_PATH", str(tmp_path / "kb.db"))
     monkeypatch.setenv("KB_CONFIDENCE_THRESHOLD", "0.5")
     monkeypatch.setenv("KB_WRITE_BLOCK_TIERS", "T1,T2")
-    monkeypatch.setenv("KB_WRITE_BLOCK_PATHS", "decisions/GDEC-008-*.md")
+    monkeypatch.setenv("KB_WRITE_BLOCK_PATHS", "decisions/DEC-008-*.md")
     monkeypatch.setenv("KB_RATE_LIMIT_PER_HOUR", "42")
     monkeypatch.setenv("KB_PENDING_TIMEOUT_SEC", "7200")
     monkeypatch.setenv("KB_PENDING_QUEUE_CAP", "25")
@@ -46,7 +46,7 @@ def test_non_default_config_is_threaded_into_app(
     # Verify load_config() picked up all non-default values correctly.
     assert cfg.confidence_threshold == 0.5
     assert cfg.write_block_tiers == ["T1", "T2"]
-    assert cfg.write_block_paths == ["decisions/GDEC-008-*.md"]
+    assert cfg.write_block_paths == ["decisions/DEC-008-*.md"]
     assert cfg.rate_limit_per_hour == 42
     assert cfg.pending_timeout_sec == 7200
     assert cfg.pending_queue_cap == 25
@@ -66,7 +66,7 @@ def test_non_default_config_is_threaded_into_app(
     assert state.config.worktree_idle_sec == 999
     assert state.config.git_key_path == "/tmp/test-key"
     assert state.config.write_block_tiers == ["T1", "T2"]
-    assert state.config.write_block_paths == ["decisions/GDEC-008-*.md"]
+    assert state.config.write_block_paths == ["decisions/DEC-008-*.md"]
 
 
 def test_write_block_tiers_reach_blocklist(
