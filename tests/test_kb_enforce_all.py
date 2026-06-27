@@ -8,15 +8,20 @@ from pathlib import Path
 HELPER = Path(__file__).resolve().parents[1] / "bin" / "_kb_enforce.py"
 
 
-def _run(*args: str, env=None):
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _run(*args: str, env=None, cwd=None):
     return subprocess.run([sys.executable, str(HELPER), *args],
-                          capture_output=True, text=True, env=env)
+                          capture_output=True, text=True, env=env, cwd=cwd)
 
 
 def test_status_all_lists_every_provider(tmp_path):
     import os
     env = {**os.environ, "KB_ENFORCE_HOME": str(tmp_path)}
-    r = _run("status", env=env)
+    # cwd=tmp_path so copilot-ide's repo-relative target resolves under tmp,
+    # never the real worktree (status only reads, but keep it hermetic).
+    r = _run("status", env=env, cwd=str(tmp_path))
     assert r.returncode == 0
     for name in ("claude-code", "codex", "gemini", "opencode",
                  "copilot-cli", "copilot-ide", "antigravity"):
@@ -40,8 +45,15 @@ def test_status_with_settings_is_single_agent(tmp_path):
 def test_install_all_skips_unsupported(tmp_path):
     import os
     env = {**os.environ, "KB_ENFORCE_HOME": str(tmp_path)}
-    r = _run("install", "--all", env=env)
+    # cwd=tmp_path is load-bearing: copilot-ide's default target is the
+    # repo-relative `.github/copilot-instructions.md`, which KB_ENFORCE_HOME
+    # does NOT re-root. Without cwd the install --all would write into the real
+    # worktree's .github/. Pin cwd so that write lands under tmp instead.
+    r = _run("install", "--all", env=env, cwd=str(tmp_path))
     assert r.returncode == 0
     assert "antigravity" in r.stdout  # mentioned as skipped/unsupported
     # claude settings written under the re-rooted home
     assert (tmp_path / ".claude" / "settings.json").exists()
+    # copilot-ide's repo-relative target landed under tmp, not the real repo.
+    assert (tmp_path / ".github" / "copilot-instructions.md").exists()
+    assert not (REPO_ROOT / ".github" / "copilot-instructions.md").exists()
