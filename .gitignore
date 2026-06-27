@@ -15,3 +15,7 @@ secret*.yaml
 *.pem
 id_ed25519*
 id_rsa*
+# Claude Code working directory (worktrees, local settings, skill/plugin scratch)
+.claude/
+# superpowers skill scratch: plan/spec docs belong under docs/plans and docs/specs
+docs/superpowers/
