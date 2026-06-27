@@ -158,8 +158,34 @@ def _claude_provider() -> HookFileProvider:
     )
 
 
+CODEX_TRUST_NOTE = (
+    "NOTE (codex): Codex requires this hook to be trusted before it runs. On the "
+    "next `codex` start you will be prompted to trust it, or run codex with "
+    "`--dangerously-bypass-hook-trust` for vetted automation. The trust hash is "
+    "persisted under [hooks.state] in ~/.codex/config.toml."
+)
+
+
+def _codex_provider() -> HookFileProvider:
+    return HookFileProvider(
+        name="codex",
+        default_target=Path(os.path.expanduser("~/.codex/hooks.json")),
+        events=[
+            ("SessionStart", "session-start", None),
+            ("UserPromptSubmit", "user-prompt", None),
+            ("PreToolUse", "pre-tool", "Edit|Write|MultiEdit"),
+            ("Stop", "stop", None),
+        ],
+        dialect="claude",  # Codex shares Claude's exit-2 deny contract
+        note=CODEX_TRUST_NOTE,
+    )
+
+
 def registry() -> dict:
-    return {"claude-code": _claude_provider()}
+    return {
+        "claude-code": _claude_provider(),
+        "codex": _codex_provider(),
+    }
 
 
 def main(argv: list[str]) -> int:
