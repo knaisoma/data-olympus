@@ -367,15 +367,25 @@ def register_routes(
         return JSONResponse(resp.model_dump())
 
     @app.custom_route("/api/v1/pending", methods=["GET"])
-    async def list_pending(_request: Request) -> JSONResponse:
-        assert state.pending is not None
+    async def list_pending(request: Request) -> JSONResponse:
+        # Observability routes leak target paths / agent identities, so when auth
+        # is configured they require an authenticated principal (open otherwise).
+        _principal, denied = _authorize(request, registry)
+        if denied is not None:
+            return denied
+        if state.pending is None:
+            return JSONResponse({"pending": []})
         from data_olympus.tools_write import kb_list_pending_fn
         resp = kb_list_pending_fn(pending=state.pending)
         return JSONResponse(resp.model_dump())
 
     @app.custom_route("/api/v1/audit", methods=["GET"])
     async def audit(request: Request) -> JSONResponse:
-        assert state.audit_log is not None
+        _principal, denied = _authorize(request, registry)
+        if denied is not None:
+            return denied
+        if state.audit_log is None:
+            return JSONResponse({"events": [], "returned": 0, "limit_hit": False})
         from data_olympus.tools_audit import kb_audit_fn
         qp = request.query_params
         since = float(qp["since"]) if qp.get("since") else None
@@ -387,7 +397,10 @@ def register_routes(
         return JSONResponse(resp.model_dump())
 
     @app.custom_route("/api/v1/audit/verify", methods=["GET"])
-    async def audit_verify(_request: Request) -> JSONResponse:
+    async def audit_verify(request: Request) -> JSONResponse:
+        _principal, denied = _authorize(request, registry)
+        if denied is not None:
+            return denied
         if state.audit_log is None:
             return JSONResponse({"ok": True, "first_broken_index": -1})
         ok, idx = state.audit_log.verify()

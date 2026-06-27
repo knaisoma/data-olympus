@@ -6,6 +6,7 @@ resources:
   - configmap.yaml
   - service.yaml
   - ingress.yaml
+  - networkpolicy.yaml
   - statefulset.yaml
   # secret.sops.yaml NOT in resources because kustomize can't decrypt SOPS in
   # its base flow. The deploy script applies it separately via:

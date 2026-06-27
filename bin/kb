@@ -366,7 +366,14 @@ cmd_pending() {
   done
   local tmpfile
   tmpfile=$(mktemp)
+  # When KB_AUTH_TOKEN is set, /api/v1/pending requires authentication; pass the
+  # bearer header via a curl config FD so the token is never visible in argv.
+  local auth_k_arg=()
+  if [[ -n "$KB_AUTH_TOKEN" ]]; then
+    auth_k_arg=(-K <(printf 'header = "Authorization: Bearer %s"\n' "$KB_AUTH_TOKEN"))
+  fi
   if ! curl --silent --max-time 10 --output "$tmpfile" \
+        ${auth_k_arg[@]+"${auth_k_arg[@]}"} \
         "$KB_ENDPOINT/api/v1/pending" 2>/dev/null; then
     rm -f "$tmpfile"
     echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2; exit 1
@@ -578,11 +585,18 @@ cmd_audit() {
       *) echo "kb: audit takes no positional args" >&2; exit 64 ;;
     esac
   done
+  # When KB_AUTH_TOKEN is set, audit routes require authentication; pass the
+  # bearer header via a curl config FD so the token is never visible in argv.
+  local auth_k_arg=()
+  if [[ -n "$KB_AUTH_TOKEN" ]]; then
+    auth_k_arg=(-K <(printf 'header = "Authorization: Bearer %s"\n' "$KB_AUTH_TOKEN"))
+  fi
   if [[ -n "$verify" ]]; then
     # Verify the tamper-evident hash chain server-side.
     local vtmp
     vtmp=$(mktemp)
     if ! curl --silent --max-time 10 --output "$vtmp" \
+        ${auth_k_arg[@]+"${auth_k_arg[@]}"} \
         "$KB_ENDPOINT/api/v1/audit/verify" 2>/dev/null; then
       rm -f "$vtmp"
       echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2; exit 1
@@ -608,7 +622,8 @@ cmd_audit() {
   [[ -n "$status_f" ]] && url="$url&status=$(url_encode "$status_f")"
   local tmpfile
   tmpfile=$(mktemp)
-  if ! curl --silent --max-time 10 --output "$tmpfile" "$url" 2>/dev/null; then
+  if ! curl --silent --max-time 10 --output "$tmpfile" \
+        ${auth_k_arg[@]+"${auth_k_arg[@]}"} "$url" 2>/dev/null; then
     rm -f "$tmpfile"
     echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2; exit 1
   fi

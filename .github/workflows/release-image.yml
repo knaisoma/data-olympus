@@ -35,7 +35,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute image tag
+      - name: Compute image tags
         id: image-tag
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -43,10 +43,23 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           INPUT_TAG: ${{ inputs.tag }}
         run: |
+          # A real release is a pushed `v*` tag: publish the semver tag AND move
+          # the `latest` channel. A manual workflow_dispatch (default `edge`) is a
+          # pre-release build: publish ONLY its tag and never move `latest`, so
+          # `latest` always means "last promoted release", not "last manual build".
           if [ "$EVENT_NAME" = "push" ] && [ "$REF_TYPE" = "tag" ]; then
-            echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
+            {
+              echo "tags<<EOF"
+              echo "ghcr.io/knaisoma/data-olympus:$REF_NAME"
+              echo "ghcr.io/knaisoma/data-olympus:latest"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+            {
+              echo "tags<<EOF"
+              echo "ghcr.io/knaisoma/data-olympus:$INPUT_TAG"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push
@@ -56,8 +69,6 @@ jobs:
           file: deploy/docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/knaisoma/data-olympus:${{ steps.image-tag.outputs.tag }}
-            ghcr.io/knaisoma/data-olympus:latest
+          tags: ${{ steps.image-tag.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

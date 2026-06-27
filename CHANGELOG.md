@@ -53,6 +53,20 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- Observability routes are gated when auth is configured. With `KB_AUTH_TOKEN`
+  set, `GET /api/v1/pending`, `/api/v1/audit`, and `/api/v1/audit/verify` now
+  require an authenticated principal (they leak target paths and agent
+  identities); they stay open when no auth is configured. `bin/kb pending` and
+  `kb audit` send the bearer header automatically.
+- Deploy hardening for the sample Kubernetes manifests: the StatefulSet pins an
+  immutable image tag (was `data-olympus:latest`), drops all Linux capabilities
+  except those the root entrypoint needs before it `gosu`-drops to uid 65534,
+  forbids privilege escalation, sets a `RuntimeDefault` seccomp profile, and runs
+  a read-only root filesystem (writes go to the PVCs and a `/tmp` emptyDir). A new
+  default-deny `NetworkPolicy` restricts ingress to the ingress controller and
+  same-namespace clients, and the ingress gained cert-manager/TLS guidance. The
+  release workflow no longer moves the `latest` channel on manual `edge` builds,
+  so `latest` always means the last promoted release.
 - The audit log is now tamper-evident. Each appended event carries an
   `event_id`, the `prev_hash` of the previous event, and its own `hash` over the
   canonical body (SHA-256, or keyed HMAC-SHA256 when `KB_AUDIT_HMAC_KEY` is set).
