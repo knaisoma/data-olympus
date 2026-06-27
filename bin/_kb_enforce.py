@@ -73,9 +73,11 @@ class HookFileProvider:
         return self._default_target
 
     def _command(self, mode: str) -> str:
-        if self._dialect == "claude":
-            return f"{HOOK_BIN} {mode}"
-        return f"{HOOK_BIN} {mode} --dialect {self._dialect}"
+        # Always thread --agent so the consult audit records the correct
+        # per-agent identity. --dialect is still suppressed for claude (default)
+        # to keep its slice-1 command form.
+        dialect = "" if self._dialect == "claude" else f" --dialect {self._dialect}"
+        return f"{HOOK_BIN} {mode}{dialect} --agent {self.name}"
 
     def _managed_block(self, mode: str, matcher: str | None) -> dict:
         entry = {"type": "command", "command": self._command(mode), MARKER: SHIM_VERSION}

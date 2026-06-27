@@ -26,6 +26,7 @@ def test_codex_install_writes_pretooluse_and_merges(tmp_path):
     blob = json.dumps(data)
     assert "protect-files.py" in blob  # operator hook preserved
     assert "kb-enforce-hook pre-tool" in blob
+    assert "--agent codex" in blob  # consult audit records codex, not claude-code
     assert "UserPromptSubmit" in data["hooks"]
     assert "trust" in (r.stdout + r.stderr).lower()  # trust note printed
 

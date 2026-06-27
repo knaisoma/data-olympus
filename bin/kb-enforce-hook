@@ -25,9 +25,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # to its JSON-on-stdout contract.
 shift || true
 DIALECT="claude"
+# AGENT is reported as agent_identity to the consult audit so the per-agent
+# compliance view is correct. The same dispatcher serves claude/codex/gemini, so
+# a hardcoded identity would mis-attribute every non-claude consultation.
+AGENT="unknown"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dialect) DIALECT="${2:-claude}"; shift; shift || true ;;
+    --agent) AGENT="${2:-unknown}"; shift; shift || true ;;
     *) shift ;;
   esac
 done
@@ -151,7 +156,7 @@ case "$MODE" in
     WS="$(resolve_workspace "$CWD")"
     BODY="$(python3 -c 'import json,sys
 print(json.dumps({"workspace":sys.argv[1],"intent":sys.argv[2],
-"source_session":sys.argv[3],"agent_identity":"claude-code"}))' "$WS" "$PROMPT" "$SESSION")"
+"source_session":sys.argv[3],"agent_identity":sys.argv[4]}))' "$WS" "$PROMPT" "$SESSION" "$AGENT")"
     # Prompt-rule injection is best-effort and never blocks: any failure
     # (connection error OR non-2xx) just means no injected rules this turn.
     if ! post_json "$KB_ENDPOINT/api/v1/consult" "$BODY" || ! is_2xx "$RESP_CODE"; then
