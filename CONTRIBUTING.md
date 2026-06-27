@@ -51,6 +51,7 @@ Every pull request must satisfy all of the following before it will be reviewed:
 - `data-olympus lint` exits 0 on any bundle you touch (zero errors, warnings are acceptable).
 - Documentation is updated if the behaviour you changed is documented.
 - `SPEC.md` and the validator stay consistent: if you change the schema (allowed field values, required fields, reserved names), update `SPEC.md` and the corresponding validator code together in the same PR.
+- `CHANGELOG.md` is updated. Any PR that makes a functional change (CLI, MCP tools, REST endpoints, format/schema, enforcement, security, or a behaviour-changing bug fix) MUST add an entry under the topmost `## [Unreleased]` block. This is mandatory: every release must ship a changelog of its important functional changes. See [`.rules/changelog-per-release.md`](.rules/changelog-per-release.md).
 
 For spec changes specifically, a Spec Proposal issue must be linked in the PR description and must show maintainer sign-off before the PR is merged.
 
