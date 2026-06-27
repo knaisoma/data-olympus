@@ -4,6 +4,7 @@ without a FastMCP server."""
 from __future__ import annotations
 
 import fnmatch
+import re
 from dataclasses import dataclass, field
 
 # Keyword signals that a user prompt is a governed code/architectural decision.
@@ -28,6 +29,15 @@ GOVERNED_PATH_GLOBS: tuple[str, ...] = (
     "Dockerfile", "*/Dockerfile", "*/docker-compose*.yml", "docker-compose*.yml",
 )
 
+# Command fragments (matched against action_diff) that indicate a governed
+# dependency/install action, so Bash/shell tool actions can be classified.
+GOVERNED_COMMAND_PATTERNS: tuple[str, ...] = (
+    "pip install", "pip3 install", "uv add", "uv pip install", "poetry add",
+    "npm install", "npm i ", "yarn add", "pnpm add",
+    "apt install", "apt-get install", "brew install",
+    "go get", "cargo add", "gem install", "bundle add",
+)
+
 
 @dataclass(frozen=True)
 class ClassifyResult:
@@ -46,9 +56,16 @@ class IntentClassifier:
         *,
         keywords: tuple[str, ...] = GOVERNED_KEYWORDS,
         path_globs: tuple[str, ...] = GOVERNED_PATH_GLOBS,
+        command_patterns: tuple[str, ...] = GOVERNED_COMMAND_PATTERNS,
     ) -> None:
         self._keywords = tuple(k.lower() for k in keywords)
         self._path_globs = tuple(path_globs)
+        self._command_patterns = tuple(p.lower() for p in command_patterns)
+        # Pre-compile a word-boundary regex per keyword so "authored" does not
+        # match "auth". \b around each keyword; keywords with spaces still work.
+        self._keyword_res = tuple(
+            (kw, re.compile(rf"\b{re.escape(kw)}\b")) for kw in self._keywords
+        )
 
     def classify(
         self,
@@ -59,9 +76,13 @@ class IntentClassifier:
     ) -> ClassifyResult:
         signals: list[str] = []
         text = f"{intent} {action_diff}".lower()
-        for kw in self._keywords:
-            if kw in text:
+        for kw, rx in self._keyword_res:
+            if rx.search(text):
                 signals.append(f"keyword:{kw}")
+        diff_lower = action_diff.lower()
+        for pat in self._command_patterns:
+            if pat in diff_lower:
+                signals.append(f"command:{pat.strip()}")
         if action_path:
             p = action_path.replace("\\", "/")
             base = p.rsplit("/", 1)[-1]
