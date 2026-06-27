@@ -19,6 +19,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Retrieval now indexes `applies_when` trigger metadata and `description` with
   column-weighted ranking, improving coding-intent to governing-rule matching
   (index schema v5). `kb_get` returns both fields.
+- Enforcement core: data-olympus can now act as a gated, mandatory consultation
+  proxy for code/architectural decisions, not only an advisory KB. New MCP tools
+  `kb_consult`, `kb_gate_check`, `kb_compliance` and REST endpoints
+  `/api/v1/consult`, `/api/v1/gate/check`, `/api/v1/compliance`, backed by a
+  shared heuristic intent classifier and an in-memory consultation ledger.
+- `kb enforce install|uninstall|status|doctor` CLI plus a `kb-enforce-hook`
+  dispatcher install an idempotent, reversible Claude Code enforcement shim
+  (SessionStart / UserPromptSubmit / PreToolUse / Stop). Fail-open by default
+  (`KB_ENFORCE_FAIL_MODE`), consultation freshness via `KB_CONSULT_TTL_SEC`.
 
 ### Fixed
 

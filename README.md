@@ -42,6 +42,7 @@ See `docs/quickstart.md` for the full local-run walkthrough, including curl and 
 - [`docs/adoption.md`](docs/adoption.md): bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - [`docs/serving.md`](docs/serving.md): single-replica serving model, read-only replicas, git pull loop.
 - [`docs/comparison.md`](docs/comparison.md): how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
+- [`docs/enforcement.md`](docs/enforcement.md): turning the KB into a mandatory consultation gate (hooks, `kb enforce`).
 
 ## License
 
