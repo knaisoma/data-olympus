@@ -348,6 +348,8 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
         import time as _time
 
         body = await request.json()
+        if (bad := _missing_fields_response(body, ["event_type", "workspace"])) is not None:
+            return bad
         from data_olympus.tools_enforce import kb_record_event_fn
         try:
             resp = kb_record_event_fn(
