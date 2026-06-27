@@ -29,6 +29,7 @@ class Config:
     git_key_path: str = "/tmp/git-key"
     audit_log_path: str = "/state/audit/events.log"
     auth_token: str = ""
+    consult_ttl_sec: int = 300
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -54,6 +55,7 @@ def load_config() -> Config:
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
     audit_log_path = os.getenv("KB_AUDIT_LOG_PATH", "/state/audit/events.log")
     auth_token = os.getenv("KB_AUTH_TOKEN", "")
+    consult_ttl_sec = int(os.getenv("KB_CONSULT_TTL_SEC", "300"))
     return Config(
         kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
         kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
@@ -74,4 +76,5 @@ def load_config() -> Config:
         git_key_path=git_key_path,
         audit_log_path=audit_log_path,
         auth_token=auth_token,
+        consult_ttl_sec=consult_ttl_sec,
     )
