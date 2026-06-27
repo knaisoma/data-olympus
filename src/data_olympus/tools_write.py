@@ -99,6 +99,7 @@ def kb_propose_memory_fn(
     remote_addr: str,
     audit_log: AuditLog | None = None,
     can_auto_commit: bool = True,
+    max_text_bytes: int = 0,
 ) -> ProposeResponse:
     """Propose a new memory file under the memory inbox prefix as <date>-<slug>.md.
 
@@ -149,6 +150,12 @@ def kb_propose_memory_fn(
     if not rate_limiter.allow(remote_addr=remote_addr, agent_identity=agent_identity):
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_rate_limited"})
         return ProposeResponse(status="rejected_rate_limited")
+
+    # 3b. Payload size cap (reject before any disk side effect).
+    if max_text_bytes > 0 and len(text.encode("utf-8")) > max_text_bytes:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_payload_too_large"})
+        return ProposeResponse(status="rejected_payload_too_large",
+                               target_path=target_path)
 
     # 4. Render the postimage (front matter + body).
     postimage = _render_memory(text=text, tags=tags, agent_identity=agent_identity)
@@ -255,6 +262,7 @@ def kb_propose_edit_fn(
     remote_addr: str,
     audit_log: AuditLog | None = None,
     can_auto_commit: bool = True,
+    max_postimage_bytes: int = 0,
 ) -> ProposeResponse:
     """Propose an edit to an existing (or new) file under target_path.
 
@@ -285,6 +293,11 @@ def kb_propose_edit_fn(
     if not rate_limiter.allow(remote_addr=remote_addr, agent_identity=agent_identity):
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_rate_limited"})
         return ProposeResponse(status="rejected_rate_limited")
+
+    if max_postimage_bytes > 0 and len(postimage.encode("utf-8")) > max_postimage_bytes:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_payload_too_large"})
+        return ProposeResponse(status="rejected_payload_too_large",
+                               target_path=target_path)
 
     if confidence < confidence_threshold or not can_auto_commit:
         try:

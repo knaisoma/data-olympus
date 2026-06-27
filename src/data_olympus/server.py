@@ -138,6 +138,10 @@ def build_app(
     write_block_paths: list[str] | None = None,
     confidence_threshold: float = 0.85,
     rate_limit_per_hour: int = 100,
+    rate_limit_per_ip_per_hour: int = 0,
+    max_text_bytes: int = 262144,
+    max_postimage_bytes: int = 1048576,
+    max_body_bytes: int = 2097152,
     pending_timeout_sec: int = 86400,
     pending_queue_cap: int = 100,
     worktree_idle_sec: int = 3600,
@@ -165,11 +169,16 @@ def build_app(
         write_block_tiers=write_block_tiers or [],
         write_block_paths=write_block_paths or [],
         rate_limit_per_hour=rate_limit_per_hour,
+        rate_limit_per_ip_per_hour=rate_limit_per_ip_per_hour,
+        max_text_bytes=max_text_bytes,
+        max_postimage_bytes=max_postimage_bytes,
+        max_body_bytes=max_body_bytes,
         pending_timeout_sec=pending_timeout_sec,
         pending_queue_cap=pending_queue_cap,
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
         auth_token=auth_token,
+        auth_principals=auth_principals or [],
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
@@ -183,7 +192,10 @@ def build_app(
         worktrees = WorktreeRegistry(git=git, worktree_root=config.worktree_root)
         push_queue = PushQueue(queue_root=config.push_queue_root)
         pending = PendingQueue(pending_root=config.pending_root)
-        rate_limiter = SlidingWindowLimiter(max_per_hour=config.rate_limit_per_hour)
+        rate_limiter = SlidingWindowLimiter(
+            max_per_hour=config.rate_limit_per_hour,
+            max_per_ip_per_hour=config.rate_limit_per_ip_per_hour,
+        )
         blocklist = PathBlocklist(
             tier_blocks=config.write_block_tiers,
             path_blocks=config.write_block_paths,
@@ -293,6 +305,7 @@ def build_app(
             blocklist=state.blocklist, remote_addr="mcp",
             audit_log=state.audit_log,
             can_auto_commit=_current_principal.get().can_auto_commit,
+            max_text_bytes=state.config.max_text_bytes,
         )
         return resp.model_dump()
 
@@ -324,6 +337,7 @@ def build_app(
             blocklist=state.blocklist, remote_addr="mcp",
             audit_log=state.audit_log,
             can_auto_commit=_current_principal.get().can_auto_commit,
+            max_postimage_bytes=state.config.max_postimage_bytes,
         )
         return resp.model_dump()
 
@@ -417,6 +431,7 @@ def build_app(
             blocklist=state.blocklist, audit_log=state.audit_log,
             remote_addr="mcp",
             can_auto_commit=_current_principal.get().can_auto_commit,
+            max_postimage_bytes=state.config.max_postimage_bytes,
         )
         return resp.model_dump()
 
@@ -524,6 +539,10 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         write_block_paths=list(config.write_block_paths),
         confidence_threshold=config.confidence_threshold,
         rate_limit_per_hour=config.rate_limit_per_hour,
+        rate_limit_per_ip_per_hour=config.rate_limit_per_ip_per_hour,
+        max_text_bytes=config.max_text_bytes,
+        max_postimage_bytes=config.max_postimage_bytes,
+        max_body_bytes=config.max_body_bytes,
         pending_timeout_sec=config.pending_timeout_sec,
         pending_queue_cap=config.pending_queue_cap,
         worktree_idle_sec=config.worktree_idle_sec,

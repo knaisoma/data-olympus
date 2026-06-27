@@ -45,6 +45,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- Resource limits bound write-side abuse. New configurable caps reject oversized
+  proposals before any disk side effect: `KB_MAX_TEXT_BYTES` (memory text, default
+  256 KiB), `KB_MAX_POSTIMAGE_BYTES` (edit/bootstrap file, default 1 MiB), and
+  `KB_MAX_BODY_BYTES` (REST request body via `Content-Length`, default 2 MiB,
+  returns 413). The sliding-window rate limiter gained an optional per-IP cap
+  (`KB_RATE_LIMIT_PER_IP_PER_HOUR`, default 0 = disabled) so a client cannot
+  multiply its quota by varying `agent_identity`.
 - Identity + capability authorization unifies MCP/REST write auth, per-agent
   policy, and a confidence clamp. A `Principal` is resolved from the
   `Authorization: Bearer` header against a registry built from `KB_AUTH_TOKEN`

@@ -72,6 +72,7 @@ def kb_bootstrap_project_fn(
     audit_log: AuditLog | None = None,  # noqa: ARG001  reserved for future audit emission
     remote_addr: str = "mcp",
     can_auto_commit: bool = True,
+    max_postimage_bytes: int = 0,
 ) -> BootstrapResponse:
     """Bootstrap a new workspace/component. Only callable when status=absent.
 
@@ -95,6 +96,7 @@ def kb_bootstrap_project_fn(
     from data_olympus.auth import is_writable_path
     from data_olympus.index import _classify_by_path
     rejected: list[str] = []
+    oversized: list[str] = []
     for f in files:
         if not is_writable_path(f["target_path"]):
             rejected.append(f["target_path"])
@@ -102,10 +104,19 @@ def kb_bootstrap_project_fn(
         target_tier, _ = _classify_by_path(f["target_path"])
         if blocklist.blocks(f["target_path"], target_tier):
             rejected.append(f["target_path"])
+            continue
+        if (max_postimage_bytes > 0
+                and len(f["postimage"].encode("utf-8")) > max_postimage_bytes):
+            oversized.append(f["target_path"])
     if rejected:
         return BootstrapResponse(
             status="rejected_path_not_indexable_or_blocked",
             rejected_paths=rejected,
+        )
+    if oversized:
+        return BootstrapResponse(
+            status="rejected_payload_too_large",
+            rejected_paths=oversized,
         )
 
     if not rate_limiter.allow(remote_addr=remote_addr, agent_identity=agent_identity):

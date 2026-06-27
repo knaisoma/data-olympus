@@ -149,6 +149,39 @@ def _write_pipeline_ready(state: ServerState) -> JSONResponse | None:
     return None
 
 
+def _propose_status(status: str) -> int:
+    """Map a propose/bootstrap response status to an HTTP status code."""
+    if status == "committed":
+        return 201
+    if status == "pending_confirmation":
+        return 202
+    if status == "rejected_payload_too_large":
+        return 413
+    return 400
+
+
+def _body_too_large(request: Request, max_body_bytes: int) -> JSONResponse | None:
+    """Return a 413 when the request's declared Content-Length exceeds the cap
+    (0 = unlimited), else None. Rejects oversized payloads before the body is
+    parsed into memory, bounding PVC/memory abuse from a reachable client."""
+    if max_body_bytes <= 0:
+        return None
+    cl = request.headers.get("content-length")
+    if cl is None:
+        return None
+    try:
+        size = int(cl)
+    except ValueError:
+        return None
+    if size > max_body_bytes:
+        return JSONResponse(
+            {"error": "payload_too_large",
+             "message": f"request body exceeds {max_body_bytes} bytes"},
+            status_code=413,
+        )
+    return None
+
+
 def register_routes(
     app: FastMCP, state: ServerState, registry: PrincipalRegistry
 ) -> None:
@@ -223,6 +256,8 @@ def register_routes(
             return denied
         if (off := _write_pipeline_ready(state)) is not None:
             return off
+        if (big := _body_too_large(request, state.config.max_body_bytes)) is not None:
+            return big
         body = await request.json()
         if (bad := _missing_fields_response(
             body, ["text", "source_session", "agent_identity", "confidence"],
@@ -249,10 +284,9 @@ def register_routes(
             remote_addr=request.client.host if request.client else "unknown",
             audit_log=state.audit_log,
             can_auto_commit=principal.can_auto_commit,
+            max_text_bytes=state.config.max_text_bytes,
         )
-        status = 201 if resp.status == "committed" else (
-            202 if resp.status == "pending_confirmation" else 400
-        )
+        status = _propose_status(resp.status)
         return JSONResponse(resp.model_dump(), status_code=status)
 
     @app.custom_route("/api/v1/propose/edit", methods=["POST"])
@@ -262,6 +296,8 @@ def register_routes(
             return denied
         if (off := _write_pipeline_ready(state)) is not None:
             return off
+        if (big := _body_too_large(request, state.config.max_body_bytes)) is not None:
+            return big
         body = await request.json()
         if (bad := _missing_fields_response(
             body,
@@ -294,10 +330,9 @@ def register_routes(
             remote_addr=request.client.host if request.client else "unknown",
             audit_log=state.audit_log,
             can_auto_commit=principal.can_auto_commit,
+            max_postimage_bytes=state.config.max_postimage_bytes,
         )
-        status = 201 if resp.status == "committed" else (
-            202 if resp.status == "pending_confirmation" else 400
-        )
+        status = _propose_status(resp.status)
         return JSONResponse(resp.model_dump(), status_code=status)
 
     @app.custom_route("/api/v1/resolve/{pending_id}", methods=["POST"])
@@ -448,6 +483,8 @@ def register_routes(
             return denied
         if (off := _write_pipeline_ready(state)) is not None:
             return off
+        if (big := _body_too_large(request, state.config.max_body_bytes)) is not None:
+            return big
         body = await request.json()
         if (bad := _missing_fields_response(
             body, ["workspace", "files", "source_session",
@@ -476,8 +513,7 @@ def register_routes(
             blocklist=state.blocklist, audit_log=state.audit_log,
             remote_addr=request.client.host if request.client else "unknown",
             can_auto_commit=principal.can_auto_commit,
+            max_postimage_bytes=state.config.max_postimage_bytes,
         )
-        status = 201 if resp.status == "committed" else (
-            202 if resp.status == "pending_confirmation" else 400
-        )
+        status = _propose_status(resp.status)
         return JSONResponse(resp.model_dump(), status_code=status)

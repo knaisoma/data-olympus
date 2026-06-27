@@ -23,6 +23,10 @@ class Config:
     write_block_tiers: list[str] = field(default_factory=list)
     write_block_paths: list[str] = field(default_factory=list)
     rate_limit_per_hour: int = 100
+    rate_limit_per_ip_per_hour: int = 0
+    max_text_bytes: int = 262144
+    max_postimage_bytes: int = 1048576
+    max_body_bytes: int = 2097152
     pending_timeout_sec: int = 86400
     pending_queue_cap: int = 100
     worktree_idle_sec: int = 3600
@@ -51,6 +55,10 @@ def load_config() -> Config:
     write_block_tiers = _split_csv(os.getenv("KB_WRITE_BLOCK_TIERS", ""))
     write_block_paths = _split_csv(os.getenv("KB_WRITE_BLOCK_PATHS", ""))
     rate_limit_per_hour = int(os.getenv("KB_RATE_LIMIT_PER_HOUR", "100"))
+    rate_limit_per_ip_per_hour = int(os.getenv("KB_RATE_LIMIT_PER_IP_PER_HOUR", "0"))
+    max_text_bytes = int(os.getenv("KB_MAX_TEXT_BYTES", "262144"))
+    max_postimage_bytes = int(os.getenv("KB_MAX_POSTIMAGE_BYTES", "1048576"))
+    max_body_bytes = int(os.getenv("KB_MAX_BODY_BYTES", "2097152"))
     pending_timeout_sec = int(os.getenv("KB_PENDING_TIMEOUT_SEC", "86400"))
     pending_queue_cap = int(os.getenv("KB_PENDING_QUEUE_CAP", "100"))
     worktree_idle_sec = int(os.getenv("KB_WORKTREE_IDLE_SEC", "3600"))
@@ -75,6 +83,10 @@ def load_config() -> Config:
         write_block_tiers=write_block_tiers,
         write_block_paths=write_block_paths,
         rate_limit_per_hour=rate_limit_per_hour,
+        rate_limit_per_ip_per_hour=rate_limit_per_ip_per_hour,
+        max_text_bytes=max_text_bytes,
+        max_postimage_bytes=max_postimage_bytes,
+        max_body_bytes=max_body_bytes,
         pending_timeout_sec=pending_timeout_sec,
         pending_queue_cap=pending_queue_cap,
         worktree_idle_sec=worktree_idle_sec,
