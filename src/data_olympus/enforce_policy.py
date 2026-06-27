@@ -4,6 +4,9 @@ without a FastMCP server."""
 from __future__ import annotations
 
 import fnmatch
+import json
+import logging
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -101,14 +104,51 @@ class LedgerEntry:
     rule_ids: list[str]
 
 
-class ConsultationLedger:
-    """In-memory record of which (session, workspace) pairs have consulted and
-    when. Single-replica server, so a process-local dict is sufficient. Not
-    persisted across restarts (a restart simply forces the next governed edit to
-    re-consult)."""
+log = logging.getLogger("data_olympus")
 
-    def __init__(self) -> None:
+
+class ConsultationLedger:
+    """Records which (session, workspace) pairs consulted and when.
+
+    With no ``path`` it is purely in-memory (the slice-1 behavior). With a
+    ``path`` it loads an existing JSON file on construction and rewrites it on
+    every ``record`` so consultations survive a server restart. A corrupt or
+    unreadable file degrades to empty with a logged warning and never crashes."""
+
+    def __init__(self, path: str | None = None) -> None:
+        self._path = path
         self._entries: dict[tuple[str, str], LedgerEntry] = {}
+        if path:
+            self._load()
+
+    def _load(self) -> None:
+        if not self._path or not os.path.exists(self._path):
+            return
+        try:
+            with open(self._path, encoding="utf-8") as f:
+                rows = json.load(f)
+            for row in rows:
+                key = (row["session_id"], row["workspace"])
+                self._entries[key] = LedgerEntry(
+                    consulted_at=float(row["consulted_at"]),
+                    rule_ids=list(row.get("rule_ids", [])),
+                )
+        except Exception as exc:  # noqa: BLE001 - corrupt file -> empty, never crash
+            log.warning("consultation ledger at %s unreadable, starting empty: %s",
+                        self._path, exc)
+            self._entries = {}
+
+    def _save(self) -> None:
+        if not self._path:
+            return
+        rows = [
+            {"session_id": s, "workspace": w,
+             "consulted_at": e.consulted_at, "rule_ids": e.rule_ids}
+            for (s, w), e in self._entries.items()
+        ]
+        os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
+        with open(self._path, "w", encoding="utf-8") as f:
+            json.dump(rows, f)
 
     def record(
         self, *, session_id: str, workspace: str, rule_ids: list[str], now: float
@@ -116,6 +156,7 @@ class ConsultationLedger:
         self._entries[(session_id, workspace)] = LedgerEntry(
             consulted_at=now, rule_ids=list(rule_ids)
         )
+        self._save()
 
     def is_fresh(
         self, *, session_id: str, workspace: str, now: float, ttl_sec: float
