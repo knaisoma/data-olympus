@@ -393,7 +393,7 @@ def main(argv: list[str]) -> int:
     args = p.parse_args(argv)
     reg = registry()
 
-    if args.all or (args.command == "status" and not args.agent):
+    if args.all or (args.command == "status" and not args.agent and not args.settings):
         rc = 0
         for name, provider in reg.items():
             if args.all and getattr(provider, "tier", "") == "unsupported":
