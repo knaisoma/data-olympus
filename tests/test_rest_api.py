@@ -122,7 +122,7 @@ async def test_rest_health_returns_503_when_index_build_failed(
     tmp_kb: Path, tmp_path: Path
 ) -> None:
     """When ServerState.last_index_build_status == 'failed', /api/v1/health must
-    return HTTP 503 with degraded:true body (per spec §2.6 + §2.7)."""
+    return HTTP 503 with degraded:true body."""
     from data_olympus.server import build_app
     app = build_app(
         kb_main_path=tmp_kb,
@@ -171,7 +171,7 @@ async def test_rest_health_returns_503_when_no_pull_recorded(
 
 
 # -------------------------------------------------------------------------
-# Degraded -> 503 on ALL read endpoints (per spec §2.6; Codex blocker fix).
+# Degraded -> 503 on ALL read endpoints.
 # -------------------------------------------------------------------------
 
 

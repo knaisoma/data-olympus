@@ -1,4 +1,4 @@
-"""Append-only JSONL audit log of all writes (2C-second)."""
+"""Append-only JSONL audit log of all writes."""
 from __future__ import annotations
 
 import json

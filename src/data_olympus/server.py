@@ -198,7 +198,7 @@ def build_app(
 
     @app.tool()
     def kb_get(id: str) -> dict[str, object]:
-        """Retrieve a document by id (STD-U-007, GDEC-008, T-NNN, etc.).
+        """Retrieve a document by id (STD-U-001, ADR-002, T-NNN, etc.).
         Returns full content markdown plus metadata."""
         from data_olympus.tools_read import KbNotFoundError, kb_get_fn
         try:
@@ -219,7 +219,7 @@ def build_app(
         text: str, tags: list[str], source_session: str,
         agent_identity: str, confidence: float,
     ) -> dict[str, object]:
-        """Propose a new operator memory file. High confidence auto-commits and
+        """Propose a new memory file. High confidence auto-commits and
         enqueues for push; low confidence enters the pending queue for operator
         review."""
         assert state.worktrees is not None

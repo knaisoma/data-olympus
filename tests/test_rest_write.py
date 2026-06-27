@@ -64,7 +64,7 @@ async def test_rest_propose_edit_rejects_traversal(http_app) -> None:
         resp = await client.post(
             "/api/v1/propose/edit",
             json={
-                "target_path": "projects/foo/../operator/x.md",
+                "target_path": "projects/foo/../memory/x.md",
                 "postimage": "x", "base_commit": "HEAD",
                 "base_blob_sha": None, "target_file_hash": None,
                 "reason": "test", "source_session": "s",

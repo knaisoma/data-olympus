@@ -1,6 +1,6 @@
 """Durable push queue: enqueue commits awaiting `git push`, drain with retry.
 
-Per spec §2.4 rev 2: every queue entry write goes through atomic_write_json
+Every queue entry write goes through atomic_write_json
 (temp -> fsync -> rename -> parent-dir fsync) so a commit returning "committed"
 guarantees the queue entry survives a crash.
 """
@@ -72,7 +72,7 @@ class PushQueue:
         worktree_root: str,
         list_unpushed_shas: Callable[[str], list[str]],
     ) -> None:
-        """Per spec §2.3: at startup, scan every worktree under worktree_root.
+        """At startup, scan every worktree under worktree_root.
         For each commit reachable from HEAD but NOT from origin/main, ensure
         a queue entry exists."""
         if not os.path.isdir(worktree_root):

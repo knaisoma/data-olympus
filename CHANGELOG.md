@@ -32,6 +32,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detection floor for un-hookable agents: `kb enforce report` (and `data-olympus report`) correlates governed git commits against the consult audit and lists changes with no consultation on record. An opt-in repo-scoped git provider (`kb enforce install --agent git`) installs a post-commit warning hook, or a pre-commit blocking hook with `--block`. Reuses the existing audit endpoint; no server change.
 - Enforcement hardening and observability: gate_bypass and gate_degraded events are now recorded (via `data-olympus report --emit-events` / the git warn hook, and the pre-tool hook on a reachable-degraded gate), so `kb_compliance` surfaces them. The gate receives `action_diff` and the classifier uses word-boundary matching plus dependency-install command signals (Codex and Claude now gate the Bash tool). New `kb enforce install --mode off|soft|hard`, ledger persistence via `KB_LEDGER_PATH`, a friendly PATH hint for `kb enforce report`, and a CI guard requiring a changelog entry for functional changes.
 
+### Changed
+
+- The path-to-`(tier, category)` taxonomy now ships a deployment-neutral default
+  and is configurable at deploy time, with no code change: `KB_TAXONOMY_PATH`
+  (a JSON file of `[prefix, tier, category]` triples that replaces the default
+  table), `KB_INDEXED_PREFIXES` (comma-separated writable top-level prefixes
+  that replace the default set), and `KB_MEMORY_INBOX_PREFIX` (directory new
+  memory proposals are written under, default `memory/inbox/`). `tech-stacks/<stack>/`
+  is now classified dynamically as `stack:<stack>` rather than from a fixed
+  allow-list. Deployments that relied on the previous built-in directory names
+  must set these variables to preserve prior classification and writable paths.
+
 ### Fixed
 
 - The enforcement hook now reports the correct per-agent identity to the consult audit. Previously every agent (Claude, Codex, Gemini) was recorded as `claude-code`, so the `kb_compliance` per-agent view was wrong for Codex and Gemini. The `kb-enforce-hook` dispatcher gained an `--agent` flag and each provider threads its own identity.

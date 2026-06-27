@@ -8,11 +8,13 @@ detect_workspace_and_component() {
     local cwd
     cwd=$(cd "$start" && pwd -P) || return 1
 
-    # Walk up until we find a directory under ~/kn-projects/.
+    # Walk up until we find a directory directly under the workspaces root.
+    # The root is configurable via KB_WORKSPACES_ROOT (default: ~/projects).
+    local workspaces_root="${KB_WORKSPACES_ROOT:-$HOME/projects}"
     local workspace_root=""
     local cur="$cwd"
     while [ "$cur" != "/" ]; do
-        if [ "$(dirname "$cur")" = "$HOME/kn-projects" ]; then
+        if [ "$(dirname "$cur")" = "$workspaces_root" ]; then
             workspace_root="$cur"
             break
         fi

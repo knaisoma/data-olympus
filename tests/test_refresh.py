@@ -48,11 +48,11 @@ def test_refresh_once_rebuilds_on_remote_change(tmp_git_kb: Path, tmp_path: Path
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", str(remote), str(clone)], check=True, env=env)
     (clone / "decisions").mkdir(parents=True, exist_ok=True)
-    (clone / "decisions" / "GDEC-NEW.md").write_text(
-        "---\nid: GDEC-NEW\n---\n# New decision\n"
+    (clone / "decisions" / "DEC-NEW.md").write_text(
+        "---\nid: DEC-NEW\n---\n# New decision\n"
     )
     subprocess.run(["git", "-C", str(clone), "add", "-A"], check=True, env=env)
-    subprocess.run(["git", "-C", str(clone), "commit", "-m", "add GDEC-NEW"],
+    subprocess.run(["git", "-C", str(clone), "commit", "-m", "add DEC-NEW"],
                    check=True, env=env)
     subprocess.run(["git", "-C", str(clone), "push", "origin", "main"], check=True, env=env)
 
@@ -63,7 +63,7 @@ def test_refresh_once_rebuilds_on_remote_change(tmp_git_kb: Path, tmp_path: Path
     after_sha = git.head_sha()
     assert before_sha != after_sha
     # The new doc must now be queryable
-    new_doc = idx.get("GDEC-NEW")
+    new_doc = idx.get("DEC-NEW")
     assert new_doc is not None
 
 

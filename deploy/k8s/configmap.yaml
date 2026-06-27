@@ -21,3 +21,15 @@ data:
   KB_GIT_KEY_PATH: /tmp/git-key
   KB_WRITE_BLOCK_TIERS: ""
   KB_WRITE_BLOCK_PATHS: ""
+  # Taxonomy overrides. Empty values use the built-in generic defaults
+  # (universal/, tech-stacks/, decisions/, workflows/, memory/, tooling/,
+  # templates/, projects/). A deployment with a different directory layout
+  # supplies its own mapping here:
+  #   KB_TAXONOMY_PATH       path to a JSON file of [prefix, tier, category]
+  #                          triples that REPLACES the default table.
+  #   KB_INDEXED_PREFIXES    comma-separated writable top-level prefixes that
+  #                          REPLACE the default set.
+  #   KB_MEMORY_INBOX_PREFIX directory new memory proposals are written under.
+  KB_TAXONOMY_PATH: ""
+  KB_INDEXED_PREFIXES: ""
+  KB_MEMORY_INBOX_PREFIX: "memory/inbox/"

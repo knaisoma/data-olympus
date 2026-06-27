@@ -22,7 +22,7 @@ The result is a format that is portable and human-readable at rest (plain files,
 
 **Concept.** A single markdown file that represents one unit of knowledge: a standard, a decision, a workflow, a project record, a memory entry, or a reference document.
 
-**Concept ID.** The stable symbolic identifier stored in the `id` frontmatter field (for example, `STD-U-002` or `GDEC-017`). This is explicitly decoupled from the file path: renaming or reorganizing a file does not change its ID.
+**Concept ID.** The stable symbolic identifier stored in the `id` frontmatter field (for example, `STD-U-001` or `ADR-002`). This is explicitly decoupled from the file path: renaming or reorganizing a file does not change its ID.
 
 **Frontmatter.** A YAML mapping block at the very top of a markdown file, delimited by opening and closing `---` lines. The frontmatter holds all structured metadata for the concept.
 
@@ -32,7 +32,7 @@ The result is a format that is portable and human-readable at rest (plain files,
 
 **Citation.** A reference to an external source (URL, paper, standard) embedded in the body. Citations are prose and are not part of the structured link graph.
 
-**Tier.** A classification of scope for a concept: `T1` (universal), `T2` (stack-specific), `T3` (project-scoped), `T4` (component-scoped), or `meta` (tooling, audits, operator configuration). Defined in the `tier` frontmatter field.
+**Tier.** A classification of scope for a concept: `T1` (universal), `T2` (stack-specific), `T3` (project-scoped), `T4` (component-scoped), or `meta` (tooling, audits, deployment configuration). Defined in the `tier` frontmatter field.
 
 ---
 
@@ -76,7 +76,7 @@ The following fields are added by this profile. OKF consumers silently ignore un
 
 **Required fields** (a concept document that is missing any of these does not conform):
 
-- `id`: stable symbolic identifier (for example, `STD-U-002` or `GDEC-017`); decoupled from path so that files can be renamed or reorganized without breaking references.
+- `id`: stable symbolic identifier (for example, `STD-U-001` or `ADR-002`); decoupled from path so that files can be renamed or reorganized without breaking references.
 - `type`: controlled vocabulary: `standard`, `decision`, `workflow`, `project`, `memory`, `reference`. Unknown values are a validation error against this spec (see section 9), but consumers MUST tolerate them at read time.
 - `status`: lifecycle state: `draft`, `active`, `deprecated`, `superseded`, `proposed`, `accepted`, `rejected`. Standards and most concepts follow draft to active to deprecated; decisions (ADRs) follow proposed to accepted to superseded, deprecated, or rejected.
 - `tier`: scope classification: `T1`, `T2`, `T3`, `T4`, `meta`.
@@ -99,13 +99,13 @@ Note: `supersedes` and `superseded_by` are governance extensions not present in 
 
 ```markdown
 ---
-id: STD-U-002
+id: STD-U-001
 type: standard
 status: active
 tier: T1
 title: Writing style standard
 description: Defines tone, length, and formatting conventions for all written
-  knowledge base content across the operator's projects.
+  knowledge base content across all projects in the bundle.
 tags:
   - writing
   - style
@@ -126,7 +126,7 @@ documents regardless of tier.
 
 ## 5. Cross-linking
 
-Links between concepts use standard markdown hyperlink syntax. The preferred form is a **bundle-relative path** starting from the bundle root (for example, `/decisions/GDEC-017-tier-model.md`). Relative paths (for example, `../universal/STD-U-001.md`) are also allowed.
+Links between concepts use standard markdown hyperlink syntax. The preferred form is a **bundle-relative path** starting from the bundle root (for example, `/decisions/ADR-002-single-writer-serving.md`). Relative paths (for example, `../universal/STD-U-001.md`) are also allowed.
 
 Links are **untyped directed edges**: the format does not define a link-type vocabulary. Semantic relationships (supersedes, implements, references) are expressed in frontmatter fields, not in link syntax.
 

@@ -1,4 +1,4 @@
-"""Build commit messages with 7 audit trailers per spec §2.6."""
+"""Build commit messages with 7 audit trailers."""
 from __future__ import annotations
 
 from typing import Literal

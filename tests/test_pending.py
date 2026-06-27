@@ -10,7 +10,7 @@ def test_enqueue_memory_writes_postimage(tmp_path) -> None:
     q = PendingQueue(pending_root=str(tmp_path / "p"))
     pid = q.enqueue(
         proposal_type="memory",
-        target_path="operator/memory/inbox/2026-06-01-test.md",
+        target_path="memory/inbox/2026-06-01-test.md",
         postimage="# test\nbody\n",
         base_commit="0123abc",
         base_blob_sha=None,
@@ -21,7 +21,7 @@ def test_enqueue_memory_writes_postimage(tmp_path) -> None:
     assert entry_path.exists()
     body = json.loads(entry_path.read_text())
     assert body["postimage"] == "# test\nbody\n"
-    assert body["target_path"] == "operator/memory/inbox/2026-06-01-test.md"
+    assert body["target_path"] == "memory/inbox/2026-06-01-test.md"
     assert body["base_commit"] == "0123abc"
 
 
@@ -76,7 +76,7 @@ def test_path_lock_releases_on_reject(tmp_path) -> None:
 def test_list_pending_returns_active_entries(tmp_path) -> None:
     q = PendingQueue(pending_root=str(tmp_path / "p"))
     p1 = q.enqueue(
-        proposal_type="memory", target_path="operator/memory/inbox/a.md",
+        proposal_type="memory", target_path="memory/inbox/a.md",
         postimage="a", base_commit="c", base_blob_sha=None, target_file_hash=None,
         meta={"confidence": 0.3, "agent_identity": "claude"},
     )
@@ -93,12 +93,12 @@ def test_list_pending_returns_active_entries(tmp_path) -> None:
 def test_resolve_approve_returns_postimage_and_metadata(tmp_path) -> None:
     q = PendingQueue(pending_root=str(tmp_path / "p"))
     pid = q.enqueue(
-        proposal_type="memory", target_path="operator/memory/inbox/a.md",
+        proposal_type="memory", target_path="memory/inbox/a.md",
         postimage="# accept\n", base_commit="c", base_blob_sha=None, target_file_hash=None,
         meta={"confidence": 0.3, "agent_identity": "claude", "source_session": "s"},
     )
     resolved = q.approve(pid)
-    assert resolved.target_path == "operator/memory/inbox/a.md"
+    assert resolved.target_path == "memory/inbox/a.md"
     assert resolved.postimage == "# accept\n"
     assert resolved.meta["confidence"] == 0.3
     # Lock + entry are cleared after approve.
@@ -108,7 +108,7 @@ def test_resolve_approve_returns_postimage_and_metadata(tmp_path) -> None:
 def test_resolve_edit_uses_edited_text(tmp_path) -> None:
     q = PendingQueue(pending_root=str(tmp_path / "p"))
     pid = q.enqueue(
-        proposal_type="memory", target_path="operator/memory/inbox/a.md",
+        proposal_type="memory", target_path="memory/inbox/a.md",
         postimage="orig", base_commit="c", base_blob_sha=None, target_file_hash=None,
         meta={"confidence": 0.3, "agent_identity": "claude"},
     )

@@ -120,7 +120,7 @@ def test_kb_propose_memory_rejects_rate_limited(tmp_path) -> None:
 
 def test_kb_propose_memory_rejects_blocked_tier(tmp_path) -> None:
     git, reg, pq, pen, rl, _ = _state(tmp_path)
-    bl = PathBlocklist(tier_blocks=["operator"], path_blocks=[])
+    bl = PathBlocklist(tier_blocks=["memory"], path_blocks=[])
     resp = kb_propose_memory_fn(
         text="x",
         tags=[],
@@ -156,7 +156,7 @@ def _seed_t1_file(repo) -> tuple[str, str]:
 def test_kb_propose_edit_rejects_traversal(tmp_path) -> None:
     git, reg, pq, pen, rl, bl = _state(tmp_path)
     resp = kb_propose_edit_fn(
-        target_path="projects/foo/../../operator/x.md",
+        target_path="projects/foo/../../memory/x.md",
         postimage="x", base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
         reason="test", source_session="s", agent_identity="claude", confidence=0.9,
         confidence_threshold=0.85,

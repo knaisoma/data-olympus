@@ -48,7 +48,7 @@ def tmp_kb(tmp_path: Path) -> Path:
       - 1 T2 tech-stacks/backend-nestjs STD (for tier filter tests)
       - 1 T3 projects/example-project/README.md (with git_remote_url for rename detection)
       - 1 T4 projects/example-project/components/payment-service/AGENTS.md (also with remote url)
-      - 1 GDEC, 1 workflow, operator-overrides + tooling files
+      - 1 decision, 1 workflow, memory + tooling files
     """
     kb = tmp_path / "kb"
     foundation = kb / "universal" / "foundation"
@@ -67,15 +67,15 @@ def tmp_kb(tmp_path: Path) -> Path:
         "title: Test Policy\n---\n# STD-U-001: Test Policy\n\n"
         "Body content for testing search over the worktree word.\n"
     )
-    (foundation / "STD-U-002-writing-style.md").write_text(
+    (foundation / "STD-U-002-style.md").write_text(
         "---\nid: STD-U-002\ntier: T1\ncategory: foundation\ntags: [style]\n"
-        "title: Writing Style\n---\n# STD-U-002: Writing Style\n\n"
-        "Use bulleted lists. Avoid em-dashes.\n"
+        "title: Example Style Standard\n---\n# STD-U-002: Example Style Standard\n\n"
+        "Prefer short sentences and clear structure.\n"
     )
-    (foundation / "STD-U-007-disagreement-format.md").write_text(
+    (foundation / "STD-U-007-review.md").write_text(
         "---\nid: STD-U-007\ntier: T1\ncategory: foundation\ntags: [collaboration]\n"
-        "title: Disagreement Format\n---\n# STD-U-007: Disagreement Format\n\n"
-        "Use PROBLEM, WHY, BETTER APPROACH, BENEFITS.\n"
+        "title: Example Review Standard\n---\n# STD-U-007: Example Review Standard\n\n"
+        "Record review findings in a consistent structure.\n"
     )
     (nestjs / "STD-BN-001-module-structure.md").write_text(
         "---\nid: STD-BN-001\ntier: T2\ncategory: stack:backend-nestjs\ntags: [nestjs]\n"
@@ -94,9 +94,9 @@ def tmp_kb(tmp_path: Path) -> Path:
         "title: payment-service AGENTS\n---\n# payment-service\n\n"
         "Component-scoped rules.\n"
     )
-    (decisions / "GDEC-008-instruction-file-standard.md").write_text(
-        "---\nid: GDEC-008\ntier: decisions\ntags: [agents]\n"
-        "title: Instruction File Standard\n---\n# GDEC-008\n\n"
+    (decisions / "DEC-001-instruction-file-standard.md").write_text(
+        "---\nid: DEC-001\ntier: decisions\ntags: [agents]\n"
+        "title: Instruction File Standard\n---\n# DEC-001\n\n"
         "AGENTS.md is canonical.\n"
     )
     workflows = kb / "workflows"
@@ -104,10 +104,10 @@ def tmp_kb(tmp_path: Path) -> Path:
     (workflows / "WF-001-ship-something.md").write_text(
         "# WF-001: Ship Something\n\nA workflow without front matter.\n"
     )
-    operator_overrides = kb / "operator" / "agent-overrides"
-    operator_overrides.mkdir(parents=True)
-    (operator_overrides / "claude.md").write_text(
-        "# Claude override\n\nClaude-specific notes.\n"
+    memory_accepted = kb / "memory" / "accepted"
+    memory_accepted.mkdir(parents=True)
+    (memory_accepted / "note-a.md").write_text(
+        "# Accepted note\n\nAn accepted memory entry.\n"
     )
     tooling = kb / "tooling"
     tooling.mkdir(parents=True)

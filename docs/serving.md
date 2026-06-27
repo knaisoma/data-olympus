@@ -42,6 +42,27 @@ reports `degraded: true` only when the index has not been rebuilt within
 For a local read-only demo with no remote, set `KB_REMOTE_URL=""`. The server
 stays healthy as long as the index builds successfully on startup.
 
+## Taxonomy and writable paths
+
+The server maps each document's path to a `(tier, category)` pair. The built-in
+default is deployment-neutral and covers `universal/`, `tech-stacks/<stack>/`,
+`decisions/`, `workflows/`, `memory/` (with `memory/inbox/` and
+`memory/accepted/`), `tooling/`, `templates/`, and `projects/<name>/`
+(with `components/<component>/` for T4).
+
+A bundle that uses a different directory layout overrides the defaults at deploy
+time, with no code change:
+
+- `KB_TAXONOMY_PATH`: path to a JSON file holding a list of
+  `[prefix, tier, category]` triples that **replaces** the default table. The
+  `tech-stacks/` and `projects/` prefixes keep their dynamic `stack:<name>` /
+  `project:<name>` behavior if present.
+- `KB_INDEXED_PREFIXES`: comma-separated list of writable top-level prefixes
+  that **replaces** the default writable set. Writes outside these prefixes are
+  rejected by the structural rule.
+- `KB_MEMORY_INBOX_PREFIX`: directory new memory proposals are written under
+  (default `memory/inbox/`).
+
 ## Authentication and network security
 
 The MCP server has no built-in authentication. It is a single-writer internal service.

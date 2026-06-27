@@ -67,8 +67,8 @@ def test_zero_valued_required_field_is_not_missing(tmp_path):
 
 def test_adr_accepted_status_is_valid(tmp_path):
     doc = _doc(
-        tmp_path, "GDEC-021.md",
-        "---\nid: GDEC-021\ntype: decision\nstatus: accepted\ntier: meta\n---\nbody\n",
+        tmp_path, "DEC-021.md",
+        "---\nid: DEC-021\ntype: decision\nstatus: accepted\ntier: meta\n---\nbody\n",
     )
     status_errs = [
         f for f in validate_document(doc)

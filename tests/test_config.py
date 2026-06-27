@@ -77,7 +77,7 @@ def test_config_loads_new_write_env_vars(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("KB_PENDING_ROOT", "/state/pending")
     monkeypatch.setenv("KB_PUSH_QUEUE_ROOT", "/state/push-queue")
     monkeypatch.setenv("KB_WRITE_BLOCK_TIERS", "T1,T2")
-    monkeypatch.setenv("KB_WRITE_BLOCK_PATHS", "decisions/GDEC-008-*.md")
+    monkeypatch.setenv("KB_WRITE_BLOCK_PATHS", "decisions/DEC-008-*.md")
     monkeypatch.setenv("KB_RATE_LIMIT_PER_HOUR", "50")
     monkeypatch.setenv("KB_PENDING_TIMEOUT_SEC", "86400")
     monkeypatch.setenv("KB_PENDING_QUEUE_CAP", "100")
@@ -90,7 +90,7 @@ def test_config_loads_new_write_env_vars(monkeypatch, tmp_path) -> None:
     assert cfg.pending_root == "/state/pending"
     assert cfg.push_queue_root == "/state/push-queue"
     assert cfg.write_block_tiers == ["T1", "T2"]
-    assert cfg.write_block_paths == ["decisions/GDEC-008-*.md"]
+    assert cfg.write_block_paths == ["decisions/DEC-008-*.md"]
     assert cfg.rate_limit_per_hour == 50
     assert cfg.pending_timeout_sec == 86400
     assert cfg.pending_queue_cap == 100

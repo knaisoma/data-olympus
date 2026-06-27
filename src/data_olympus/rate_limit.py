@@ -1,8 +1,8 @@
 """In-memory sliding-window rate limiter keyed by (remote_addr, agent_identity).
 
-Per spec §2.7 + §5.2 honest framing: this is fair-use accounting for cooperative
-agents. A misbehaving agent CAN vary agent_identity to multiply quota; that is
-the accepted residual risk under the operator-trusted laptop posture.
+Honest framing: this is fair-use accounting for cooperative agents. A misbehaving
+agent CAN vary agent_identity to multiply quota; that is the accepted residual
+risk under a trusted single-user deployment posture.
 """
 from __future__ import annotations
 

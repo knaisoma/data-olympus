@@ -1,13 +1,11 @@
 #!/usr/bin/env bats
-# bats tests for the 2C-second write subcommands of bin/kb. Spins up the
+# bats tests for the write subcommands of bin/kb. Spins up the
 # same mock REST server used by test_kb_cli.bats but exercises the POST
 # routes (propose/resolve) and the new GET routes (pending/audit).
 
 setup_file() {
-  # tests/ sits ONE level below the repo root in this repo, so the root is the
-  # parent of the bats file's directory. (The original `../../..` was carried
-  # over from the company-knowledge layout where these lived under
-  # tools/data-olympus-mcp/tests/, and resolved to $HOME here.)
+  # tests/ sits ONE level below the repo root, so the root is the parent of the
+  # bats file's directory.
   REPO_ROOT="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)"
   export REPO_ROOT
   export FIXTURE_DIR="${BATS_TEST_FILENAME%/*}/cli-fixtures"
@@ -114,7 +112,7 @@ teardown() {
 @test "kb pending lists entries" {
   run "$KB" pending
   [ "$status" -eq 0 ]
-  [[ "$output" == *"pending_id"* ]] || [[ "$output" == *"operator/memory/inbox"* ]]
+  [[ "$output" == *"pending_id"* ]] || [[ "$output" == *"memory/inbox"* ]]
 }
 
 @test "kb pending plain output is tab-delimited" {
