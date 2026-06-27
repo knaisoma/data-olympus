@@ -188,6 +188,30 @@ class AuditResponse(BaseModel):
     limit_hit: bool = False
 
 
+class ConsultResponse(BaseModel):
+    """kb_consult response: governing rules plus a recorded consultation."""
+
+    is_governed_decision: bool
+    rules: list[SearchHitModel] = []
+    consulted_at: float
+    ttl_seconds: int
+
+
+class GateCheckResponse(BaseModel):
+    """kb_gate_check verdict for a pending code action."""
+
+    verdict: str  # 'allow' | 'consult_required'
+    reason: str = ""
+    rules: list[SearchHitModel] = []
+
+
+class ComplianceResponse(BaseModel):
+    """Aggregated enforcement-event counts overall and per agent."""
+
+    counts: dict[str, int] = {}
+    by_agent: dict[str, dict[str, int]] = {}
+
+
 class RenameCandidateModel(BaseModel):
     target_tier: str
     target_workspace: str
