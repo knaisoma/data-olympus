@@ -14,18 +14,22 @@ from data_olympus.report import (
 )
 
 
-# git log --pretty=format:%H%x00%ct%x00%an --name-only -z output: records are
-# separated by NUL; within a record, header fields are NUL-separated, then the
-# file list is NUL-separated, and the commit block ends before the next %H.
-# We build it explicitly so the parser contract is unambiguous.
+# Reproduces the EXACT byte structure of
+#   git log --no-merges -z --format=%x1e%H%x1f%ct%x1f%an --name-only
+# Records are separated by RS (\x1e). Within a record the header is
+# <sha>\x1f<ts>\x1f<author>; then `--name-only -z` appends a NUL after the last
+# format field, then a newline, then the NUL-separated, NUL-terminated file list.
+# Verified empirically against real git output before being committed here.
 def _log(*commits) -> str:
     # each commit: (sha, ts, author, [files])
     parts = []
     for sha, ts, author, files in commits:
-        parts.append(f"{sha}\x00{ts}\x00{author}")
-        for f in files:
-            parts.append(f"\x00{f}")
-        parts.append("\x00")  # record terminator before next sha
+        rec = f"\x1e{sha}\x1f{ts}\x1f{author}"
+        if files:
+            rec += "\x00\n" + "".join(f"{f}\x00" for f in files)
+        else:
+            rec += "\x00"
+        parts.append(rec)
     return "".join(parts)
 
 

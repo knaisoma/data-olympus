@@ -40,48 +40,36 @@ class ComplianceReport:
 
 
 def parse_governed_commits(git_log_text: str, classifier: IntentClassifier) -> list[GovernedCommit]:
-    """Parse `git log --pretty=format:%H%x00%ct%x00%an --name-only -z` output.
+    """Parse `git log --no-merges -z --format=%x1e%H%x1f%ct%x1f%an --name-only` output.
 
-    Records are separated by NUL. The first three NUL-separated tokens of a record
-    are sha, unix-timestamp, author; the remaining NUL-separated tokens are file
-    paths (until the next sha-looking token). A commit is kept only if at least one
-    of its files is governed per the classifier."""
-    tokens = list(git_log_text.split("\x00"))
+    Records are separated by RS (\\x1e). Within a record the header fields are
+    separated by US (\\x1f): the first three are sha, unix-timestamp, author. The
+    `--name-only -z` flags then append a NUL after the last format field, a
+    newline, and finally the NUL-separated (NUL-terminated) file list. So the
+    third US-field of a record is `<author>\\x00\\n<file>\\x00<file>\\x00...`; we
+    split the author off at the first newline and read the rest as the file list.
+    Unambiguous record/field separators avoid the heuristic boundary-detection
+    that real git output (author joined to the first filename by a literal
+    newline) defeats. A commit is kept only if at least one of its files is
+    governed per the classifier."""
     commits: list[GovernedCommit] = []
-    i = 0
-    n = len(tokens)
-    while i < n:
-        sha = tokens[i].strip()
-        if not sha:
-            i += 1
+    for record in git_log_text.split("\x1e"):
+        # The leading split produces an empty chunk; empty commits leave only the
+        # header with no file list. Skip anything with no real header content.
+        if not record.strip("\x00\n"):
             continue
-        # next two tokens are ts, author
-        if i + 2 >= n:
-            break
-        ts_raw = tokens[i + 1].strip()
-        author = tokens[i + 2].strip()
-        i += 3
-        files: list[str] = []
-        while i < n:
-            tok = tokens[i]
-            stripped = tok.strip()
-            if not stripped:
-                i += 1
-                # blank token terminates the file list for this record
-                break
-            # A new record begins with a bare sha followed by a numeric unix ts.
-            # Detect it structurally: an all-hex token whose next token is
-            # all-digits starts the next commit. (`git log -z` does not emit a
-            # blank separator between records, so this hex+digit-follow rule is
-            # the sole record boundary signal.)
-            if (
-                i + 1 < n
-                and all(c in "0123456789abcdef" for c in stripped.lower())
-                and tokens[i + 1].strip().isdigit()
-            ):
-                break
-            files.append(stripped)
-            i += 1
+        fields = record.split("\x1f")
+        if len(fields) < 3:
+            continue
+        sha = fields[0].strip()
+        ts_raw = fields[1].strip()
+        rest = fields[2]
+        if "\n" in rest:
+            author_part, files_blob = rest.split("\n", 1)
+        else:
+            author_part, files_blob = rest, ""
+        author = author_part.rstrip("\x00").strip()
+        files = [f for f in files_blob.split("\x00") if f.strip()]
         if any(classifier.classify(action_path=f).is_governed_decision for f in files):
             try:
                 ts = int(ts_raw)
@@ -96,7 +84,7 @@ def extract_consults(audit_events: list[dict[str, Any]], workspace: str) -> list
     for ev in audit_events:
         if ev.get("event_type") == "consult" and ev.get("target_path") == workspace:
             out.append(Consult(
-                ts=float(ev.get("ts", 0.0)),
+                ts=float(ev.get("ts") or 0.0),
                 agent_identity=str(ev.get("agent_identity") or "unknown"),
                 source_session=str(ev.get("source_session") or ""),
             ))
