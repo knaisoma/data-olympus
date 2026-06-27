@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 from data_olympus.audit_log import AuditLog
 from data_olympus.auth import PathBlocklist
 from data_olympus.config import Config, load_config
+from data_olympus.enforce_policy import ConsultationLedger, IntentClassifier
 from data_olympus.git_ops import GitOps
 from data_olympus.index import Index
 from data_olympus.pending import PendingQueue
@@ -41,6 +42,8 @@ class ServerState:
         rate_limiter: SlidingWindowLimiter | None = None,
         blocklist: PathBlocklist | None = None,
         audit_log: AuditLog | None = None,
+        classifier: IntentClassifier | None = None,
+        ledger: ConsultationLedger | None = None,
     ) -> None:
         self.idx = idx
         self.git = git
@@ -59,6 +62,8 @@ class ServerState:
         self.rate_limiter: SlidingWindowLimiter | None = rate_limiter
         self.blocklist: PathBlocklist | None = blocklist
         self.audit_log: AuditLog | None = audit_log
+        self.classifier: IntentClassifier = classifier or IntentClassifier()
+        self.ledger: ConsultationLedger = ledger or ConsultationLedger()
 
     def record_pull(self, ts: float) -> None:
         self.last_git_pull_at = ts
@@ -346,6 +351,55 @@ def build_app(
             blocklist=state.blocklist, audit_log=state.audit_log,
             remote_addr="mcp",
         )
+        return resp.model_dump()
+
+    @app.tool()
+    def kb_consult(
+        workspace: str, intent: str, source_session: str,
+        agent_identity: str,
+    ) -> dict[str, object]:
+        """Record a consultation for (source_session, workspace) and return the
+        governing rules for the intent. Call before code/architectural work."""
+        import time as _time
+
+        from data_olympus.tools_enforce import kb_consult_fn
+        resp = kb_consult_fn(
+            idx=state.idx, classifier=state.classifier, ledger=state.ledger,
+            workspace=workspace, intent=intent, source_session=source_session,
+            agent_identity=agent_identity,
+            ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
+            audit_log=state.audit_log,
+        )
+        return resp.model_dump()
+
+    @app.tool()
+    def kb_gate_check(
+        workspace: str, session_id: str, tool_name: str,
+        action_path: str | None = None, action_diff: str = "",
+    ) -> dict[str, object]:
+        """Return a verdict (allow | consult_required) for a pending code action.
+        Governed actions require a fresh consultation on record."""
+        import time as _time
+
+        from data_olympus.tools_enforce import kb_gate_check_fn
+        resp = kb_gate_check_fn(
+            classifier=state.classifier, ledger=state.ledger,
+            workspace=workspace, session_id=session_id, tool_name=tool_name,
+            action_path=action_path, action_diff=action_diff,
+            now=_time.time(), ttl_sec=state.config.consult_ttl_sec,
+            audit_log=state.audit_log,
+        )
+        return resp.model_dump()
+
+    @app.tool()
+    def kb_compliance(
+        since: float | None = None, agent: str | None = None,
+    ) -> dict[str, object]:
+        """Aggregate enforcement events (consult / gate_*) overall and per agent."""
+        if state.audit_log is None:
+            return {"counts": {}, "by_agent": {}}
+        from data_olympus.tools_enforce import kb_compliance_fn
+        resp = kb_compliance_fn(audit_log=state.audit_log, since=since, agent=agent)
         return resp.model_dump()
 
     from data_olympus.rest_api import register_routes
