@@ -245,12 +245,99 @@ class OpenCodeProvider:
         return 0 if ok else 1
 
 
+IBEGIN = "<!-- >>> data-olympus enforce (managed) >>> -->"
+IEND = "<!-- <<< data-olympus enforce <<< -->"
+INSTRUCTIONS_BODY = f"""{IBEGIN}
+<!-- data-olympus-enforce v{SHIM_VERSION} -->
+## Governed decisions (data-olympus)
+
+Before making a code or architectural decision (choosing a library, pattern,
+migration, API design, schema, or auth approach), you MUST call the `kb_consult`
+MCP tool for the current workspace and follow the governing rules it returns.
+Treat those rules as authoritative, not advisory. This agent cannot be hard-gated
+locally, so compliance is observed via the data-olympus audit log.
+{IEND}"""
+
+
+class InstructionsProvider:
+    """A soft provider that writes a MARKER-delimited managed block into a
+    Markdown instructions file. Unlike the hard hook providers, it cannot block a
+    tool call; it instructs the agent to consult the KB and relies on the
+    data-olympus audit log to observe compliance. The block is delimited by the
+    IBEGIN/IEND HTML comments so install is idempotent (one block, replaced on
+    re-install) and uninstall is surgical (operator content preserved).
+    """
+
+    tier = "soft"
+
+    def __init__(self, name: str, default_target: Path) -> None:
+        self.name = name
+        self._default_target = default_target
+
+    def default_target(self) -> Path:
+        return self._default_target
+
+    @staticmethod
+    def _strip_block(text: str) -> str:
+        if IBEGIN in text and IEND in text:
+            pre = text.split(IBEGIN, 1)[0].rstrip("\n")
+            post = text.split(IEND, 1)[1].lstrip("\n")
+            joined = "\n".join(p for p in (pre, post) if p)
+            return (joined + "\n") if joined else ""
+        return text
+
+    def install(self, target: Path) -> int:
+        existing = target.read_text() if target.exists() else ""
+        if target.exists():
+            _backup(target)
+        base = self._strip_block(existing).rstrip("\n")
+        new = (base + "\n\n" if base else "") + INSTRUCTIONS_BODY + "\n"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(new)
+        print(
+            f"installed data-olympus enforcement (v{SHIM_VERSION}) into {target} "
+            f"[{self.name}, tier=soft]"
+        )
+        return 0
+
+    def uninstall(self, target: Path) -> int:
+        if not target.exists():
+            print("nothing to uninstall")
+            return 0
+        _backup(target)
+        target.write_text(self._strip_block(target.read_text()))
+        print(f"uninstalled data-olympus enforcement from {target} [{self.name}]")
+        return 0
+
+    def status(self, target: Path) -> int:
+        if target.exists() and IBEGIN in target.read_text():
+            print(f"{self.name}: installed, tier=soft, versions=['{SHIM_VERSION}']")
+        else:
+            print(f"{self.name}: not installed")
+        return 0
+
+    def doctor(self, _target: Path) -> int:
+        ok, msg = _doctor_endpoint()
+        print(f"doctor [{self.name}]: {msg}")
+        return 0 if ok else 1
+
+
 def registry() -> dict:
     return {
         "claude-code": _claude_provider(),
         "codex": _codex_provider(),
         "gemini": _gemini_provider(),
         "opencode": OpenCodeProvider(),
+        # copilot-cli: the GitHub Copilot CLI loads "custom instructions from
+        # AGENTS.md and related files" (verified via `copilot --help`:
+        # `--no-custom-instructions` disables exactly that). No instructions file
+        # exists in ~/.copilot/ on this laptop, so we default to the documented
+        # global custom-instructions path ~/.copilot/copilot-instructions.md (one
+        # of the "related files"). Operators can override with --settings.
+        "copilot-cli": InstructionsProvider(
+            "copilot-cli", Path(os.path.expanduser("~/.copilot/copilot-instructions.md"))),
+        "copilot-ide": InstructionsProvider(
+            "copilot-ide", Path(".github/copilot-instructions.md")),
     }
 
 
