@@ -69,6 +69,47 @@ def _check_auth(request: Request, auth_token: str) -> JSONResponse | None:
     return None
 
 
+def _missing_fields_response(body: object, required: list[str]) -> JSONResponse | None:
+    """Return a 400 JSONResponse naming the missing/null required field(s), or
+    None when all are present and non-null.
+
+    Without this guard a missing field raised KeyError inside the handler,
+    surfacing as a plain-text HTTP 500 "Internal Server Error". The kb CLI fed
+    that non-JSON body to jq and aborted with a parse error, so a client that
+    forgot a field got an opaque crash instead of an actionable 400. An explicit
+    JSON null is treated the same as absent, since the handlers would otherwise
+    pass None straight into the write functions.
+    """
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"error": "bad_request", "message": "request body must be a JSON object"},
+            status_code=400,
+        )
+    missing = [f for f in required if body.get(f) is None]
+    if missing:
+        return JSONResponse(
+            {"error": "missing_field",
+             "message": f"missing or null required field(s): {', '.join(missing)}"},
+            status_code=400,
+        )
+    return None
+
+
+def _parse_confidence(body: dict) -> tuple[float, JSONResponse | None]:
+    """Coerce body['confidence'] to float, returning a 400 JSONResponse instead
+    of letting a non-numeric value raise ValueError/TypeError -> HTTP 500 (the
+    same opaque-crash class as a missing field). Presence/non-null is enforced
+    separately by _missing_fields_response, so the key is assumed present here.
+    """
+    try:
+        return float(body["confidence"]), None
+    except (TypeError, ValueError):
+        return 0.0, JSONResponse(
+            {"error": "bad_request", "message": "confidence must be a number"},
+            status_code=400,
+        )
+
+
 def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> None:
     """Mount REST routes under /api/v1/ on the FastMCP app.
 
@@ -138,6 +179,13 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
         if (denied := _check_auth(request, auth_token)) is not None:
             return denied
         body = await request.json()
+        if (bad := _missing_fields_response(
+            body, ["text", "source_session", "agent_identity", "confidence"],
+        )) is not None:
+            return bad
+        confidence, bad = _parse_confidence(body)
+        if bad is not None:
+            return bad
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None
@@ -148,7 +196,7 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
             text=body["text"], tags=body.get("tags", []),
             source_session=body["source_session"],
             agent_identity=body["agent_identity"],
-            confidence=float(body["confidence"]),
+            confidence=confidence,
             confidence_threshold=state.config.confidence_threshold,
             worktrees=state.worktrees, push_queue=state.push_queue,
             pending=state.pending, rate_limiter=state.rate_limiter,
@@ -166,6 +214,15 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
         if (denied := _check_auth(request, auth_token)) is not None:
             return denied
         body = await request.json()
+        if (bad := _missing_fields_response(
+            body,
+            ["target_path", "postimage", "base_commit",
+             "source_session", "agent_identity", "confidence"],
+        )) is not None:
+            return bad
+        confidence, bad = _parse_confidence(body)
+        if bad is not None:
+            return bad
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None
@@ -180,7 +237,7 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
             reason=body.get("reason", ""),
             source_session=body["source_session"],
             agent_identity=body["agent_identity"],
-            confidence=float(body["confidence"]),
+            confidence=confidence,
             confidence_threshold=state.config.confidence_threshold,
             worktrees=state.worktrees, push_queue=state.push_queue,
             pending=state.pending, rate_limiter=state.rate_limiter,

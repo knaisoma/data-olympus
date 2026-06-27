@@ -2,7 +2,9 @@
 # bats tests for bin/kb. Spins up a mock REST server on a free port per test.
 
 setup_file() {
-  REPO_ROOT="$(cd "$(dirname "${BATS_TEST_FILENAME}")/../../.." && pwd)"
+  # tests/ sits ONE level below the repo root in this repo (see note in
+  # test_kb_cli_write.bats); the original `../../..` resolved to $HOME here.
+  REPO_ROOT="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)"
   export REPO_ROOT
   export FIXTURE_DIR="${BATS_TEST_FILENAME%/*}/cli-fixtures"
   export KB="${REPO_ROOT}/bin/kb"

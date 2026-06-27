@@ -153,7 +153,39 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw) if raw else {}
         except json.JSONDecodeError:
             body = {}
-        if path in ("/api/v1/propose/memory", "/api/v1/propose/edit"):
+        if path == "/api/v1/propose/edit" and body.get("target_path") == "trigger/server-error.md":
+            # Plain-text 5xx, mimicking the real server's unhandled-KeyError 500.
+            # Exercises the CLI's graceful non-JSON error handling (must not feed
+            # this body to jq and abort with a parse error).
+            self._send(500, "Internal Server Error")
+        elif path == "/api/v1/propose/edit" and not body.get("base_commit"):
+            # Contract: propose/edit REQUIRES base_commit. The real server 500s
+            # without it; here we return a clean 400 so the bats suite asserts
+            # the CLI actually sends base_commit (regression guard for the bug
+            # where cmd_propose_edit omitted it).
+            self._send(
+                400,
+                json.dumps(
+                    {
+                        "status": "rejected_missing_base_commit",
+                        "reason": "base_commit is required",
+                    }
+                ),
+            )
+        elif path == "/api/v1/propose/edit" and body.get("base_commit") != "abc1234":
+            # Value check: health-ok.json exposes kb_commit="abc1234", so a
+            # correct CLI must fetch /health and send THAT exact value (not a
+            # hardcoded "HEAD" or stale string). Guards presence != value.
+            self._send(
+                400,
+                json.dumps(
+                    {
+                        "status": "rejected_wrong_base_commit",
+                        "reason": "base_commit must equal the KB head (abc1234)",
+                    }
+                ),
+            )
+        elif path in ("/api/v1/propose/memory", "/api/v1/propose/edit"):
             confidence = float(body.get("confidence", 0.0))
             if confidence >= 0.85:
                 self._send(
