@@ -151,11 +151,12 @@ def kb_bootstrap_project_fn(
     import subprocess
 
     from data_olympus.audit_trailers import build_commit_message
+    from data_olympus.auth import safe_join_under_root
     wt = worktrees.get_or_create(source_session=source_session, agent_identity=agent_identity)
     for f in files:
-        full_path = os.path.join(wt.path, f["target_path"])
-        real = os.path.realpath(full_path)
-        if not real.startswith(os.path.realpath(wt.path) + os.sep):
+        # Shared symlink-escape containment guard (see safe_join_under_root).
+        full_path = safe_join_under_root(wt.path, f["target_path"])
+        if full_path is None:
             return BootstrapResponse(status="rejected_symlink_escape",
                                      rejected_paths=[f["target_path"]])
         os.makedirs(os.path.dirname(full_path), exist_ok=True)

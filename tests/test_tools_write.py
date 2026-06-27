@@ -138,6 +138,53 @@ def test_kb_propose_memory_rejects_blocked_tier(tmp_path) -> None:
     assert resp.status == "rejected_path_blocked"
 
 
+def test_kb_propose_memory_rejects_symlink_escape(tmp_path, monkeypatch) -> None:
+    """Regression for the Codex blocker: a KB commit that plants the memory inbox
+    as a symlink to an outside dir must NOT cause a write outside the worktree."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    evil = tmp_path / "evil"
+    evil.mkdir()
+    (repo / "memory").mkdir()
+    os.symlink(str(evil), str(repo / "memory" / "inbox"))
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=_env())
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "plant symlink"],
+                   check=True, env=_env())
+    resp = kb_propose_memory_fn(
+        text="escape attempt", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    assert resp.status == "rejected_symlink_escape"
+    assert list(evil.iterdir()) == []  # nothing written outside the worktree
+    assert pq.size() == 0
+
+
+def test_kb_propose_edit_rejects_symlink_escape(tmp_path, monkeypatch) -> None:
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    evil = tmp_path / "evil-edit"
+    evil.mkdir()
+    # Plant universal/ as a symlink to the evil dir, committed into the tree.
+    os.symlink(str(evil), str(repo / "universal"))
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=_env())
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "plant symlink dir"],
+                   check=True, env=_env())
+    resp = kb_propose_edit_fn(
+        target_path="universal/foundation/STD-U-001.md",
+        postimage="pwned\n", base_commit="HEAD", base_blob_sha=None,
+        target_file_hash=None, reason="escape", source_session="s",
+        agent_identity="claude", confidence=0.95, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    assert resp.status == "rejected_symlink_escape"
+    assert list(evil.iterdir()) == []
+    assert pq.size() == 0
+
+
 def _seed_t1_file(repo) -> tuple[str, str]:
     """Seed a T1 file in the repo; return (target_path, base_blob_sha)."""
     p = repo / "universal" / "foundation" / "STD-U-001.md"

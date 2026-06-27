@@ -65,6 +65,30 @@ def is_writable_path(target_path: str) -> bool:
     return any(canonical.startswith(p) for p in indexed_prefixes())
 
 
+def safe_join_under_root(root: str, target_path: str) -> str | None:
+    """Join ``target_path`` under ``root`` and return the absolute path only when
+    it resolves to a location strictly inside ``root``; return None otherwise.
+
+    Defence against symlink escape and traversal: ``os.path.realpath`` resolves
+    every symlink in the existing path prefix (and any ``..`` segments), so a
+    pre-existing malicious symlink in the checked-out tree (e.g. ``memory/inbox``
+    pointing outside the worktree) makes the resolved path fall outside ``root``
+    and is rejected here, before any ``os.makedirs`` / ``open`` side effect.
+
+    The returned value is the *unresolved* join (``os.path.join(root,
+    target_path)``) so callers keep writing to the in-tree path and ``git add``
+    the relative ``target_path`` exactly as before; returning the resolved real
+    path would change those semantics. This is the single shared containment
+    guard used by every write path (memory propose, edit, resolve, bootstrap).
+    """
+    root_real = os.path.realpath(root)
+    full = os.path.join(root, target_path)
+    real = os.path.realpath(full)
+    if real != root_real and real.startswith(root_real + os.sep):
+        return full
+    return None
+
+
 class PathBlocklist:
     """Operator-configured per-tier + per-path blocklist. Both default empty."""
 

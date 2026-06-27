@@ -10,7 +10,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from data_olympus.audit_trailers import build_commit_message
-from data_olympus.auth import PathBlocklist, is_writable_path
+from data_olympus.auth import PathBlocklist, is_writable_path, safe_join_under_root
 from data_olympus.models import (
     PendingEntry,
     PendingListResponse,
@@ -184,7 +184,13 @@ def kb_propose_memory_fn(
     wt = worktrees.get_or_create(
         source_session=source_session, agent_identity=agent_identity
     )
-    full_path = os.path.join(wt.path, target_path)
+    # Symlink-escape containment (Codex blocker 1): a malicious KB commit can
+    # plant the inbox dir as a symlink pointing outside the worktree. Reject
+    # before any makedirs/open side effect.
+    full_path = safe_join_under_root(wt.path, target_path)
+    if full_path is None:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_symlink_escape"})
+        return ProposeResponse(status="rejected_symlink_escape", target_path=target_path)
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
     with open(full_path, "w", encoding="utf-8") as f:
         f.write(postimage)
@@ -298,14 +304,12 @@ def kb_propose_edit_fn(
         )
 
     wt = worktrees.get_or_create(source_session=source_session, agent_identity=agent_identity)
-    full_path = os.path.join(wt.path, target_path)
-    # Symlink-escape defense (Codex blocker 2 second checkpoint): verify the
-    # resolved path is still inside the worktree.
-    real = os.path.realpath(full_path)
-    if not real.startswith(os.path.realpath(wt.path) + os.sep):
+    # Symlink-escape containment via the shared guard (see safe_join_under_root).
+    full_path = safe_join_under_root(wt.path, target_path)
+    if full_path is None:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_symlink_escape"})
         return ProposeResponse(status="rejected_symlink_escape",
-                               target_path=target_path, resolved_path=real)
+                               target_path=target_path)
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
     with open(full_path, "w", encoding="utf-8") as f:
         f.write(postimage)
@@ -368,9 +372,8 @@ def kb_resolve_pending_fn(
         audit_base["confidence"] = None
     wt = worktrees.get_or_create(source_session=source_session,
                                  agent_identity=agent_identity)
-    full_path = os.path.join(wt.path, resolved.target_path)
-    real = os.path.realpath(full_path)
-    if not real.startswith(os.path.realpath(wt.path) + os.sep):
+    full_path = safe_join_under_root(wt.path, resolved.target_path)
+    if full_path is None:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_symlink_escape"})
         return ResolvePendingResponse(status="rejected_symlink_escape")
     os.makedirs(os.path.dirname(full_path), exist_ok=True)

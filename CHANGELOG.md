@@ -32,6 +32,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detection floor for un-hookable agents: `kb enforce report` (and `data-olympus report`) correlates governed git commits against the consult audit and lists changes with no consultation on record. An opt-in repo-scoped git provider (`kb enforce install --agent git`) installs a post-commit warning hook, or a pre-commit blocking hook with `--block`. Reuses the existing audit endpoint; no server change.
 - Enforcement hardening and observability: gate_bypass and gate_degraded events are now recorded (via `data-olympus report --emit-events` / the git warn hook, and the pre-tool hook on a reachable-degraded gate), so `kb_compliance` surfaces them. The gate receives `action_diff` and the classifier uses word-boundary matching plus dependency-install command signals (Codex and Claude now gate the Bash tool). New `kb enforce install --mode off|soft|hard`, ledger persistence via `KB_LEDGER_PATH`, a friendly PATH hint for `kb enforce report`, and a CI guard requiring a changelog entry for functional changes.
 
+### Security
+
+- Path containment is now enforced uniformly across every write path. A new
+  shared `safe_join_under_root()` guard rejects any proposed write whose resolved
+  location escapes the per-session worktree (symlink, traversal, or absolute
+  path). This closes a memory-proposal symlink-escape where a malicious KB commit
+  could plant `memory/inbox` as a symlink and cause a high-confidence proposal to
+  write a file outside the worktree before `git add` aborted. The edit, resolve,
+  and onboarding-bootstrap paths now use the same guard. Regression tests cover
+  the helper directly and each write path.
+
 ### Changed
 
 - The path-to-`(tier, category)` taxonomy now ships a deployment-neutral default
