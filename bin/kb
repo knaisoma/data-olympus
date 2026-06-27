@@ -17,7 +17,7 @@
 #   kb onboard project <workspace>
 #   kb onboard component <workspace> <component>
 #   kb onboard rename <from> <to>
-#   kb enforce install|uninstall|status|doctor [--agent NAME] [--settings PATH]
+#   kb enforce install|uninstall|status|doctor [--agent NAME | --all] [--settings PATH]
 #
 # Environment:
 #   KB_ENDPOINT        REST endpoint URL (default: http://localhost:8080)

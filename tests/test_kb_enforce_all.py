@@ -1,0 +1,59 @@
+"""install --all and status-all behaviours."""
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+HELPER = Path(__file__).resolve().parents[1] / "bin" / "_kb_enforce.py"
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _run(*args: str, env=None, cwd=None):
+    return subprocess.run([sys.executable, str(HELPER), *args],
+                          capture_output=True, text=True, env=env, cwd=cwd)
+
+
+def test_status_all_lists_every_provider(tmp_path):
+    import os
+    env = {**os.environ, "KB_ENFORCE_HOME": str(tmp_path)}
+    # cwd=tmp_path so copilot-ide's repo-relative target resolves under tmp,
+    # never the real worktree (status only reads, but keep it hermetic).
+    r = _run("status", env=env, cwd=str(tmp_path))
+    assert r.returncode == 0
+    for name in ("claude-code", "codex", "gemini", "opencode",
+                 "copilot-cli", "copilot-ide", "antigravity"):
+        assert name in r.stdout
+
+
+def test_status_with_settings_is_single_agent(tmp_path):
+    # An explicit --settings names one file, so status must target a single
+    # provider (claude-code) and must NOT fan out across all providers.
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}")
+    _run("install", "--agent", "claude-code", "--settings", str(settings))
+    r = _run("status", "--settings", str(settings))
+    assert r.returncode == 0
+    assert "claude-code" in r.stdout
+    # single-agent, not the 7-line fan-out
+    for other in ("codex", "gemini", "opencode", "copilot-cli", "copilot-ide", "antigravity"):
+        assert other not in r.stdout
+
+
+def test_install_all_skips_unsupported(tmp_path):
+    import os
+    env = {**os.environ, "KB_ENFORCE_HOME": str(tmp_path)}
+    # cwd=tmp_path is load-bearing: copilot-ide's default target is the
+    # repo-relative `.github/copilot-instructions.md`, which KB_ENFORCE_HOME
+    # does NOT re-root. Without cwd the install --all would write into the real
+    # worktree's .github/. Pin cwd so that write lands under tmp instead.
+    r = _run("install", "--all", env=env, cwd=str(tmp_path))
+    assert r.returncode == 0
+    assert "antigravity" in r.stdout  # mentioned as skipped/unsupported
+    # claude settings written under the re-rooted home
+    assert (tmp_path / ".claude" / "settings.json").exists()
+    # copilot-ide's repo-relative target landed under tmp, not the real repo.
+    assert (tmp_path / ".github" / "copilot-instructions.md").exists()
+    assert not (REPO_ROOT / ".github" / "copilot-instructions.md").exists()
