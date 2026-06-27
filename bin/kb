@@ -615,6 +615,10 @@ case "$SUBCMD" in
     [[ $# -ge 1 ]] || { echo "kb: enforce requires subcommand (install|uninstall|status|doctor|report)" >&2; exit 64; }
     if [[ "$1" == "report" ]]; then
       shift
+      if ! command -v data-olympus >/dev/null 2>&1; then
+        echo "kb: data-olympus not found on PATH; install the package or activate its venv" >&2
+        exit 127
+      fi
       exec data-olympus report "$@"
     fi
     exec python3 "$(dirname "$0")/_kb_enforce.py" "$@"
