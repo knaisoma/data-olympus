@@ -271,9 +271,11 @@ The installer now takes a `--mode` flag:
   UserPromptSubmit), with NO blocking pre-tool gate.
 - `off`: uninstalls the managed hooks.
 
-`--mode` applies to the hook-file providers (Claude, Codex, Gemini, OpenCode).
-The fixed-tier providers accept `off` (to uninstall) and note that `soft`/`hard`
-have no effect on their fixed tier.
+`soft`/`hard` apply to the hook-file providers Claude, Codex, and Gemini. The
+fixed-tier providers (OpenCode, Copilot CLI, Copilot IDE) accept `off` (to
+uninstall) and note that `soft`/`hard` have no effect on their fixed tier:
+`kb enforce install --agent opencode --mode soft` prints that note and installs
+the hard gate.
 
 ### Persisted consultation ledger
 
