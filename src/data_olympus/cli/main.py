@@ -69,6 +69,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
         window_sec=args.window_sec,
         as_json=args.json,
         fail_on_unverified=args.fail_on_unverified,
+        staged=args.staged,
     )
 
 
@@ -97,6 +98,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("--json", action="store_true", help="emit JSON")
     p_report.add_argument("--fail-on-unverified", action="store_true",
                           help="exit 3 if any unverified governed change is found")
+    p_report.add_argument("--staged", action="store_true",
+                          help="classify the staged diff instead of git log (for pre-commit)")
     p_report.set_defaults(func=_cmd_report)
     return parser
 
