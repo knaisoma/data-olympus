@@ -181,10 +181,25 @@ def _codex_provider() -> HookFileProvider:
     )
 
 
+def _gemini_provider() -> HookFileProvider:
+    return HookFileProvider(
+        name="gemini",
+        default_target=Path(os.path.expanduser("~/.gemini/settings.json")),
+        events=[
+            ("SessionStart", "session-start", None),
+            ("BeforeAgent", "user-prompt", None),  # BeforeAgent carries `prompt`
+            ("BeforeTool", "pre-tool", "write_file|replace|run_shell_command"),
+            ("Stop", "stop", None),
+        ],
+        dialect="gemini",
+    )
+
+
 def registry() -> dict:
     return {
         "claude-code": _claude_provider(),
         "codex": _codex_provider(),
+        "gemini": _gemini_provider(),
     }
 
 
