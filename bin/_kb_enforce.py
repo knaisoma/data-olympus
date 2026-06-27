@@ -23,6 +23,11 @@ PLUGIN_SRC = Path(__file__).resolve().parent / "opencode" / "data-olympus-gate.t
 PLUGIN_NAME = "data-olympus-gate.ts"
 
 
+def _home() -> str:
+    override = os.getenv("KB_ENFORCE_HOME")
+    return override if override else os.path.expanduser("~")
+
+
 def _backup(target: Path) -> None:
     if target.exists():
         ts = time.strftime("%Y%m%d-%H%M%S")
@@ -149,7 +154,7 @@ class HookFileProvider:
 def _claude_provider() -> HookFileProvider:
     return HookFileProvider(
         name="claude-code",
-        default_target=Path(os.path.expanduser("~/.claude/settings.json")),
+        default_target=Path(_home()) / ".claude" / "settings.json",
         events=[
             ("SessionStart", "session-start", None),
             ("UserPromptSubmit", "user-prompt", None),
@@ -171,7 +176,7 @@ CODEX_TRUST_NOTE = (
 def _codex_provider() -> HookFileProvider:
     return HookFileProvider(
         name="codex",
-        default_target=Path(os.path.expanduser("~/.codex/hooks.json")),
+        default_target=Path(_home()) / ".codex" / "hooks.json",
         events=[
             ("SessionStart", "session-start", None),
             ("UserPromptSubmit", "user-prompt", None),
@@ -186,7 +191,7 @@ def _codex_provider() -> HookFileProvider:
 def _gemini_provider() -> HookFileProvider:
     return HookFileProvider(
         name="gemini",
-        default_target=Path(os.path.expanduser("~/.gemini/settings.json")),
+        default_target=Path(_home()) / ".gemini" / "settings.json",
         events=[
             ("SessionStart", "session-start", None),
             ("BeforeAgent", "user-prompt", None),  # BeforeAgent carries `prompt`
@@ -208,7 +213,7 @@ class OpenCodeProvider:
     tier = "hard"
 
     def default_target(self) -> Path:
-        return Path(os.path.expanduser("~/.config/opencode/plugin"))
+        return Path(_home()) / ".config" / "opencode" / "plugin"
 
     def install(self, target: Path) -> int:
         target.mkdir(parents=True, exist_ok=True)
@@ -369,7 +374,7 @@ def registry() -> dict:
         # global custom-instructions path ~/.copilot/copilot-instructions.md (one
         # of the "related files"). Operators can override with --settings.
         "copilot-cli": InstructionsProvider(
-            "copilot-cli", Path(os.path.expanduser("~/.copilot/copilot-instructions.md"))),
+            "copilot-cli", Path(_home()) / ".copilot" / "copilot-instructions.md"),
         "copilot-ide": InstructionsProvider(
             "copilot-ide", Path(".github/copilot-instructions.md")),
         "antigravity": UnsupportedProvider(
@@ -382,14 +387,29 @@ def registry() -> dict:
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="kb enforce")
     p.add_argument("command", choices=["install", "uninstall", "status", "doctor"])
-    p.add_argument("--agent", default="claude-code")
+    p.add_argument("--agent", default=None)
+    p.add_argument("--all", action="store_true")
     p.add_argument("--settings", default=None)
     args = p.parse_args(argv)
-
     reg = registry()
-    provider = reg.get(args.agent)
+
+    if args.all or (args.command == "status" and not args.agent):
+        rc = 0
+        for name, provider in reg.items():
+            if args.all and getattr(provider, "tier", "") == "unsupported":
+                print(f"{name}: skipped (unsupported)")
+                continue
+            target = provider.default_target()
+            rc |= {
+                "install": provider.install, "uninstall": provider.uninstall,
+                "status": provider.status, "doctor": provider.doctor,
+            }[args.command](target)
+        return rc
+
+    agent = args.agent or "claude-code"
+    provider = reg.get(agent)
     if provider is None:
-        print(f"kb enforce: unknown agent '{args.agent}' (known: {', '.join(sorted(reg))})",
+        print(f"kb enforce: unknown agent '{agent}' (known: {', '.join(sorted(reg))})",
               file=sys.stderr)
         return 64
     target = Path(args.settings) if args.settings else provider.default_target()
