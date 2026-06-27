@@ -160,7 +160,11 @@ remote), set two environment variables before starting the server:
   key on disk, or a credential helper).
 
 Without `KB_REMOTE_URL`, the server runs in read-only mode: the pull loop runs
-but does not push, and write tools return an appropriate error.
+but does not push, and the write pipeline is disabled. REST write routes
+(`/api/v1/propose/*`, `/resolve/{id}`, `/onboarding/bootstrap`) return
+`503 {"error": "write_pipeline_disabled"}` and the MCP write tools return
+`{"status": "write_pipeline_disabled"}` rather than crashing. Read routes work
+normally.
 
 ## 6. Wire an agent
 

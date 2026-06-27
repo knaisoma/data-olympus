@@ -65,11 +65,24 @@ time, with no code change:
 
 ## Authentication and network security
 
-The MCP server has no built-in authentication. It is a single-writer internal service.
+The server supports optional bearer-token authentication with a per-principal
+capability model, enforced on **both** the REST routes and the MCP write tools:
 
-Operators MUST deploy it on a trusted private network or behind an authenticating reverse proxy. The write routes (`/api/v1/propose/*`, `/api/v1/resolve`, `/api/v1/onboarding/bootstrap`) allow arbitrary knowledge-base writes. Do NOT expose these routes to untrusted networks.
+- `KB_AUTH_TOKEN` registers a single full-capability `operator` principal.
+- `KB_AUTH_PRINCIPALS` (JSON) registers per-agent tokens with explicit
+  capabilities; a principal lacking `auto_commit` has its proposals clamped to
+  pending regardless of the client-asserted confidence.
 
-See `SECURITY.md` for the full threat model.
+When auth is configured, write, enforcement, and observability routes require a
+capable principal; read routes (`search`/`get`/`list`/`outline`/`health`) stay
+open. When it is unset (the default) every caller is fully trusted, which is only
+safe on a trusted private network.
+
+Authentication does not protect read routes, so for confidentiality operators
+MUST still deploy on a trusted private network or behind an authenticating
+reverse proxy (terminate TLS there). See `SECURITY.md` for the full threat model,
+the route/capability table, payload limits, the tamper-evident audit log, and the
+git sync-failure health fields.
 
 ## Running locally
 
