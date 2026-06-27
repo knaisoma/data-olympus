@@ -17,6 +17,7 @@
 #   kb onboard project <workspace>
 #   kb onboard component <workspace> <component>
 #   kb onboard rename <from> <to>
+#   kb enforce install|uninstall|status|doctor [--agent NAME] [--settings PATH]
 #
 # Environment:
 #   KB_ENDPOINT        REST endpoint URL (default: http://localhost:8080)
@@ -565,6 +566,10 @@ case "$SUBCMD" in
   resolve) cmd_resolve "$@"; exit $? ;;
   pending) cmd_pending "$@"; exit $? ;;
   audit) cmd_audit "$@"; exit $? ;;
+  enforce)
+    [[ $# -ge 1 ]] || { echo "kb: enforce requires subcommand (install|uninstall|status|doctor)" >&2; exit 64; }
+    exec python3 "$(dirname "$0")/_kb_enforce.py" "$@"
+    ;;
   onboarding-check) cmd_onboarding_check "$@"; exit $? ;;
   onboard)
     [[ $# -ge 1 ]] || { echo "kb: onboard requires subcommand (status|project|component|rename)" >&2; exit 64; }
