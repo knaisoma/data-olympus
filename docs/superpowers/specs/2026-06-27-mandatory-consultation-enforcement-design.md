@@ -53,8 +53,9 @@ otherwise.
 ## Overall program (context; only slice 1 is specified in detail here)
 
 1. **Policy core** in data-olympus (this slice): consultation receipt/ledger,
-   `policy/check`, intent classifier, compliance audit, plus the Claude Code
-   reference shim.
+   `policy/check`, intent classifier, compliance audit, the Claude Code reference
+   shim, and the `kb enforce` install/uninstall/status/doctor CLI with its agent
+   provider interface (Claude Code provider implemented).
 2. **Shim pack + installer**: `kb enforce install` generators for every agent.
 3. **Optional egress-proxy floor** for closed IDE apps.
 
@@ -161,6 +162,47 @@ engine.
     `consult_required`)
   - `Stop` -> `kb-enforce-hook stop` (finalize compliance record)
 
+### Install / uninstall via the kb CLI
+
+A gate that is configured by hand is a gate nobody installs correctly. The `kb`
+CLI gains an `enforce` command group so configuring (and de-configuring) an
+agent's enforcement wiring is a single supported, idempotent, reversible
+operation rather than a runbook.
+
+- **`kb enforce install [--agent <name>|--all] [--mode off|soft|hard]`**
+  - Detects installed agents (reusing the detection patterns from the existing
+    `register-mcp-with-agents.sh` / `_kb_detect_workspace.sh` work) and resolves
+    each agent's config location.
+  - Installs that agent's shim and hook wiring at the highest tier the agent
+    supports, capped by `--mode`. Installing on a soft-only agent installs the
+    soft variant and prints that the hard tier is unavailable for it.
+  - Idempotent: edits are confined to a clearly delimited managed block
+    (`# >>> data-olympus enforce (managed) >>>` ... `# <<< data-olympus enforce
+    <<<`) or a dedicated managed file referenced from the agent config, so
+    re-running never duplicates entries and never clobbers operator-authored
+    settings outside the block.
+  - Safety: snapshots the target config to a timestamped backup before any edit;
+    refuses to proceed if it cannot write the backup.
+  - Stamps a shim/schema version into the managed block so `status` can detect a
+    stale install.
+- **`kb enforce uninstall [--agent <name>|--all]`**
+  - Removes only the managed block / managed file and the dispatcher script,
+    leaving the rest of the agent config untouched. Verifies the result parses.
+- **`kb enforce status`**
+  - Per detected agent, reports: installed yes/no, mode, achievable tier, shim
+    version, and whether the on-disk block has drifted from the current version
+    (prompting a re-install).
+- **`kb enforce doctor`**
+  - Live verification: for each installed agent, round-trips `kb_health` and a
+    dry-run `kb_gate_check` to confirm the wiring actually reaches the server and
+    returns a verdict. This is what turns "I think it's configured" into "it is
+    configured and working."
+
+The command surface and an agent **provider interface** (detect -> render config
+-> write managed block -> verify) are part of slice 1, with the Claude Code
+provider fully implemented. Slice 2 adds one provider per remaining agent; no
+new CLI surface is needed for them.
+
 ### Configuration
 
 - `KB_ENFORCE_MODE` per workspace: `off | soft | hard` (default chosen at install
@@ -204,10 +246,18 @@ Configurable to fail-closed via `KB_ENFORCE_FAIL_MODE=closed`.
 - End-to-end smoke: install the Claude Code shim into a throwaway settings file,
   drive a governed prompt, confirm the gate blocks an Edit until a consult is on
   record and allows it after.
+- CLI: `kb enforce install` into a throwaway config is idempotent (second run is a
+  no-op diff) and writes a backup; `kb enforce uninstall` restores the config to
+  a clean parseable state with the managed block gone; `kb enforce status`
+  reports installed/mode/tier/version and flags a hand-mutated stale block;
+  `kb enforce doctor` passes against a live in-process server and reports failure
+  against a stubbed-unreachable one.
 
 ## Out of scope for this slice
 
-- Shims for any agent other than Claude Code (slice 2).
+- Shims and `kb enforce` providers for any agent other than Claude Code; the CLI
+  command framework and provider interface land here, but the only implemented
+  provider is Claude Code (the rest are slice 2).
 - The egress proxy (slice 3).
 - LLM-backed intent classification (heuristic only here; interface is pluggable).
 - Persisting the consultation ledger across server restarts.
