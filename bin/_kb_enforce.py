@@ -68,6 +68,7 @@ class HookFileProvider:
         self._events = events
         self._dialect = dialect
         self._note = note
+        self.enforce_mode = "hard"
 
     def default_target(self) -> Path:
         return self._default_target
@@ -105,7 +106,10 @@ class HookFileProvider:
         data = _load_json(target)
         _backup(target)
         hooks = self._strip_managed(data.get("hooks", {}))
-        for event, mode, matcher in self._events:
+        events = self._events
+        if self.enforce_mode == "soft":
+            events = [(e, m, mt) for (e, m, mt) in self._events if m != "pre-tool"]
+        for event, mode, matcher in events:
             hooks.setdefault(event, []).append(self._managed_block(mode, matcher))
         data["hooks"] = hooks
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -160,7 +164,7 @@ def _claude_provider() -> HookFileProvider:
         events=[
             ("SessionStart", "session-start", None),
             ("UserPromptSubmit", "user-prompt", None),
-            ("PreToolUse", "pre-tool", "Edit|Write|MultiEdit|NotebookEdit"),
+            ("PreToolUse", "pre-tool", "Edit|Write|MultiEdit|NotebookEdit|Bash"),
             ("Stop", "stop", None),
         ],
         dialect="claude",
@@ -182,7 +186,7 @@ def _codex_provider() -> HookFileProvider:
         events=[
             ("SessionStart", "session-start", None),
             ("UserPromptSubmit", "user-prompt", None),
-            ("PreToolUse", "pre-tool", "Edit|Write|MultiEdit"),
+            ("PreToolUse", "pre-tool", "Edit|Write|MultiEdit|Bash"),
             ("Stop", "stop", None),
         ],
         dialect="claude",  # Codex shares Claude's exit-2 deny contract
@@ -239,11 +243,15 @@ class OpenCodeProvider:
         return 0
 
     def status(self, target: Path) -> int:
+        import re
         dest = target / PLUGIN_NAME
-        if dest.exists() and "data-olympus-enforce (managed)" in dest.read_text():
-            print("opencode: installed, tier=hard, versions=['1']")
-        else:
+        if not (dest.exists() and "data-olympus-enforce (managed)" in dest.read_text()):
             print("opencode: not installed")
+            return 0
+        m = re.search(r"data-olympus-enforce \(managed\) v(\d+)", dest.read_text())
+        ver = m.group(1) if m else "?"
+        stale = " (stale; run `kb enforce install`)" if ver != SHIM_VERSION else ""
+        print(f"opencode: installed, tier=hard, versions=['{ver}']{stale}")
         return 0
 
     def doctor(self, _target: Path) -> int:
@@ -471,6 +479,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--block", action="store_true",
                    help="git provider: install a blocking pre-commit hook "
                         "instead of post-commit warn")
+    p.add_argument("--mode", choices=["off", "soft", "hard"], default="hard",
+                   help="off uninstalls; soft installs inject-only (no blocking "
+                        "gate); hard (default) installs the full gate")
     args = p.parse_args(argv)
     reg = registry()
 
@@ -480,11 +491,20 @@ def main(argv: list[str]) -> int:
             if args.all and getattr(provider, "tier", "") == "unsupported":
                 print(f"{name}: skipped (unsupported)")
                 continue
+            cmd = args.command
+            if args.command == "install" and args.mode == "off":
+                cmd = "uninstall"
+            elif args.command == "install" and args.mode == "soft":
+                if hasattr(provider, "enforce_mode"):
+                    provider.enforce_mode = "soft"
+                else:
+                    print(f"note: {name} has a fixed tier; --mode soft has no "
+                          f"effect (use --mode off to uninstall)")
             target = provider.default_target()
             rc |= {
                 "install": provider.install, "uninstall": provider.uninstall,
                 "status": provider.status, "doctor": provider.doctor,
-            }[args.command](target)
+            }[cmd](target)
         return rc
 
     agent = args.agent or "claude-code"
@@ -493,11 +513,20 @@ def main(argv: list[str]) -> int:
         print(f"kb enforce: unknown agent '{agent}' (known: {', '.join(sorted(reg))}, git)",
               file=sys.stderr)
         return 64
+    command = args.command
+    if args.command == "install" and args.mode == "off":
+        command = "uninstall"
+    elif args.command == "install" and args.mode == "soft":
+        if hasattr(provider, "enforce_mode"):
+            provider.enforce_mode = "soft"
+        else:
+            print(f"note: {agent} has a fixed tier; --mode soft has no effect "
+                  f"(use --mode off to uninstall)")
     target = Path(args.settings) if args.settings else provider.default_target()
     return {
         "install": provider.install, "uninstall": provider.uninstall,
         "status": provider.status, "doctor": provider.doctor,
-    }[args.command](target)
+    }[command](target)
 
 
 if __name__ == "__main__":
