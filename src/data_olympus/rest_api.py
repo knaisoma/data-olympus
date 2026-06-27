@@ -2,11 +2,17 @@
 so MCP + REST share one Starlette/uvicorn process."""
 from __future__ import annotations
 
-import hmac
 from typing import TYPE_CHECKING
 
 from starlette.responses import JSONResponse
 
+from data_olympus.principals import (
+    CAP_BOOTSTRAP,
+    CAP_PROPOSE,
+    CAP_RECORD_EVENT,
+    CAP_RESOLVE,
+    PrincipalRegistry,
+)
 from data_olympus.tools_read import (
     KbNotFoundError,
     kb_get_fn,
@@ -21,6 +27,7 @@ if TYPE_CHECKING:
     from starlette.requests import Request
 
     from data_olympus.models import HealthResponse
+    from data_olympus.principals import Principal
     from data_olympus.server import ServerState
 
 
@@ -50,23 +57,38 @@ def _degraded_response(health: HealthResponse) -> JSONResponse:
     return JSONResponse(body, status_code=503)
 
 
-def _check_auth(request: Request, auth_token: str) -> JSONResponse | None:
-    """Return a 401 JSONResponse if auth_token is set and the request does not
-    supply a matching ``Authorization: Bearer <token>`` header. Uses
-    hmac.compare_digest for constant-time comparison.
+def _authorize(
+    request: Request,
+    registry: PrincipalRegistry,
+    capability: str | None = None,
+) -> tuple[Principal, JSONResponse | None]:
+    """Resolve the request's principal and check it against ``capability``.
 
-    Returns None when auth is satisfied (token empty, or header matches).
+    Returns ``(principal, None)`` when allowed, or ``(principal, denial)`` where
+    ``denial`` is a 401 (unauthenticated) or 403 (authenticated but missing the
+    capability) JSONResponse. ``capability=None`` means "any authenticated
+    principal" — used for the enforcement-plane routes (consult / gate) which do
+    not map to a KB write capability but must still be closed to anonymous
+    callers when auth is configured.
+
+    With no auth configured the resolver returns the fully-trusted LOCAL_TRUSTED
+    principal, so every check passes and behavior matches the pre-auth product.
     """
-    if not auth_token:
-        return None
-    header = request.headers.get("Authorization", "")
-    prefix = "Bearer "
-    if not header.startswith(prefix):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    supplied = header[len(prefix):]
-    if not hmac.compare_digest(supplied.encode(), auth_token.encode()):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    return None
+    principal = registry.resolve(request.headers.get("Authorization"))
+    if capability is None:
+        allowed = (not registry.auth_configured) or principal.authenticated
+    else:
+        allowed = principal.has(capability)
+    if allowed:
+        return principal, None
+    if not principal.authenticated:
+        return principal, JSONResponse({"error": "unauthorized"}, status_code=401)
+    return principal, JSONResponse(
+        {"error": "forbidden",
+         "message": f"principal '{principal.name}' lacks capability "
+                    f"'{capability}'"},
+        status_code=403,
+    )
 
 
 def _missing_fields_response(body: object, required: list[str]) -> JSONResponse | None:
@@ -110,11 +132,14 @@ def _parse_confidence(body: dict) -> tuple[float, JSONResponse | None]:
         )
 
 
-def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> None:
+def register_routes(
+    app: FastMCP, state: ServerState, registry: PrincipalRegistry
+) -> None:
     """Mount REST routes under /api/v1/ on the FastMCP app.
 
-    Write routes require a valid ``Authorization: Bearer <token>`` header when
-    ``auth_token`` is non-empty. Read routes are always open.
+    Write and enforcement-plane routes are authorized against ``registry``
+    (see ``_authorize``). When no auth is configured every caller is trusted and
+    behavior matches the pre-auth product. Read routes are always open.
     """
 
     @app.custom_route("/api/v1/health", methods=["GET"])
@@ -176,7 +201,8 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/propose/memory", methods=["POST"])
     async def propose_memory(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        principal, denied = _authorize(request, registry, CAP_PROPOSE)
+        if denied is not None:
             return denied
         body = await request.json()
         if (bad := _missing_fields_response(
@@ -203,6 +229,7 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
             blocklist=state.blocklist,
             remote_addr=request.client.host if request.client else "unknown",
             audit_log=state.audit_log,
+            can_auto_commit=principal.can_auto_commit,
         )
         status = 201 if resp.status == "committed" else (
             202 if resp.status == "pending_confirmation" else 400
@@ -211,7 +238,8 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/propose/edit", methods=["POST"])
     async def propose_edit(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        principal, denied = _authorize(request, registry, CAP_PROPOSE)
+        if denied is not None:
             return denied
         body = await request.json()
         if (bad := _missing_fields_response(
@@ -244,6 +272,7 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
             blocklist=state.blocklist,
             remote_addr=request.client.host if request.client else "unknown",
             audit_log=state.audit_log,
+            can_auto_commit=principal.can_auto_commit,
         )
         status = 201 if resp.status == "committed" else (
             202 if resp.status == "pending_confirmation" else 400
@@ -252,7 +281,8 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/resolve/{pending_id}", methods=["POST"])
     async def resolve_pending(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        _principal, denied = _authorize(request, registry, CAP_RESOLVE)
+        if denied is not None:
             return denied
         pid = request.path_params["pending_id"]
         body = await request.json()
@@ -293,7 +323,8 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/consult", methods=["POST"])
     async def consult(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        _principal, denied = _authorize(request, registry)
+        if denied is not None:
             return denied
         import time as _time
 
@@ -311,7 +342,8 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/gate/check", methods=["POST"])
     async def gate_check(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        _principal, denied = _authorize(request, registry)
+        if denied is not None:
             return denied
         import time as _time
 
@@ -341,7 +373,8 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/audit/event", methods=["POST"])
     async def record_event(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        _principal, denied = _authorize(request, registry, CAP_RECORD_EVENT)
+        if denied is not None:
             return denied
         if state.audit_log is None:
             return JSONResponse({"recorded": False}, status_code=503)
@@ -377,7 +410,8 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/onboarding/bootstrap", methods=["POST"])
     async def onboarding_bootstrap(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        principal, denied = _authorize(request, registry, CAP_BOOTSTRAP)
+        if denied is not None:
             return denied
         body = await request.json()
         assert state.worktrees is not None
@@ -401,6 +435,7 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
             pending=state.pending, rate_limiter=state.rate_limiter,
             blocklist=state.blocklist, audit_log=state.audit_log,
             remote_addr=request.client.host if request.client else "unknown",
+            can_auto_commit=principal.can_auto_commit,
         )
         status = 201 if resp.status == "committed" else (
             202 if resp.status == "pending_confirmation" else 400

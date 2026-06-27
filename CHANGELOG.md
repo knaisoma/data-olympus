@@ -34,6 +34,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- Identity + capability authorization unifies MCP/REST write auth, per-agent
+  policy, and a confidence clamp. A `Principal` is resolved from the
+  `Authorization: Bearer` header against a registry built from `KB_AUTH_TOKEN`
+  (a full-capability `operator`) and an optional `KB_AUTH_PRINCIPALS` JSON list
+  of per-agent tokens with explicit capabilities (`read`, `propose`,
+  `auto_commit`, `resolve`, `bootstrap`, `record_event`).
+  - **MCP write tools are now authenticated.** A FastMCP middleware enforces the
+    same capabilities on `kb_propose_*`, `kb_resolve_pending`,
+    `kb_bootstrap_project`, and `kb_record_event` that the REST layer enforces,
+    closing the gap where MCP write tools bypassed `KB_AUTH_TOKEN`.
+  - **Confidence is clamped for non-privileged callers.** A principal lacking the
+    `auto_commit` capability has its proposals parked as *pending* regardless of
+    the client-asserted confidence, so a caller can no longer self-assert
+    `confidence: 1.0` to skip operator review. REST returns 401 for anonymous and
+    403 for an authenticated principal missing a capability.
+  - When no auth is configured (no token, no principals) every caller is the
+    fully-trusted local principal, preserving the prior trusted-local behavior.
 - Path containment is now enforced uniformly across every write path. A new
   shared `safe_join_under_root()` guard rejects any proposed write whose resolved
   location escapes the per-session worktree (symlink, traversal, or absolute

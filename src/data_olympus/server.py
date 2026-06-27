@@ -3,14 +3,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import time
 from typing import TYPE_CHECKING
 
 from fastmcp import FastMCP
+from fastmcp.server.middleware import Middleware
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from fastmcp.server.middleware import MiddlewareContext
 
 from data_olympus.audit_log import AuditLog
 from data_olympus.auth import PathBlocklist
@@ -19,12 +23,61 @@ from data_olympus.enforce_policy import ConsultationLedger, IntentClassifier
 from data_olympus.git_ops import GitOps
 from data_olympus.index import Index
 from data_olympus.pending import PendingQueue
+from data_olympus.principals import (
+    LOCAL_TRUSTED,
+    WRITE_TOOL_CAPABILITY,
+    Principal,
+    PrincipalRegistry,
+)
 from data_olympus.push_queue import PushQueue
 from data_olympus.rate_limit import SlidingWindowLimiter
 from data_olympus.tools_read import kb_health_fn, kb_outline_fn, kb_search_fn
 from data_olympus.worktrees import WorktreeRegistry
 
 log = logging.getLogger("data_olympus")
+
+# The principal resolved by the MCP auth middleware for the in-flight tool call.
+# Defaults to the fully-trusted local principal so direct (non-HTTP) tool calls
+# in tests behave as before. Read by the write-tool closures for the clamp.
+_current_principal: contextvars.ContextVar[Principal] = contextvars.ContextVar(
+    "current_principal", default=LOCAL_TRUSTED
+)
+
+
+class MCPAuthMiddleware(Middleware):
+    """Enforce principal capabilities on MCP write tools.
+
+    REST routes are authorized in rest_api.py; this is the MCP-transport
+    counterpart so the two surfaces share one policy and KB_AUTH_TOKEN actually
+    protects MCP write tools (the gap the security review flagged). The resolved
+    principal is stashed in a contextvar so the write-tool closures can apply the
+    confidence clamp (auto-commit only when the principal holds that capability).
+    """
+
+    def __init__(self, registry: PrincipalRegistry) -> None:
+        self._registry = registry
+
+    async def on_call_tool(
+        self, context: MiddlewareContext, call_next: object,
+    ) -> object:
+        from fastmcp.exceptions import ToolError
+        from fastmcp.server.dependencies import get_http_headers
+
+        # Authorization is stripped by get_http_headers' default exclude set;
+        # include it explicitly so bearer auth reaches the MCP transport.
+        headers = get_http_headers(include={"authorization"})
+        principal = self._registry.resolve(headers.get("authorization"))
+        token = _current_principal.set(principal)
+        try:
+            cap = WRITE_TOOL_CAPABILITY.get(context.message.name)
+            if cap is not None and not principal.has(cap):
+                raise ToolError(
+                    f"unauthorized: principal '{principal.name}' lacks "
+                    f"capability '{cap}' required by '{context.message.name}'"
+                )
+            return await call_next(context)  # type: ignore[operator]
+        finally:
+            _current_principal.reset(token)
 
 
 class ServerState:
@@ -90,6 +143,7 @@ def build_app(
     worktree_idle_sec: int = 3600,
     git_key_path: str = "/tmp/git-key",
     auth_token: str = "",
+    auth_principals: list[dict] | None = None,
     ledger_path: str | None = None,
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
@@ -236,6 +290,7 @@ def build_app(
             pending=state.pending, rate_limiter=state.rate_limiter,
             blocklist=state.blocklist, remote_addr="mcp",
             audit_log=state.audit_log,
+            can_auto_commit=_current_principal.get().can_auto_commit,
         )
         return resp.model_dump()
 
@@ -264,6 +319,7 @@ def build_app(
             pending=state.pending, rate_limiter=state.rate_limiter,
             blocklist=state.blocklist, remote_addr="mcp",
             audit_log=state.audit_log,
+            can_auto_commit=_current_principal.get().can_auto_commit,
         )
         return resp.model_dump()
 
@@ -352,6 +408,7 @@ def build_app(
             pending=state.pending, rate_limiter=state.rate_limiter,
             blocklist=state.blocklist, audit_log=state.audit_log,
             remote_addr="mcp",
+            can_auto_commit=_current_principal.get().can_auto_commit,
         )
         return resp.model_dump()
 
@@ -424,8 +481,13 @@ def build_app(
             return {"recorded": False, "error": str(e)}
         return resp.model_dump()
 
+    registry = PrincipalRegistry(auth_token=auth_token, principals=auth_principals)
+    # MCP-transport auth: enforce write-tool capabilities (REST is enforced in
+    # rest_api.py against the same registry).
+    app.add_middleware(MCPAuthMiddleware(registry))
+
     from data_olympus.rest_api import register_routes
-    register_routes(app, state, auth_token=auth_token)
+    register_routes(app, state, registry)
     # Attach state for lifespan to discover; not used by tests
     app._dolympus_state = state  # type: ignore[attr-defined]
     return app
@@ -459,6 +521,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         worktree_idle_sec=config.worktree_idle_sec,
         git_key_path=config.git_key_path,
         auth_token=config.auth_token,
+        auth_principals=list(config.auth_principals),
         ledger_path=config.ledger_path,
     )
 

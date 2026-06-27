@@ -29,6 +29,7 @@ class Config:
     git_key_path: str = "/tmp/git-key"
     audit_log_path: str = "/state/audit/events.log"
     auth_token: str = ""
+    auth_principals: list[dict] = field(default_factory=list)
     consult_ttl_sec: int = 300
     ledger_path: str = "/state/ledger.json"
 
@@ -56,6 +57,8 @@ def load_config() -> Config:
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
     audit_log_path = os.getenv("KB_AUDIT_LOG_PATH", "/state/audit/events.log")
     auth_token = os.getenv("KB_AUTH_TOKEN", "")
+    from data_olympus.principals import parse_principals_env
+    auth_principals = parse_principals_env(os.getenv("KB_AUTH_PRINCIPALS", ""))
     consult_ttl_sec = int(os.getenv("KB_CONSULT_TTL_SEC", "300"))
     ledger_path = os.getenv("KB_LEDGER_PATH", "/state/ledger.json")
     return Config(
@@ -78,6 +81,7 @@ def load_config() -> Config:
         git_key_path=git_key_path,
         audit_log_path=audit_log_path,
         auth_token=auth_token,
+        auth_principals=auth_principals,
         consult_ttl_sec=consult_ttl_sec,
         ledger_path=ledger_path,
     )

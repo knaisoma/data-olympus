@@ -98,11 +98,17 @@ def kb_propose_memory_fn(
     blocklist: PathBlocklist,
     remote_addr: str,
     audit_log: AuditLog | None = None,
+    can_auto_commit: bool = True,
 ) -> ProposeResponse:
     """Propose a new memory file under the memory inbox prefix as <date>-<slug>.md.
 
     Structural rule is satisfied by construction; blocklist still applies.
     High confidence -> auto-commit + push enqueue. Low -> pending queue.
+
+    ``can_auto_commit`` is the caller's authorization to skip operator review:
+    when False (an authenticated principal lacking the auto_commit capability, or
+    an untrusted caller) the proposal is parked as pending regardless of the
+    client-asserted confidence. This is the confidence clamp.
     """
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     slug = _slugify(text)
@@ -147,7 +153,7 @@ def kb_propose_memory_fn(
     # 4. Render the postimage (front matter + body).
     postimage = _render_memory(text=text, tags=tags, agent_identity=agent_identity)
 
-    if confidence < confidence_threshold:
+    if confidence < confidence_threshold or not can_auto_commit:
         try:
             pid = pending.enqueue(
                 proposal_type="memory",
@@ -248,8 +254,12 @@ def kb_propose_edit_fn(
     blocklist: PathBlocklist,
     remote_addr: str,
     audit_log: AuditLog | None = None,
+    can_auto_commit: bool = True,
 ) -> ProposeResponse:
-    """Propose an edit to an existing (or new) file under target_path."""
+    """Propose an edit to an existing (or new) file under target_path.
+
+    ``can_auto_commit=False`` clamps the proposal to pending regardless of
+    confidence (see kb_propose_memory_fn for the rationale)."""
     audit_base: dict[str, Any] = {
         "event_type": "propose_edit",
         "agent_identity": agent_identity,
@@ -276,7 +286,7 @@ def kb_propose_edit_fn(
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_rate_limited"})
         return ProposeResponse(status="rejected_rate_limited")
 
-    if confidence < confidence_threshold:
+    if confidence < confidence_threshold or not can_auto_commit:
         try:
             pid = pending.enqueue(
                 proposal_type="edit",

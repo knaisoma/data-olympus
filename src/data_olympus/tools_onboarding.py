@@ -71,6 +71,7 @@ def kb_bootstrap_project_fn(
     blocklist: PathBlocklist,
     audit_log: AuditLog | None = None,  # noqa: ARG001  reserved for future audit emission
     remote_addr: str = "mcp",
+    can_auto_commit: bool = True,
 ) -> BootstrapResponse:
     """Bootstrap a new workspace/component. Only callable when status=absent.
 
@@ -116,8 +117,9 @@ def kb_bootstrap_project_fn(
     if component_remote_url:
         files = _inject_remote_url(files, component_remote_url, target_filename="AGENTS.md")
 
-    if confidence < confidence_threshold:
-        # Low confidence: enqueue ALL files as a single pending bundle.
+    if confidence < confidence_threshold or not can_auto_commit:
+        # Low confidence (or caller not authorized to auto-commit): enqueue ALL
+        # files as a single pending bundle.
         # For onboarding v1, we enqueue them one-by-one (the pending queue
         # supports per-file entries; resolving "all" is the operator's choice).
         # Future: native bundle support in PendingQueue.
