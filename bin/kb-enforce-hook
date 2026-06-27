@@ -20,6 +20,18 @@ KB_AUTH_TOKEN="${KB_AUTH_TOKEN:-}"
 MODE="${1:-}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
+# Optional --dialect after the mode. Default "claude" keeps the current
+# (claude == codex) output contract byte-for-byte; "gemini" switches deny/inject
+# to its JSON-on-stdout contract.
+shift || true
+DIALECT="claude"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dialect) DIALECT="${2:-claude}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
 # Read entire stdin payload.
 PAYLOAD="$(cat || true)"
 
@@ -101,9 +113,35 @@ is_2xx() {
   [[ "$1" =~ ^2[0-9][0-9]$ ]]
 }
 
+emit_context() {
+  # emit_context <text> ; print injected context per dialect.
+  local text="$1"
+  if [[ "$DIALECT" == "gemini" ]]; then
+    python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"additionalContext":sys.argv[1]}}))' "$text"
+  else
+    printf '%s\n' "$text"
+  fi
+}
+
+emit_deny() {
+  # emit_deny <reason> ; signal a blocked tool call per dialect, then exit.
+  local reason="$1"
+  if [[ "$DIALECT" == "gemini" ]]; then
+    python3 -c 'import json,sys; print(json.dumps({"decision":"deny","reason":sys.argv[1]}))' "$reason"
+    exit 0
+  fi
+  echo "$reason" >&2
+  exit 2
+}
+
+emit_fail_closed() {
+  # emit_fail_closed <reason> ; block due to gate-unavailable under fail-mode=closed.
+  emit_deny "$1"
+}
+
 case "$MODE" in
   session-start)
-    echo "[KB] data-olympus enforcement active (endpoint: $KB_ENDPOINT)."
+    emit_context "[KB] data-olympus enforcement active (endpoint: $KB_ENDPOINT)."
     exit 0
     ;;
   user-prompt)
@@ -122,12 +160,14 @@ print(json.dumps({"workspace":sys.argv[1],"intent":sys.argv[2],
     fi
     GOV="$(json_field_from "$RESP_BODY" is_governed_decision)"
     if [[ "$GOV" == "true" ]]; then
-      echo "=== GOVERNING RULES (data-olympus) ==="
-      echo "$RESP_BODY" | python3 -c 'import json,sys
+      RULES="$(echo "$RESP_BODY" | python3 -c 'import json,sys
 d=json.load(sys.stdin)
+lines=["=== GOVERNING RULES (data-olympus) ==="]
 for r in d.get("rules",[]):
-    print(f"- {r.get('"'"'id'"'"')}: {r.get('"'"'title'"'"')}")'
-      echo "=== consult these before deciding ==="
+    lines.append(f"- {r.get('"'"'id'"'"')}: {r.get('"'"'title'"'"')}")
+lines.append("=== consult these before deciding ===")
+print("\n".join(lines))')"
+      emit_context "$RULES"
     fi
     exit 0
     ;;
@@ -155,15 +195,13 @@ print(json.dumps({"workspace":sys.argv[1],"session_id":sys.argv[2],
     # silently allow on an unexpected/degraded response.
     if [[ "$GATE_AVAILABLE" == "0" || ( "$VERDICT" != "allow" && "$VERDICT" != "consult_required" ) ]]; then
       if [[ "$KB_ENFORCE_FAIL_MODE" == "closed" ]]; then
-        echo "[KB] gate unavailable and fail-mode=closed; blocking." >&2
-        exit 2
+        emit_fail_closed "[KB] gate unavailable and fail-mode=closed; blocking."
       fi
       echo "[KB] warn: gate endpoint unavailable; failing open (enforcement gap)." >&2
       exit 0
     fi
     if [[ "$VERDICT" == "consult_required" ]]; then
-      echo "[KB] BLOCKED: this is a governed change. Call kb_consult for '$WS' first, then retry." >&2
-      exit 2
+      emit_deny "[KB] BLOCKED: this is a governed change. Call kb_consult for '$WS' first, then retry."
     fi
     # Only reached when 2xx AND verdict == allow.
     exit 0
