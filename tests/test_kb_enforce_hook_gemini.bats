@@ -48,3 +48,11 @@ teardown() { kill "$MOCK_PID" 2>/dev/null || true; wait "$MOCK_PID" 2>/dev/null 
   [ "$status" -eq 0 ]
   [[ "$output" == *'"deny"'* ]]
 }
+
+@test "gemini pre-tool fail-open emits no deny and exits 0" {
+  # Unreachable endpoint, default fail-mode (open): a governed path must NOT
+  # produce a deny decision. Fail-open warns on stderr and lets the call through.
+  KB_ENDPOINT="http://127.0.0.1:1" run bash -c 'echo "{\"session_id\":\"x\",\"cwd\":\"/tmp/p\",\"tool_name\":\"write_file\",\"tool_input\":{\"file_path\":\"/tmp/p/pyproject.toml\"}}" | "'"$HOOK"'" pre-tool --dialect gemini'
+  [ "$status" -eq 0 ]
+  [[ "$output" != *'"deny"'* ]]
+}

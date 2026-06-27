@@ -27,7 +27,7 @@ shift || true
 DIALECT="claude"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dialect) DIALECT="${2:-claude}"; shift 2 ;;
+    --dialect) DIALECT="${2:-claude}"; shift; shift || true ;;
     *) shift ;;
   esac
 done
