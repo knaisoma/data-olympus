@@ -39,3 +39,13 @@ def test_claude_pretooluse_uses_dialect_claude(tmp_path) -> None:
     # Claude commands keep the slice-1 form: "<hook> <mode>" (dialect claude is default, omitted)
     assert "kb-enforce-hook session-start" in blob
     assert "kb-enforce-hook pre-tool" in blob
+
+
+def test_claude_commands_thread_agent_identity(tmp_path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}")
+    _run("install", "--agent", "claude-code", "--settings", str(settings))
+    blob = settings.read_text()
+    # Every generated command carries --agent so the consult audit records the
+    # correct per-agent identity (not a hardcoded "claude-code" for all agents).
+    assert "--agent claude-code" in blob

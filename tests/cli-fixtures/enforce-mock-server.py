@@ -5,6 +5,7 @@
 /api/v1/compliance    -> {"counts": {}, "by_agent": {}}
 """
 import json
+import os
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -31,6 +32,12 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length) or "{}")
         if self.path == "/api/v1/consult":
+            # When KB_MOCK_CAPTURE_FILE is set, record the raw consult request body
+            # so a test can assert the agent_identity the hook threaded through.
+            capture = os.getenv("KB_MOCK_CAPTURE_FILE")
+            if capture:
+                with open(capture, "w", encoding="utf-8") as fh:
+                    json.dump(body, fh)
             self._send({
                 "is_governed_decision": True,
                 "rules": [{"id": "STD-U-002", "path": "p", "title": "Style",

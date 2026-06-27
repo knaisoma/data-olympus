@@ -38,6 +38,44 @@ teardown() {
   [[ "$output" == *"STD-U-002"* ]]
 }
 
+@test "user-prompt --agent codex threads agent_identity=codex to the consult body" {
+  # Regression guard for the audit-attribution bug: the hardcoded "claude-code"
+  # in the consult body meant every agent was recorded as claude-code. We capture
+  # the raw consult request body via the mock's KB_MOCK_CAPTURE_FILE hook and
+  # assert the threaded --agent value reaches agent_identity.
+  CAP="${BATS_TEST_TMPDIR}/consult-body.json"
+  # Restart the mock with capture enabled (setup()'s instance has no capture file).
+  kill "$MOCK_PID" 2>/dev/null || true
+  wait "$MOCK_PID" 2>/dev/null || true
+  KB_MOCK_CAPTURE_FILE="$CAP" python3 "${FIXTURE_DIR}/enforce-mock-server.py" "$PORT" &
+  MOCK_PID=$!
+  for _ in $(seq 1 30); do
+    if curl --silent --max-time 0.2 "http://127.0.0.1:${PORT}/api/v1/compliance" >/dev/null 2>&1; then break; fi
+    sleep 0.1
+  done
+
+  run bash -c 'echo "{\"session_id\":\"s1\",\"cwd\":\"/tmp/proj\",\"prompt\":\"add a library\"}" | "'"$HOOK"'" user-prompt --agent codex'
+  [ "$status" -eq 0 ]
+  [ -f "$CAP" ]
+  run python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["agent_identity"])' "$CAP"
+  [ "$output" = "codex" ]
+}
+
+@test "user-prompt with a trailing --agent (no value) does not hang and exits 0" {
+  # set -u + a bad `shift 2` on a trailing flag would hang/error; the guarded
+  # `shift; shift || true` must tolerate a value-less trailing --agent. We bound
+  # the run with a portable background watchdog (macOS has no coreutils timeout).
+  bash -c 'echo "{\"session_id\":\"s1\",\"cwd\":\"/tmp/proj\",\"prompt\":\"add a library\"}" | "'"$HOOK"'" user-prompt --agent' &
+  hook_pid=$!
+  ( sleep 10; kill "$hook_pid" 2>/dev/null ) &
+  watchdog_pid=$!
+  wait "$hook_pid"
+  hook_status=$?
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  [ "$hook_status" -eq 0 ]
+}
+
 @test "pre-tool mode blocks (exit 2) when consult_required" {
   run bash -c 'echo "{\"session_id\":\"blockme\",\"cwd\":\"/tmp/proj\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/proj/pyproject.toml\"}}" | "'"$HOOK"'" pre-tool'
   [ "$status" -eq 2 ]

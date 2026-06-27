@@ -32,6 +32,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The enforcement hook now reports the correct per-agent identity to the consult audit. Previously every agent (Claude, Codex, Gemini) was recorded as `claude-code`, so the `kb_compliance` per-agent view was wrong for Codex and Gemini. The `kb-enforce-hook` dispatcher gained an `--agent` flag and each provider threads its own identity.
 - `data-olympus lint` no longer false-greens when its file discovery matches nothing. The summary now reports how many concept files were actually linted (e.g. `0 errors across 0 files (9 linted)`), and the command exits non-zero when a bundle has no concept files to lint, so a broken or over-broad skip walk surfaces as a red CI gate instead of a silent pass. Reserved files (`index.md`, `log.md`, `template.md`) are exempt from the concept schema and so are excluded from the linted count, preventing a bundle that kept only its generated indexes from passing the guard. File discovery is now exposed as `discover_bundle_files` for direct testing.
 
 ## [0.1.0] - 2026-06-24
