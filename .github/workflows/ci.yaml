@@ -21,3 +21,18 @@ jobs:
         run: bats -r tests
       - name: Lint example bundle (dogfood conformance check)
         run: uv run data-olympus lint example-bundle
+  changelog-guard:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Check changelog updated for functional changes
+        env:
+          KB_NO_CHANGELOG: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') && '1' || '0' }}
+        run: |
+          base="origin/${{ github.base_ref }}"
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          mapfile -t changed < <(git diff --name-only "$base"...HEAD)
+          python3 scripts/check_changelog.py "${changed[@]}"
