@@ -28,6 +28,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   dispatcher install an idempotent, reversible Claude Code enforcement shim
   (SessionStart / UserPromptSubmit / PreToolUse / Stop). Fail-open by default
   (`KB_ENFORCE_FAIL_MODE`), consultation freshness via `KB_CONSULT_TTL_SEC`.
+- Cross-agent enforcement providers: `kb enforce install --agent codex|gemini|opencode|copilot-cli|copilot-ide` and `--all`. Codex and Gemini get hard PreToolUse/BeforeTool gates (merging into existing hooks), OpenCode gets a `tool.execute.before` plugin, and Copilot CLI/IDE get a soft instructions-file + MCP provider. Antigravity is a documented-unsupported stub. The `kb-enforce-hook` dispatcher gained a `--dialect gemini` output mode.
 
 ### Fixed
 
