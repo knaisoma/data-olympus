@@ -385,7 +385,7 @@ def _git_managed_block(block: bool) -> str:
         )
     else:
         body = (
-            'data-olympus report --range HEAD~1..HEAD || true'
+            'data-olympus report --range HEAD~1..HEAD --emit-events || true'
         )
     return f"{HOOK_BEGIN}\n# data-olympus-enforce v{SHIM_VERSION}\n{body}\n{HOOK_END}\n"
 

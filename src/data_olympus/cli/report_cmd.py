@@ -1,6 +1,7 @@
 """`data-olympus report`: correlate governed git commits with the consult audit."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -63,6 +64,16 @@ def _fetch_audit(endpoint: str, token: str, since_ts: int) -> tuple[bool, list[d
         return False, []
 
 
+def _post_event(endpoint: str, token: str, payload: dict[str, Any]) -> None:
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(f"{endpoint}/api/v1/audit/event", data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    with contextlib.suppress(Exception):  # best-effort emission
+        urllib.request.urlopen(req, timeout=5).close()
+
+
 def run_report(
     *,
     workspace: str,
@@ -72,6 +83,7 @@ def run_report(
     as_json: bool,
     fail_on_unverified: bool,
     staged: bool = False,
+    emit_events: bool = False,
 ) -> int:
     classifier = IntentClassifier()
     endpoint = os.getenv("KB_ENDPOINT", "http://localhost:8080")
@@ -114,6 +126,14 @@ def run_report(
             print(f"[KB] warn: audit endpoint {endpoint} unreachable; "
                   f"consult state unknown, listing governed changes only.")
         print(format_report(report, as_json=False))
+
+    if emit_events and report.unverified:
+        for c in report.unverified:
+            _post_event(endpoint, token, {
+                "event_type": "gate_bypass", "workspace": workspace,
+                "agent_identity": c.author or "unknown", "source_session": "report",
+                "reason": f"{c.sha[:10]}: {', '.join(c.files)}",
+            })
 
     if fail_on_unverified and report.unverified:
         return 3

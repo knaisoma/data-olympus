@@ -70,6 +70,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
         as_json=args.json,
         fail_on_unverified=args.fail_on_unverified,
         staged=args.staged,
+        emit_events=args.emit_events,
     )
 
 
@@ -100,6 +101,8 @@ def build_parser() -> argparse.ArgumentParser:
                           help="exit 3 if any unverified governed change is found")
     p_report.add_argument("--staged", action="store_true",
                           help="classify the staged diff instead of git log (for pre-commit)")
+    p_report.add_argument("--emit-events", action="store_true",
+                          help="record a gate_bypass audit event per unverified governed change")
     p_report.set_defaults(func=_cmd_report)
     return parser
 
