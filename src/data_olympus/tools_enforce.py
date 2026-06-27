@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from data_olympus.models import (
-    ComplianceResponse,  # noqa: F401  used by kb_compliance_fn (appended in a later task)
+    ComplianceResponse,
     ConsultResponse,
     GateCheckResponse,
 )
@@ -104,3 +104,24 @@ def kb_gate_check_fn(
         verdict="consult_required",
         reason="governed action without a fresh consultation; call kb_consult first",
     )
+
+
+def kb_compliance_fn(
+    *,
+    audit_log: AuditLog,
+    since: float | None = None,
+    agent: str | None = None,
+) -> ComplianceResponse:
+    """Aggregate enforcement events (consult / gate_*) into overall and per-agent
+    counts. Ignores non-enforcement audit events."""
+    counts: dict[str, int] = {}
+    by_agent: dict[str, dict[str, int]] = {}
+    for ev in audit_log.iter_filtered(since=since, agent=agent):
+        et = ev.get("event_type", "")
+        if et not in ENFORCE_EVENT_TYPES:
+            continue
+        counts[et] = counts.get(et, 0) + 1
+        who = ev.get("agent_identity") or "unknown"
+        bucket = by_agent.setdefault(who, {})
+        bucket[et] = bucket.get(et, 0) + 1
+    return ComplianceResponse(counts=counts, by_agent=by_agent)
