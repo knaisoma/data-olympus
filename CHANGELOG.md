@@ -34,6 +34,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Git sync failures are now visible instead of masquerading as a fresh
+  no-change. `kb_health` / `/api/v1/health` expose `last_git_fetch_status`
+  (`changed` / `no_change` / `no_remote` / `fetch_failed` / `ff_failed`),
+  `last_git_fetch_error`, `last_git_fetch_at`, `last_successful_refresh_at`, and
+  `remote_head_sha`. A fetch or fast-forward failure no longer advances the
+  freshness marker, so staleness climbs and health degrades rather than reporting
+  the KB as up to date against a broken or diverged remote. A deployment with no
+  remote (read-only) is classified `no_remote` and stays healthy.
 - Write routes return structured errors instead of opaque 500s. In read-only mode
   (`KB_REMOTE_URL` unset) the write pipeline is disabled, and `POST
   /api/v1/propose/*`, `/resolve/{id}`, and `/onboarding/bootstrap` now return a

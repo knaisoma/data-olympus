@@ -37,6 +37,11 @@ def kb_health_fn(
     last_index_error_at: float | None = None,
     last_index_conflicts: list[dict[str, object]] | None = None,
     path_locks_held: int = 0,
+    last_git_fetch_status: str = "no_change",
+    last_git_fetch_error: str | None = None,
+    last_git_fetch_at: float | None = None,
+    last_successful_refresh_at: float | None = None,
+    remote_head_sha: str | None = None,
 ) -> HealthResponse:
     state = snapshot(
         idx=idx,
@@ -49,6 +54,11 @@ def kb_health_fn(
         last_index_error=last_index_error,
         last_index_error_at=last_index_error_at,
         last_index_conflicts=last_index_conflicts,
+        last_git_fetch_status=last_git_fetch_status,
+        last_git_fetch_error=last_git_fetch_error,
+        last_git_fetch_at=last_git_fetch_at,
+        last_successful_refresh_at=last_successful_refresh_at,
+        remote_head_sha=remote_head_sha,
     )
     return HealthResponse(
         kb_commit=state.kb_commit,
@@ -66,6 +76,11 @@ def kb_health_fn(
         last_index_error=state.last_index_error,
         last_index_error_at=state.last_index_error_at,
         last_index_conflicts=list(state.last_index_conflicts),
+        last_git_fetch_status=state.last_git_fetch_status,
+        last_git_fetch_error=state.last_git_fetch_error,
+        last_git_fetch_at=state.last_git_fetch_at,
+        last_successful_refresh_at=state.last_successful_refresh_at,
+        remote_head_sha=state.remote_head_sha,
     )
 
 

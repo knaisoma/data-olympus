@@ -23,6 +23,12 @@ class HealthResponse(BaseModel):
     last_index_error: str | None = None
     last_index_error_at: float | None = None
     last_index_conflicts: list[dict[str, object]] = []
+    # Git sync-failure visibility (a fetch/ff failure must not look "fresh").
+    last_git_fetch_status: str = "no_change"
+    last_git_fetch_error: str | None = None
+    last_git_fetch_at: float | None = None
+    last_successful_refresh_at: float | None = None
+    remote_head_sha: str | None = None
 
 
 class CategoryCount(BaseModel):

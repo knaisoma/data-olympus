@@ -45,6 +45,11 @@ def _build_health(state: ServerState) -> HealthResponse:
         last_index_error=state.last_index_error,
         last_index_error_at=state.last_index_error_at,
         last_index_conflicts=state.last_index_conflicts,
+        last_git_fetch_status=state.last_git_fetch_status,
+        last_git_fetch_error=state.last_git_fetch_error,
+        last_git_fetch_at=state.last_git_fetch_at,
+        last_successful_refresh_at=state.last_successful_refresh_at,
+        remote_head_sha=state.remote_head_sha,
     )
 
 

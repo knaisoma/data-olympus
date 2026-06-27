@@ -41,14 +41,25 @@ def rebuild_index_safely(
 def refresh_once(
     *, git: GitOps, idx: Index, kb_main_path: Path
 ) -> dict[str, Any]:
-    """One iteration of the refresh loop: fast-forward main, rebuild on SHA change."""
+    """One iteration of the refresh loop: fast-forward main, rebuild on SHA change.
+
+    The returned dict carries both the index ``outcome`` (no_change / rebuilt /
+    failed) and the git ``sync_status`` (changed / no_change / no_remote /
+    fetch_failed / ff_failed) plus ``remote_head_sha``, so the loop reports sync
+    failures distinctly from index-build failures."""
     result = git.ff_merge_origin_main(timeout_sec=30)
+    sync = {
+        "sync_status": result.status,
+        "remote_head_sha": result.remote_sha,
+        "note": result.note,
+    }
     if not result.changed:
-        return {"outcome": "no_change", "error": None, "conflicts": [], "sha": result.current_sha}
+        return {"outcome": "no_change", "error": None, "conflicts": [],
+                "sha": result.current_sha, **sync}
     rebuilt = rebuild_index_safely(
         idx=idx, kb_main_path=kb_main_path, source_commit=result.current_sha
     )
-    return {**rebuilt, "sha": result.current_sha}
+    return {**rebuilt, "sha": result.current_sha, **sync}
 
 
 async def git_pull_loop(state: ServerState, interval_sec: int) -> None:
@@ -65,7 +76,22 @@ async def git_pull_loop(state: ServerState, interval_sec: int) -> None:
                 kb_main_path=state.config.kb_main_path,
             )
             outcome = await asyncio.get_event_loop().run_in_executor(None, fn)
-            state.last_git_pull_at = time.time()
+            now = time.time()
+            # Sync-status visibility: a fetch/ff failure must NOT look "fresh".
+            # We record the failure and deliberately do not advance
+            # last_git_pull_at, so staleness climbs and health degrades instead of
+            # reporting a fresh no-change against a broken remote.
+            sync_status = outcome.get("sync_status", "no_change")
+            state.last_git_fetch_status = sync_status
+            state.last_git_fetch_at = now
+            state.remote_head_sha = outcome.get("remote_head_sha")
+            if sync_status in ("fetch_failed", "ff_failed"):
+                state.last_git_fetch_error = outcome.get("note") or sync_status
+            else:
+                state.last_git_fetch_error = None
+                state.last_git_pull_at = now
+                if sync_status in ("changed", "no_change"):
+                    state.last_successful_refresh_at = now
             if outcome["outcome"] == "failed":
                 state.last_index_build_status = "failed"
                 state.last_index_error = outcome["error"]

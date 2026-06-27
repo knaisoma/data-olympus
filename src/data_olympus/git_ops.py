@@ -12,12 +12,24 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class FfMergeResult:
-    """Outcome of an ff-only merge from origin/main."""
+    """Outcome of an ff-only merge from origin/main.
+
+    ``status`` distinguishes the failure modes the refresh loop must surface so a
+    broken remote does not masquerade as "fresh, no change":
+
+    - ``changed``      fetch + fast-forward advanced the local checkout.
+    - ``no_change``    fetch ok, already up to date.
+    - ``no_remote``    no ``origin`` configured (read-only deployment; healthy).
+    - ``fetch_failed`` fetch errored (network/auth/unreachable remote).
+    - ``ff_failed``    fetch ok but fast-forward refused (diverged history).
+    """
 
     previous_sha: str
     current_sha: str
     changed: bool
     note: str = ""
+    status: str = "no_change"
+    remote_sha: str | None = None
 
 
 class GitOps:
@@ -45,10 +57,26 @@ class GitOps:
     def head_sha(self) -> str:
         return self._run("rev-parse", "HEAD").stdout.strip()
 
+    def _has_origin(self) -> bool:
+        result = self._run("remote", check=False)
+        remotes = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+        return "origin" in remotes
+
     def ff_merge_origin_main(self, *, timeout_sec: int = 30) -> FfMergeResult:
-        """Fetch origin and fast-forward main. No-ops cleanly if origin is unset or unreachable."""
+        """Fetch origin and fast-forward main, returning a status-classified result.
+
+        A read-only deployment with no ``origin`` returns ``no_remote`` (healthy,
+        not a failure). Fetch and fast-forward failures return ``fetch_failed`` /
+        ``ff_failed`` so the refresh loop can degrade health instead of reporting
+        a fresh no-change.
+        """
         previous = self.head_sha()
-        # Fetch may fail (no remote, no network); we tolerate that.
+        if not self._has_origin():
+            return FfMergeResult(
+                previous_sha=previous, current_sha=previous, changed=False,
+                status="no_remote",
+            )
+        # Fetch may fail (no network, auth, unreachable); classify rather than hide.
         fetch = self._run("fetch", "origin", "main", check=False, timeout_sec=timeout_sec)
         if fetch.returncode != 0:
             return FfMergeResult(
@@ -56,7 +84,10 @@ class GitOps:
                 current_sha=previous,
                 changed=False,
                 note=f"fetch_failed: {fetch.stderr.strip()[:200]}",
+                status="fetch_failed",
             )
+        remote = self._run("rev-parse", "origin/main", check=False, timeout_sec=timeout_sec)
+        remote_sha = remote.stdout.strip() if remote.returncode == 0 else None
         merge = self._run("merge", "--ff-only", "origin/main", check=False, timeout_sec=timeout_sec)
         if merge.returncode != 0:
             return FfMergeResult(
@@ -64,10 +95,15 @@ class GitOps:
                 current_sha=previous,
                 changed=False,
                 note=f"ff_merge_failed: {merge.stderr.strip()[:200]}",
+                status="ff_failed",
+                remote_sha=remote_sha,
             )
         current = self.head_sha()
+        changed = current != previous
         return FfMergeResult(
-            previous_sha=previous, current_sha=current, changed=(current != previous)
+            previous_sha=previous, current_sha=current, changed=changed,
+            status="changed" if changed else "no_change",
+            remote_sha=remote_sha,
         )
 
     def clone(self, remote_url: str, *, timeout_sec: int = 120) -> None:

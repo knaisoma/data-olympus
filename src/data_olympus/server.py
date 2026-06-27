@@ -103,6 +103,12 @@ class ServerState:
         self.config = config
         self.last_git_pull_at: float | None = None
         self.last_git_push_at: float | None = None
+        # Sync-failure visibility (see refresh.git_pull_loop).
+        self.last_git_fetch_status: str = "no_change"
+        self.last_git_fetch_error: str | None = None
+        self.last_git_fetch_at: float | None = None
+        self.last_successful_refresh_at: float | None = None
+        self.remote_head_sha: str | None = None
         self.pending_count: int = 0
         self.push_queue_size: int = 0
         self.last_index_build_status: str = "ok"
@@ -233,6 +239,11 @@ def build_app(
             last_index_error_at=state.last_index_error_at,
             last_index_conflicts=state.last_index_conflicts,
             path_locks_held=state.pending.locks_held() if state.pending else 0,
+            last_git_fetch_status=state.last_git_fetch_status,
+            last_git_fetch_error=state.last_git_fetch_error,
+            last_git_fetch_at=state.last_git_fetch_at,
+            last_successful_refresh_at=state.last_successful_refresh_at,
+            remote_head_sha=state.remote_head_sha,
         )
         return resp.model_dump()
 
