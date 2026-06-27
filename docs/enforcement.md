@@ -209,3 +209,92 @@ the governed changes it found and marks the consult state as unknown rather
 than crashing. A post-commit warn hook never crashes a commit. The
 `--staged`/`--block` gate requires a consult within the window to pass, so a
 stale consult (outside the window) does not let a governed commit through.
+
+## Hardening and observability (slice 4)
+
+Slice 4 closes the enforcement follow-ups: it makes the compliance audit
+capture gate bypass and degradation, feeds the gate a richer classification
+signal, completes the installer CLI, persists the consultation ledger, and adds
+a changelog CI gate.
+
+### `gate_bypass` and `gate_degraded` are now recorded
+
+Two new enforcement events make non-compliant or degraded paths observable:
+
+- `gate_bypass`: recorded once per unverified governed change. `data-olympus
+  report --emit-events` (and the post-commit git warn hook, which now passes
+  `--emit-events`) post one `gate_bypass` per unverified governed change found
+  in the scanned range.
+- `gate_degraded`: recorded by the pre-tool hook when the gate is REACHABLE but
+  degraded (a non-2xx response or an unparseable body). The hook does NOT record
+  `gate_degraded` on a full connection failure: it cannot phone home when the
+  server is down, so a hard outage leaves no degraded event (the action still
+  fails open with a warning, per `KB_ENFORCE_FAIL_MODE`).
+
+`kb_compliance` (and `GET /api/v1/compliance`) now surface both event types in
+its aggregated counts. A new auth-guarded `POST /api/v1/audit/event` endpoint
+(and the matching `kb_record_event` MCP tool) lets clients append these events.
+The endpoint accepts ONLY `gate_bypass` and `gate_degraded`, so a client cannot
+forge `consult`, `gate_allow`, or `gate_block` rows. Body:
+
+- `event_type` (must be `gate_bypass` or `gate_degraded`)
+- `workspace`
+- `agent_identity`
+- `source_session`
+- `reason`
+
+### Richer gate signal: `action_diff` + word-boundary classifier
+
+The pre-tool hook now sends `action_diff` to the gate: the change content (a
+Write's content, an Edit's new string, or a Bash command), capped at 4000
+characters so the gate body stays bounded. With this content the classifier can
+do two new things:
+
+- Word-boundary keyword matching: keywords are matched on word boundaries, so
+  "authored" no longer matches the "auth" keyword and "standardize" no longer
+  matches "standard". This removes a class of substring false positives.
+- Dependency-install command signals: install commands (`pip install`, `uv
+  add`, `npm install`, `apt install`, `brew install`, `go get`, `cargo add`,
+  and similar) in `action_diff` are recognized as governed. This lets the
+  classifier handle Bash/shell governed actions, which carry their intent in the
+  command rather than a file path.
+
+To exercise this, Codex and Claude now also gate the `Bash` tool (added to the
+PreToolUse matcher alongside the edit tools).
+
+### `kb enforce install --mode off|soft|hard`
+
+The installer now takes a `--mode` flag:
+
+- `hard` (default): the full gate, including the blocking pre-tool gate.
+- `soft`: installs the consult and inject hooks only (SessionStart,
+  UserPromptSubmit), with NO blocking pre-tool gate.
+- `off`: uninstalls the managed hooks.
+
+`soft`/`hard` apply to the hook-file providers Claude, Codex, and Gemini. The
+fixed-tier providers (OpenCode, Copilot CLI, Copilot IDE) accept `off` (to
+uninstall) and note that `soft`/`hard` have no effect on their fixed tier:
+`kb enforce install --agent opencode --mode soft` prints that note and installs
+the hard gate.
+
+### Persisted consultation ledger
+
+The consultation ledger now persists to `KB_LEDGER_PATH` (default
+`/state/ledger.json`), so recorded consultations survive a server restart. It
+loads the file on startup and rewrites it atomically on every record. With no
+path configured it stays purely in-memory (the original behavior), and a
+corrupt or unreadable file degrades to empty (with a logged warning) rather than
+crashing.
+
+### Friendly PATH hint for `kb enforce report`
+
+`kb enforce report` now prints a friendly hint and exits 127 when
+`data-olympus` is not on PATH, instead of leaking a raw `command not found`. The
+message points the operator at installing the package or activating its venv.
+
+### Changelog CI gate
+
+CI now guards that a pull request changing functional paths (`src/`, `bin/`,
+`deploy/`, or `SPEC.md`) also updates `CHANGELOG.md`. The guard is skippable by
+adding a `no-changelog` label to the PR. Docs-only and tests-only changes do not
+trip the guard.

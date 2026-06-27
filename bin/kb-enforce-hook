@@ -144,6 +144,18 @@ emit_fail_closed() {
   emit_deny "$1"
 }
 
+record_degraded() {
+  # record_degraded <workspace> <session> <reason> ; best-effort, ignores failure.
+  # Records a gate_degraded audit event when the gate was REACHED but degraded.
+  # Never changes the gate's allow/block/fail decision.
+  local body
+  body="$(python3 -c 'import json,sys
+print(json.dumps({"event_type":"gate_degraded","workspace":sys.argv[1],
+"agent_identity":sys.argv[2],"source_session":sys.argv[3],"reason":sys.argv[4]}))' \
+    "$1" "$AGENT" "$2" "$3")"
+  post_json "$KB_ENDPOINT/api/v1/audit/event" "$body" >/dev/null 2>&1 || true
+}
+
 case "$MODE" in
   session-start)
     emit_context "[KB] data-olympus enforcement active (endpoint: $KB_ENDPOINT)."
@@ -182,14 +194,29 @@ print("\n".join(lines))')"
     TOOL="$(json_field tool_name)"
     FPATH="$(json_field tool_input.file_path)"
     WS="$(resolve_workspace "$CWD")"
+    # action_diff: the change content (Write.content, Edit.new_string, Bash.command),
+    # capped so the gate body stays bounded. Lets the classifier use diff signals
+    # and classify shell commands.
+    ADIFF="$(printf '%s' "$PAYLOAD" | python3 -c 'import json,sys
+try:
+    d=json.loads(sys.stdin.read() or "{}")
+    ti=d.get("tool_input",{}) if isinstance(d.get("tool_input"),dict) else {}
+    val=ti.get("content") or ti.get("new_string") or ti.get("command") or ""
+    print(val[:4000])
+except Exception:
+    print("")')"
     BODY="$(python3 -c 'import json,sys
 print(json.dumps({"workspace":sys.argv[1],"session_id":sys.argv[2],
-"tool_name":sys.argv[3],"action_path":sys.argv[4]}))' "$WS" "$SESSION" "$TOOL" "$FPATH")"
+"tool_name":sys.argv[3],"action_path":sys.argv[4],"action_diff":sys.argv[5]}))' "$WS" "$SESSION" "$TOOL" "$FPATH" "$ADIFF")"
     # Gate is "unavailable" when the connection fails OR the HTTP status is not
     # 2xx (curl --silent exits 0 on 4xx/5xx). Unavailable routes through the
-    # fail-mode switch; it must NEVER implicitly allow.
+    # fail-mode switch; it must NEVER implicitly allow. REACHED distinguishes a
+    # full connection failure (cannot record) from a reachable-but-degraded gate.
     GATE_AVAILABLE=1
-    if ! post_json "$KB_ENDPOINT/api/v1/gate/check" "$BODY" || ! is_2xx "$RESP_CODE"; then
+    REACHED=1
+    if ! post_json "$KB_ENDPOINT/api/v1/gate/check" "$BODY"; then
+      GATE_AVAILABLE=0; REACHED=0
+    elif ! is_2xx "$RESP_CODE"; then
       GATE_AVAILABLE=0
     fi
     VERDICT=""
@@ -199,6 +226,11 @@ print(json.dumps({"workspace":sys.argv[1],"session_id":sys.argv[2],
     # A reachable 2xx with no parseable verdict is also "unavailable": do not
     # silently allow on an unexpected/degraded response.
     if [[ "$GATE_AVAILABLE" == "0" || ( "$VERDICT" != "allow" && "$VERDICT" != "consult_required" ) ]]; then
+      # Reachable-but-degraded (server up, non-2xx or unparseable) is recorded;
+      # a full connection failure cannot be recorded (phone is down).
+      if [[ "$REACHED" == "1" ]]; then
+        record_degraded "$WS" "$SESSION" "gate degraded (code=$RESP_CODE)"
+      fi
       if [[ "$KB_ENFORCE_FAIL_MODE" == "closed" ]]; then
         emit_fail_closed "[KB] gate unavailable and fail-mode=closed; blocking."
       fi

@@ -3,7 +3,13 @@ in-memory consultation ledger. Pure and dependency-free so it is unit-testable
 without a FastMCP server."""
 from __future__ import annotations
 
+import contextlib
 import fnmatch
+import json
+import logging
+import os
+import re
+import tempfile
 from dataclasses import dataclass, field
 
 # Keyword signals that a user prompt is a governed code/architectural decision.
@@ -28,6 +34,15 @@ GOVERNED_PATH_GLOBS: tuple[str, ...] = (
     "Dockerfile", "*/Dockerfile", "*/docker-compose*.yml", "docker-compose*.yml",
 )
 
+# Command fragments (matched against action_diff) that indicate a governed
+# dependency/install action, so Bash/shell tool actions can be classified.
+GOVERNED_COMMAND_PATTERNS: tuple[str, ...] = (
+    "pip install", "pip3 install", "uv add", "uv pip install", "poetry add",
+    "npm install", "npm i ", "yarn add", "pnpm add",
+    "apt install", "apt-get install", "brew install",
+    "go get", "cargo add", "gem install", "bundle add",
+)
+
 
 @dataclass(frozen=True)
 class ClassifyResult:
@@ -46,9 +61,16 @@ class IntentClassifier:
         *,
         keywords: tuple[str, ...] = GOVERNED_KEYWORDS,
         path_globs: tuple[str, ...] = GOVERNED_PATH_GLOBS,
+        command_patterns: tuple[str, ...] = GOVERNED_COMMAND_PATTERNS,
     ) -> None:
         self._keywords = tuple(k.lower() for k in keywords)
         self._path_globs = tuple(path_globs)
+        self._command_patterns = tuple(p.lower() for p in command_patterns)
+        # Pre-compile a word-boundary regex per keyword so "authored" does not
+        # match "auth". \b around each keyword; keywords with spaces still work.
+        self._keyword_res = tuple(
+            (kw, re.compile(rf"\b{re.escape(kw)}\b")) for kw in self._keywords
+        )
 
     def classify(
         self,
@@ -59,9 +81,13 @@ class IntentClassifier:
     ) -> ClassifyResult:
         signals: list[str] = []
         text = f"{intent} {action_diff}".lower()
-        for kw in self._keywords:
-            if kw in text:
+        for kw, rx in self._keyword_res:
+            if rx.search(text):
                 signals.append(f"keyword:{kw}")
+        diff_lower = action_diff.lower()
+        for pat in self._command_patterns:
+            if pat in diff_lower:
+                signals.append(f"command:{pat.strip()}")
         if action_path:
             p = action_path.replace("\\", "/")
             base = p.rsplit("/", 1)[-1]
@@ -80,14 +106,62 @@ class LedgerEntry:
     rule_ids: list[str]
 
 
-class ConsultationLedger:
-    """In-memory record of which (session, workspace) pairs have consulted and
-    when. Single-replica server, so a process-local dict is sufficient. Not
-    persisted across restarts (a restart simply forces the next governed edit to
-    re-consult)."""
+log = logging.getLogger("data_olympus")
 
-    def __init__(self) -> None:
+
+class ConsultationLedger:
+    """Records which (session, workspace) pairs consulted and when.
+
+    With no ``path`` it is purely in-memory (the slice-1 behavior). With a
+    ``path`` it loads an existing JSON file on construction and rewrites it on
+    every ``record`` so consultations survive a server restart. A corrupt or
+    unreadable file degrades to empty with a logged warning and never crashes."""
+
+    def __init__(self, path: str | None = None) -> None:
+        self._path = path
         self._entries: dict[tuple[str, str], LedgerEntry] = {}
+        if path:
+            self._load()
+
+    def _load(self) -> None:
+        if not self._path or not os.path.exists(self._path):
+            return
+        try:
+            with open(self._path, encoding="utf-8") as f:
+                rows = json.load(f)
+            for row in rows:
+                key = (row["session_id"], row["workspace"])
+                self._entries[key] = LedgerEntry(
+                    consulted_at=float(row["consulted_at"]),
+                    rule_ids=list(row.get("rule_ids", [])),
+                )
+        except Exception as exc:  # noqa: BLE001 - corrupt file -> empty, never crash
+            log.warning("consultation ledger at %s unreadable, starting empty: %s",
+                        self._path, exc)
+            self._entries = {}
+
+    def _save(self) -> None:
+        if not self._path:
+            return
+        rows = [
+            {"session_id": s, "workspace": w,
+             "consulted_at": e.consulted_at, "rule_ids": e.rule_ids}
+            for (s, w), e in self._entries.items()
+        ]
+        d = os.path.dirname(self._path) or "."
+        os.makedirs(d, exist_ok=True)
+        # Atomic write: serialize to a temp file in the same directory, then
+        # os.replace() over the target so a crash/full-disk mid-write cannot
+        # truncate or corrupt the existing ledger.
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".ledger-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(rows, f)
+            os.replace(tmp, self._path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
 
     def record(
         self, *, session_id: str, workspace: str, rule_ids: list[str], now: float
@@ -95,6 +169,7 @@ class ConsultationLedger:
         self._entries[(session_id, workspace)] = LedgerEntry(
             consulted_at=now, rule_ids=list(rule_ids)
         )
+        self._save()
 
     def is_fresh(
         self, *, session_id: str, workspace: str, now: float, ttl_sec: float

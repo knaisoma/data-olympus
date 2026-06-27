@@ -325,7 +325,34 @@ _WRITE_ROUTES = [
             "confidence": 0.9,
         },
     ),
+    (
+        "/api/v1/audit/event",
+        {
+            "event_type": "gate_bypass",
+            "workspace": "param-ws",
+            "agent_identity": "claude",
+            "source_session": "s",
+            "reason": "x",
+        },
+    ),
 ]
+
+
+# ---------------------------------------------------------------------------
+# audit/event — no header + correct token (dedicated, like the other routes)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_audit_event_no_auth_header_returns_401(authed_app) -> None:
+    transport = httpx.ASGITransport(app=authed_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/audit/event",
+            json={"event_type": "gate_bypass", "workspace": "ws",
+                  "agent_identity": "claude", "source_session": "s", "reason": "x"},
+        )
+    assert resp.status_code == 401
+    assert resp.json() == {"error": "unauthorized"}
 
 
 # ---------------------------------------------------------------------------

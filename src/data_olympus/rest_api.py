@@ -339,6 +339,29 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
         resp = kb_compliance_fn(audit_log=state.audit_log, since=since, agent=agent)
         return JSONResponse(resp.model_dump())
 
+    @app.custom_route("/api/v1/audit/event", methods=["POST"])
+    async def record_event(request: Request) -> JSONResponse:
+        if (denied := _check_auth(request, auth_token)) is not None:
+            return denied
+        if state.audit_log is None:
+            return JSONResponse({"recorded": False}, status_code=503)
+        import time as _time
+
+        body = await request.json()
+        if (bad := _missing_fields_response(body, ["event_type", "workspace"])) is not None:
+            return bad
+        from data_olympus.tools_enforce import kb_record_event_fn
+        try:
+            resp = kb_record_event_fn(
+                audit_log=state.audit_log, event_type=body["event_type"],
+                workspace=body["workspace"],
+                agent_identity=body.get("agent_identity", "unknown"),
+                source_session=body.get("source_session", ""),
+                reason=body.get("reason", ""), now=_time.time())
+        except ValueError as e:
+            return JSONResponse({"recorded": False, "error": str(e)}, status_code=400)
+        return JSONResponse(resp.model_dump())
+
     @app.custom_route("/api/v1/onboarding/status", methods=["GET"])
     async def onboarding_status(request: Request) -> JSONResponse:
         from data_olympus.tools_onboarding import kb_onboarding_status_fn
