@@ -70,3 +70,39 @@ class IntentClassifier:
                     signals.append(f"path:{glob}")
                     break
         return ClassifyResult(is_governed_decision=bool(signals), signals=signals)
+
+
+@dataclass
+class LedgerEntry:
+    """A recorded consultation for a (session, workspace) pair."""
+
+    consulted_at: float
+    rule_ids: list[str]
+
+
+class ConsultationLedger:
+    """In-memory record of which (session, workspace) pairs have consulted and
+    when. Single-replica server, so a process-local dict is sufficient. Not
+    persisted across restarts (a restart simply forces the next governed edit to
+    re-consult)."""
+
+    def __init__(self) -> None:
+        self._entries: dict[tuple[str, str], LedgerEntry] = {}
+
+    def record(
+        self, *, session_id: str, workspace: str, rule_ids: list[str], now: float
+    ) -> None:
+        self._entries[(session_id, workspace)] = LedgerEntry(
+            consulted_at=now, rule_ids=list(rule_ids)
+        )
+
+    def is_fresh(
+        self, *, session_id: str, workspace: str, now: float, ttl_sec: float
+    ) -> bool:
+        entry = self._entries.get((session_id, workspace))
+        if entry is None:
+            return False
+        return (now - entry.consulted_at) <= ttl_sec
+
+    def get(self, *, session_id: str, workspace: str) -> LedgerEntry | None:
+        return self._entries.get((session_id, workspace))
