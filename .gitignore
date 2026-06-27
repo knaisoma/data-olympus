@@ -17,5 +17,7 @@ id_ed25519*
 id_rsa*
 # Claude Code working directory (worktrees, local settings, skill/plugin scratch)
 .claude/
-# superpowers skill scratch: plan/spec docs belong under docs/plans and docs/specs
+# internal planning/design docs are not committed; docs/ holds only user-facing material
+docs/plans/
+docs/specs/
 docs/superpowers/

@@ -24,7 +24,7 @@ The system is optimized for one specific job: a small team of agents (and humans
 
 ## Quantified comparison
 
-Methodology: a synthetic corpus of 250 concepts (deterministic, `seed=0`) was generated across all tiers and types, including supersession pairs. Four retrieval methods were run over 500 queries spanning four categories (`exact`, `semantic`, `status`, `graph`). Token counts use the dep-free `SimpleTokenizer` (word runs and punctuation marks); token *ratios* across methods are tokenizer-robust, absolute counts are specific to this tokenizer. Vector-RAG was not included because the `[bench]` optional dependencies are absent from the CI install; it is expected to win on the `semantic` category. See [`benchmarks/README.md`](../benchmarks/README.md) and [`docs/specs/2026-06-25-retrieval-benchmark-design.md`](specs/2026-06-25-retrieval-benchmark-design.md) for the full methodology.
+Methodology: a synthetic corpus of 250 concepts (deterministic, `seed=0`) was generated across all tiers and types, including supersession pairs. Four retrieval methods were run over 500 queries spanning four categories (`exact`, `semantic`, `status`, `graph`). Token counts use the dep-free `SimpleTokenizer` (word runs and punctuation marks); token *ratios* across methods are tokenizer-robust, absolute counts are specific to this tokenizer. Vector-RAG was not included because the `[bench]` optional dependencies are absent from the CI install; it is expected to win on the `semantic` category. See [`benchmarks/README.md`](../benchmarks/README.md) for the full methodology.
 
 **Corpus: SYNTHETIC (generated). Tokenizer: SimpleTokenizer (dep-free). Vector-RAG: not included in this run.**
 
