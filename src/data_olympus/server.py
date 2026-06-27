@@ -276,6 +276,8 @@ def build_app(
         """Propose a new memory file. High confidence auto-commits and
         enqueues for push; low confidence enters the pending queue for operator
         review."""
+        if state.worktrees is None or state.push_queue is None or state.pending is None:
+            return {"status": "write_pipeline_disabled"}
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None
@@ -303,6 +305,8 @@ def build_app(
         """Propose an edit to an existing (or new) markdown file under an
         indexed tier. High confidence auto-commits + queues for push; low
         confidence enters the pending queue for operator review."""
+        if state.worktrees is None or state.push_queue is None or state.pending is None:
+            return {"status": "write_pipeline_disabled"}
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None
@@ -330,6 +334,8 @@ def build_app(
     ) -> dict[str, object]:
         """Resolve a pending proposal: approve (optionally with edited text) or
         reject. Approval commits + enqueues for push."""
+        if state.worktrees is None or state.push_queue is None or state.pending is None:
+            return {"status": "write_pipeline_disabled"}
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None
@@ -390,6 +396,8 @@ def build_app(
     ) -> dict[str, object]:
         """Bootstrap a new workspace/component. Only valid when status=absent.
         High confidence commits atomically; low confidence enqueues pending."""
+        if state.worktrees is None or state.push_queue is None or state.pending is None:
+            return {"status": "write_pipeline_disabled"}
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None

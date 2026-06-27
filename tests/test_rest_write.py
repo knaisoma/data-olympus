@@ -150,6 +150,74 @@ async def test_rest_propose_memory_missing_text_returns_400(http_app) -> None:
     assert "text" in f"{body.get('error', '')} {body.get('message', '')}"
 
 
+@pytest.fixture
+def readonly_app(tmp_kb, tmp_index_path, tmp_path):
+    """App with no remote -> write pipeline disabled (read-only mode)."""
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=tmp_kb, check=True, env=env)
+    subprocess.run(["git", "-C", str(tmp_kb), "add", "-A"], check=True, env=env)
+    subprocess.run(["git", "-C", str(tmp_kb), "commit", "-m", "init"], check=True, env=env)
+    app = build_app(
+        kb_main_path=tmp_kb, kb_index_path=tmp_index_path,
+        sync_interval_sec=60, staleness_degraded_sec=600, bootstrap_now=True,
+        kb_remote_url="",  # read-only: no write pipeline
+        worktree_root=str(tmp_path / "wts"),
+        pending_root=str(tmp_path / "pending"), push_queue_root=str(tmp_path / "pq"),
+    )
+    return app.http_app()
+
+
+@pytest.mark.asyncio
+async def test_readonly_propose_memory_returns_503(readonly_app) -> None:
+    """A read-only deployment must return a structured 503, not an opaque 500."""
+    transport = httpx.ASGITransport(app=readonly_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/propose/memory",
+            json={"text": "x", "tags": [], "source_session": "s",
+                  "agent_identity": "claude", "confidence": 0.9},
+        )
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "write_pipeline_disabled"
+
+
+@pytest.mark.asyncio
+async def test_readonly_resolve_returns_503(readonly_app) -> None:
+    transport = httpx.ASGITransport(app=readonly_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/v1/resolve/some-id", json={"decision": "approve"})
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "write_pipeline_disabled"
+
+
+@pytest.mark.asyncio
+async def test_resolve_missing_decision_returns_400(http_app) -> None:
+    transport = httpx.ASGITransport(app=http_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/v1/resolve/some-id", json={})
+    assert resp.status_code == 400
+    assert "decision" in f"{resp.json()}"
+
+
+@pytest.mark.asyncio
+async def test_consult_missing_source_session_returns_400(http_app) -> None:
+    transport = httpx.ASGITransport(app=http_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/v1/consult", json={"workspace": "ws"})
+    assert resp.status_code == 400
+    assert "source_session" in f"{resp.json()}"
+
+
+@pytest.mark.asyncio
+async def test_gate_check_missing_session_id_returns_400(http_app) -> None:
+    transport = httpx.ASGITransport(app=http_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/v1/gate/check", json={"workspace": "ws"})
+    assert resp.status_code == 400
+    assert "session_id" in f"{resp.json()}"
+
+
 @pytest.mark.asyncio
 async def test_rest_list_pending_returns_entries(http_app) -> None:
     transport = httpx.ASGITransport(app=http_app)

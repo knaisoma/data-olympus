@@ -32,6 +32,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detection floor for un-hookable agents: `kb enforce report` (and `data-olympus report`) correlates governed git commits against the consult audit and lists changes with no consultation on record. An opt-in repo-scoped git provider (`kb enforce install --agent git`) installs a post-commit warning hook, or a pre-commit blocking hook with `--block`. Reuses the existing audit endpoint; no server change.
 - Enforcement hardening and observability: gate_bypass and gate_degraded events are now recorded (via `data-olympus report --emit-events` / the git warn hook, and the pre-tool hook on a reachable-degraded gate), so `kb_compliance` surfaces them. The gate receives `action_diff` and the classifier uses word-boundary matching plus dependency-install command signals (Codex and Claude now gate the Bash tool). New `kb enforce install --mode off|soft|hard`, ledger persistence via `KB_LEDGER_PATH`, a friendly PATH hint for `kb enforce report`, and a CI guard requiring a changelog entry for functional changes.
 
+### Fixed
+
+- Write routes return structured errors instead of opaque 500s. In read-only mode
+  (`KB_REMOTE_URL` unset) the write pipeline is disabled, and `POST
+  /api/v1/propose/*`, `/resolve/{id}`, and `/onboarding/bootstrap` now return a
+  `503 {"error":"write_pipeline_disabled"}` (and the MCP write tools return
+  `{"status":"write_pipeline_disabled"}`) instead of crashing on an internal
+  assertion. Missing-field validation was extended to `/api/v1/consult`,
+  `/api/v1/gate/check`, and `/api/v1/resolve/{id}`, so a request that omits a
+  required field gets an actionable `400` rather than a `KeyError`-driven 500.
+
 ### Security
 
 - Identity + capability authorization unifies MCP/REST write auth, per-agent

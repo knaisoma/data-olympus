@@ -132,6 +132,23 @@ def _parse_confidence(body: dict) -> tuple[float, JSONResponse | None]:
         )
 
 
+def _write_pipeline_ready(state: ServerState) -> JSONResponse | None:
+    """Return a structured 503 when the write pipeline is disabled (the server
+    runs read-only because ``KB_REMOTE_URL`` is unset), else None.
+
+    Previously the write handlers asserted ``state.worktrees is not None`` and a
+    read-only deployment turned every write call into an opaque plain-text HTTP
+    500. This returns an actionable JSON body and the correct 503 status instead.
+    """
+    if state.worktrees is None or state.push_queue is None or state.pending is None:
+        return JSONResponse(
+            {"error": "write_pipeline_disabled",
+             "message": "server is read-only (KB_REMOTE_URL is not set)"},
+            status_code=503,
+        )
+    return None
+
+
 def register_routes(
     app: FastMCP, state: ServerState, registry: PrincipalRegistry
 ) -> None:
@@ -204,6 +221,8 @@ def register_routes(
         principal, denied = _authorize(request, registry, CAP_PROPOSE)
         if denied is not None:
             return denied
+        if (off := _write_pipeline_ready(state)) is not None:
+            return off
         body = await request.json()
         if (bad := _missing_fields_response(
             body, ["text", "source_session", "agent_identity", "confidence"],
@@ -241,6 +260,8 @@ def register_routes(
         principal, denied = _authorize(request, registry, CAP_PROPOSE)
         if denied is not None:
             return denied
+        if (off := _write_pipeline_ready(state)) is not None:
+            return off
         body = await request.json()
         if (bad := _missing_fields_response(
             body,
@@ -284,8 +305,12 @@ def register_routes(
         _principal, denied = _authorize(request, registry, CAP_RESOLVE)
         if denied is not None:
             return denied
+        if (off := _write_pipeline_ready(state)) is not None:
+            return off
         pid = request.path_params["pending_id"]
         body = await request.json()
+        if (bad := _missing_fields_response(body, ["decision"])) is not None:
+            return bad
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None
@@ -330,6 +355,10 @@ def register_routes(
 
         from data_olympus.tools_enforce import kb_consult_fn
         body = await request.json()
+        if (bad := _missing_fields_response(
+            body, ["workspace", "source_session"],
+        )) is not None:
+            return bad
         resp = kb_consult_fn(
             idx=state.idx, classifier=state.classifier, ledger=state.ledger,
             workspace=body["workspace"], intent=body.get("intent", ""),
@@ -349,6 +378,10 @@ def register_routes(
 
         from data_olympus.tools_enforce import kb_gate_check_fn
         body = await request.json()
+        if (bad := _missing_fields_response(
+            body, ["workspace", "session_id"],
+        )) is not None:
+            return bad
         resp = kb_gate_check_fn(
             classifier=state.classifier, ledger=state.ledger,
             workspace=body["workspace"], session_id=body["session_id"],
@@ -413,7 +446,14 @@ def register_routes(
         principal, denied = _authorize(request, registry, CAP_BOOTSTRAP)
         if denied is not None:
             return denied
+        if (off := _write_pipeline_ready(state)) is not None:
+            return off
         body = await request.json()
+        if (bad := _missing_fields_response(
+            body, ["workspace", "files", "source_session",
+                   "agent_identity", "confidence"],
+        )) is not None:
+            return bad
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None
