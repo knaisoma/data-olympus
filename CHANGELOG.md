@@ -34,6 +34,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `data-olympus-mcp --help` now prints usage and exits 0 instead of crashing with
+  `NotADirectoryError: KB root not a directory: /kb-main`. Argument parsing runs
+  before config loading, so the documented quickstart command works on first run.
 - Git sync failures are now visible instead of masquerading as a fresh
   no-change. `kb_health` / `/api/v1/health` expose `last_git_fetch_status`
   (`changed` / `no_change` / `no_remote` / `fetch_failed` / `ff_failed`),

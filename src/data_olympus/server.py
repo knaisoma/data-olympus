@@ -573,6 +573,21 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
 def main() -> None:
     """Production entry. Loads config from env, bootstraps index, starts HTTP server
     with the git_pull_loop refresh task running in the background."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="data-olympus-mcp",
+        description=(
+            "Run the data-olympus MCP + REST server. All configuration is via "
+            "KB_* environment variables (see docs/serving.md); there are no "
+            "positional arguments. Start a local instance with scripts/run-local.sh."
+        ),
+    )
+    # Parsing first means `data-olympus-mcp --help` prints usage and exits 0
+    # without loading config (which would otherwise fail with NotADirectoryError
+    # when KB_MAIN_PATH does not exist).
+    parser.parse_args()
+
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
