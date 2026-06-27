@@ -386,6 +386,13 @@ def register_routes(
                           agent=agent, status=status_filter, limit=limit)
         return JSONResponse(resp.model_dump())
 
+    @app.custom_route("/api/v1/audit/verify", methods=["GET"])
+    async def audit_verify(_request: Request) -> JSONResponse:
+        if state.audit_log is None:
+            return JSONResponse({"ok": True, "first_broken_index": -1})
+        ok, idx = state.audit_log.verify()
+        return JSONResponse({"ok": ok, "first_broken_index": idx})
+
     @app.custom_route("/api/v1/consult", methods=["POST"])
     async def consult(request: Request) -> JSONResponse:
         _principal, denied = _authorize(request, registry)

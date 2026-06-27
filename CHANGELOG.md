@@ -53,6 +53,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- The audit log is now tamper-evident. Each appended event carries an
+  `event_id`, the `prev_hash` of the previous event, and its own `hash` over the
+  canonical body (SHA-256, or keyed HMAC-SHA256 when `KB_AUDIT_HMAC_KEY` is set).
+  Any later edit, deletion, or reordering breaks the chain. A new
+  `GET /api/v1/audit/verify` route and `kb audit --verify` recompute and report
+  the first broken line. Legacy unhashed lines are tolerated, so enabling the
+  feature on an existing log does not retroactively flag it.
 - Resource limits bound write-side abuse. New configurable caps reject oversized
   proposals before any disk side effect: `KB_MAX_TEXT_BYTES` (memory text, default
   256 KiB), `KB_MAX_POSTIMAGE_BYTES` (edit/bootstrap file, default 1 MiB), and

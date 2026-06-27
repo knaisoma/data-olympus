@@ -32,6 +32,7 @@ class Config:
     worktree_idle_sec: int = 3600
     git_key_path: str = "/tmp/git-key"
     audit_log_path: str = "/state/audit/events.log"
+    audit_hmac_key: str = ""
     auth_token: str = ""
     auth_principals: list[dict] = field(default_factory=list)
     consult_ttl_sec: int = 300
@@ -64,6 +65,7 @@ def load_config() -> Config:
     worktree_idle_sec = int(os.getenv("KB_WORKTREE_IDLE_SEC", "3600"))
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
     audit_log_path = os.getenv("KB_AUDIT_LOG_PATH", "/state/audit/events.log")
+    audit_hmac_key = os.getenv("KB_AUDIT_HMAC_KEY", "")
     auth_token = os.getenv("KB_AUTH_TOKEN", "")
     from data_olympus.principals import parse_principals_env
     auth_principals = parse_principals_env(os.getenv("KB_AUTH_PRINCIPALS", ""))
@@ -92,6 +94,7 @@ def load_config() -> Config:
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
         audit_log_path=audit_log_path,
+        audit_hmac_key=audit_hmac_key,
         auth_token=auth_token,
         auth_principals=auth_principals,
         consult_ttl_sec=consult_ttl_sec,

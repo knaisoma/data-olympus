@@ -12,6 +12,7 @@
 #   kb resolve PENDING_ID --decision approve|reject [--edit-text TEXT]
 #   kb pending [-o json|plain]
 #   kb audit [--since EPOCH] [--agent A] [--status S] [--limit N] [-o json|plain]
+#   kb audit --verify   (recompute the tamper-evident hash chain)
 #   kb onboarding-check [--workspace W] [--component C] [--workspace-remote-url U] [--component-remote-url U]
 #   kb onboard status <workspace> [<component>]
 #   kb onboard project <workspace>
@@ -563,7 +564,7 @@ EOF
 
 # Subcommand: kb audit [--since EPOCH] [--agent A] [--status S] [--limit N] [-o json|plain]
 cmd_audit() {
-  local fmt="json" since="" agent="" status_f="" limit="100"
+  local fmt="json" since="" agent="" status_f="" limit="100" verify=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -o|--output) need_value "$1" "${2:-}"; fmt="$2"; shift 2 ;;
@@ -571,11 +572,36 @@ cmd_audit() {
       --agent) need_value "$1" "${2:-}"; agent="$2"; shift 2 ;;
       --status) need_value "$1" "${2:-}"; status_f="$2"; shift 2 ;;
       --limit) need_value "$1" "${2:-}"; limit="$2"; shift 2 ;;
+      --verify) verify="1"; shift ;;
       -h|--help) usage ;;
       -*) echo "kb: unknown flag $1" >&2; exit 64 ;;
       *) echo "kb: audit takes no positional args" >&2; exit 64 ;;
     esac
   done
+  if [[ -n "$verify" ]]; then
+    # Verify the tamper-evident hash chain server-side.
+    local vtmp
+    vtmp=$(mktemp)
+    if ! curl --silent --max-time 10 --output "$vtmp" \
+        "$KB_ENDPOINT/api/v1/audit/verify" 2>/dev/null; then
+      rm -f "$vtmp"
+      echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2; exit 1
+    fi
+    REST_BODY=$(cat "$vtmp"); rm -f "$vtmp"
+    if command -v jq >/dev/null 2>&1; then
+      local ok
+      ok=$(echo "$REST_BODY" | jq -r '.ok')
+      if [[ "$ok" == "true" ]]; then
+        echo "audit chain OK"
+      else
+        echo "audit chain BROKEN at line index $(echo "$REST_BODY" | jq -r '.first_broken_index')" >&2
+        exit 1
+      fi
+    else
+      format_json
+    fi
+    return 0
+  fi
   local url="$KB_ENDPOINT/api/v1/audit?limit=$(url_encode "$limit")"
   [[ -n "$since" ]] && url="$url&since=$(url_encode "$since")"
   [[ -n "$agent" ]] && url="$url&agent=$(url_encode "$agent")"

@@ -154,6 +154,7 @@ def build_app(
     git_key_path: str = "/tmp/git-key",
     auth_token: str = "",
     auth_principals: list[dict] | None = None,
+    audit_hmac_key: str = "",
     ledger_path: str | None = None,
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
@@ -185,6 +186,7 @@ def build_app(
         git_key_path=git_key_path,
         auth_token=auth_token,
         auth_principals=auth_principals or [],
+        audit_hmac_key=audit_hmac_key,
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
@@ -213,7 +215,10 @@ def build_app(
         state.blocklist = blocklist
 
     if config.kb_remote_url:
-        audit_log = AuditLog(log_path=audit_log_path or config.audit_log_path)
+        audit_log = AuditLog(
+            log_path=audit_log_path or config.audit_log_path,
+            hmac_key=config.audit_hmac_key,
+        )
         state.audit_log = audit_log
 
     if bootstrap_now:
@@ -560,6 +565,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         git_key_path=config.git_key_path,
         auth_token=config.auth_token,
         auth_principals=list(config.auth_principals),
+        audit_hmac_key=config.audit_hmac_key,
         ledger_path=config.ledger_path,
     )
 

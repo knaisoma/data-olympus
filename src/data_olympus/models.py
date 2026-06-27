@@ -186,12 +186,23 @@ class AuditEvent(BaseModel):
     commit_sha: str | None = None
     reason: str | None = None
     remote_addr: str | None = None
+    # Tamper-evident chain fields (present on events appended with chaining).
+    event_id: str | None = None
+    prev_hash: str | None = None
+    hash: str | None = None
 
 
 class AuditResponse(BaseModel):
     events: list[AuditEvent]
     returned: int
     limit_hit: bool = False
+
+
+class AuditVerifyResponse(BaseModel):
+    """Result of recomputing the audit hash chain."""
+
+    ok: bool
+    first_broken_index: int = -1
 
 
 class ConsultResponse(BaseModel):

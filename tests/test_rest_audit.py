@@ -45,3 +45,18 @@ async def test_rest_audit_returns_events(http_app) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["returned"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_rest_audit_verify_ok(http_app) -> None:
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        for _ in range(3):
+            await client.post("/api/v1/propose/memory",
+                json={"text": "x", "tags": [], "source_session": "s",
+                      "agent_identity": "claude", "confidence": 0.9})
+        resp = await client.get("/api/v1/audit/verify")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["first_broken_index"] == -1
