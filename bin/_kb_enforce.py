@@ -363,6 +363,82 @@ class UnsupportedProvider:
         return self._report()
 
 
+HOOK_BEGIN = "# >>> data-olympus enforce (managed) >>>"
+HOOK_END = "# <<< data-olympus enforce <<<"
+
+
+def _git_managed_block(block: bool) -> str:
+    if block:
+        body = (
+            'data-olympus report --staged --fail-on-unverified || {\n'
+            '  echo "[KB] commit blocked: governed change without a consultation '
+            '(set KB_ENFORCE_FAIL_MODE or run kb_consult)." >&2; exit 1;\n'
+            '}'
+        )
+    else:
+        body = (
+            'data-olympus report --range HEAD~1..HEAD || true'
+        )
+    return f"{HOOK_BEGIN}\n# data-olympus-enforce v{SHIM_VERSION}\n{body}\n{HOOK_END}\n"
+
+
+class GitHookProvider:
+    name = "git"
+    tier = "detect"
+
+    def __init__(self, *, block: bool = False) -> None:
+        self._block = block
+
+    def default_target(self) -> Path:
+        hook = "pre-commit" if self._block else "post-commit"
+        return Path(".git") / "hooks" / hook
+
+    @staticmethod
+    def _strip(text: str) -> str:
+        if HOOK_BEGIN in text and HOOK_END in text:
+            pre = text.split(HOOK_BEGIN, 1)[0].rstrip("\n")
+            post = text.split(HOOK_END, 1)[1].lstrip("\n")
+            joined = "\n".join(p for p in (pre, post) if p)
+            return (joined + "\n") if joined else ""
+        return text
+
+    def install(self, target: Path) -> int:
+        existing = target.read_text() if target.exists() else ""
+        if target.exists():
+            _backup(target)
+        base = self._strip(existing).rstrip("\n")
+        if not base:
+            base = "#!/bin/sh"
+        new = base + "\n\n" + _git_managed_block(self._block) + "\n"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(new)
+        target.chmod(0o755)
+        kind = "pre-commit (block)" if self._block else "post-commit (warn)"
+        print(f"installed data-olympus enforcement (v{SHIM_VERSION}) into {target} [git, {kind}]")
+        return 0
+
+    def uninstall(self, target: Path) -> int:
+        if not target.exists():
+            print("nothing to uninstall")
+            return 0
+        _backup(target)
+        target.write_text(self._strip(target.read_text()))
+        print(f"uninstalled data-olympus enforcement from {target} [git]")
+        return 0
+
+    def status(self, target: Path) -> int:
+        if target.exists() and HOOK_BEGIN in target.read_text():
+            print(f"git: installed, tier=detect, versions=['{SHIM_VERSION}']")
+        else:
+            print("git: not installed")
+        return 0
+
+    def doctor(self, target: Path) -> int:
+        ok = target.exists() and HOOK_BEGIN in target.read_text() and os.access(target, os.X_OK)
+        print(f"doctor [git]: hook {'present and executable' if ok else 'missing'} at {target}")
+        return 0 if ok else 1
+
+
 def registry() -> dict:
     return {
         "claude-code": _claude_provider(),
@@ -392,6 +468,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--agent", default=None)
     p.add_argument("--all", action="store_true")
     p.add_argument("--settings", default=None)
+    p.add_argument("--block", action="store_true",
+                   help="git provider: install a blocking pre-commit hook "
+                        "instead of post-commit warn")
     args = p.parse_args(argv)
     reg = registry()
 
@@ -409,9 +488,9 @@ def main(argv: list[str]) -> int:
         return rc
 
     agent = args.agent or "claude-code"
-    provider = reg.get(agent)
+    provider = GitHookProvider(block=args.block) if agent == "git" else reg.get(agent)
     if provider is None:
-        print(f"kb enforce: unknown agent '{agent}' (known: {', '.join(sorted(reg))})",
+        print(f"kb enforce: unknown agent '{agent}' (known: {', '.join(sorted(reg))}, git)",
               file=sys.stderr)
         return 64
     target = Path(args.settings) if args.settings else provider.default_target()

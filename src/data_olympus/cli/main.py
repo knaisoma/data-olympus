@@ -60,6 +60,19 @@ def _cmd_visualize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_report(args: argparse.Namespace) -> int:
+    from data_olympus.cli.report_cmd import run_report
+    return run_report(
+        workspace=args.workspace or Path.cwd().name,
+        rng=args.range,
+        since=args.since,
+        window_sec=args.window_sec,
+        as_json=args.json,
+        fail_on_unverified=args.fail_on_unverified,
+        staged=args.staged,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="data-olympus")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -76,6 +89,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_viz.add_argument("--name", default=None, help="display name in the viewer header")
     p_viz.set_defaults(func=_cmd_visualize)
+    p_report = sub.add_parser("report", help="report governed changes lacking a consultation")
+    p_report.add_argument("--workspace", default=None, help="workspace label (default: cwd name)")
+    p_report.add_argument("--range", default=None, help="git revision range, e.g. HEAD~5..HEAD")
+    p_report.add_argument("--since", default="7 days ago", help="git --since when no --range")
+    p_report.add_argument("--window-sec", type=int, default=3600,
+                          help="consult correlation window in seconds")
+    p_report.add_argument("--json", action="store_true", help="emit JSON")
+    p_report.add_argument("--fail-on-unverified", action="store_true",
+                          help="exit 3 if any unverified governed change is found")
+    p_report.add_argument("--staged", action="store_true",
+                          help="classify the staged diff instead of git log (for pre-commit)")
+    p_report.set_defaults(func=_cmd_report)
     return parser
 
 

@@ -114,3 +114,98 @@ Antigravity is unsupported. It exposes no documented local hook, instructions,
 or MCP surface, so there is nothing for the installer to wire. `kb enforce`
 reports it as unsupported and `--all` skips it. Revisit when Google publishes
 an extensibility API.
+
+## Detection floor (un-hookable agents)
+
+### Why it exists
+
+Some agents cannot be hard-gated locally. Closed IDE apps such as
+Copilot-in-VS-Code and Antigravity expose no local hook, instructions, or MCP
+surface that the installer can wire, so a PreToolUse-style deny is impossible
+for them. What every agent does share is git: every governed change eventually
+becomes a commit. Git is therefore the common chokepoint. The detection floor
+uses it not to block (the gating tiers above already do that where they can)
+but to detect governed changes that have no consultation on record and report
+them, so an un-hookable agent's work is at least observable after the fact.
+
+### `kb enforce report` (alias `data-olympus report`)
+
+```bash
+kb enforce report [--workspace W] [--range A..B | --since S] \
+                  [--window-sec N] [--json] [--fail-on-unverified] [--staged]
+```
+
+`data-olympus report` is the same command (the `kb enforce report` route
+delegates straight to it). The report parses governed commits from `git log`
+(reusing the same path classifier the gates use), then correlates them against
+`consult` events fetched from the existing `GET /api/v1/audit`. It reuses that
+endpoint as-is: there is no server change for this feature.
+
+Flags:
+
+- `--workspace W`: workspace label to correlate against (defaults to the
+  current directory name).
+- `--range A..B`: a git revision range to scan (for example `HEAD~5..HEAD`).
+- `--since S`: a git `--since` window when no `--range` is given.
+- `--window-sec N`: the correlation window, in seconds, around each commit.
+- `--json`: emit machine-readable JSON instead of the text summary.
+- `--fail-on-unverified`: exit non-zero when an unverified governed change is
+  found (see exit codes).
+- `--staged`: classify the staged diff instead of `git log` (used by the
+  pre-commit block hook).
+
+Exit codes:
+
+- `0`: normal completion (including the case where unverified changes exist but
+  `--fail-on-unverified` was not passed).
+- `3`: returned only with `--fail-on-unverified`, when at least one unverified
+  governed change is found.
+- `2`: a git error (for example a bad `--range`). The command does not mistake
+  a git failure for a clean repo.
+
+### The opt-in git hook
+
+```bash
+kb enforce install --agent git           # post-commit WARN hook (detection only)
+kb enforce install --agent git --block   # pre-commit hook that fails the commit
+kb enforce uninstall --agent git         # surgical removal of the managed block
+```
+
+`kb enforce install --agent git` installs a post-commit hook that WARNs: it
+cannot block (post-commit runs after the commit is already made), so it is pure
+detection. `kb enforce install --agent git --block` instead installs a
+pre-commit hook that fails the commit when the staged diff contains an
+unverified governed change.
+
+The git hooks are repo-scoped: they live in `.git/hooks` of the current repo,
+not under `~`. The installer merges its managed block into any existing hook
+content (preserving operator-authored lines) and uninstall removes only the
+managed block. The git provider is opt-in: it is NOT installed by
+`kb enforce install --all`. You must ask for it explicitly with `--agent git`.
+
+### Requirement: `data-olympus` must be on PATH
+
+Both `kb enforce report` and the git hooks call the `data-olympus` console
+script. It must be on PATH at run time (for `report`) and at commit time (for
+the hooks). Install the package, or activate the venv, so the script resolves.
+A GUI git client whose environment lacks the venv PATH will see the warn hook
+print `command not found` (harmless: the commit still lands), or, for the
+`--block` pre-commit hook, fail the commit because the gate cannot run.
+
+### Honest limits
+
+Correlation is best-effort by workspace plus time window, not a hard
+session-to-commit link. State the limits plainly:
+
+- False positives (a governed change reported as unverified when a consult did
+  happen): a consult recorded in a different session, a consult that fell
+  outside the time window, or a consult recorded under a different workspace
+  label.
+- False negatives (a governed change that goes unreported): a change whose path
+  the classifier does not consider governed.
+
+When the audit endpoint is unreachable, the command degrades to warn: it lists
+the governed changes it found and marks the consult state as unknown rather
+than crashing. A post-commit warn hook never crashes a commit. The
+`--staged`/`--block` gate requires a consult within the window to pass, so a
+stale consult (outside the window) does not let a governed commit through.
