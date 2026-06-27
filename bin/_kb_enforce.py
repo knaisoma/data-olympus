@@ -19,6 +19,8 @@ from pathlib import Path
 MARKER = "data-olympus-enforce"
 SHIM_VERSION = "1"
 HOOK_BIN = str(Path(__file__).resolve().parent / "kb-enforce-hook")
+PLUGIN_SRC = Path(__file__).resolve().parent / "opencode" / "data-olympus-gate.ts"
+PLUGIN_NAME = "data-olympus-gate.ts"
 
 
 def _backup(target: Path) -> None:
@@ -195,11 +197,60 @@ def _gemini_provider() -> HookFileProvider:
     )
 
 
+class OpenCodeProvider:
+    """OpenCode provider. Unlike the hard shell-hook agents, OpenCode is wired by
+    dropping a managed TypeScript plugin file into the plugin directory. Install
+    copies the bundled template; uninstall removes it only if it still carries the
+    managed marker, so operator-authored plugins in the same dir are untouched.
+    """
+
+    name = "opencode"
+    tier = "hard"
+
+    def default_target(self) -> Path:
+        return Path(os.path.expanduser("~/.config/opencode/plugin"))
+
+    def install(self, target: Path) -> int:
+        target.mkdir(parents=True, exist_ok=True)
+        dest = target / PLUGIN_NAME
+        if dest.exists():
+            _backup(dest)
+        shutil.copy2(PLUGIN_SRC, dest)
+        print(
+            f"installed data-olympus enforcement (v{SHIM_VERSION}) into {dest} "
+            f"[opencode, tier=hard]"
+        )
+        return 0
+
+    def uninstall(self, target: Path) -> int:
+        dest = target / PLUGIN_NAME
+        if dest.exists() and "data-olympus-enforce (managed)" in dest.read_text():
+            dest.unlink()
+            print(f"uninstalled data-olympus enforcement from {dest} [opencode]")
+        else:
+            print("nothing to uninstall")
+        return 0
+
+    def status(self, target: Path) -> int:
+        dest = target / PLUGIN_NAME
+        if dest.exists() and "data-olympus-enforce (managed)" in dest.read_text():
+            print("opencode: installed, tier=hard, versions=['1']")
+        else:
+            print("opencode: not installed")
+        return 0
+
+    def doctor(self, _target: Path) -> int:
+        ok, msg = _doctor_endpoint()
+        print(f"doctor [opencode]: {msg}")
+        return 0 if ok else 1
+
+
 def registry() -> dict:
     return {
         "claude-code": _claude_provider(),
         "codex": _codex_provider(),
         "gemini": _gemini_provider(),
+        "opencode": OpenCodeProvider(),
     }
 
 
