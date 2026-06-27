@@ -31,8 +31,7 @@ jobs:
       - name: Check changelog updated for functional changes
         env:
           KB_NO_CHANGELOG: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') && '1' || '0' }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          base="origin/${{ github.base_ref }}"
-          git fetch origin "${{ github.base_ref }}" --depth=1
-          mapfile -t changed < <(git diff --name-only "$base"...HEAD)
+          mapfile -t changed < <(git diff --name-only "origin/$BASE_REF"...HEAD)
           python3 scripts/check_changelog.py "${changed[@]}"

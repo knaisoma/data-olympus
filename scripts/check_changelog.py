@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """CI guard: a PR that changes functional code must also update CHANGELOG.md.
 
-Reads the list of changed files from argv (one per line via stdin is also
-supported by the workflow) and exits non-zero when a functional path changed
-without CHANGELOG.md. The `no-changelog` PR label sets KB_NO_CHANGELOG=1 to skip.
+Reads the list of changed files from argv and exits non-zero when a functional
+path changed without CHANGELOG.md. The `no-changelog` PR label sets
+KB_NO_CHANGELOG=1 to skip.
 """
 from __future__ import annotations
 
