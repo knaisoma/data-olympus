@@ -236,6 +236,8 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/consult", methods=["POST"])
     async def consult(request: Request) -> JSONResponse:
+        if (denied := _check_auth(request, auth_token)) is not None:
+            return denied
         import time as _time
 
         from data_olympus.tools_enforce import kb_consult_fn
@@ -252,6 +254,8 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/gate/check", methods=["POST"])
     async def gate_check(request: Request) -> JSONResponse:
+        if (denied := _check_auth(request, auth_token)) is not None:
+            return denied
         import time as _time
 
         from data_olympus.tools_enforce import kb_gate_check_fn
