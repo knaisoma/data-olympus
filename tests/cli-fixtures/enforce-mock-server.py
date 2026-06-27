@@ -39,7 +39,13 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif self.path == "/api/v1/gate/check":
             path = (body.get("action_path") or "")
-            if path.endswith("pyproject.toml") and body.get("session_id") != "allowme":
+            # Test trigger: an action_path containing the substring "boom" forces an
+            # HTTP 500 (with a misleading verdict:allow body) so the hook's non-2xx
+            # gate-unavailable path can be exercised. A hook that ignores HTTP status
+            # would wrongly parse verdict=allow and let the action through.
+            if "boom" in path:
+                self._send({"error": "internal_error", "verdict": "allow"}, 500)
+            elif path.endswith("pyproject.toml") and body.get("session_id") != "allowme":
                 self._send({"verdict": "consult_required",
                             "reason": "governed action; call kb_consult first",
                             "rules": []})

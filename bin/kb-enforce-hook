@@ -61,19 +61,44 @@ resolve_workspace() {
 }
 
 post_json() {
-  # post_json <url> <json-body> ; prints body, returns curl status.
-  # When KB_AUTH_TOKEN is set, pass the Authorization header via a curl config
-  # on a process-substitution FD so the token is NOT exposed in process
-  # arguments (visible via `ps`). Mirrors bin/kb's do_curl_post.
+  # post_json <url> <json-body>
+  # On a successful HTTP round-trip, sets globals RESP_BODY (response body) and
+  # RESP_CODE (numeric HTTP status) and returns 0. Returns non-zero ONLY when the
+  # curl CONNECTION itself fails (DNS/connect/timeout); callers must additionally
+  # check RESP_CODE for 2xx, since curl --silent exits 0 on 4xx/5xx.
+  #
+  # When KB_AUTH_TOKEN is set, pass the Authorization header via a curl config on
+  # a process-substitution FD so the token is NOT exposed in process arguments
+  # (visible via `ps`). Mirrors bin/kb's do_curl_post.
+  local url="$1"
+  local body="$2"
+  local tmpfile
+  tmpfile="$(mktemp)"
   local auth_k_arg=()
   if [[ -n "$KB_AUTH_TOKEN" ]]; then
     auth_k_arg=(-K <(printf 'header = "Authorization: Bearer %s"\n' "$KB_AUTH_TOKEN"))
   fi
   # Guard the array expansion: under `set -u`, "${arr[@]}" on an empty array is
   # an unbound-variable error on bash 3.2 (macOS default).
-  curl --silent --max-time 5 -H "Content-Type: application/json" \
-       ${auth_k_arg[@]+"${auth_k_arg[@]}"} \
-       --data "$2" -X POST "$1" 2>/dev/null
+  if RESP_CODE=$(curl --silent --max-time 5 \
+      -H "Content-Type: application/json" \
+      ${auth_k_arg[@]+"${auth_k_arg[@]}"} \
+      --data "$body" \
+      --output "$tmpfile" --write-out "%{http_code}" \
+      -X POST "$url" 2>/dev/null); then
+    RESP_BODY="$(cat "$tmpfile")"
+    rm -f "$tmpfile"
+    return 0
+  fi
+  rm -f "$tmpfile"
+  RESP_BODY=""
+  RESP_CODE=""
+  return 1
+}
+
+is_2xx() {
+  # is_2xx <http-code> ; true when the code is 200-299.
+  [[ "$1" =~ ^2[0-9][0-9]$ ]]
 }
 
 case "$MODE" in
@@ -89,18 +114,19 @@ case "$MODE" in
     BODY="$(python3 -c 'import json,sys
 print(json.dumps({"workspace":sys.argv[1],"intent":sys.argv[2],
 "source_session":sys.argv[3],"agent_identity":"claude-code"}))' "$WS" "$PROMPT" "$SESSION")"
-    RESP="$(post_json "$KB_ENDPOINT/api/v1/consult" "$BODY")" || RESP=""
-    if [[ -z "$RESP" ]]; then
+    # Prompt-rule injection is best-effort and never blocks: any failure
+    # (connection error OR non-2xx) just means no injected rules this turn.
+    if ! post_json "$KB_ENDPOINT/api/v1/consult" "$BODY" || ! is_2xx "$RESP_CODE"; then
       echo "[KB] warn: consult endpoint unreachable; proceeding without injected rules." >&2
       exit 0
     fi
-    GOV="$(json_field_from "$RESP" is_governed_decision)"
+    GOV="$(json_field_from "$RESP_BODY" is_governed_decision)"
     if [[ "$GOV" == "true" ]]; then
       echo "=== GOVERNING RULES (data-olympus) ==="
-      echo "$RESP" | python3 -c 'import json,sys
+      echo "$RESP_BODY" | python3 -c 'import json,sys
 d=json.load(sys.stdin)
 for r in d.get("rules",[]):
-    print(f"- {r.get(\"id\")}: {r.get(\"title\")}")'
+    print(f"- {r.get('"'"'id'"'"')}: {r.get('"'"'title'"'"')}")'
       echo "=== consult these before deciding ==="
     fi
     exit 0
@@ -114,20 +140,32 @@ for r in d.get("rules",[]):
     BODY="$(python3 -c 'import json,sys
 print(json.dumps({"workspace":sys.argv[1],"session_id":sys.argv[2],
 "tool_name":sys.argv[3],"action_path":sys.argv[4]}))' "$WS" "$SESSION" "$TOOL" "$FPATH")"
-    RESP="$(post_json "$KB_ENDPOINT/api/v1/gate/check" "$BODY")" || RESP=""
-    if [[ -z "$RESP" ]]; then
+    # Gate is "unavailable" when the connection fails OR the HTTP status is not
+    # 2xx (curl --silent exits 0 on 4xx/5xx). Unavailable routes through the
+    # fail-mode switch; it must NEVER implicitly allow.
+    GATE_AVAILABLE=1
+    if ! post_json "$KB_ENDPOINT/api/v1/gate/check" "$BODY" || ! is_2xx "$RESP_CODE"; then
+      GATE_AVAILABLE=0
+    fi
+    VERDICT=""
+    if [[ "$GATE_AVAILABLE" == "1" ]]; then
+      VERDICT="$(json_field_from "$RESP_BODY" verdict)"
+    fi
+    # A reachable 2xx with no parseable verdict is also "unavailable": do not
+    # silently allow on an unexpected/degraded response.
+    if [[ "$GATE_AVAILABLE" == "0" || ( "$VERDICT" != "allow" && "$VERDICT" != "consult_required" ) ]]; then
       if [[ "$KB_ENFORCE_FAIL_MODE" == "closed" ]]; then
-        echo "[KB] gate unreachable and fail-mode=closed; blocking." >&2
+        echo "[KB] gate unavailable and fail-mode=closed; blocking." >&2
         exit 2
       fi
-      echo "[KB] warn: gate endpoint unreachable; failing open (enforcement gap)." >&2
+      echo "[KB] warn: gate endpoint unavailable; failing open (enforcement gap)." >&2
       exit 0
     fi
-    VERDICT="$(json_field_from "$RESP" verdict)"
     if [[ "$VERDICT" == "consult_required" ]]; then
       echo "[KB] BLOCKED: this is a governed change. Call kb_consult for '$WS' first, then retry." >&2
       exit 2
     fi
+    # Only reached when 2xx AND verdict == allow.
     exit 0
     ;;
   stop)

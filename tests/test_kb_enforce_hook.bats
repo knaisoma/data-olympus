@@ -33,6 +33,9 @@ teardown() {
   run bash -c 'echo "{\"session_id\":\"s1\",\"cwd\":\"/tmp/proj\",\"prompt\":\"add a library\"}" | "'"$HOOK"'" user-prompt'
   [ "$status" -eq 0 ]
   [[ "$output" == *"GOVERNING RULES"* ]]
+  # Assert a real rule was injected, not just the header (catches the
+  # f-string SyntaxError that silently printed no rules).
+  [[ "$output" == *"STD-U-002"* ]]
 }
 
 @test "pre-tool mode blocks (exit 2) when consult_required" {
@@ -54,5 +57,21 @@ teardown() {
 
 @test "pre-tool fails closed (exit 2) when unreachable and KB_ENFORCE_FAIL_MODE=closed" {
   KB_ENDPOINT="http://127.0.0.1:1" KB_ENFORCE_FAIL_MODE=closed run bash -c 'echo "{\"session_id\":\"x\",\"cwd\":\"/tmp/proj\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/proj/pyproject.toml\"}}" | "'"$HOOK"'" pre-tool'
+  [ "$status" -eq 2 ]
+}
+
+@test "pre-tool fails open (exit 0) on HTTP 500 with default fail-mode" {
+  # action_path contains "boom" -> mock returns HTTP 500 (with verdict:allow body).
+  # A status-blind hook would parse verdict=allow and exit 0 for the WRONG reason;
+  # this asserts the degraded warning is emitted (the right reason).
+  run bash -c 'echo "{\"session_id\":\"x\",\"cwd\":\"/tmp/proj\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/proj/boom.toml\"}}" | "'"$HOOK"'" pre-tool'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"warn"* ]] || [[ "$output" == *"unavailable"* ]]
+}
+
+@test "pre-tool fails closed (exit 2) on HTTP 500 with KB_ENFORCE_FAIL_MODE=closed" {
+  # The critical regression: a 500 must NOT be treated as allow. With fail-mode
+  # closed it must block, proving the hook honors HTTP status, not just the body.
+  KB_ENFORCE_FAIL_MODE=closed run bash -c 'echo "{\"session_id\":\"x\",\"cwd\":\"/tmp/proj\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/proj/boom.toml\"}}" | "'"$HOOK"'" pre-tool'
   [ "$status" -eq 2 ]
 }
