@@ -190,6 +190,14 @@ The single-replica invariant applies only to the write-enabled server. Deploymen
 
 The serving transport MUST be streamable HTTP (not stdio). The MCP endpoint is `/mcp` by convention.
 
+**Enforcement endpoints.** A server MAY expose an enforcement surface that turns the advisory KB into a gated consultation proxy for code and architectural decisions. The endpoints are:
+
+- `POST /api/v1/consult`: record a consultation for a `(source_session, workspace)` pair and return the governing rules for the supplied intent.
+- `POST /api/v1/gate/check`: return a verdict (`allow` or `consult_required`) for a pending code action, based on whether a fresh consultation is on record for the action's `(session_id, workspace)` pair.
+- `GET /api/v1/compliance`: return aggregated enforcement-event counts, overall and per agent.
+
+These three are mirrored as the `kb_consult`, `kb_gate_check`, and `kb_compliance` MCP tools. See [`docs/enforcement.md`](docs/enforcement.md) for the request bodies, configuration (`KB_CONSULT_TTL_SEC`, `KB_ENFORCE_FAIL_MODE`), and the Claude Code hook installer.
+
 ---
 
 ## 9. Conformance
