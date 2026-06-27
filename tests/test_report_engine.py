@@ -48,6 +48,20 @@ def test_parse_picks_only_governed_commits() -> None:
     assert "pyproject.toml" in aaa.files
 
 
+def test_parse_handles_spaces_in_author_and_filename() -> None:
+    # Guards the real-git case the parser fix targets: a multi-word author and a
+    # governed path containing a space. The old NUL-token heuristic swallowed the
+    # first filename into the author; the RS/US format must keep them separate.
+    raw = _log(
+        ("ddd", "1300", "Carol Space", ["weird dir/pyproject.toml", "weird dir/notes.txt"]),
+    )
+    commits = parse_governed_commits(raw, IntentClassifier())
+    assert len(commits) == 1
+    ddd = commits[0]
+    assert ddd.author == "Carol Space"  # no filename pollution
+    assert "weird dir/pyproject.toml" in ddd.files  # spaced path retained
+
+
 def test_extract_consults_filters_by_workspace_and_type() -> None:
     events = [
         {"ts": 990.0, "event_type": "consult", "target_path": "proj", "agent_identity": "codex"},

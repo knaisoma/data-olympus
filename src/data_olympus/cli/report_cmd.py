@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+import time
 import urllib.request
 from typing import Any
 
@@ -23,7 +25,7 @@ from data_olympus.report import (
 _GIT_FORMAT = "%x1e%H%x1f%ct%x1f%an"
 
 
-def _git_log(rng: str | None, since: str | None) -> str:
+def _git_log(rng: str | None, since: str | None) -> tuple[bool, str]:
     args = ["git", "log", "--no-merges", "-z", f"--format={_GIT_FORMAT}", "--name-only"]
     if rng:
         args.append(rng)
@@ -31,16 +33,21 @@ def _git_log(rng: str | None, since: str | None) -> str:
         args.append(f"--since={since}")
     proc = subprocess.run(args, capture_output=True, text=True)
     if proc.returncode != 0:
-        return ""
-    return proc.stdout
+        # Surface git's error instead of masquerading as a clean (0-commit) scan.
+        if proc.stderr:
+            print(proc.stderr.rstrip("\n"), file=sys.stderr)
+        return False, ""
+    return True, proc.stdout
 
 
-def _git_staged_files() -> list[str]:
+def _git_staged_files() -> tuple[bool, list[str]]:
     proc = subprocess.run(["git", "diff", "--cached", "--name-only", "-z"],
                           capture_output=True, text=True)
     if proc.returncode != 0:
-        return []
-    return [p for p in proc.stdout.split("\x00") if p.strip()]
+        if proc.stderr:
+            print(proc.stderr.rstrip("\n"), file=sys.stderr)
+        return False, []
+    return True, [p for p in proc.stdout.split("\x00") if p.strip()]
 
 
 def _fetch_audit(endpoint: str, token: str, since_ts: int) -> tuple[bool, list[dict[str, Any]]]:
@@ -67,26 +74,34 @@ def run_report(
     staged: bool = False,
 ) -> int:
     classifier = IntentClassifier()
-    if staged:
-        gfiles = [f for f in _git_staged_files()
-                  if classifier.classify(action_path=f).is_governed_decision]
-        commits = [GovernedCommit(sha="STAGED", ts=0, author="", files=gfiles)] if gfiles else []
-    else:
-        commits = parse_governed_commits(_git_log(rng, since), classifier)
-    earliest = min((c.ts for c in commits), default=0)
     endpoint = os.getenv("KB_ENDPOINT", "http://localhost:8080")
     token = os.getenv("KB_AUTH_TOKEN", "")
-    reachable, events = _fetch_audit(endpoint, token, max(0, earliest - window_sec))
-    consults = extract_consults(events, workspace) if reachable else []
 
-    if staged and commits:
-        # Staged changes have no commit timestamp; pin the synthetic commit ts to
-        # the newest consult so correlate() marks it verified iff a consult exists
-        # for this workspace (and unverified when none do).
-        newest = max((c.ts for c in consults), default=None)
-        ts = int(newest) if newest is not None else 0
-        commits = [GovernedCommit(sha="STAGED", ts=ts, author=commits[0].author,
-                                  files=commits[0].files)]
+    if staged:
+        ok, staged_files = _git_staged_files()
+        if not ok:
+            return 2  # git scan failed; do not mistake an error for a clean repo
+        gfiles = [f for f in staged_files
+                  if classifier.classify(action_path=f).is_governed_decision]
+        # Staged changes have no commit timestamp, so use the real clock: the gate
+        # must verify a RECENT consult, not any consult ever recorded. Pin the
+        # synthetic commit to `now` and only fetch (and accept) consults within
+        # [now - window_sec, now], so a stale consult cannot keep the gate green.
+        now = int(time.time())
+        commits = (
+            [GovernedCommit(sha="STAGED", ts=now, author="", files=gfiles)] if gfiles else []
+        )
+        since_ts = max(0, now - window_sec)
+    else:
+        ok, log_text = _git_log(rng, since)
+        if not ok:
+            return 2  # git scan failed (e.g. bad --range); not a clean repo
+        commits = parse_governed_commits(log_text, classifier)
+        earliest = min((c.ts for c in commits), default=0)
+        since_ts = max(0, earliest - window_sec)
+
+    reachable, events = _fetch_audit(endpoint, token, since_ts)
+    consults = extract_consults(events, workspace) if reachable else []
 
     report = correlate(commits, consults, window_sec=window_sec)
 
