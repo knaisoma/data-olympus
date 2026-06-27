@@ -3,6 +3,7 @@
 /api/v1/consult       -> {"is_governed_decision": true, "rules": [...], ...}
 /api/v1/gate/check    -> verdict depends on action_path / session_id
 /api/v1/compliance    -> {"counts": {}, "by_agent": {}}
+/api/v1/audit/event   -> {"recorded": true}
 """
 import json
 import os
@@ -30,14 +31,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
-        body = json.loads(self.rfile.read(length) or "{}")
+        raw = self.rfile.read(length) or b"{}"
+        body = json.loads(raw or b"{}")
+        # When KB_MOCK_CAPTURE_FILE is set, append the raw request body (one JSON
+        # object per line) for EVERY POST before routing. Opt-in so the existing
+        # bats tests (which do not set it) are unaffected. Lets a test assert the
+        # action_diff threaded into the gate body and the gate_degraded event POST.
+        capture = os.getenv("KB_MOCK_CAPTURE_FILE")
+        if capture:
+            with open(capture, "a", encoding="utf-8") as fh:
+                fh.write(raw.decode("utf-8", "replace") + "\n")
         if self.path == "/api/v1/consult":
-            # When KB_MOCK_CAPTURE_FILE is set, record the raw consult request body
-            # so a test can assert the agent_identity the hook threaded through.
-            capture = os.getenv("KB_MOCK_CAPTURE_FILE")
-            if capture:
-                with open(capture, "w", encoding="utf-8") as fh:
-                    json.dump(body, fh)
             self._send({
                 "is_governed_decision": True,
                 "rules": [{"id": "STD-U-002", "path": "p", "title": "Style",
@@ -58,6 +62,8 @@ class Handler(BaseHTTPRequestHandler):
                             "rules": []})
             else:
                 self._send({"verdict": "allow", "reason": "ok", "rules": []})
+        elif self.path == "/api/v1/audit/event":
+            self._send({"recorded": True})
         else:
             self._send({"error": "not_found"}, 404)
 
