@@ -6,7 +6,7 @@ import contextlib
 import contextvars
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
@@ -14,7 +14,10 @@ from fastmcp.server.middleware import Middleware
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import mcp.types as mt
     from fastmcp.server.middleware import MiddlewareContext
+    from fastmcp.server.middleware.middleware import CallNext
+    from fastmcp.tools.base import ToolResult
 
 from data_olympus.audit_log import AuditLog
 from data_olympus.auth import PathBlocklist
@@ -58,8 +61,10 @@ class MCPAuthMiddleware(Middleware):
         self._registry = registry
 
     async def on_call_tool(
-        self, context: MiddlewareContext, call_next: object,
-    ) -> object:
+        self,
+        context: MiddlewareContext[mt.CallToolRequestParams],
+        call_next: CallNext[mt.CallToolRequestParams, ToolResult],
+    ) -> ToolResult:
         from fastmcp.exceptions import ToolError
         from fastmcp.server.dependencies import get_http_headers
 
@@ -75,7 +80,7 @@ class MCPAuthMiddleware(Middleware):
                     f"unauthorized: principal '{principal.name}' lacks "
                     f"capability '{cap}' required by '{context.message.name}'"
                 )
-            return await call_next(context)  # type: ignore[operator]
+            return await call_next(context)
         finally:
             _current_principal.reset(token)
 
@@ -153,7 +158,7 @@ def build_app(
     worktree_idle_sec: int = 3600,
     git_key_path: str = "/tmp/git-key",
     auth_token: str = "",
-    auth_principals: list[dict] | None = None,
+    auth_principals: list[dict[str, Any]] | None = None,
     audit_hmac_key: str = "",
     ledger_path: str | None = None,
 ) -> FastMCP:

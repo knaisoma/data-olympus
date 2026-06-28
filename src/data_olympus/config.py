@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +35,7 @@ class Config:
     audit_log_path: str = "/state/audit/events.log"
     audit_hmac_key: str = ""
     auth_token: str = ""
-    auth_principals: list[dict] = field(default_factory=list)
+    auth_principals: list[dict[str, Any]] = field(default_factory=list)
     consult_ttl_sec: int = 300
     ledger_path: str = "/state/ledger.json"
 

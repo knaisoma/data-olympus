@@ -31,6 +31,7 @@ import hmac
 import json
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 log = logging.getLogger("data_olympus")
 
@@ -90,7 +91,7 @@ def _extract_bearer(auth_header: str | None) -> str | None:
     return auth_header[len(prefix):]
 
 
-def parse_principals_env(raw: str) -> list[dict]:
+def parse_principals_env(raw: str) -> list[dict[str, Any]]:
     """Parse a ``KB_AUTH_PRINCIPALS`` JSON value. Empty / malformed input degrades
     to an empty list (logged) so a bad config never crashes startup."""
     raw = (raw or "").strip()
@@ -111,7 +112,7 @@ class PrincipalRegistry:
     """Maps bearer tokens to principals; resolves an Authorization header."""
 
     def __init__(
-        self, *, auth_token: str = "", principals: list[dict] | None = None
+        self, *, auth_token: str = "", principals: list[dict[str, Any]] | None = None
     ) -> None:
         self._by_token: list[tuple[str, Principal]] = []
         if auth_token:

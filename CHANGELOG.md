@@ -112,6 +112,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `uv run mypy src` is now green and runs as a CI gate (added `types-PyYAML`, fixed
+  the source type errors). Type regressions in `src/` now fail CI; `tests/` typing
+  is intentionally out of scope.
 - The path-to-`(tier, category)` taxonomy now ships a deployment-neutral default
   and is configurable at deploy time, with no code change: `KB_TAXONOMY_PATH`
   (a JSON file of `[prefix, tier, category]` triples that replaces the default

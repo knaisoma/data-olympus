@@ -2,7 +2,7 @@
 so MCP + REST share one Starlette/uvicorn process."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from starlette.responses import JSONResponse
 
@@ -122,7 +122,7 @@ def _missing_fields_response(body: object, required: list[str]) -> JSONResponse 
     return None
 
 
-def _parse_confidence(body: dict) -> tuple[float, JSONResponse | None]:
+def _parse_confidence(body: dict[str, Any]) -> tuple[float, JSONResponse | None]:
     """Coerce body['confidence'] to float, returning a 400 JSONResponse instead
     of letting a non-numeric value raise ValueError/TypeError -> HTTP 500 (the
     same opaque-crash class as a missing field). Presence/non-null is enforced
