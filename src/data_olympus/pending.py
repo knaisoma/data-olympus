@@ -151,6 +151,13 @@ class PendingQueue:
         self._release_lock(entry["target_path"])
         atomic_remove(os.path.join(self._root, f"{pending_id}.json"))
 
+    def would_exceed(self, n: int) -> bool:
+        """True if enqueuing ``n`` more entries would exceed the cap (0 = unlimited).
+
+        Lets a multi-file caller (onboarding bootstrap) check capacity up front so
+        it can reject atomically instead of enqueuing a partial bundle."""
+        return self._cap > 0 and self.size() + n > self._cap
+
     def size(self) -> int:
         return sum(
             1 for f in os.listdir(self._root)

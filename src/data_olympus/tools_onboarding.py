@@ -1,6 +1,7 @@
 """kb_onboarding_status_fn + kb_bootstrap_project_fn."""
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 
 from data_olympus.models import (
@@ -144,9 +145,16 @@ def kb_bootstrap_project_fn(
         # For onboarding v1, we enqueue them one-by-one (the pending queue
         # supports per-file entries; resolving "all" is the operator's choice).
         # Future: native bundle support in PendingQueue.
+        from data_olympus.pending import PathLockBusyError, PendingQueueFullError
+        # Atomicity: a bootstrap is one bundle. Reject up front if the whole
+        # bundle would not fit, so we never leave a partial set of pending entries.
+        if pending.would_exceed(len(files)):
+            return BootstrapResponse(
+                status="rejected_pending_queue_full",
+                rejected_paths=[f["target_path"] for f in files],
+            )
         pending_ids = []
         for f in files:
-            from data_olympus.pending import PathLockBusyError, PendingQueueFullError
             try:
                 pid = pending.enqueue(
                     proposal_type="edit",
@@ -164,10 +172,14 @@ def kb_bootstrap_project_fn(
             except PathLockBusyError:
                 pass  # already pending; skip
             except PendingQueueFullError:
+                # Lost a capacity race after the pre-check: roll back this bundle's
+                # enqueued entries so the bootstrap stays all-or-nothing.
+                for pid in pending_ids:
+                    with contextlib.suppress(Exception):
+                        pending.reject(pid)
                 return BootstrapResponse(
                     status="rejected_pending_queue_full",
-                    pending_id=pending_ids[0] if pending_ids else None,
-                    rejected_paths=[f["target_path"]],
+                    rejected_paths=[f["target_path"] for f in files],
                 )
         return BootstrapResponse(
             status="pending_confirmation",

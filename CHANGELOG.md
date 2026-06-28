@@ -75,6 +75,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     (default 50), and `KB_PENDING_QUEUE_CAP` is now enforced in the pending queue.
   - **Bootstrap confidence parse:** `/api/v1/onboarding/bootstrap` returns a clean
     `400` on non-numeric confidence instead of a 500.
+  - **Compliance route gated:** `GET /api/v1/compliance` now requires an
+    authenticated principal when auth is configured, like the other observability
+    routes (it was the one REST route still open).
+  - **Atomic bootstrap:** a low-confidence bootstrap that would overflow the
+    pending queue is rejected up front (and rolls back on a capacity race), so it
+    never leaves a partial set of pending entries.
 - Observability routes are gated when auth is configured. With `KB_AUTH_TOKEN`
   set, `GET /api/v1/pending`, `/api/v1/audit`, and `/api/v1/audit/verify` now
   require an authenticated principal (they leak target paths and agent

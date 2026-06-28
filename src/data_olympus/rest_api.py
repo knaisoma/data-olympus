@@ -472,6 +472,11 @@ def register_routes(
 
     @app.custom_route("/api/v1/compliance", methods=["GET"])
     async def compliance(request: Request) -> JSONResponse:
+        # Enforcement aggregates are observability data; gate like /pending,
+        # /audit, /consult, /gate when auth is configured.
+        _principal, denied = _authorize(request, registry)
+        if denied is not None:
+            return denied
         if state.audit_log is None:
             return JSONResponse({"counts": {}, "by_agent": {}})
         from data_olympus.tools_enforce import kb_compliance_fn

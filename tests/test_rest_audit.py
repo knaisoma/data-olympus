@@ -75,10 +75,12 @@ async def test_audit_and_pending_gated_when_auth_configured(authed_app) -> None:
         assert (await client.get("/api/v1/audit")).status_code == 401
         assert (await client.get("/api/v1/pending")).status_code == 401
         assert (await client.get("/api/v1/audit/verify")).status_code == 401
+        assert (await client.get("/api/v1/compliance")).status_code == 401
         h = {"Authorization": "Bearer tok"}
         assert (await client.get("/api/v1/audit", headers=h)).status_code == 200
         assert (await client.get("/api/v1/pending", headers=h)).status_code == 200
         assert (await client.get("/api/v1/audit/verify", headers=h)).status_code == 200
+        assert (await client.get("/api/v1/compliance", headers=h)).status_code == 200
 
 
 @pytest.mark.asyncio
