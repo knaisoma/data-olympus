@@ -56,6 +56,13 @@ WRITE_TOOL_CAPABILITY: dict[str, str] = {
     "kb_record_event": CAP_RECORD_EVENT,
 }
 
+# Non-write MCP tools that expose pending/audit/enforcement state and so require
+# an authenticated principal when auth is configured, mirroring the REST gating of
+# /pending, /audit, /audit/verify, /consult, and /gate/check.
+AUTH_REQUIRED_TOOLS: frozenset[str] = frozenset({
+    "kb_list_pending", "kb_audit", "kb_consult", "kb_gate_check", "kb_compliance",
+})
+
 
 @dataclass(frozen=True, slots=True)
 class Principal:

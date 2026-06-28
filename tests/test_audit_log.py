@@ -132,5 +132,19 @@ def test_verify_tolerates_legacy_unhashed_lines(tmp_path) -> None:
     al = AuditLog(log_path=str(path))
     al.append({"ts": 1.0, "status": "new"})
     al.append({"ts": 2.0, "status": "new2"})
-    # The legacy line is ignored; the new chained lines validate.
+    # The legacy prefix line is tolerated; the new chained lines validate.
     assert al.verify() == (True, -1)
+
+
+def test_verify_rejects_unhashed_line_after_chain_started(tmp_path) -> None:
+    """An unhashed (legacy-shaped) line appended AFTER the chain has started is
+    treated as tampering, so an attacker cannot forge an event past the chain."""
+    path = tmp_path / "events.log"
+    al = AuditLog(log_path=str(path))
+    al.append({"ts": 1.0, "status": "real"})
+    al.append({"ts": 2.0, "status": "real2"})
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": 3.0, "status": "FORGED"}) + "\n")
+    ok, idx = AuditLog(log_path=str(path)).verify()
+    assert ok is False
+    assert idx == 2

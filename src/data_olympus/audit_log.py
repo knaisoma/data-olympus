@@ -83,13 +83,18 @@ class AuditLog:
         """Recompute the hash chain over the log.
 
         Returns ``(True, -1)`` when intact (or empty / all-legacy), else
-        ``(False, line_index)`` for the 0-based index of the first line whose
-        recomputed hash or ``prev_hash`` linkage does not match. Unhashed legacy
-        lines are skipped (they predate the chain).
+        ``(False, line_index)`` for the 0-based index of the first offending line.
+
+        Unhashed legacy lines are tolerated ONLY as a prefix before the first
+        hashed event (the pre-chaining migration window). Once the chain has
+        started, any unhashed JSON line is treated as tampering and breaks
+        verification, so an attacker cannot append a legacy-shaped record to forge
+        an event while keeping verify green.
         """
         if not os.path.exists(self._path):
             return (True, -1)
         prev = GENESIS
+        seen_hashed = False
         with open(self._path, encoding="utf-8") as f:
             for i, raw in enumerate(f):
                 raw = raw.strip()
@@ -100,12 +105,15 @@ class AuditLog:
                 except json.JSONDecodeError:
                     return (False, i)
                 if not (isinstance(ev, dict) and ev.get("hash")):
-                    continue  # legacy/unhashed line: not part of the chain
+                    if seen_hashed:
+                        return (False, i)  # unhashed line after the chain started
+                    continue  # legacy prefix, tolerated
                 if ev.get("prev_hash") != prev:
                     return (False, i)
                 if self._digest(self._canonical(ev)) != ev["hash"]:
                     return (False, i)
                 prev = ev["hash"]
+                seen_hashed = True
         return (True, -1)
 
     def iter_filtered(

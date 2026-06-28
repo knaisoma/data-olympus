@@ -27,6 +27,7 @@ from data_olympus.git_ops import GitOps
 from data_olympus.index import Index
 from data_olympus.pending import PendingQueue
 from data_olympus.principals import (
+    AUTH_REQUIRED_TOOLS,
     LOCAL_TRUSTED,
     WRITE_TOOL_CAPABILITY,
     Principal,
@@ -74,11 +75,21 @@ class MCPAuthMiddleware(Middleware):
         principal = self._registry.resolve(headers.get("authorization"))
         token = _current_principal.set(principal)
         try:
-            cap = WRITE_TOOL_CAPABILITY.get(context.message.name)
-            if cap is not None and not principal.has(cap):
+            name = context.message.name
+            cap = WRITE_TOOL_CAPABILITY.get(name)
+            if cap is not None:
+                if not principal.has(cap):
+                    raise ToolError(
+                        f"unauthorized: principal '{principal.name}' lacks "
+                        f"capability '{cap}' required by '{name}'"
+                    )
+            elif (name in AUTH_REQUIRED_TOOLS
+                  and self._registry.auth_configured
+                  and not principal.authenticated):
+                # Observability/enforcement tools: require authentication when
+                # configured, matching the REST gating of these surfaces.
                 raise ToolError(
-                    f"unauthorized: principal '{principal.name}' lacks "
-                    f"capability '{cap}' required by '{context.message.name}'"
+                    f"unauthorized: authentication required for '{name}'"
                 )
             return await call_next(context)
         finally:
@@ -153,6 +164,7 @@ def build_app(
     max_text_bytes: int = 262144,
     max_postimage_bytes: int = 1048576,
     max_body_bytes: int = 2097152,
+    max_bootstrap_files: int = 50,
     pending_timeout_sec: int = 86400,
     pending_queue_cap: int = 100,
     worktree_idle_sec: int = 3600,
@@ -185,6 +197,7 @@ def build_app(
         max_text_bytes=max_text_bytes,
         max_postimage_bytes=max_postimage_bytes,
         max_body_bytes=max_body_bytes,
+        max_bootstrap_files=max_bootstrap_files,
         pending_timeout_sec=pending_timeout_sec,
         pending_queue_cap=pending_queue_cap,
         worktree_idle_sec=worktree_idle_sec,
@@ -204,7 +217,9 @@ def build_app(
     if config.kb_remote_url:
         worktrees = WorktreeRegistry(git=git, worktree_root=config.worktree_root)
         push_queue = PushQueue(queue_root=config.push_queue_root)
-        pending = PendingQueue(pending_root=config.pending_root)
+        pending = PendingQueue(
+            pending_root=config.pending_root, cap=config.pending_queue_cap
+        )
         rate_limiter = SlidingWindowLimiter(
             max_per_hour=config.rate_limit_per_hour,
             max_per_ip_per_hour=config.rate_limit_per_ip_per_hour,
@@ -453,6 +468,7 @@ def build_app(
             remote_addr="mcp",
             can_auto_commit=_current_principal.get().can_auto_commit,
             max_postimage_bytes=state.config.max_postimage_bytes,
+            max_files=state.config.max_bootstrap_files,
         )
         return resp.model_dump()
 
@@ -564,6 +580,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         max_text_bytes=config.max_text_bytes,
         max_postimage_bytes=config.max_postimage_bytes,
         max_body_bytes=config.max_body_bytes,
+        max_bootstrap_files=config.max_bootstrap_files,
         pending_timeout_sec=config.pending_timeout_sec,
         pending_queue_cap=config.pending_queue_cap,
         worktree_idle_sec=config.worktree_idle_sec,

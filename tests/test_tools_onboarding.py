@@ -20,6 +20,25 @@ def test_kb_onboarding_status_returns_absent_for_new_workspace() -> None:
     assert resp.state == "absent"
 
 
+def test_bootstrap_rejects_too_many_files() -> None:
+    """An aggregate file-count cap stops one request enqueuing/writing an
+    unbounded number of (individually capped) files."""
+    idx = MagicMock()
+    idx.list_by_prefix.return_value = []  # workspace absent
+    idx.list_with_remote_url.return_value = []
+    files = [{"target_path": f"projects/p/f{i}.md", "postimage": "x"} for i in range(3)]
+    resp = kb_bootstrap_project_fn(
+        idx=idx, workspace="p", component=None,
+        workspace_remote_url=None, component_remote_url=None,
+        files=files, source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85,
+        worktrees=MagicMock(), push_queue=MagicMock(), pending=MagicMock(),
+        rate_limiter=MagicMock(), blocklist=MagicMock(),
+        max_files=2,
+    )
+    assert resp.status == "rejected_too_many_files"
+
+
 def test_kb_onboarding_status_returns_onboarded() -> None:
     idx = MagicMock()
     idx.list_by_prefix.return_value = [

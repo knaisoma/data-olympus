@@ -17,7 +17,7 @@ from data_olympus.models import (
     ProposeResponse,
     ResolvePendingResponse,
 )
-from data_olympus.pending import PathLockBusyError, PendingQueue
+from data_olympus.pending import PathLockBusyError, PendingQueue, PendingQueueFullError
 
 if TYPE_CHECKING:
     from data_olympus.audit_log import AuditLog
@@ -182,6 +182,12 @@ def kb_propose_memory_fn(
                 status="rejected_path_lock_busy",
                 target_path=target_path,
             )
+        except PendingQueueFullError:
+            _emit_audit(audit_log, **{**audit_base, "status": "rejected_pending_queue_full"})
+            return ProposeResponse(
+                status="rejected_pending_queue_full",
+                target_path=target_path,
+            )
         _emit_audit(audit_log, **{**audit_base, "status": "pending_confirmation",
                                    "pending_id": pid})
         return ProposeResponse(
@@ -316,6 +322,10 @@ def kb_propose_edit_fn(
         except PathLockBusyError:
             _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
             return ProposeResponse(status="rejected_path_lock_busy",
+                                   target_path=target_path)
+        except PendingQueueFullError:
+            _emit_audit(audit_log, **{**audit_base, "status": "rejected_pending_queue_full"})
+            return ProposeResponse(status="rejected_pending_queue_full",
                                    target_path=target_path)
         _emit_audit(audit_log, **{**audit_base, "status": "pending_confirmation",
                                    "pending_id": pid})

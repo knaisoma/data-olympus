@@ -109,3 +109,40 @@ async def test_read_tool_open_without_token(monkeypatch) -> None:
     result = await mw.on_call_tool(_ctx("kb_search"), call_next)
     assert result == "search-result"
     assert called.get("yes") is True
+
+
+@pytest.mark.asyncio
+async def test_observability_tool_requires_auth_when_configured(monkeypatch) -> None:
+    """kb_audit/kb_consult etc. require authentication when auth is configured,
+    matching the REST gating of /audit and /consult."""
+    from fastmcp.exceptions import ToolError
+    _patch_headers(monkeypatch, {})  # anonymous
+    mw = MCPAuthMiddleware(PrincipalRegistry(auth_token=TOKEN))
+
+    async def call_next(_ctx):  # pragma: no cover - must not be reached
+        return "ok"
+
+    with pytest.raises(ToolError):
+        await mw.on_call_tool(_ctx("kb_audit"), call_next)
+
+
+@pytest.mark.asyncio
+async def test_observability_tool_allowed_with_token(monkeypatch) -> None:
+    _patch_headers(monkeypatch, {"authorization": f"Bearer {TOKEN}"})
+    mw = MCPAuthMiddleware(PrincipalRegistry(auth_token=TOKEN))
+
+    async def call_next(_ctx):
+        return "audit-events"
+
+    assert await mw.on_call_tool(_ctx("kb_audit"), call_next) == "audit-events"
+
+
+@pytest.mark.asyncio
+async def test_observability_tool_open_when_no_auth_configured(monkeypatch) -> None:
+    _patch_headers(monkeypatch, {})
+    mw = MCPAuthMiddleware(PrincipalRegistry())  # no auth configured
+
+    async def call_next(_ctx):
+        return "audit-events"
+
+    assert await mw.on_call_tool(_ctx("kb_audit"), call_next) == "audit-events"

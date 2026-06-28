@@ -73,6 +73,7 @@ def kb_bootstrap_project_fn(
     remote_addr: str = "mcp",
     can_auto_commit: bool = True,
     max_postimage_bytes: int = 0,
+    max_files: int = 0,
 ) -> BootstrapResponse:
     """Bootstrap a new workspace/component. Only callable when status=absent.
 
@@ -89,6 +90,15 @@ def kb_bootstrap_project_fn(
         return BootstrapResponse(
             status="rejected_already_onboarded",
             rejected_paths=[],
+        )
+
+    # Aggregate file-count cap: one request must not enqueue/write an unbounded
+    # number of (individually capped) files. Aggregate byte size is bounded by the
+    # REST body cap upstream.
+    if max_files > 0 and len(files) > max_files:
+        return BootstrapResponse(
+            status="rejected_too_many_files",
+            rejected_paths=[f["target_path"] for f in files],
         )
 
     # For onboarding v1: simplified atomic-commit path.
@@ -136,7 +146,7 @@ def kb_bootstrap_project_fn(
         # Future: native bundle support in PendingQueue.
         pending_ids = []
         for f in files:
-            from data_olympus.pending import PathLockBusyError
+            from data_olympus.pending import PathLockBusyError, PendingQueueFullError
             try:
                 pid = pending.enqueue(
                     proposal_type="edit",
@@ -153,6 +163,12 @@ def kb_bootstrap_project_fn(
                 pending_ids.append(pid)
             except PathLockBusyError:
                 pass  # already pending; skip
+            except PendingQueueFullError:
+                return BootstrapResponse(
+                    status="rejected_pending_queue_full",
+                    pending_id=pending_ids[0] if pending_ids else None,
+                    rejected_paths=[f["target_path"]],
+                )
         return BootstrapResponse(
             status="pending_confirmation",
             pending_id=pending_ids[0] if pending_ids else None,

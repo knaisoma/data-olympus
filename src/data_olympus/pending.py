@@ -22,6 +22,10 @@ class PathLockBusyError(Exception):
     """Raised when another pending entry already locks the same target_path."""
 
 
+class PendingQueueFullError(Exception):
+    """Raised when the pending queue is at capacity (KB_PENDING_QUEUE_CAP)."""
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedPending:
     pending_id: str
@@ -40,8 +44,9 @@ def _path_lock_filename(target_path: str) -> str:
 
 
 class PendingQueue:
-    def __init__(self, *, pending_root: str) -> None:
+    def __init__(self, *, pending_root: str, cap: int = 0) -> None:
         self._root = pending_root
+        self._cap = cap  # 0 = unlimited
         self._locks_dir = os.path.join(self._root, "locks")
         os.makedirs(self._root, exist_ok=True)
         os.makedirs(self._locks_dir, exist_ok=True)
@@ -76,6 +81,10 @@ class PendingQueue:
         target_file_hash: str | None,
         meta: dict[str, Any],
     ) -> str:
+        if self._cap > 0 and self.size() >= self._cap:
+            raise PendingQueueFullError(
+                f"pending queue at capacity ({self._cap})"
+            )
         pending_id = uuid.uuid4().hex
         self._acquire_lock(target_path, pending_id)
         try:

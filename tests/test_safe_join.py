@@ -45,12 +45,15 @@ def test_symlinked_parent_dir_escape_returns_none(tmp_path) -> None:
     assert safe_join_under_root(root, "memory/inbox/escape.md") is None
 
 
-def test_symlink_to_inside_root_is_allowed(tmp_path) -> None:
+def test_in_root_symlink_redirection_is_rejected(tmp_path) -> None:
+    """A symlink that redirects to ANOTHER in-root path is rejected: the lexical
+    target (classified/blocklisted/audited/git-added) must equal where bytes land,
+    so an allowed path cannot be aimed at a different tier/file."""
     root = str(tmp_path / "root")
     os.makedirs(os.path.join(root, "real"))
     os.symlink(os.path.join(root, "real"), os.path.join(root, "link"))
-    # Resolves to root/real/x.md which is still inside root -> allowed.
-    assert safe_join_under_root(root, "link/x.md") == os.path.join(root, "link/x.md")
+    # Resolves to root/real/x.md (in-root) but != lexical root/link/x.md -> reject.
+    assert safe_join_under_root(root, "link/x.md") is None
 
 
 def test_empty_target_returns_none(tmp_path) -> None:

@@ -56,6 +56,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- Hardening from the companion security review:
+  - **Audit chain forgery fixed (blocker):** `verify()` now tolerates unhashed
+    legacy lines only as a prefix before the chain starts; any unhashed line after
+    the first hashed event breaks verification, so an appended legacy-shaped record
+    can no longer forge an event while keeping `/audit/verify` green.
+  - **Path containment tightened:** `safe_join_under_root()` now also requires the
+    resolved path to equal the lexical target, rejecting an in-tree symlink that
+    redirects an allowed `target_path` to a different in-root file (which would
+    decouple classification/blocklist/audit from where bytes land).
+  - **Body cap is real for chunked clients:** the REST body limit is enforced by
+    streaming the request and returning `413` past the cap, instead of trusting
+    `Content-Length`.
+  - **MCP observability tools gated:** `kb_list_pending`, `kb_audit`,
+    `kb_consult`, `kb_gate_check`, and `kb_compliance` require an authenticated
+    principal over MCP when auth is configured, matching the REST gating.
+  - **Aggregate caps:** onboarding bootstrap rejects over `KB_MAX_BOOTSTRAP_FILES`
+    (default 50), and `KB_PENDING_QUEUE_CAP` is now enforced in the pending queue.
+  - **Bootstrap confidence parse:** `/api/v1/onboarding/bootstrap` returns a clean
+    `400` on non-numeric confidence instead of a 500.
 - Observability routes are gated when auth is configured. With `KB_AUTH_TOKEN`
   set, `GET /api/v1/pending`, `/api/v1/audit`, and `/api/v1/audit/verify` now
   require an authenticated principal (they leak target paths and agent

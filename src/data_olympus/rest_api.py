@@ -2,6 +2,7 @@
 so MCP + REST share one Starlette/uvicorn process."""
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from starlette.responses import JSONResponse
@@ -160,31 +161,47 @@ def _propose_status(status: str) -> int:
         return 201
     if status == "pending_confirmation":
         return 202
-    if status == "rejected_payload_too_large":
+    if status in ("rejected_payload_too_large", "rejected_too_many_files"):
         return 413
+    if status in ("rejected_rate_limited", "rejected_pending_queue_full"):
+        return 429
     return 400
 
 
-def _body_too_large(request: Request, max_body_bytes: int) -> JSONResponse | None:
-    """Return a 413 when the request's declared Content-Length exceeds the cap
-    (0 = unlimited), else None. Rejects oversized payloads before the body is
-    parsed into memory, bounding PVC/memory abuse from a reachable client."""
+async def _read_json_capped(
+    request: Request, max_body_bytes: int,
+) -> tuple[Any, JSONResponse | None]:
+    """Read and JSON-parse the request body, enforcing a hard byte cap.
+
+    Reads the body stream incrementally and returns a 413 the moment the running
+    byte count exceeds ``max_body_bytes`` (0 = unlimited). Unlike a Content-Length
+    precheck this also bounds chunked or Content-Length-omitting clients, so the
+    cap is real rather than advisory. Returns ``(data, None)`` on success or
+    ``(None, response)`` for a 413 (too large) or 400 (invalid JSON)."""
     if max_body_bytes <= 0:
-        return None
-    cl = request.headers.get("content-length")
-    if cl is None:
-        return None
+        try:
+            return await request.json(), None
+        except (json.JSONDecodeError, ValueError):
+            return None, JSONResponse(
+                {"error": "bad_request", "message": "invalid JSON body"},
+                status_code=400,
+            )
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf += chunk
+        if len(buf) > max_body_bytes:
+            return None, JSONResponse(
+                {"error": "payload_too_large",
+                 "message": f"request body exceeds {max_body_bytes} bytes"},
+                status_code=413,
+            )
     try:
-        size = int(cl)
-    except ValueError:
-        return None
-    if size > max_body_bytes:
-        return JSONResponse(
-            {"error": "payload_too_large",
-             "message": f"request body exceeds {max_body_bytes} bytes"},
-            status_code=413,
+        return json.loads(buf), None
+    except (json.JSONDecodeError, ValueError):
+        return None, JSONResponse(
+            {"error": "bad_request", "message": "invalid JSON body"},
+            status_code=400,
         )
-    return None
 
 
 def register_routes(
@@ -261,9 +278,9 @@ def register_routes(
             return denied
         if (off := _write_pipeline_ready(state)) is not None:
             return off
-        if (big := _body_too_large(request, state.config.max_body_bytes)) is not None:
+        body, big = await _read_json_capped(request, state.config.max_body_bytes)
+        if big is not None:
             return big
-        body = await request.json()
         if (bad := _missing_fields_response(
             body, ["text", "source_session", "agent_identity", "confidence"],
         )) is not None:
@@ -301,9 +318,9 @@ def register_routes(
             return denied
         if (off := _write_pipeline_ready(state)) is not None:
             return off
-        if (big := _body_too_large(request, state.config.max_body_bytes)) is not None:
+        body, big = await _read_json_capped(request, state.config.max_body_bytes)
+        if big is not None:
             return big
-        body = await request.json()
         if (bad := _missing_fields_response(
             body,
             ["target_path", "postimage", "base_commit",
@@ -508,13 +525,16 @@ def register_routes(
             return denied
         if (off := _write_pipeline_ready(state)) is not None:
             return off
-        if (big := _body_too_large(request, state.config.max_body_bytes)) is not None:
+        body, big = await _read_json_capped(request, state.config.max_body_bytes)
+        if big is not None:
             return big
-        body = await request.json()
         if (bad := _missing_fields_response(
             body, ["workspace", "files", "source_session",
                    "agent_identity", "confidence"],
         )) is not None:
+            return bad
+        confidence, bad = _parse_confidence(body)
+        if bad is not None:
             return bad
         assert state.worktrees is not None
         assert state.push_queue is not None
@@ -531,7 +551,7 @@ def register_routes(
             files=body["files"],
             source_session=body["source_session"],
             agent_identity=body["agent_identity"],
-            confidence=float(body["confidence"]),
+            confidence=confidence,
             confidence_threshold=state.config.confidence_threshold,
             worktrees=state.worktrees, push_queue=state.push_queue,
             pending=state.pending, rate_limiter=state.rate_limiter,
@@ -539,6 +559,7 @@ def register_routes(
             remote_addr=request.client.host if request.client else "unknown",
             can_auto_commit=principal.can_auto_commit,
             max_postimage_bytes=state.config.max_postimage_bytes,
+            max_files=state.config.max_bootstrap_files,
         )
         status = _propose_status(resp.status)
         return JSONResponse(resp.model_dump(), status_code=status)
