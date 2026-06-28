@@ -1,14 +1,25 @@
 # WARNING: This ingress exposes all routes including write routes
 # (/api/v1/propose/*, /api/v1/resolve, /api/v1/onboarding/bootstrap).
-# The server has no built-in authentication. You MUST protect it with an
-# authenticating reverse proxy or restrict it to a trusted private network
-# before exposing it beyond localhost. See SECURITY.md.
+# Set KB_AUTH_TOKEN (and optionally KB_AUTH_PRINCIPALS) to authenticate the write
+# and enforcement routes for BOTH REST and MCP; read routes stay open. For full
+# confidentiality (including reads) also restrict to a trusted private network or
+# put an authenticating reverse proxy in front. See SECURITY.md.
+#
+# TLS: terminate TLS at the ingress. With cert-manager, uncomment the annotation
+# and the tls block below (replace the issuer name and host). Do not serve write
+# routes over plaintext on an untrusted network.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: data-olympus-mcp
   namespace: data-olympus
+  # annotations:
+  #   cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
+  # tls:
+  #   - hosts:
+  #       - data-olympus.example.com
+  #     secretName: data-olympus-mcp-tls
   rules:
     - host: data-olympus.example.com  # replace with your hostname
       http:

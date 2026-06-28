@@ -33,7 +33,16 @@ The single-writer write pipeline (propose, pending, resolve) is the primary atta
 
 - **Path blocklist.** The `KB_WRITE_BLOCK_TIERS` and `KB_WRITE_BLOCK_PATHS` environment variables restrict which paths agent-proposed writes may target. Operators should configure these to the minimum surface that agents legitimately need.
 - **Structural write rules.** Only `.md` files under indexed prefixes are accepted. Path traversal sequences (`..`) and writes under `.git/`, `tools/`, or `.worktrees/` are rejected by the server.
+- **Path containment.** Every write path resolves its target through a shared `safe_join_under_root()` guard and rejects any proposal whose resolved location escapes the per-session worktree (symlink, traversal, or absolute path), before any filesystem side effect. This covers memory propose, edit, resolve, and onboarding bootstrap.
+- **Payload size caps.** `KB_MAX_TEXT_BYTES` (memory text, default 256 KiB), `KB_MAX_POSTIMAGE_BYTES` (edit/bootstrap file, default 1 MiB), and `KB_MAX_BODY_BYTES` (REST request body, default 2 MiB) reject oversized proposals before any disk write. The body cap is enforced by reading the request stream incrementally and returning `413` once the byte count is exceeded, so it bounds chunked or `Content-Length`-omitting clients, not just honest ones. Set to `0` to disable a given cap.
+- **Aggregate caps.** Onboarding bootstrap rejects requests over `KB_MAX_BOOTSTRAP_FILES` (default 50). The pending queue is bounded by `KB_PENDING_QUEUE_CAP` (default 100); enqueue past the cap is rejected rather than growing unbounded on disk.
+- **Confidence clamp.** Client-supplied `confidence` is advisory. Only a caller whose principal holds the `auto_commit` capability may auto-commit; everyone else has their proposals parked as pending regardless of the asserted confidence (see authentication below).
+- **Rate limiting.** A per-(remote_addr, agent_identity) sliding window (`KB_RATE_LIMIT_PER_HOUR`) plus an optional per-IP cap (`KB_RATE_LIMIT_PER_IP_PER_HOUR`, default disabled) bound write volume.
 - **Single writer.** The server runs a single writer with advisory locking and a durable push queue. Concurrent write races from multiple agent sessions are serialised rather than silently merged.
+
+### Audit log
+
+Every write and enforcement decision is appended to a JSONL audit log. The log is **tamper-evident**: each event carries an `event_id`, the `prev_hash` of the previous event, and its own `hash` over the canonical event body (SHA-256, or keyed HMAC-SHA256 when `KB_AUDIT_HMAC_KEY` is set). Any later edit, deletion, or reordering breaks the chain; recompute it with `GET /api/v1/audit/verify` or `kb audit --verify`.
 
 ### Secrets handling
 
@@ -48,35 +57,44 @@ The `data-olympus visualize` command produces an HTML bundle graph. User-authore
 
 The MCP server is a single-writer internal service designed for operator-controlled deployment (local network or private Kubernetes cluster).
 
-#### Optional bearer-token gate (`KB_AUTH_TOKEN`)
+#### Bearer-token authentication and capabilities (`KB_AUTH_TOKEN` / `KB_AUTH_PRINCIPALS`)
 
-Set the `KB_AUTH_TOKEN` environment variable to a non-empty secret string to enable built-in bearer-token authentication on the write routes:
+Authentication is resolved from the `Authorization: Bearer <token>` header against a registry of **principals**, each holding a set of **capabilities**: `read`, `propose`, `auto_commit`, `resolve`, `bootstrap`, `record_event`.
 
-```
-KB_AUTH_TOKEN=<your-secret-token>
-```
+- `KB_AUTH_TOKEN=<secret>` registers a single full-capability principal named `operator` (back-compatible).
+- `KB_AUTH_PRINCIPALS=<json>` optionally registers per-agent tokens with explicit capabilities, e.g.:
 
-When set, the following write routes require an `Authorization: Bearer <token>` header that exactly matches `KB_AUTH_TOKEN` (checked with `hmac.compare_digest` to prevent timing attacks):
+  ```json
+  [{"name": "codex", "token": "<secret>", "capabilities": ["read", "propose"]}]
+  ```
 
-- `POST /api/v1/propose/memory`
-- `POST /api/v1/propose/edit`
-- `POST /api/v1/resolve/{pending_id}`
-- `POST /api/v1/onboarding/bootstrap`
+  A principal with `propose` but not `auto_commit` may propose, but its proposals are always parked as pending (the confidence clamp).
 
-Requests with a missing or incorrect token receive `HTTP 401 {"error": "unauthorized"}`.
+Tokens are compared with `hmac.compare_digest` (constant time).
 
-Read routes (`/api/v1/search`, `/api/v1/get`, `/api/v1/list`, `/api/v1/outline`, `/api/v1/health`) remain open regardless of `KB_AUTH_TOKEN`.
+**Coverage is REST and MCP.** Unlike earlier releases where the token guarded REST routes only, an MCP-transport middleware enforces the same capabilities on the MCP write tools (`kb_propose_*`, `kb_resolve_pending`, `kb_bootstrap_project`, `kb_record_event`). The observability/enforcement tools (`kb_list_pending`, `kb_audit`, `kb_consult`, `kb_gate_check`, `kb_compliance`) likewise require an authenticated principal over MCP when auth is configured, matching the REST gating. A token-less MCP client can no longer call write or observability tools when auth is configured.
 
-The `bin/kb` CLI automatically includes `Authorization: Bearer $KB_AUTH_TOKEN` on write subcommands when the variable is set.
+When auth is configured, the following require a capable principal (else `401` for an anonymous/invalid token, `403` for an authenticated principal missing the capability):
 
-When `KB_AUTH_TOKEN` is empty (the default), behavior is unchanged from previous releases: all routes are open.
+| Route / MCP tool | Capability |
+|---|---|
+| `POST /api/v1/propose/memory`, `/propose/edit` · `kb_propose_memory`, `kb_propose_edit` | `propose` (+ `auto_commit` to skip pending) |
+| `POST /api/v1/resolve/{pending_id}` · `kb_resolve_pending` | `resolve` |
+| `POST /api/v1/onboarding/bootstrap` · `kb_bootstrap_project` | `bootstrap` |
+| `POST /api/v1/audit/event` · `kb_record_event` | `record_event` |
+| `POST /api/v1/consult`, `/gate/check` | any authenticated principal |
+| `GET /api/v1/pending`, `/audit`, `/audit/verify` | any authenticated principal |
 
-**`KB_AUTH_TOKEN` is not a substitute for network-level access control.** For full protection of both read and write routes, you still MUST:
+Read routes (`/api/v1/search`, `/get`, `/list`, `/outline`, `/health`) remain open regardless of auth.
 
-- Deploy on a trusted private network, or behind an authenticating reverse proxy.
+The `bin/kb` CLI includes `Authorization: Bearer $KB_AUTH_TOKEN` on write and observability subcommands when the variable is set.
+
+When neither `KB_AUTH_TOKEN` nor `KB_AUTH_PRINCIPALS` is set (the default), every caller is the fully-trusted local principal and all routes are open. This is the trusted-agent assumption: only safe on a trusted private network.
+
+**Authentication is not a substitute for network-level access control.** Read routes stay open, so for strict confidentiality of the knowledge base you still MUST:
+
+- Deploy on a trusted private network, or behind an authenticating reverse proxy (terminate TLS there).
 - NOT expose the server to untrusted networks.
-
-Bearer-token auth adds a meaningful second layer for write routes, but for environments requiring strict confidentiality of the knowledge base, add authentication at the network layer as well.
 
 ## License
 

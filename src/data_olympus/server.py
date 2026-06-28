@@ -3,14 +3,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
+from fastmcp.server.middleware import Middleware
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import mcp.types as mt
+    from fastmcp.server.middleware import MiddlewareContext
+    from fastmcp.server.middleware.middleware import CallNext
+    from fastmcp.tools.base import ToolResult
 
 from data_olympus.audit_log import AuditLog
 from data_olympus.auth import PathBlocklist
@@ -19,12 +26,74 @@ from data_olympus.enforce_policy import ConsultationLedger, IntentClassifier
 from data_olympus.git_ops import GitOps
 from data_olympus.index import Index
 from data_olympus.pending import PendingQueue
+from data_olympus.principals import (
+    AUTH_REQUIRED_TOOLS,
+    LOCAL_TRUSTED,
+    WRITE_TOOL_CAPABILITY,
+    Principal,
+    PrincipalRegistry,
+)
 from data_olympus.push_queue import PushQueue
 from data_olympus.rate_limit import SlidingWindowLimiter
 from data_olympus.tools_read import kb_health_fn, kb_outline_fn, kb_search_fn
 from data_olympus.worktrees import WorktreeRegistry
 
 log = logging.getLogger("data_olympus")
+
+# The principal resolved by the MCP auth middleware for the in-flight tool call.
+# Defaults to the fully-trusted local principal so direct (non-HTTP) tool calls
+# in tests behave as before. Read by the write-tool closures for the clamp.
+_current_principal: contextvars.ContextVar[Principal] = contextvars.ContextVar(
+    "current_principal", default=LOCAL_TRUSTED
+)
+
+
+class MCPAuthMiddleware(Middleware):
+    """Enforce principal capabilities on MCP write tools.
+
+    REST routes are authorized in rest_api.py; this is the MCP-transport
+    counterpart so the two surfaces share one policy and KB_AUTH_TOKEN actually
+    protects MCP write tools (the gap the security review flagged). The resolved
+    principal is stashed in a contextvar so the write-tool closures can apply the
+    confidence clamp (auto-commit only when the principal holds that capability).
+    """
+
+    def __init__(self, registry: PrincipalRegistry) -> None:
+        self._registry = registry
+
+    async def on_call_tool(
+        self,
+        context: MiddlewareContext[mt.CallToolRequestParams],
+        call_next: CallNext[mt.CallToolRequestParams, ToolResult],
+    ) -> ToolResult:
+        from fastmcp.exceptions import ToolError
+        from fastmcp.server.dependencies import get_http_headers
+
+        # Authorization is stripped by get_http_headers' default exclude set;
+        # include it explicitly so bearer auth reaches the MCP transport.
+        headers = get_http_headers(include={"authorization"})
+        principal = self._registry.resolve(headers.get("authorization"))
+        token = _current_principal.set(principal)
+        try:
+            name = context.message.name
+            cap = WRITE_TOOL_CAPABILITY.get(name)
+            if cap is not None:
+                if not principal.has(cap):
+                    raise ToolError(
+                        f"unauthorized: principal '{principal.name}' lacks "
+                        f"capability '{cap}' required by '{name}'"
+                    )
+            elif (name in AUTH_REQUIRED_TOOLS
+                  and self._registry.auth_configured
+                  and not principal.authenticated):
+                # Observability/enforcement tools: require authentication when
+                # configured, matching the REST gating of these surfaces.
+                raise ToolError(
+                    f"unauthorized: authentication required for '{name}'"
+                )
+            return await call_next(context)
+        finally:
+            _current_principal.reset(token)
 
 
 class ServerState:
@@ -50,6 +119,12 @@ class ServerState:
         self.config = config
         self.last_git_pull_at: float | None = None
         self.last_git_push_at: float | None = None
+        # Sync-failure visibility (see refresh.git_pull_loop).
+        self.last_git_fetch_status: str = "no_change"
+        self.last_git_fetch_error: str | None = None
+        self.last_git_fetch_at: float | None = None
+        self.last_successful_refresh_at: float | None = None
+        self.remote_head_sha: str | None = None
         self.pending_count: int = 0
         self.push_queue_size: int = 0
         self.last_index_build_status: str = "ok"
@@ -85,11 +160,18 @@ def build_app(
     write_block_paths: list[str] | None = None,
     confidence_threshold: float = 0.85,
     rate_limit_per_hour: int = 100,
+    rate_limit_per_ip_per_hour: int = 0,
+    max_text_bytes: int = 262144,
+    max_postimage_bytes: int = 1048576,
+    max_body_bytes: int = 2097152,
+    max_bootstrap_files: int = 50,
     pending_timeout_sec: int = 86400,
     pending_queue_cap: int = 100,
     worktree_idle_sec: int = 3600,
     git_key_path: str = "/tmp/git-key",
     auth_token: str = "",
+    auth_principals: list[dict[str, Any]] | None = None,
+    audit_hmac_key: str = "",
     ledger_path: str | None = None,
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
@@ -111,11 +193,18 @@ def build_app(
         write_block_tiers=write_block_tiers or [],
         write_block_paths=write_block_paths or [],
         rate_limit_per_hour=rate_limit_per_hour,
+        rate_limit_per_ip_per_hour=rate_limit_per_ip_per_hour,
+        max_text_bytes=max_text_bytes,
+        max_postimage_bytes=max_postimage_bytes,
+        max_body_bytes=max_body_bytes,
+        max_bootstrap_files=max_bootstrap_files,
         pending_timeout_sec=pending_timeout_sec,
         pending_queue_cap=pending_queue_cap,
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
         auth_token=auth_token,
+        auth_principals=auth_principals or [],
+        audit_hmac_key=audit_hmac_key,
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
@@ -128,8 +217,13 @@ def build_app(
     if config.kb_remote_url:
         worktrees = WorktreeRegistry(git=git, worktree_root=config.worktree_root)
         push_queue = PushQueue(queue_root=config.push_queue_root)
-        pending = PendingQueue(pending_root=config.pending_root)
-        rate_limiter = SlidingWindowLimiter(max_per_hour=config.rate_limit_per_hour)
+        pending = PendingQueue(
+            pending_root=config.pending_root, cap=config.pending_queue_cap
+        )
+        rate_limiter = SlidingWindowLimiter(
+            max_per_hour=config.rate_limit_per_hour,
+            max_per_ip_per_hour=config.rate_limit_per_ip_per_hour,
+        )
         blocklist = PathBlocklist(
             tier_blocks=config.write_block_tiers,
             path_blocks=config.write_block_paths,
@@ -141,7 +235,10 @@ def build_app(
         state.blocklist = blocklist
 
     if config.kb_remote_url:
-        audit_log = AuditLog(log_path=audit_log_path or config.audit_log_path)
+        audit_log = AuditLog(
+            log_path=audit_log_path or config.audit_log_path,
+            hmac_key=config.audit_hmac_key,
+        )
         state.audit_log = audit_log
 
     if bootstrap_now:
@@ -167,6 +264,11 @@ def build_app(
             last_index_error_at=state.last_index_error_at,
             last_index_conflicts=state.last_index_conflicts,
             path_locks_held=state.pending.locks_held() if state.pending else 0,
+            last_git_fetch_status=state.last_git_fetch_status,
+            last_git_fetch_error=state.last_git_fetch_error,
+            last_git_fetch_at=state.last_git_fetch_at,
+            last_successful_refresh_at=state.last_successful_refresh_at,
+            remote_head_sha=state.remote_head_sha,
         )
         return resp.model_dump()
 
@@ -222,6 +324,8 @@ def build_app(
         """Propose a new memory file. High confidence auto-commits and
         enqueues for push; low confidence enters the pending queue for operator
         review."""
+        if state.worktrees is None or state.push_queue is None or state.pending is None:
+            return {"status": "write_pipeline_disabled"}
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None
@@ -236,6 +340,8 @@ def build_app(
             pending=state.pending, rate_limiter=state.rate_limiter,
             blocklist=state.blocklist, remote_addr="mcp",
             audit_log=state.audit_log,
+            can_auto_commit=_current_principal.get().can_auto_commit,
+            max_text_bytes=state.config.max_text_bytes,
         )
         return resp.model_dump()
 
@@ -248,6 +354,8 @@ def build_app(
         """Propose an edit to an existing (or new) markdown file under an
         indexed tier. High confidence auto-commits + queues for push; low
         confidence enters the pending queue for operator review."""
+        if state.worktrees is None or state.push_queue is None or state.pending is None:
+            return {"status": "write_pipeline_disabled"}
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None
@@ -264,6 +372,8 @@ def build_app(
             pending=state.pending, rate_limiter=state.rate_limiter,
             blocklist=state.blocklist, remote_addr="mcp",
             audit_log=state.audit_log,
+            can_auto_commit=_current_principal.get().can_auto_commit,
+            max_postimage_bytes=state.config.max_postimage_bytes,
         )
         return resp.model_dump()
 
@@ -274,6 +384,8 @@ def build_app(
     ) -> dict[str, object]:
         """Resolve a pending proposal: approve (optionally with edited text) or
         reject. Approval commits + enqueues for push."""
+        if state.worktrees is None or state.push_queue is None or state.pending is None:
+            return {"status": "write_pipeline_disabled"}
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None
@@ -334,6 +446,8 @@ def build_app(
     ) -> dict[str, object]:
         """Bootstrap a new workspace/component. Only valid when status=absent.
         High confidence commits atomically; low confidence enqueues pending."""
+        if state.worktrees is None or state.push_queue is None or state.pending is None:
+            return {"status": "write_pipeline_disabled"}
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None
@@ -352,6 +466,9 @@ def build_app(
             pending=state.pending, rate_limiter=state.rate_limiter,
             blocklist=state.blocklist, audit_log=state.audit_log,
             remote_addr="mcp",
+            can_auto_commit=_current_principal.get().can_auto_commit,
+            max_postimage_bytes=state.config.max_postimage_bytes,
+            max_files=state.config.max_bootstrap_files,
         )
         return resp.model_dump()
 
@@ -424,8 +541,13 @@ def build_app(
             return {"recorded": False, "error": str(e)}
         return resp.model_dump()
 
+    registry = PrincipalRegistry(auth_token=auth_token, principals=auth_principals)
+    # MCP-transport auth: enforce write-tool capabilities (REST is enforced in
+    # rest_api.py against the same registry).
+    app.add_middleware(MCPAuthMiddleware(registry))
+
     from data_olympus.rest_api import register_routes
-    register_routes(app, state, auth_token=auth_token)
+    register_routes(app, state, registry)
     # Attach state for lifespan to discover; not used by tests
     app._dolympus_state = state  # type: ignore[attr-defined]
     return app
@@ -454,11 +576,18 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         write_block_paths=list(config.write_block_paths),
         confidence_threshold=config.confidence_threshold,
         rate_limit_per_hour=config.rate_limit_per_hour,
+        rate_limit_per_ip_per_hour=config.rate_limit_per_ip_per_hour,
+        max_text_bytes=config.max_text_bytes,
+        max_postimage_bytes=config.max_postimage_bytes,
+        max_body_bytes=config.max_body_bytes,
+        max_bootstrap_files=config.max_bootstrap_files,
         pending_timeout_sec=config.pending_timeout_sec,
         pending_queue_cap=config.pending_queue_cap,
         worktree_idle_sec=config.worktree_idle_sec,
         git_key_path=config.git_key_path,
         auth_token=config.auth_token,
+        auth_principals=list(config.auth_principals),
+        audit_hmac_key=config.audit_hmac_key,
         ledger_path=config.ledger_path,
     )
 
@@ -466,6 +595,21 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
 def main() -> None:
     """Production entry. Loads config from env, bootstraps index, starts HTTP server
     with the git_pull_loop refresh task running in the background."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="data-olympus-mcp",
+        description=(
+            "Run the data-olympus MCP + REST server. All configuration is via "
+            "KB_* environment variables (see docs/serving.md); there are no "
+            "positional arguments. Start a local instance with scripts/run-local.sh."
+        ),
+    )
+    # Parsing first means `data-olympus-mcp --help` prints usage and exits 0
+    # without loading config (which would otherwise fail with NotADirectoryError
+    # when KB_MAIN_PATH does not exist).
+    parser.parse_args()
+
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )

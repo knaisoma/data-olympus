@@ -1,6 +1,7 @@
 """kb_onboarding_status_fn + kb_bootstrap_project_fn."""
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 
 from data_olympus.models import (
@@ -71,6 +72,9 @@ def kb_bootstrap_project_fn(
     blocklist: PathBlocklist,
     audit_log: AuditLog | None = None,  # noqa: ARG001  reserved for future audit emission
     remote_addr: str = "mcp",
+    can_auto_commit: bool = True,
+    max_postimage_bytes: int = 0,
+    max_files: int = 0,
 ) -> BootstrapResponse:
     """Bootstrap a new workspace/component. Only callable when status=absent.
 
@@ -89,11 +93,21 @@ def kb_bootstrap_project_fn(
             rejected_paths=[],
         )
 
+    # Aggregate file-count cap: one request must not enqueue/write an unbounded
+    # number of (individually capped) files. Aggregate byte size is bounded by the
+    # REST body cap upstream.
+    if max_files > 0 and len(files) > max_files:
+        return BootstrapResponse(
+            status="rejected_too_many_files",
+            rejected_paths=[f["target_path"] for f in files],
+        )
+
     # For onboarding v1: simplified atomic-commit path.
     # Validate every file via is_writable_path + blocklist before any side effects.
     from data_olympus.auth import is_writable_path
     from data_olympus.index import _classify_by_path
     rejected: list[str] = []
+    oversized: list[str] = []
     for f in files:
         if not is_writable_path(f["target_path"]):
             rejected.append(f["target_path"])
@@ -101,10 +115,19 @@ def kb_bootstrap_project_fn(
         target_tier, _ = _classify_by_path(f["target_path"])
         if blocklist.blocks(f["target_path"], target_tier):
             rejected.append(f["target_path"])
+            continue
+        if (max_postimage_bytes > 0
+                and len(f["postimage"].encode("utf-8")) > max_postimage_bytes):
+            oversized.append(f["target_path"])
     if rejected:
         return BootstrapResponse(
             status="rejected_path_not_indexable_or_blocked",
             rejected_paths=rejected,
+        )
+    if oversized:
+        return BootstrapResponse(
+            status="rejected_payload_too_large",
+            rejected_paths=oversized,
         )
 
     if not rate_limiter.allow(remote_addr=remote_addr, agent_identity=agent_identity):
@@ -116,14 +139,22 @@ def kb_bootstrap_project_fn(
     if component_remote_url:
         files = _inject_remote_url(files, component_remote_url, target_filename="AGENTS.md")
 
-    if confidence < confidence_threshold:
-        # Low confidence: enqueue ALL files as a single pending bundle.
+    if confidence < confidence_threshold or not can_auto_commit:
+        # Low confidence (or caller not authorized to auto-commit): enqueue ALL
+        # files as a single pending bundle.
         # For onboarding v1, we enqueue them one-by-one (the pending queue
         # supports per-file entries; resolving "all" is the operator's choice).
         # Future: native bundle support in PendingQueue.
+        from data_olympus.pending import PathLockBusyError, PendingQueueFullError
+        # Atomicity: a bootstrap is one bundle. Reject up front if the whole
+        # bundle would not fit, so we never leave a partial set of pending entries.
+        if pending.would_exceed(len(files)):
+            return BootstrapResponse(
+                status="rejected_pending_queue_full",
+                rejected_paths=[f["target_path"] for f in files],
+            )
         pending_ids = []
         for f in files:
-            from data_olympus.pending import PathLockBusyError
             try:
                 pid = pending.enqueue(
                     proposal_type="edit",
@@ -140,6 +171,16 @@ def kb_bootstrap_project_fn(
                 pending_ids.append(pid)
             except PathLockBusyError:
                 pass  # already pending; skip
+            except PendingQueueFullError:
+                # Lost a capacity race after the pre-check: roll back this bundle's
+                # enqueued entries so the bootstrap stays all-or-nothing.
+                for pid in pending_ids:
+                    with contextlib.suppress(Exception):
+                        pending.reject(pid)
+                return BootstrapResponse(
+                    status="rejected_pending_queue_full",
+                    rejected_paths=[f["target_path"] for f in files],
+                )
         return BootstrapResponse(
             status="pending_confirmation",
             pending_id=pending_ids[0] if pending_ids else None,
@@ -151,11 +192,12 @@ def kb_bootstrap_project_fn(
     import subprocess
 
     from data_olympus.audit_trailers import build_commit_message
+    from data_olympus.auth import safe_join_under_root
     wt = worktrees.get_or_create(source_session=source_session, agent_identity=agent_identity)
     for f in files:
-        full_path = os.path.join(wt.path, f["target_path"])
-        real = os.path.realpath(full_path)
-        if not real.startswith(os.path.realpath(wt.path) + os.sep):
+        # Shared symlink-escape containment guard (see safe_join_under_root).
+        full_path = safe_join_under_root(wt.path, f["target_path"])
+        if full_path is None:
             return BootstrapResponse(status="rejected_symlink_escape",
                                      rejected_paths=[f["target_path"]])
         os.makedirs(os.path.dirname(full_path), exist_ok=True)

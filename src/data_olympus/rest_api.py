@@ -2,11 +2,18 @@
 so MCP + REST share one Starlette/uvicorn process."""
 from __future__ import annotations
 
-import hmac
-from typing import TYPE_CHECKING
+import json
+from typing import TYPE_CHECKING, Any
 
 from starlette.responses import JSONResponse
 
+from data_olympus.principals import (
+    CAP_BOOTSTRAP,
+    CAP_PROPOSE,
+    CAP_RECORD_EVENT,
+    CAP_RESOLVE,
+    PrincipalRegistry,
+)
 from data_olympus.tools_read import (
     KbNotFoundError,
     kb_get_fn,
@@ -21,6 +28,7 @@ if TYPE_CHECKING:
     from starlette.requests import Request
 
     from data_olympus.models import HealthResponse
+    from data_olympus.principals import Principal
     from data_olympus.server import ServerState
 
 
@@ -38,6 +46,11 @@ def _build_health(state: ServerState) -> HealthResponse:
         last_index_error=state.last_index_error,
         last_index_error_at=state.last_index_error_at,
         last_index_conflicts=state.last_index_conflicts,
+        last_git_fetch_status=state.last_git_fetch_status,
+        last_git_fetch_error=state.last_git_fetch_error,
+        last_git_fetch_at=state.last_git_fetch_at,
+        last_successful_refresh_at=state.last_successful_refresh_at,
+        remote_head_sha=state.remote_head_sha,
     )
 
 
@@ -50,23 +63,38 @@ def _degraded_response(health: HealthResponse) -> JSONResponse:
     return JSONResponse(body, status_code=503)
 
 
-def _check_auth(request: Request, auth_token: str) -> JSONResponse | None:
-    """Return a 401 JSONResponse if auth_token is set and the request does not
-    supply a matching ``Authorization: Bearer <token>`` header. Uses
-    hmac.compare_digest for constant-time comparison.
+def _authorize(
+    request: Request,
+    registry: PrincipalRegistry,
+    capability: str | None = None,
+) -> tuple[Principal, JSONResponse | None]:
+    """Resolve the request's principal and check it against ``capability``.
 
-    Returns None when auth is satisfied (token empty, or header matches).
+    Returns ``(principal, None)`` when allowed, or ``(principal, denial)`` where
+    ``denial`` is a 401 (unauthenticated) or 403 (authenticated but missing the
+    capability) JSONResponse. ``capability=None`` means "any authenticated
+    principal" — used for the enforcement-plane routes (consult / gate) which do
+    not map to a KB write capability but must still be closed to anonymous
+    callers when auth is configured.
+
+    With no auth configured the resolver returns the fully-trusted LOCAL_TRUSTED
+    principal, so every check passes and behavior matches the pre-auth product.
     """
-    if not auth_token:
-        return None
-    header = request.headers.get("Authorization", "")
-    prefix = "Bearer "
-    if not header.startswith(prefix):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    supplied = header[len(prefix):]
-    if not hmac.compare_digest(supplied.encode(), auth_token.encode()):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    return None
+    principal = registry.resolve(request.headers.get("Authorization"))
+    if capability is None:
+        allowed = (not registry.auth_configured) or principal.authenticated
+    else:
+        allowed = principal.has(capability)
+    if allowed:
+        return principal, None
+    if not principal.authenticated:
+        return principal, JSONResponse({"error": "unauthorized"}, status_code=401)
+    return principal, JSONResponse(
+        {"error": "forbidden",
+         "message": f"principal '{principal.name}' lacks capability "
+                    f"'{capability}'"},
+        status_code=403,
+    )
 
 
 def _missing_fields_response(body: object, required: list[str]) -> JSONResponse | None:
@@ -95,7 +123,7 @@ def _missing_fields_response(body: object, required: list[str]) -> JSONResponse 
     return None
 
 
-def _parse_confidence(body: dict) -> tuple[float, JSONResponse | None]:
+def _parse_confidence(body: dict[str, Any]) -> tuple[float, JSONResponse | None]:
     """Coerce body['confidence'] to float, returning a 400 JSONResponse instead
     of letting a non-numeric value raise ValueError/TypeError -> HTTP 500 (the
     same opaque-crash class as a missing field). Presence/non-null is enforced
@@ -110,11 +138,80 @@ def _parse_confidence(body: dict) -> tuple[float, JSONResponse | None]:
         )
 
 
-def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> None:
+def _write_pipeline_ready(state: ServerState) -> JSONResponse | None:
+    """Return a structured 503 when the write pipeline is disabled (the server
+    runs read-only because ``KB_REMOTE_URL`` is unset), else None.
+
+    Previously the write handlers asserted ``state.worktrees is not None`` and a
+    read-only deployment turned every write call into an opaque plain-text HTTP
+    500. This returns an actionable JSON body and the correct 503 status instead.
+    """
+    if state.worktrees is None or state.push_queue is None or state.pending is None:
+        return JSONResponse(
+            {"error": "write_pipeline_disabled",
+             "message": "server is read-only (KB_REMOTE_URL is not set)"},
+            status_code=503,
+        )
+    return None
+
+
+def _propose_status(status: str) -> int:
+    """Map a propose/bootstrap response status to an HTTP status code."""
+    if status == "committed":
+        return 201
+    if status == "pending_confirmation":
+        return 202
+    if status in ("rejected_payload_too_large", "rejected_too_many_files"):
+        return 413
+    if status in ("rejected_rate_limited", "rejected_pending_queue_full"):
+        return 429
+    return 400
+
+
+async def _read_json_capped(
+    request: Request, max_body_bytes: int,
+) -> tuple[Any, JSONResponse | None]:
+    """Read and JSON-parse the request body, enforcing a hard byte cap.
+
+    Reads the body stream incrementally and returns a 413 the moment the running
+    byte count exceeds ``max_body_bytes`` (0 = unlimited). Unlike a Content-Length
+    precheck this also bounds chunked or Content-Length-omitting clients, so the
+    cap is real rather than advisory. Returns ``(data, None)`` on success or
+    ``(None, response)`` for a 413 (too large) or 400 (invalid JSON)."""
+    if max_body_bytes <= 0:
+        try:
+            return await request.json(), None
+        except (json.JSONDecodeError, ValueError):
+            return None, JSONResponse(
+                {"error": "bad_request", "message": "invalid JSON body"},
+                status_code=400,
+            )
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf += chunk
+        if len(buf) > max_body_bytes:
+            return None, JSONResponse(
+                {"error": "payload_too_large",
+                 "message": f"request body exceeds {max_body_bytes} bytes"},
+                status_code=413,
+            )
+    try:
+        return json.loads(buf), None
+    except (json.JSONDecodeError, ValueError):
+        return None, JSONResponse(
+            {"error": "bad_request", "message": "invalid JSON body"},
+            status_code=400,
+        )
+
+
+def register_routes(
+    app: FastMCP, state: ServerState, registry: PrincipalRegistry
+) -> None:
     """Mount REST routes under /api/v1/ on the FastMCP app.
 
-    Write routes require a valid ``Authorization: Bearer <token>`` header when
-    ``auth_token`` is non-empty. Read routes are always open.
+    Write and enforcement-plane routes are authorized against ``registry``
+    (see ``_authorize``). When no auth is configured every caller is trusted and
+    behavior matches the pre-auth product. Read routes are always open.
     """
 
     @app.custom_route("/api/v1/health", methods=["GET"])
@@ -176,9 +273,14 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/propose/memory", methods=["POST"])
     async def propose_memory(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        principal, denied = _authorize(request, registry, CAP_PROPOSE)
+        if denied is not None:
             return denied
-        body = await request.json()
+        if (off := _write_pipeline_ready(state)) is not None:
+            return off
+        body, big = await _read_json_capped(request, state.config.max_body_bytes)
+        if big is not None:
+            return big
         if (bad := _missing_fields_response(
             body, ["text", "source_session", "agent_identity", "confidence"],
         )) is not None:
@@ -203,17 +305,22 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
             blocklist=state.blocklist,
             remote_addr=request.client.host if request.client else "unknown",
             audit_log=state.audit_log,
+            can_auto_commit=principal.can_auto_commit,
+            max_text_bytes=state.config.max_text_bytes,
         )
-        status = 201 if resp.status == "committed" else (
-            202 if resp.status == "pending_confirmation" else 400
-        )
+        status = _propose_status(resp.status)
         return JSONResponse(resp.model_dump(), status_code=status)
 
     @app.custom_route("/api/v1/propose/edit", methods=["POST"])
     async def propose_edit(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        principal, denied = _authorize(request, registry, CAP_PROPOSE)
+        if denied is not None:
             return denied
-        body = await request.json()
+        if (off := _write_pipeline_ready(state)) is not None:
+            return off
+        body, big = await _read_json_capped(request, state.config.max_body_bytes)
+        if big is not None:
+            return big
         if (bad := _missing_fields_response(
             body,
             ["target_path", "postimage", "base_commit",
@@ -244,18 +351,23 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
             blocklist=state.blocklist,
             remote_addr=request.client.host if request.client else "unknown",
             audit_log=state.audit_log,
+            can_auto_commit=principal.can_auto_commit,
+            max_postimage_bytes=state.config.max_postimage_bytes,
         )
-        status = 201 if resp.status == "committed" else (
-            202 if resp.status == "pending_confirmation" else 400
-        )
+        status = _propose_status(resp.status)
         return JSONResponse(resp.model_dump(), status_code=status)
 
     @app.custom_route("/api/v1/resolve/{pending_id}", methods=["POST"])
     async def resolve_pending(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        _principal, denied = _authorize(request, registry, CAP_RESOLVE)
+        if denied is not None:
             return denied
+        if (off := _write_pipeline_ready(state)) is not None:
+            return off
         pid = request.path_params["pending_id"]
         body = await request.json()
+        if (bad := _missing_fields_response(body, ["decision"])) is not None:
+            return bad
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None
@@ -272,15 +384,25 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
         return JSONResponse(resp.model_dump())
 
     @app.custom_route("/api/v1/pending", methods=["GET"])
-    async def list_pending(_request: Request) -> JSONResponse:
-        assert state.pending is not None
+    async def list_pending(request: Request) -> JSONResponse:
+        # Observability routes leak target paths / agent identities, so when auth
+        # is configured they require an authenticated principal (open otherwise).
+        _principal, denied = _authorize(request, registry)
+        if denied is not None:
+            return denied
+        if state.pending is None:
+            return JSONResponse({"pending": []})
         from data_olympus.tools_write import kb_list_pending_fn
         resp = kb_list_pending_fn(pending=state.pending)
         return JSONResponse(resp.model_dump())
 
     @app.custom_route("/api/v1/audit", methods=["GET"])
     async def audit(request: Request) -> JSONResponse:
-        assert state.audit_log is not None
+        _principal, denied = _authorize(request, registry)
+        if denied is not None:
+            return denied
+        if state.audit_log is None:
+            return JSONResponse({"events": [], "returned": 0, "limit_hit": False})
         from data_olympus.tools_audit import kb_audit_fn
         qp = request.query_params
         since = float(qp["since"]) if qp.get("since") else None
@@ -291,14 +413,29 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
                           agent=agent, status=status_filter, limit=limit)
         return JSONResponse(resp.model_dump())
 
+    @app.custom_route("/api/v1/audit/verify", methods=["GET"])
+    async def audit_verify(request: Request) -> JSONResponse:
+        _principal, denied = _authorize(request, registry)
+        if denied is not None:
+            return denied
+        if state.audit_log is None:
+            return JSONResponse({"ok": True, "first_broken_index": -1})
+        ok, idx = state.audit_log.verify()
+        return JSONResponse({"ok": ok, "first_broken_index": idx})
+
     @app.custom_route("/api/v1/consult", methods=["POST"])
     async def consult(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        _principal, denied = _authorize(request, registry)
+        if denied is not None:
             return denied
         import time as _time
 
         from data_olympus.tools_enforce import kb_consult_fn
         body = await request.json()
+        if (bad := _missing_fields_response(
+            body, ["workspace", "source_session"],
+        )) is not None:
+            return bad
         resp = kb_consult_fn(
             idx=state.idx, classifier=state.classifier, ledger=state.ledger,
             workspace=body["workspace"], intent=body.get("intent", ""),
@@ -311,12 +448,17 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/gate/check", methods=["POST"])
     async def gate_check(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        _principal, denied = _authorize(request, registry)
+        if denied is not None:
             return denied
         import time as _time
 
         from data_olympus.tools_enforce import kb_gate_check_fn
         body = await request.json()
+        if (bad := _missing_fields_response(
+            body, ["workspace", "session_id"],
+        )) is not None:
+            return bad
         resp = kb_gate_check_fn(
             classifier=state.classifier, ledger=state.ledger,
             workspace=body["workspace"], session_id=body["session_id"],
@@ -330,6 +472,11 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/compliance", methods=["GET"])
     async def compliance(request: Request) -> JSONResponse:
+        # Enforcement aggregates are observability data; gate like /pending,
+        # /audit, /consult, /gate when auth is configured.
+        _principal, denied = _authorize(request, registry)
+        if denied is not None:
+            return denied
         if state.audit_log is None:
             return JSONResponse({"counts": {}, "by_agent": {}})
         from data_olympus.tools_enforce import kb_compliance_fn
@@ -341,7 +488,8 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/audit/event", methods=["POST"])
     async def record_event(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        _principal, denied = _authorize(request, registry, CAP_RECORD_EVENT)
+        if denied is not None:
             return denied
         if state.audit_log is None:
             return JSONResponse({"recorded": False}, status_code=503)
@@ -377,9 +525,22 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
 
     @app.custom_route("/api/v1/onboarding/bootstrap", methods=["POST"])
     async def onboarding_bootstrap(request: Request) -> JSONResponse:
-        if (denied := _check_auth(request, auth_token)) is not None:
+        principal, denied = _authorize(request, registry, CAP_BOOTSTRAP)
+        if denied is not None:
             return denied
-        body = await request.json()
+        if (off := _write_pipeline_ready(state)) is not None:
+            return off
+        body, big = await _read_json_capped(request, state.config.max_body_bytes)
+        if big is not None:
+            return big
+        if (bad := _missing_fields_response(
+            body, ["workspace", "files", "source_session",
+                   "agent_identity", "confidence"],
+        )) is not None:
+            return bad
+        confidence, bad = _parse_confidence(body)
+        if bad is not None:
+            return bad
         assert state.worktrees is not None
         assert state.push_queue is not None
         assert state.pending is not None
@@ -395,14 +556,15 @@ def register_routes(app: FastMCP, state: ServerState, auth_token: str = "") -> N
             files=body["files"],
             source_session=body["source_session"],
             agent_identity=body["agent_identity"],
-            confidence=float(body["confidence"]),
+            confidence=confidence,
             confidence_threshold=state.config.confidence_threshold,
             worktrees=state.worktrees, push_queue=state.push_queue,
             pending=state.pending, rate_limiter=state.rate_limiter,
             blocklist=state.blocklist, audit_log=state.audit_log,
             remote_addr=request.client.host if request.client else "unknown",
+            can_auto_commit=principal.can_auto_commit,
+            max_postimage_bytes=state.config.max_postimage_bytes,
+            max_files=state.config.max_bootstrap_files,
         )
-        status = 201 if resp.status == "committed" else (
-            202 if resp.status == "pending_confirmation" else 400
-        )
+        status = _propose_status(resp.status)
         return JSONResponse(resp.model_dump(), status_code=status)

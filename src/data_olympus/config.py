@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,12 +24,19 @@ class Config:
     write_block_tiers: list[str] = field(default_factory=list)
     write_block_paths: list[str] = field(default_factory=list)
     rate_limit_per_hour: int = 100
+    rate_limit_per_ip_per_hour: int = 0
+    max_text_bytes: int = 262144
+    max_postimage_bytes: int = 1048576
+    max_body_bytes: int = 2097152
+    max_bootstrap_files: int = 50
     pending_timeout_sec: int = 86400
     pending_queue_cap: int = 100
     worktree_idle_sec: int = 3600
     git_key_path: str = "/tmp/git-key"
     audit_log_path: str = "/state/audit/events.log"
+    audit_hmac_key: str = ""
     auth_token: str = ""
+    auth_principals: list[dict[str, Any]] = field(default_factory=list)
     consult_ttl_sec: int = 300
     ledger_path: str = "/state/ledger.json"
 
@@ -50,12 +58,20 @@ def load_config() -> Config:
     write_block_tiers = _split_csv(os.getenv("KB_WRITE_BLOCK_TIERS", ""))
     write_block_paths = _split_csv(os.getenv("KB_WRITE_BLOCK_PATHS", ""))
     rate_limit_per_hour = int(os.getenv("KB_RATE_LIMIT_PER_HOUR", "100"))
+    rate_limit_per_ip_per_hour = int(os.getenv("KB_RATE_LIMIT_PER_IP_PER_HOUR", "0"))
+    max_text_bytes = int(os.getenv("KB_MAX_TEXT_BYTES", "262144"))
+    max_postimage_bytes = int(os.getenv("KB_MAX_POSTIMAGE_BYTES", "1048576"))
+    max_body_bytes = int(os.getenv("KB_MAX_BODY_BYTES", "2097152"))
+    max_bootstrap_files = int(os.getenv("KB_MAX_BOOTSTRAP_FILES", "50"))
     pending_timeout_sec = int(os.getenv("KB_PENDING_TIMEOUT_SEC", "86400"))
     pending_queue_cap = int(os.getenv("KB_PENDING_QUEUE_CAP", "100"))
     worktree_idle_sec = int(os.getenv("KB_WORKTREE_IDLE_SEC", "3600"))
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
     audit_log_path = os.getenv("KB_AUDIT_LOG_PATH", "/state/audit/events.log")
+    audit_hmac_key = os.getenv("KB_AUDIT_HMAC_KEY", "")
     auth_token = os.getenv("KB_AUTH_TOKEN", "")
+    from data_olympus.principals import parse_principals_env
+    auth_principals = parse_principals_env(os.getenv("KB_AUTH_PRINCIPALS", ""))
     consult_ttl_sec = int(os.getenv("KB_CONSULT_TTL_SEC", "300"))
     ledger_path = os.getenv("KB_LEDGER_PATH", "/state/ledger.json")
     return Config(
@@ -72,12 +88,19 @@ def load_config() -> Config:
         write_block_tiers=write_block_tiers,
         write_block_paths=write_block_paths,
         rate_limit_per_hour=rate_limit_per_hour,
+        rate_limit_per_ip_per_hour=rate_limit_per_ip_per_hour,
+        max_text_bytes=max_text_bytes,
+        max_postimage_bytes=max_postimage_bytes,
+        max_body_bytes=max_body_bytes,
+        max_bootstrap_files=max_bootstrap_files,
         pending_timeout_sec=pending_timeout_sec,
         pending_queue_cap=pending_queue_cap,
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
         audit_log_path=audit_log_path,
+        audit_hmac_key=audit_hmac_key,
         auth_token=auth_token,
+        auth_principals=auth_principals,
         consult_ttl_sec=consult_ttl_sec,
         ledger_path=ledger_path,
     )

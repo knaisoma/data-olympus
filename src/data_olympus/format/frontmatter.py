@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import yaml
 
 _DELIM = "---"
 
 
-def parse_frontmatter(text: str) -> tuple[dict, str]:
+def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     """Split YAML frontmatter from a markdown body.
 
     Returns (frontmatter, body). If the document has no frontmatter block

@@ -65,6 +65,37 @@ def is_writable_path(target_path: str) -> bool:
     return any(canonical.startswith(p) for p in indexed_prefixes())
 
 
+def safe_join_under_root(root: str, target_path: str) -> str | None:
+    """Join ``target_path`` under ``root`` and return the absolute path only when
+    it resolves to exactly that lexical location inside ``root``; else return None.
+
+    Two checks, both required:
+
+    1. The realpath-resolved location is strictly inside ``root``. This rejects
+       traversal and symlinks that point *outside* the worktree (e.g. a malicious
+       ``memory/inbox`` symlinked to ``/etc``).
+    2. The resolved location equals the lexical join of ``root`` and
+       ``target_path``. This additionally rejects a symlink component that
+       redirects to *another in-root path*: without it, an allowed lexical
+       ``target_path`` (which is what gets classified, blocklist-checked, audited,
+       and ``git add``-ed) could land its bytes on a different file, decoupling
+       the policy decision from the filesystem effect.
+
+    The returned value is the *unresolved* join so callers keep writing to the
+    in-tree path and ``git add`` the relative ``target_path`` exactly as before.
+    This is the single shared containment guard used by every write path (memory
+    propose, edit, resolve, bootstrap).
+    """
+    root_real = os.path.realpath(root)
+    full = os.path.join(root, target_path)
+    real = os.path.realpath(full)
+    expected = os.path.normpath(os.path.join(root_real, target_path))
+    inside = real != root_real and real.startswith(root_real + os.sep)
+    if inside and real == expected:
+        return full
+    return None
+
+
 class PathBlocklist:
     """Operator-configured per-tier + per-path blocklist. Both default empty."""
 

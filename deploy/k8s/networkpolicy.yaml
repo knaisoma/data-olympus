@@ -1,0 +1,31 @@
+# Default-deny ingress for the data-olympus-mcp pod, then allow only the traffic
+# a write-enabled deployment should accept: the ingress controller and pods in
+# the same namespace. Egress is left open (the pod must reach the git remote and
+# DNS); tighten it further for your environment if required.
+#
+# Adjust the ingress-controller selector to match your cluster. The example
+# below allows any namespace labelled `network-policy: ingress` (a common
+# convention) plus same-namespace traffic. If your CNI does not enforce
+# NetworkPolicy this manifest is a no-op; verify with your platform.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: data-olympus-mcp
+  namespace: data-olympus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: data-olympus-mcp
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Ingress controller namespace (label your ingress-nginx namespace to match).
+        - namespaceSelector:
+            matchLabels:
+              network-policy: ingress
+        # Same-namespace clients.
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080

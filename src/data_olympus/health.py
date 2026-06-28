@@ -30,6 +30,11 @@ class HealthState:
     last_index_error: str | None = None
     last_index_error_at: float | None = None
     last_index_conflicts: list[dict[str, object]] = field(default_factory=list)
+    last_git_fetch_status: str = "no_change"
+    last_git_fetch_error: str | None = None
+    last_git_fetch_at: float | None = None
+    last_successful_refresh_at: float | None = None
+    remote_head_sha: str | None = None
 
 
 def snapshot(
@@ -44,8 +49,18 @@ def snapshot(
     last_index_error: str | None = None,
     last_index_error_at: float | None = None,
     last_index_conflicts: list[dict[str, object]] | None = None,
+    last_git_fetch_status: str = "no_change",
+    last_git_fetch_error: str | None = None,
+    last_git_fetch_at: float | None = None,
+    last_successful_refresh_at: float | None = None,
+    remote_head_sha: str | None = None,
 ) -> HealthState:
-    """Compose a HealthState from the index and the last-pull/push timestamps."""
+    """Compose a HealthState from the index and the last-pull/push timestamps.
+
+    A fetch/ff failure freezes ``last_git_pull_at`` (see refresh.git_pull_loop),
+    so staleness climbs and ``degraded`` flips through the existing staleness
+    path; the ``last_git_fetch_*`` fields surface the immediate cause.
+    """
     h = idx.health()
     now = time.time()
     staleness = (now - last_git_pull_at) if last_git_pull_at is not None else None
@@ -70,4 +85,9 @@ def snapshot(
         last_index_error=last_index_error,
         last_index_error_at=last_index_error_at,
         last_index_conflicts=list(last_index_conflicts or []),
+        last_git_fetch_status=last_git_fetch_status,
+        last_git_fetch_error=last_git_fetch_error,
+        last_git_fetch_at=last_git_fetch_at,
+        last_successful_refresh_at=last_successful_refresh_at,
+        remote_head_sha=remote_head_sha,
     )

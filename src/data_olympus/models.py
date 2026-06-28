@@ -23,6 +23,12 @@ class HealthResponse(BaseModel):
     last_index_error: str | None = None
     last_index_error_at: float | None = None
     last_index_conflicts: list[dict[str, object]] = []
+    # Git sync-failure visibility (a fetch/ff failure must not look "fresh").
+    last_git_fetch_status: str = "no_change"
+    last_git_fetch_error: str | None = None
+    last_git_fetch_at: float | None = None
+    last_successful_refresh_at: float | None = None
+    remote_head_sha: str | None = None
 
 
 class CategoryCount(BaseModel):
@@ -180,12 +186,23 @@ class AuditEvent(BaseModel):
     commit_sha: str | None = None
     reason: str | None = None
     remote_addr: str | None = None
+    # Tamper-evident chain fields (present on events appended with chaining).
+    event_id: str | None = None
+    prev_hash: str | None = None
+    hash: str | None = None
 
 
 class AuditResponse(BaseModel):
     events: list[AuditEvent]
     returned: int
     limit_hit: bool = False
+
+
+class AuditVerifyResponse(BaseModel):
+    """Result of recomputing the audit hash chain."""
+
+    ok: bool
+    first_broken_index: int = -1
 
 
 class ConsultResponse(BaseModel):

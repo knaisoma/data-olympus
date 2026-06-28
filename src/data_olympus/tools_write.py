@@ -10,14 +10,14 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from data_olympus.audit_trailers import build_commit_message
-from data_olympus.auth import PathBlocklist, is_writable_path
+from data_olympus.auth import PathBlocklist, is_writable_path, safe_join_under_root
 from data_olympus.models import (
     PendingEntry,
     PendingListResponse,
     ProposeResponse,
     ResolvePendingResponse,
 )
-from data_olympus.pending import PathLockBusyError, PendingQueue
+from data_olympus.pending import PathLockBusyError, PendingQueue, PendingQueueFullError
 
 if TYPE_CHECKING:
     from data_olympus.audit_log import AuditLog
@@ -98,11 +98,18 @@ def kb_propose_memory_fn(
     blocklist: PathBlocklist,
     remote_addr: str,
     audit_log: AuditLog | None = None,
+    can_auto_commit: bool = True,
+    max_text_bytes: int = 0,
 ) -> ProposeResponse:
     """Propose a new memory file under the memory inbox prefix as <date>-<slug>.md.
 
     Structural rule is satisfied by construction; blocklist still applies.
     High confidence -> auto-commit + push enqueue. Low -> pending queue.
+
+    ``can_auto_commit`` is the caller's authorization to skip operator review:
+    when False (an authenticated principal lacking the auto_commit capability, or
+    an untrusted caller) the proposal is parked as pending regardless of the
+    client-asserted confidence. This is the confidence clamp.
     """
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     slug = _slugify(text)
@@ -144,10 +151,16 @@ def kb_propose_memory_fn(
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_rate_limited"})
         return ProposeResponse(status="rejected_rate_limited")
 
+    # 3b. Payload size cap (reject before any disk side effect).
+    if max_text_bytes > 0 and len(text.encode("utf-8")) > max_text_bytes:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_payload_too_large"})
+        return ProposeResponse(status="rejected_payload_too_large",
+                               target_path=target_path)
+
     # 4. Render the postimage (front matter + body).
     postimage = _render_memory(text=text, tags=tags, agent_identity=agent_identity)
 
-    if confidence < confidence_threshold:
+    if confidence < confidence_threshold or not can_auto_commit:
         try:
             pid = pending.enqueue(
                 proposal_type="memory",
@@ -169,6 +182,12 @@ def kb_propose_memory_fn(
                 status="rejected_path_lock_busy",
                 target_path=target_path,
             )
+        except PendingQueueFullError:
+            _emit_audit(audit_log, **{**audit_base, "status": "rejected_pending_queue_full"})
+            return ProposeResponse(
+                status="rejected_pending_queue_full",
+                target_path=target_path,
+            )
         _emit_audit(audit_log, **{**audit_base, "status": "pending_confirmation",
                                    "pending_id": pid})
         return ProposeResponse(
@@ -184,7 +203,13 @@ def kb_propose_memory_fn(
     wt = worktrees.get_or_create(
         source_session=source_session, agent_identity=agent_identity
     )
-    full_path = os.path.join(wt.path, target_path)
+    # Symlink-escape containment (Codex blocker 1): a malicious KB commit can
+    # plant the inbox dir as a symlink pointing outside the worktree. Reject
+    # before any makedirs/open side effect.
+    full_path = safe_join_under_root(wt.path, target_path)
+    if full_path is None:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_symlink_escape"})
+        return ProposeResponse(status="rejected_symlink_escape", target_path=target_path)
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
     with open(full_path, "w", encoding="utf-8") as f:
         f.write(postimage)
@@ -242,8 +267,13 @@ def kb_propose_edit_fn(
     blocklist: PathBlocklist,
     remote_addr: str,
     audit_log: AuditLog | None = None,
+    can_auto_commit: bool = True,
+    max_postimage_bytes: int = 0,
 ) -> ProposeResponse:
-    """Propose an edit to an existing (or new) file under target_path."""
+    """Propose an edit to an existing (or new) file under target_path.
+
+    ``can_auto_commit=False`` clamps the proposal to pending regardless of
+    confidence (see kb_propose_memory_fn for the rationale)."""
     audit_base: dict[str, Any] = {
         "event_type": "propose_edit",
         "agent_identity": agent_identity,
@@ -270,7 +300,12 @@ def kb_propose_edit_fn(
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_rate_limited"})
         return ProposeResponse(status="rejected_rate_limited")
 
-    if confidence < confidence_threshold:
+    if max_postimage_bytes > 0 and len(postimage.encode("utf-8")) > max_postimage_bytes:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_payload_too_large"})
+        return ProposeResponse(status="rejected_payload_too_large",
+                               target_path=target_path)
+
+    if confidence < confidence_threshold or not can_auto_commit:
         try:
             pid = pending.enqueue(
                 proposal_type="edit",
@@ -288,6 +323,10 @@ def kb_propose_edit_fn(
             _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
             return ProposeResponse(status="rejected_path_lock_busy",
                                    target_path=target_path)
+        except PendingQueueFullError:
+            _emit_audit(audit_log, **{**audit_base, "status": "rejected_pending_queue_full"})
+            return ProposeResponse(status="rejected_pending_queue_full",
+                                   target_path=target_path)
         _emit_audit(audit_log, **{**audit_base, "status": "pending_confirmation",
                                    "pending_id": pid})
         return ProposeResponse(
@@ -298,14 +337,12 @@ def kb_propose_edit_fn(
         )
 
     wt = worktrees.get_or_create(source_session=source_session, agent_identity=agent_identity)
-    full_path = os.path.join(wt.path, target_path)
-    # Symlink-escape defense (Codex blocker 2 second checkpoint): verify the
-    # resolved path is still inside the worktree.
-    real = os.path.realpath(full_path)
-    if not real.startswith(os.path.realpath(wt.path) + os.sep):
+    # Symlink-escape containment via the shared guard (see safe_join_under_root).
+    full_path = safe_join_under_root(wt.path, target_path)
+    if full_path is None:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_symlink_escape"})
         return ProposeResponse(status="rejected_symlink_escape",
-                               target_path=target_path, resolved_path=real)
+                               target_path=target_path)
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
     with open(full_path, "w", encoding="utf-8") as f:
         f.write(postimage)
@@ -368,9 +405,8 @@ def kb_resolve_pending_fn(
         audit_base["confidence"] = None
     wt = worktrees.get_or_create(source_session=source_session,
                                  agent_identity=agent_identity)
-    full_path = os.path.join(wt.path, resolved.target_path)
-    real = os.path.realpath(full_path)
-    if not real.startswith(os.path.realpath(wt.path) + os.sep):
+    full_path = safe_join_under_root(wt.path, resolved.target_path)
+    if full_path is None:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_symlink_escape"})
         return ResolvePendingResponse(status="rejected_symlink_escape")
     os.makedirs(os.path.dirname(full_path), exist_ok=True)

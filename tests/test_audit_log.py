@@ -58,3 +58,93 @@ def test_iter_returns_most_recent_first(tmp_path) -> None:
 def test_iter_missing_log_returns_empty(tmp_path) -> None:
     al = AuditLog(log_path=str(tmp_path / "never-existed.log"))
     assert list(al.iter_filtered()) == []
+
+
+# --- tamper-evident hash chain --------------------------------------------
+
+def test_append_adds_chain_fields(tmp_path) -> None:
+    al = AuditLog(log_path=str(tmp_path / "events.log"))
+    al.append({"ts": 1.0, "event_type": "propose_memory", "status": "committed"})
+    ev = json.loads((tmp_path / "events.log").read_text().splitlines()[0])
+    assert ev["event_id"]
+    assert ev["prev_hash"] == ""  # genesis
+    assert ev["hash"]
+
+
+def test_chain_links_prev_hash(tmp_path) -> None:
+    al = AuditLog(log_path=str(tmp_path / "events.log"))
+    al.append({"ts": 1.0, "status": "a"})
+    al.append({"ts": 2.0, "status": "b"})
+    lines = [json.loads(x) for x in (tmp_path / "events.log").read_text().splitlines()]
+    assert lines[1]["prev_hash"] == lines[0]["hash"]
+
+
+def test_verify_intact_chain(tmp_path) -> None:
+    al = AuditLog(log_path=str(tmp_path / "events.log"))
+    for i in range(5):
+        al.append({"ts": float(i), "status": "committed"})
+    assert al.verify() == (True, -1)
+
+
+def test_verify_detects_tampered_event(tmp_path) -> None:
+    path = tmp_path / "events.log"
+    al = AuditLog(log_path=str(path))
+    for i in range(3):
+        al.append({"ts": float(i), "status": "committed"})
+    # Tamper with the body of line 1 (leave its hash) -> recomputed != stored.
+    lines = path.read_text().splitlines()
+    ev = json.loads(lines[1])
+    ev["status"] = "FORGED"
+    lines[1] = json.dumps(ev)
+    path.write_text("\n".join(lines) + "\n")
+    ok, idx = AuditLog(log_path=str(path)).verify()
+    assert ok is False
+    assert idx == 1
+
+
+def test_verify_detects_deleted_event(tmp_path) -> None:
+    path = tmp_path / "events.log"
+    al = AuditLog(log_path=str(path))
+    for i in range(3):
+        al.append({"ts": float(i), "status": "committed"})
+    lines = path.read_text().splitlines()
+    del lines[1]  # drop the middle event -> prev_hash linkage breaks at new line 1
+    path.write_text("\n".join(lines) + "\n")
+    ok, idx = AuditLog(log_path=str(path)).verify()
+    assert ok is False
+    assert idx == 1
+
+
+def test_hmac_chain_requires_key_to_verify(tmp_path) -> None:
+    path = tmp_path / "events.log"
+    AuditLog(log_path=str(path), hmac_key="secret").append({"ts": 1.0, "status": "x"})
+    AuditLog(log_path=str(path), hmac_key="secret").append({"ts": 2.0, "status": "y"})
+    assert AuditLog(log_path=str(path), hmac_key="secret").verify() == (True, -1)
+    # Wrong/absent key cannot validate the HMAC chain.
+    assert AuditLog(log_path=str(path), hmac_key="wrong").verify()[0] is False
+    assert AuditLog(log_path=str(path)).verify()[0] is False
+
+
+def test_verify_tolerates_legacy_unhashed_lines(tmp_path) -> None:
+    path = tmp_path / "events.log"
+    # Pre-existing legacy line with no hash field.
+    path.write_text(json.dumps({"ts": 0.0, "status": "legacy"}) + "\n")
+    al = AuditLog(log_path=str(path))
+    al.append({"ts": 1.0, "status": "new"})
+    al.append({"ts": 2.0, "status": "new2"})
+    # The legacy prefix line is tolerated; the new chained lines validate.
+    assert al.verify() == (True, -1)
+
+
+def test_verify_rejects_unhashed_line_after_chain_started(tmp_path) -> None:
+    """An unhashed (legacy-shaped) line appended AFTER the chain has started is
+    treated as tampering, so an attacker cannot forge an event past the chain."""
+    path = tmp_path / "events.log"
+    al = AuditLog(log_path=str(path))
+    al.append({"ts": 1.0, "status": "real"})
+    al.append({"ts": 2.0, "status": "real2"})
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": 3.0, "status": "FORGED"}) + "\n")
+    ok, idx = AuditLog(log_path=str(path)).verify()
+    assert ok is False
+    assert idx == 2

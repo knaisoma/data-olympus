@@ -3,7 +3,40 @@ from __future__ import annotations
 
 import json
 
-from data_olympus.pending import PathLockBusyError, PendingQueue
+import pytest
+
+from data_olympus.pending import (
+    PathLockBusyError,
+    PendingQueue,
+    PendingQueueFullError,
+)
+
+
+def test_enqueue_respects_capacity(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"), cap=2)
+    for i in range(2):
+        q.enqueue(
+            proposal_type="memory", target_path=f"memory/inbox/x{i}.md",
+            postimage="b", base_commit="HEAD", base_blob_sha=None,
+            target_file_hash=None, meta={},
+        )
+    with pytest.raises(PendingQueueFullError):
+        q.enqueue(
+            proposal_type="memory", target_path="memory/inbox/x2.md",
+            postimage="b", base_commit="HEAD", base_blob_sha=None,
+            target_file_hash=None, meta={},
+        )
+
+
+def test_enqueue_cap_zero_is_unlimited(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))  # cap defaults to 0
+    for i in range(5):
+        q.enqueue(
+            proposal_type="memory", target_path=f"memory/inbox/y{i}.md",
+            postimage="b", base_commit="HEAD", base_blob_sha=None,
+            target_file_hash=None, meta={},
+        )
+    assert q.size() == 5
 
 
 def test_enqueue_memory_writes_postimage(tmp_path) -> None:

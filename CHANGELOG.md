@@ -32,8 +32,114 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detection floor for un-hookable agents: `kb enforce report` (and `data-olympus report`) correlates governed git commits against the consult audit and lists changes with no consultation on record. An opt-in repo-scoped git provider (`kb enforce install --agent git`) installs a post-commit warning hook, or a pre-commit blocking hook with `--block`. Reuses the existing audit endpoint; no server change.
 - Enforcement hardening and observability: gate_bypass and gate_degraded events are now recorded (via `data-olympus report --emit-events` / the git warn hook, and the pre-tool hook on a reachable-degraded gate), so `kb_compliance` surfaces them. The gate receives `action_diff` and the classifier uses word-boundary matching plus dependency-install command signals (Codex and Claude now gate the Bash tool). New `kb enforce install --mode off|soft|hard`, ledger persistence via `KB_LEDGER_PATH`, a friendly PATH hint for `kb enforce report`, and a CI guard requiring a changelog entry for functional changes.
 
+### Fixed
+
+- `data-olympus-mcp --help` now prints usage and exits 0 instead of crashing with
+  `NotADirectoryError: KB root not a directory: /kb-main`. Argument parsing runs
+  before config loading, so the documented quickstart command works on first run.
+- Git sync failures are now visible instead of masquerading as a fresh
+  no-change. `kb_health` / `/api/v1/health` expose `last_git_fetch_status`
+  (`changed` / `no_change` / `no_remote` / `fetch_failed` / `ff_failed`),
+  `last_git_fetch_error`, `last_git_fetch_at`, `last_successful_refresh_at`, and
+  `remote_head_sha`. A fetch or fast-forward failure no longer advances the
+  freshness marker, so staleness climbs and health degrades rather than reporting
+  the KB as up to date against a broken or diverged remote. A deployment with no
+  remote (read-only) is classified `no_remote` and stays healthy.
+- Write routes return structured errors instead of opaque 500s. In read-only mode
+  (`KB_REMOTE_URL` unset) the write pipeline is disabled, and `POST
+  /api/v1/propose/*`, `/resolve/{id}`, and `/onboarding/bootstrap` now return a
+  `503 {"error":"write_pipeline_disabled"}` (and the MCP write tools return
+  `{"status":"write_pipeline_disabled"}`) instead of crashing on an internal
+  assertion. Missing-field validation was extended to `/api/v1/consult`,
+  `/api/v1/gate/check`, and `/api/v1/resolve/{id}`, so a request that omits a
+  required field gets an actionable `400` rather than a `KeyError`-driven 500.
+
+### Security
+
+- Hardening from the companion security review:
+  - **Audit chain forgery fixed (blocker):** `verify()` now tolerates unhashed
+    legacy lines only as a prefix before the chain starts; any unhashed line after
+    the first hashed event breaks verification, so an appended legacy-shaped record
+    can no longer forge an event while keeping `/audit/verify` green.
+  - **Path containment tightened:** `safe_join_under_root()` now also requires the
+    resolved path to equal the lexical target, rejecting an in-tree symlink that
+    redirects an allowed `target_path` to a different in-root file (which would
+    decouple classification/blocklist/audit from where bytes land).
+  - **Body cap is real for chunked clients:** the REST body limit is enforced by
+    streaming the request and returning `413` past the cap, instead of trusting
+    `Content-Length`.
+  - **MCP observability tools gated:** `kb_list_pending`, `kb_audit`,
+    `kb_consult`, `kb_gate_check`, and `kb_compliance` require an authenticated
+    principal over MCP when auth is configured, matching the REST gating.
+  - **Aggregate caps:** onboarding bootstrap rejects over `KB_MAX_BOOTSTRAP_FILES`
+    (default 50), and `KB_PENDING_QUEUE_CAP` is now enforced in the pending queue.
+  - **Bootstrap confidence parse:** `/api/v1/onboarding/bootstrap` returns a clean
+    `400` on non-numeric confidence instead of a 500.
+  - **Compliance route gated:** `GET /api/v1/compliance` now requires an
+    authenticated principal when auth is configured, like the other observability
+    routes (it was the one REST route still open).
+  - **Atomic bootstrap:** a low-confidence bootstrap that would overflow the
+    pending queue is rejected up front (and rolls back on a capacity race), so it
+    never leaves a partial set of pending entries.
+- Observability routes are gated when auth is configured. With `KB_AUTH_TOKEN`
+  set, `GET /api/v1/pending`, `/api/v1/audit`, and `/api/v1/audit/verify` now
+  require an authenticated principal (they leak target paths and agent
+  identities); they stay open when no auth is configured. `bin/kb pending` and
+  `kb audit` send the bearer header automatically.
+- Deploy hardening for the sample Kubernetes manifests: the StatefulSet pins an
+  immutable image tag (was `data-olympus:latest`), drops all Linux capabilities
+  except those the root entrypoint needs before it `gosu`-drops to uid 65534,
+  forbids privilege escalation, sets a `RuntimeDefault` seccomp profile, and runs
+  a read-only root filesystem (writes go to the PVCs and a `/tmp` emptyDir). A new
+  default-deny `NetworkPolicy` restricts ingress to the ingress controller and
+  same-namespace clients, and the ingress gained cert-manager/TLS guidance. The
+  release workflow no longer moves the `latest` channel on manual `edge` builds,
+  so `latest` always means the last promoted release.
+- The audit log is now tamper-evident. Each appended event carries an
+  `event_id`, the `prev_hash` of the previous event, and its own `hash` over the
+  canonical body (SHA-256, or keyed HMAC-SHA256 when `KB_AUDIT_HMAC_KEY` is set).
+  Any later edit, deletion, or reordering breaks the chain. A new
+  `GET /api/v1/audit/verify` route and `kb audit --verify` recompute and report
+  the first broken line. Legacy unhashed lines are tolerated, so enabling the
+  feature on an existing log does not retroactively flag it.
+- Resource limits bound write-side abuse. New configurable caps reject oversized
+  proposals before any disk side effect: `KB_MAX_TEXT_BYTES` (memory text, default
+  256 KiB), `KB_MAX_POSTIMAGE_BYTES` (edit/bootstrap file, default 1 MiB), and
+  `KB_MAX_BODY_BYTES` (REST request body via `Content-Length`, default 2 MiB,
+  returns 413). The sliding-window rate limiter gained an optional per-IP cap
+  (`KB_RATE_LIMIT_PER_IP_PER_HOUR`, default 0 = disabled) so a client cannot
+  multiply its quota by varying `agent_identity`.
+- Identity + capability authorization unifies MCP/REST write auth, per-agent
+  policy, and a confidence clamp. A `Principal` is resolved from the
+  `Authorization: Bearer` header against a registry built from `KB_AUTH_TOKEN`
+  (a full-capability `operator`) and an optional `KB_AUTH_PRINCIPALS` JSON list
+  of per-agent tokens with explicit capabilities (`read`, `propose`,
+  `auto_commit`, `resolve`, `bootstrap`, `record_event`).
+  - **MCP write tools are now authenticated.** A FastMCP middleware enforces the
+    same capabilities on `kb_propose_*`, `kb_resolve_pending`,
+    `kb_bootstrap_project`, and `kb_record_event` that the REST layer enforces,
+    closing the gap where MCP write tools bypassed `KB_AUTH_TOKEN`.
+  - **Confidence is clamped for non-privileged callers.** A principal lacking the
+    `auto_commit` capability has its proposals parked as *pending* regardless of
+    the client-asserted confidence, so a caller can no longer self-assert
+    `confidence: 1.0` to skip operator review. REST returns 401 for anonymous and
+    403 for an authenticated principal missing a capability.
+  - When no auth is configured (no token, no principals) every caller is the
+    fully-trusted local principal, preserving the prior trusted-local behavior.
+- Path containment is now enforced uniformly across every write path. A new
+  shared `safe_join_under_root()` guard rejects any proposed write whose resolved
+  location escapes the per-session worktree (symlink, traversal, or absolute
+  path). This closes a memory-proposal symlink-escape where a malicious KB commit
+  could plant `memory/inbox` as a symlink and cause a high-confidence proposal to
+  write a file outside the worktree before `git add` aborted. The edit, resolve,
+  and onboarding-bootstrap paths now use the same guard. Regression tests cover
+  the helper directly and each write path.
+
 ### Changed
 
+- `uv run mypy src` is now green and runs as a CI gate (added `types-PyYAML`, fixed
+  the source type errors). Type regressions in `src/` now fail CI; `tests/` typing
+  is intentionally out of scope.
 - The path-to-`(tier, category)` taxonomy now ships a deployment-neutral default
   and is configurable at deploy time, with no code change: `KB_TAXONOMY_PATH`
   (a JSON file of `[prefix, tier, category]` triples that replaces the default

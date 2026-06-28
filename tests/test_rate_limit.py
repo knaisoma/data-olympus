@@ -37,6 +37,24 @@ def test_separate_buckets_per_agent_identity() -> None:
     assert rl.allow(remote_addr="10.0.0.1", agent_identity="codex") is True
 
 
+def test_per_ip_cap_bounds_total_across_agents() -> None:
+    """With a per-IP cap, varying agent_identity no longer multiplies quota:
+    the IP-wide budget is exhausted regardless of identity."""
+    rl = SlidingWindowLimiter(max_per_hour=100, max_per_ip_per_hour=2)
+    assert rl.allow(remote_addr="10.0.0.1", agent_identity="claude") is True
+    assert rl.allow(remote_addr="10.0.0.1", agent_identity="codex") is True
+    # Third request from the same IP (any identity) is blocked by the per-IP cap.
+    assert rl.allow(remote_addr="10.0.0.1", agent_identity="gemini") is False
+    # A different IP has its own per-IP budget.
+    assert rl.allow(remote_addr="10.0.0.2", agent_identity="claude") is True
+
+
+def test_per_ip_cap_disabled_by_default() -> None:
+    rl = SlidingWindowLimiter(max_per_hour=100)  # max_per_ip_per_hour defaults to 0
+    for ident in ("a", "b", "c", "d", "e"):
+        assert rl.allow(remote_addr="10.0.0.1", agent_identity=ident) is True
+
+
 def test_window_slides_after_hour(monkeypatch) -> None:
     """After 3600s, the old timestamps fall out of the window."""
     import data_olympus.rate_limit as rl_mod

@@ -2,6 +2,13 @@
 # Runs as root. Handles SSH key + (optional) /kb-main bootstrap, then drops to uid 65534.
 set -e
 
+# --- Writable scratch under a read-only root filesystem ----------------------
+# When the container runs with readOnlyRootFilesystem, /tmp is an emptyDir mount
+# that starts empty (masking the image's pre-created /tmp/uv-cache). Recreate the
+# uv cache dir owned by the runtime user so `uv run` can write there.
+mkdir -p "${UV_CACHE_DIR:-/tmp/uv-cache}"
+chown 65534:65534 "${UV_CACHE_DIR:-/tmp/uv-cache}" || true
+
 # --- SSH key for git push/pull -----------------------------------------------
 # Mounted via the K8s Secret -> /etc/git-key-mount (read-only). We copy to
 # /tmp/git-key so we can chown + chmod for the non-root runtime user.
