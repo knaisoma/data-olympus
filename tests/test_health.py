@@ -93,3 +93,58 @@ def test_health_response_includes_path_locks_held(tmp_kb, tmp_index_path):
         path_locks_held=2,
     )
     assert resp.path_locks_held == 2
+
+
+def test_health_response_surfaces_live_sessions(tmp_kb, tmp_index_path):
+    """live_sessions defaults to None (unobservable) and is threaded when set."""
+    from data_olympus.index import Index
+    from data_olympus.tools_read import kb_health_fn
+
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    default = kb_health_fn(idx=idx, last_git_pull_at=None, staleness_degraded_sec=600)
+    assert default.live_sessions is None
+
+    with_count = kb_health_fn(
+        idx=idx, last_git_pull_at=None, staleness_degraded_sec=600, live_sessions=3
+    )
+    assert with_count.live_sessions == 3
+
+
+def test_server_state_live_session_count(tmp_kb, tmp_index_path):
+    """ServerState.live_session_count() returns None with no provider, the
+    provider's value when wired, and None (not a crash) when the provider raises."""
+    from data_olympus.git_ops import GitOps
+    from data_olympus.index import Index
+    from data_olympus.server import ServerState
+
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    cfg = _config_stub()
+    state = ServerState(idx=idx, git=GitOps(tmp_kb), config=cfg)
+    assert state.live_session_count() is None
+
+    state.session_count_provider = lambda: 5
+    assert state.live_session_count() == 5
+
+    def boom() -> int:
+        raise RuntimeError("manager gone")
+
+    state.session_count_provider = boom
+    assert state.live_session_count() is None
+
+
+def _config_stub():
+    from pathlib import Path
+
+    from data_olympus.config import Config
+
+    return Config(
+        kb_main_path=Path("/kb"),
+        kb_index_path=Path("/kb.db"),
+        kb_remote_url="",
+        sync_interval_sec=60,
+        staleness_degraded_sec=600,
+        confidence_threshold=0.85,
+        http_port=8080,
+    )

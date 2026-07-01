@@ -39,6 +39,11 @@ class Config:
     auth_principals: list[dict[str, Any]] = field(default_factory=list)
     consult_ttl_sec: int = 300
     ledger_path: str = "/state/ledger.json"
+    # Streamable-http session reaping: terminate transports idle beyond this many
+    # seconds to bound _server_instances (see session_metrics). 0 disables the
+    # reaper (observability-only). The scan runs every session_reap_interval_sec.
+    session_idle_timeout_sec: int = 1800
+    session_reap_interval_sec: int = 60
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -74,6 +79,8 @@ def load_config() -> Config:
     auth_principals = parse_principals_env(os.getenv("KB_AUTH_PRINCIPALS", ""))
     consult_ttl_sec = int(os.getenv("KB_CONSULT_TTL_SEC", "300"))
     ledger_path = os.getenv("KB_LEDGER_PATH", "/state/ledger.json")
+    session_idle_timeout_sec = int(os.getenv("KB_SESSION_IDLE_TIMEOUT_SEC", "1800"))
+    session_reap_interval_sec = int(os.getenv("KB_SESSION_REAP_INTERVAL_SEC", "60"))
     return Config(
         kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
         kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
@@ -103,4 +110,6 @@ def load_config() -> Config:
         auth_principals=auth_principals,
         consult_ttl_sec=consult_ttl_sec,
         ledger_path=ledger_path,
+        session_idle_timeout_sec=session_idle_timeout_sec,
+        session_reap_interval_sec=session_reap_interval_sec,
     )

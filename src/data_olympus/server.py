@@ -12,6 +12,7 @@ from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     import mcp.types as mt
@@ -139,9 +140,24 @@ class ServerState:
         self.audit_log: AuditLog | None = audit_log
         self.classifier: IntentClassifier = classifier or IntentClassifier()
         self.ledger: ConsultationLedger = ledger or ConsultationLedger()
+        # Set at serve time (main) to observe the live streamable-http session
+        # count. None until then / in tests, so health reports live_sessions=None
+        # rather than a misleading 0. See session_metrics.
+        self.session_count_provider: Callable[[], int | None] | None = None
 
     def record_pull(self, ts: float) -> None:
         self.last_git_pull_at = ts
+
+    def live_session_count(self) -> int | None:
+        """Best-effort live streamable-http session count for health. None when
+        no provider is wired (in-memory tests, pre-serve) or on any error."""
+        provider = self.session_count_provider
+        if provider is None:
+            return None
+        try:
+            return provider()
+        except Exception:  # pragma: no cover - defensive; must not break health
+            return None
 
 
 def build_app(
@@ -173,6 +189,8 @@ def build_app(
     auth_principals: list[dict[str, Any]] | None = None,
     audit_hmac_key: str = "",
     ledger_path: str | None = None,
+    session_idle_timeout_sec: int = 1800,
+    session_reap_interval_sec: int = 60,
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
 
@@ -205,6 +223,8 @@ def build_app(
         auth_token=auth_token,
         auth_principals=auth_principals or [],
         audit_hmac_key=audit_hmac_key,
+        session_idle_timeout_sec=session_idle_timeout_sec,
+        session_reap_interval_sec=session_reap_interval_sec,
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
@@ -274,6 +294,7 @@ def build_app(
             last_git_fetch_at=state.last_git_fetch_at,
             last_successful_refresh_at=state.last_successful_refresh_at,
             remote_head_sha=state.remote_head_sha,
+            live_sessions=state.live_session_count(),
         )
         return resp.model_dump()
 
@@ -617,6 +638,8 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         auth_principals=list(config.auth_principals),
         audit_hmac_key=config.audit_hmac_key,
         ledger_path=config.ledger_path,
+        session_idle_timeout_sec=config.session_idle_timeout_sec,
+        session_reap_interval_sec=config.session_reap_interval_sec,
     )
 
 
@@ -647,12 +670,36 @@ def main() -> None:
     state = app._dolympus_state  # type: ignore[attr-defined]  # set in build_app
     log.info("starting streamable HTTP MCP on port %s", config.http_port)
 
+    # Build the streamable-http ASGI app explicitly (rather than app.run_async)
+    # so we own the app object: we install the session-activity middleware, wire
+    # the live-session count into health, and run the idle-session reaper. See
+    # session_metrics for why FastMCP's default wiring never reaps sessions.
+    from starlette.middleware import Middleware as StarletteMiddleware
+
+    from data_olympus.session_metrics import (
+        SessionActivityMiddleware,
+        SessionActivityTracker,
+        count_live_sessions,
+    )
+
+    tracker = SessionActivityTracker()
+    http_app = app.http_app(
+        transport="streamable-http",
+        middleware=[StarletteMiddleware(SessionActivityMiddleware, tracker=tracker)],
+    )
+    # Health surfaces the live session count; the manager is only reachable once
+    # the lifespan has started, so this returns None before then (never raises).
+    state.session_count_provider = lambda: count_live_sessions(http_app)
+
     async def runner() -> None:
+        import uvicorn
+
         from data_olympus.refresh import (
             git_pull_loop,
             pending_gc_loop,
             push_retry_loop,
         )
+        from data_olympus.session_metrics import session_reaper_loop
         tasks = [
             asyncio.create_task(
                 git_pull_loop(state, config.sync_interval_sec),
@@ -677,10 +724,23 @@ def main() -> None:
                 ),
                 name="pending_gc_loop",
             ))
-        try:
-            await app.run_async(
-                transport="streamable-http", host="0.0.0.0", port=config.http_port
+        if config.session_idle_timeout_sec > 0:
+            tasks.append(asyncio.create_task(
+                session_reaper_loop(
+                    app=http_app,
+                    tracker=tracker,
+                    idle_after_sec=config.session_idle_timeout_sec,
+                    interval_sec=config.session_reap_interval_sec,
+                ),
+                name="session_reaper_loop",
+            ))
+        server = uvicorn.Server(
+            uvicorn.Config(
+                http_app, host="0.0.0.0", port=config.http_port, log_level="info"
             )
+        )
+        try:
+            await server.serve()
         finally:
             for task in tasks:
                 task.cancel()

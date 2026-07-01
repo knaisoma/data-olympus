@@ -68,6 +68,7 @@ def _build_health(state: ServerState) -> HealthResponse:
         last_git_fetch_at=state.last_git_fetch_at,
         last_successful_refresh_at=state.last_successful_refresh_at,
         remote_head_sha=state.remote_head_sha,
+        live_sessions=state.live_session_count(),
     )
 
 
