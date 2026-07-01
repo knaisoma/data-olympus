@@ -32,9 +32,28 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Detection floor for un-hookable agents: `kb enforce report` (and `data-olympus report`) correlates governed git commits against the consult audit and lists changes with no consultation on record. An opt-in repo-scoped git provider (`kb enforce install --agent git`) installs a post-commit warning hook, or a pre-commit blocking hook with `--block`. Reuses the existing audit endpoint; no server change.
 - Enforcement hardening and observability: gate_bypass and gate_degraded events are now recorded (via `data-olympus report --emit-events` / the git warn hook, and the pre-tool hook on a reachable-degraded gate), so `kb_compliance` surfaces them. The gate receives `action_diff` and the classifier uses word-boundary matching plus dependency-install command signals (Codex and Claude now gate the Bash tool). New `kb enforce install --mode off|soft|hard`, ledger persistence via `KB_LEDGER_PATH`, a friendly PATH hint for `kb enforce report`, and a CI guard requiring a changelog entry for functional changes.
 - Guided onboarding: MCP prompts `onboard`, `onboard_project`, and `onboard_component` walk an agent through bootstrapping a new workspace or component, backed by a single-sourced playbook (`render_playbook`). A read-only `kb_cleanup_plan` MCP tool plus `POST /api/v1/onboarding/cleanup-plan` classify local repo docs against KB content and propose thin-pointer replacements for duplicates. `GET /api/v1/onboarding/playbook` and `kb onboard playbook` expose the same script to agents without native MCP prompt support.
+- Composable search pipeline: `Index.search()` now runs expand-query / match /
+  re-rank stages with pluggable `query_expander` and `reranker` hooks, so ranking
+  and query-expansion features compose without rewriting the core query. When a
+  reranker is installed the query is matched against a wider BM25 candidate pool
+  (over-fetched) and the reranked result is truncated back to the requested limit.
 
 ### Fixed
 
+- Intermittent `503 Service Unavailable` from the single-replica MCP under load.
+  The readiness probe was too aggressive (`timeoutSeconds: 1`) while every
+  REST/enforcement handler ran synchronous work on the one asyncio event loop, so
+  a burst stalled the probe and the only pod was ejected from the Service (nginx
+  then served a 503 with an empty upstream, leaving no application-log trace).
+  Fixes: relax the readiness probe (5s timeout, 5 failures) and raise the CPU
+  limit to 2; offload blocking handler work to the anyio worker pool while serving
+  `/api/v1/health` inline (off that pool) from a short-TTL cache of
+  `Index.health()`; add locks to the audit log and consultation ledger for safe
+  concurrent access.
+- The consultation ledger grew without bound (every `(session, workspace)` pair,
+  the whole file rewritten on every consult). It now evicts entries past the
+  consult TTL, enforces a hard max-entries cap, and bounds an oversized persisted
+  ledger on load rather than holding it all in memory until the first prune.
 - `data-olympus-mcp --help` now prints usage and exits 0 instead of crashing with
   `NotADirectoryError: KB root not a directory: /kb-main`. Argument parsing runs
   before config loading, so the documented quickstart command works on first run.

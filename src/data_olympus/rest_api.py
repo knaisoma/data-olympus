@@ -233,7 +233,12 @@ def register_routes(
 
     @app.custom_route("/api/v1/health", methods=["GET"])
     async def health(_request: Request) -> JSONResponse:
-        resp = await _offload(_build_health, state)
+        # Served INLINE, not via _offload(): the readiness probe must never queue
+        # behind the shared anyio worker pool it exists to outlive. _build_health
+        # reads the cached Index.health() snapshot (memory in steady state; the
+        # rare cache-miss SQLite read is sub-millisecond on the loop), so keeping
+        # it off the limiter is the right trade for probe responsiveness.
+        resp = _build_health(state)
         # Degraded health responses MUST return 503 so the
         # CLI's --no-stale contract (exit 2 on HTTP 200 or 503 degraded) is meaningful.
         status = 503 if resp.degraded else 200

@@ -61,6 +61,14 @@ _FTS_MATCH_COLUMNS: tuple[str, ...] = ("title", "tags", "applies_when", "descrip
 # Title and applies_when are weighted highest; body lowest. Tune in D2.
 _DEFAULT_BM25_WEIGHTS: tuple[float, ...] = (0.0, 10.0, 5.0, 10.0, 4.0, 1.0)
 
+# When a reranker is installed, fetch a wider BM25 candidate pool than the caller
+# asked for so the reranker can promote a relevant doc sitting just outside the
+# top-N window, then truncate back to the requested limit. Bounded so a small
+# limit still gets a useful pool and a large one cannot drag in the whole corpus.
+_RERANK_OVERFETCH_FACTOR = 5
+_RERANK_MIN_POOL = 50
+_RERANK_MAX_POOL = 200
+
 # Generic, deployment-neutral default taxonomy. A deployment with a different
 # directory layout supplies its own table at runtime via KB_TAXONOMY_PATH (a
 # JSON file holding a list of [prefix, tier, category] triples). The two
@@ -467,7 +475,18 @@ class Index:
             if doc_type:
                 where.append("docs.type = ?")
                 params.append(doc_type)
-            params.append(limit)
+            # Over-fetch a wider candidate pool when a reranker will reorder the
+            # hits (see stage 3); never fewer than `limit`.
+            candidate_limit = limit
+            if self.reranker is not None:
+                candidate_limit = max(
+                    limit,
+                    min(
+                        max(limit * _RERANK_OVERFETCH_FACTOR, _RERANK_MIN_POOL),
+                        _RERANK_MAX_POOL,
+                    ),
+                )
+            params.append(candidate_limit)
             sql = f"""
                 SELECT
                     fts.id AS id,
@@ -499,9 +518,10 @@ class Index:
             ]
         finally:
             conn.close()
-        # Stage 3 (re-rank): optional hook reorders/rescores (default identity).
+        # Stage 3 (re-rank): optional hook reorders/rescores (default identity),
+        # then truncate the (possibly wider / prepended) pool back to `limit`.
         if self.reranker is not None:
-            hits = list(self.reranker(query, hits))
+            hits = list(self.reranker(query, hits))[:limit]
         return hits
 
     def _build_match_expr(self, terms: list[str], columns: list[str] | None) -> str:

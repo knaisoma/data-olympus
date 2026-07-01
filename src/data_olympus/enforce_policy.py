@@ -146,6 +146,11 @@ class ConsultationLedger:
         self._lock = threading.Lock()
         if path:
             self._load()
+            # A ledger persisted by the previous unbounded implementation can be
+            # arbitrarily large; cap it on load so an oversized /state/ledger.json
+            # is not held in memory until the first record() prunes it. TTL
+            # eviction still runs on the first record() (it needs a caller "now").
+            self._enforce_cap()
 
     def _load(self) -> None:
         if not self._path or not os.path.exists(self._path):
@@ -197,8 +202,13 @@ class ConsultationLedger:
         self._entries = {
             key: e for key, e in self._entries.items() if e.consulted_at >= cutoff
         }
+        self._enforce_cap()
+
+    def _enforce_cap(self) -> None:
+        """Bound _entries to the newest ``max_entries`` by consulted_at. Clock-free
+        so it can run on load (before any caller "now" is available). Caller holds
+        the lock, except the single-threaded construction-time call."""
         if len(self._entries) > self._max_entries:
-            # Keep the most recently consulted entries; drop the oldest.
             newest = sorted(
                 self._entries.items(), key=lambda kv: kv[1].consulted_at, reverse=True
             )[: self._max_entries]
