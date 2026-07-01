@@ -14,6 +14,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Automated, human-gated release pipeline (conformant with the STD-U-810
+  versioning standard). A daily `data-olympus-release-cutter` routine computes the
+  SemVer bump from Conventional Commits and opens a release PR; merging that PR
+  cuts an annotated `vX.Y.Z` tag, a GitHub Release, and the container image via
+  CI. New helpers `scripts/compute_release.py`, `scripts/should_tag.py`,
+  `scripts/lint_pr_title.py` (a PR-title Conventional Commit check enforced by
+  `.github/workflows/pr-title-lint.yml`), and `scripts/compute-version.sh` (preview
+  version plus invariant check). New `tag-release.yml` cuts the tag and Release on
+  a `pyproject.toml` version bump, then builds the image via a reusable
+  `release-image-reusable.yml` (which also stamps OCI version and revision labels).
+  Process is documented in `.rules/versioning.md` and `.rules/release-routine.md`.
+  No tags are ever cut unattended.
 - Search now short-circuits exact-id and exact-tag queries: a single-token query
   that is a document id (e.g. `STD-U-002`, or a path-derived id) is surfaced as
   the top hit via a direct lookup even when it is absent from the bm25 results,
