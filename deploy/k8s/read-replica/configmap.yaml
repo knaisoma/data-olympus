@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: data-olympus-mcp-read
+  namespace: data-olympus
+data:
+  # Read-only replica (issue #44). KB_READ_ONLY switches the server to serve
+  # ONLY the read tools + read REST routes: no write/enforcement-write tools or
+  # routes are registered, and the write pipeline (worktrees / push queue /
+  # pending) is not initialised. The git_pull_loop still runs so each replica
+  # refreshes its own index snapshot from the same git remote as the writer.
+  KB_READ_ONLY: "true"
+  KB_MAIN_PATH: /kb-main
+  KB_INDEX_PATH: /index/kb.db
+  KB_HTTP_PORT: "8080"
+  KB_SYNC_INTERVAL_SEC: "60"
+  KB_STALENESS_DEGRADED_SEC: "600"
+  # Taxonomy overrides. Empty values use the built-in generic defaults; a
+  # deployment with a different directory layout supplies its own mapping (see
+  # the writer ConfigMap for the full field docs).
+  KB_TAXONOMY_PATH: ""
+  KB_INDEXED_PREFIXES: ""

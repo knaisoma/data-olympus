@@ -48,6 +48,7 @@ class Config:
     # (issue #37). None means "use the Index built-in default map". A negative
     # weight boosts an in-force status, a positive one penalizes a retired one.
     status_weights: dict[str, float] | None = None
+    read_only: bool = False
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -75,6 +76,10 @@ def _load_status_weights(raw: str) -> dict[str, float] | None:
             f"got {type(data).__name__}"
         )
     return {str(k): float(v) for k, v in data.items()}
+def _env_bool(raw: str) -> bool:
+    """Parse a truthy env string. True for 1/true/yes/on (case-insensitive);
+    everything else (including empty) is False."""
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def load_config() -> Config:
@@ -109,6 +114,7 @@ def load_config() -> Config:
     session_idle_timeout_sec = int(os.getenv("KB_SESSION_IDLE_TIMEOUT_SEC", "1800"))
     session_reap_interval_sec = int(os.getenv("KB_SESSION_REAP_INTERVAL_SEC", "60"))
     status_weights = _load_status_weights(os.getenv("KB_STATUS_WEIGHTS", ""))
+    read_only = _env_bool(os.getenv("KB_READ_ONLY", ""))
     return Config(
         kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
         kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
@@ -141,4 +147,5 @@ def load_config() -> Config:
         session_idle_timeout_sec=session_idle_timeout_sec,
         session_reap_interval_sec=session_reap_interval_sec,
         status_weights=status_weights,
+        read_only=read_only,
     )

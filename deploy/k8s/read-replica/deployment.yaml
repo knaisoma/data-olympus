@@ -1,0 +1,117 @@
+# Read-only replica set (issue #44): horizontally scalable read serving.
+#
+# This is a Deployment (NOT the StatefulSet writer). Every replica is
+# interchangeable and stateless: it clones /kb-main from the git remote on
+# start, builds its own index under /index, and refreshes both via the
+# git_pull_loop. Because KB_READ_ONLY=true (from the read ConfigMap) the write
+# pipeline is never initialised and no write/enforcement-write tools or routes
+# are registered, so no replica is a git writer. The single StatefulSet remains
+# the only writer/owner of the git remote.
+#
+# Scratch is per-pod emptyDir (not PVCs): each replica owns an ephemeral clone +
+# index snapshot, so pods scale up/down freely and never contend for a volume.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-olympus-mcp-read
+  namespace: data-olympus
+spec:
+  # Scale this to N for more read throughput.
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: data-olympus-mcp-read
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-olympus-mcp-read
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: data-olympus-mcp
+          # Same image as the writer; behaviour differs only by KB_READ_ONLY.
+          image: ghcr.io/knaisoma/data-olympus:v0.1.1  # replace with your registry/tag or digest
+          imagePullPolicy: IfNotPresent
+          # The entrypoint starts as root to copy/chown the deploy key and clone
+          # /kb-main, then drops to uid 65534 via gosu. Same hardening as the
+          # writer: drop all caps except those the entrypoint needs, forbid
+          # privilege escalation, read-only root filesystem (writes go to the
+          # emptyDir mounts and /tmp below).
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: data-olympus-mcp-read
+          env:
+            # The deploy key only needs read (fetch/clone) access for a replica,
+            # but we reuse the same Secret as the writer for simplicity. Grant a
+            # read-only key here if your platform supports per-workload keys.
+            - name: KB_GIT_REMOTE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: data-olympus-mcp
+                  key: KB_GIT_REMOTE_URL
+            - name: KB_REMOTE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: data-olympus-mcp
+                  key: KB_GIT_REMOTE_URL
+          volumeMounts:
+            - name: kb-main
+              mountPath: /kb-main
+            - name: kb-index
+              mountPath: /index
+            - name: tmp
+              mountPath: /tmp
+            - name: git-key
+              mountPath: /etc/git-key-mount
+              subPath: git-key
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1
+              memory: 1Gi
+      volumes:
+        # Per-pod ephemeral clone + index snapshot + writable scratch. No PVCs:
+        # a read replica holds no durable state and re-clones on (re)start.
+        - name: kb-main
+          emptyDir: {}
+        - name: kb-index
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: git-key
+          secret:
+            secretName: data-olympus-mcp
+            defaultMode: 0400
+            items:
+              - key: git-key
+                path: git-key

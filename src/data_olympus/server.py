@@ -194,11 +194,18 @@ def build_app(
     session_idle_timeout_sec: int = 1800,
     session_reap_interval_sec: int = 60,
     status_weights: dict[str, float] | None = None,
+    read_only: bool = False,
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
 
     If `bootstrap_now` is True (used in tests), the index is built synchronously
     before returning. In production main(), bootstrap happens via the lifespan hook.
+
+    When `read_only` is True the server runs as a scaling replica (issue #44):
+    only the read tools and read REST routes are registered, the write pipeline
+    (worktrees / push queue / pending) is not initialised, and no write or
+    enforcement-write tools/routes are exposed. The git_pull_loop still runs (in
+    main()) so the replica refreshes its own index snapshot from the git remote.
     """
     config_kwargs: dict[str, object] = dict(
         kb_main_path=kb_main_path,
@@ -229,6 +236,7 @@ def build_app(
         session_idle_timeout_sec=session_idle_timeout_sec,
         session_reap_interval_sec=session_reap_interval_sec,
         status_weights=status_weights,
+        read_only=read_only,
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
@@ -253,7 +261,9 @@ def build_app(
     )
     state = ServerState(idx=idx, git=git, config=config, ledger=ledger)
 
-    if config.kb_remote_url:
+    # A read-only replica sets kb_remote_url (so the git_pull_loop has a remote
+    # to refresh from) but must NOT bring up the write pipeline.
+    if config.kb_remote_url and not config.read_only:
         worktrees = WorktreeRegistry(git=git, worktree_root=config.worktree_root)
         push_queue = PushQueue(queue_root=config.push_queue_root)
         pending = PendingQueue(
@@ -273,7 +283,7 @@ def build_app(
         state.rate_limiter = rate_limiter
         state.blocklist = blocklist
 
-    if config.kb_remote_url:
+    if config.kb_remote_url and not config.read_only:
         audit_log = AuditLog(
             log_path=audit_log_path or config.audit_log_path,
             hmac_key=config.audit_hmac_key,
@@ -357,110 +367,6 @@ def build_app(
         return resp.model_dump()
 
     @app.tool()
-    def kb_propose_memory(
-        text: str, tags: list[str], source_session: str,
-        agent_identity: str, confidence: float,
-    ) -> dict[str, object]:
-        """Propose a new memory file. High confidence auto-commits and
-        enqueues for push; low confidence enters the pending queue for operator
-        review."""
-        if state.worktrees is None or state.push_queue is None or state.pending is None:
-            return {"status": "write_pipeline_disabled"}
-        assert state.worktrees is not None
-        assert state.push_queue is not None
-        assert state.pending is not None
-        assert state.rate_limiter is not None
-        assert state.blocklist is not None
-        from data_olympus.tools_write import kb_propose_memory_fn
-        resp = kb_propose_memory_fn(
-            text=text, tags=tags, source_session=source_session,
-            agent_identity=agent_identity, confidence=confidence,
-            confidence_threshold=state.config.confidence_threshold,
-            worktrees=state.worktrees, push_queue=state.push_queue,
-            pending=state.pending, rate_limiter=state.rate_limiter,
-            blocklist=state.blocklist, remote_addr="mcp",
-            audit_log=state.audit_log,
-            can_auto_commit=_current_principal.get().can_auto_commit,
-            max_text_bytes=state.config.max_text_bytes,
-        )
-        return resp.model_dump()
-
-    @app.tool()
-    def kb_propose_edit(
-        target_path: str, postimage: str, base_commit: str,
-        base_blob_sha: str | None, target_file_hash: str | None,
-        reason: str, source_session: str, agent_identity: str, confidence: float,
-    ) -> dict[str, object]:
-        """Propose an edit to an existing (or new) markdown file under an
-        indexed tier. High confidence auto-commits + queues for push; low
-        confidence enters the pending queue for operator review."""
-        if state.worktrees is None or state.push_queue is None or state.pending is None:
-            return {"status": "write_pipeline_disabled"}
-        assert state.worktrees is not None
-        assert state.push_queue is not None
-        assert state.pending is not None
-        assert state.rate_limiter is not None
-        assert state.blocklist is not None
-        from data_olympus.tools_write import kb_propose_edit_fn
-        resp = kb_propose_edit_fn(
-            target_path=target_path, postimage=postimage, base_commit=base_commit,
-            base_blob_sha=base_blob_sha, target_file_hash=target_file_hash,
-            reason=reason, source_session=source_session, agent_identity=agent_identity,
-            confidence=confidence,
-            confidence_threshold=state.config.confidence_threshold,
-            worktrees=state.worktrees, push_queue=state.push_queue,
-            pending=state.pending, rate_limiter=state.rate_limiter,
-            blocklist=state.blocklist, remote_addr="mcp",
-            audit_log=state.audit_log,
-            can_auto_commit=_current_principal.get().can_auto_commit,
-            max_postimage_bytes=state.config.max_postimage_bytes,
-        )
-        return resp.model_dump()
-
-    @app.tool()
-    def kb_resolve_pending(
-        pending_id: str, decision: str, edited_text: str | None = None,
-        source_session: str = "operator-resolve", agent_identity: str = "operator",
-    ) -> dict[str, object]:
-        """Resolve a pending proposal: approve (optionally with edited text) or
-        reject. Approval commits + enqueues for push."""
-        if state.worktrees is None or state.push_queue is None or state.pending is None:
-            return {"status": "write_pipeline_disabled"}
-        assert state.worktrees is not None
-        assert state.push_queue is not None
-        assert state.pending is not None
-        from data_olympus.tools_write import kb_resolve_pending_fn
-        resp = kb_resolve_pending_fn(
-            pending_id=pending_id, decision=decision, edited_text=edited_text,
-            worktrees=state.worktrees, push_queue=state.push_queue,
-            pending=state.pending,
-            source_session=source_session, agent_identity=agent_identity,
-            audit_log=state.audit_log,
-        )
-        return resp.model_dump()
-
-    @app.tool()
-    def kb_list_pending() -> dict[str, object]:
-        """List currently pending proposals awaiting operator decision."""
-        assert state.pending is not None
-        from data_olympus.tools_write import kb_list_pending_fn
-        resp = kb_list_pending_fn(pending=state.pending)
-        return resp.model_dump()
-
-    @app.tool()
-    def kb_audit(
-        since: float | None = None, agent: str | None = None,
-        status: str | None = None, limit: int = 100,
-    ) -> dict[str, object]:
-        """Return recent audit events, most-recent first. Optional filters:
-        since (unix ts), agent (agent_identity), status (event status)."""
-        assert state.audit_log is not None
-        from data_olympus.tools_audit import kb_audit_fn
-        resp = kb_audit_fn(audit_log=state.audit_log, since=since,
-                          agent=agent, status=status, limit=limit)
-        return resp.model_dump()
-
-    @app.tool()
     def kb_onboarding_status(
         workspace: str, component: str | None = None,
         workspace_remote_url: str | None = None,
@@ -473,42 +379,6 @@ def build_app(
             idx=state.idx, workspace=workspace, component=component,
             workspace_remote_url=workspace_remote_url,
             component_remote_url=component_remote_url,
-        )
-        return resp.model_dump()
-
-    @app.tool()
-    def kb_bootstrap_project(
-        workspace: str, files: list[dict[str, str]],
-        source_session: str, agent_identity: str, confidence: float,
-        component: str | None = None,
-        workspace_remote_url: str | None = None,
-        component_remote_url: str | None = None,
-    ) -> dict[str, object]:
-        """Bootstrap a new workspace/component. Only valid when status=absent.
-        High confidence commits atomically; low confidence enqueues pending."""
-        if state.worktrees is None or state.push_queue is None or state.pending is None:
-            return {"status": "write_pipeline_disabled"}
-        assert state.worktrees is not None
-        assert state.push_queue is not None
-        assert state.pending is not None
-        assert state.rate_limiter is not None
-        assert state.blocklist is not None
-        from data_olympus.tools_onboarding import kb_bootstrap_project_fn
-        resp = kb_bootstrap_project_fn(
-            idx=state.idx, workspace=workspace, component=component,
-            workspace_remote_url=workspace_remote_url,
-            component_remote_url=component_remote_url,
-            files=files,
-            source_session=source_session, agent_identity=agent_identity,
-            confidence=confidence,
-            confidence_threshold=state.config.confidence_threshold,
-            worktrees=state.worktrees, push_queue=state.push_queue,
-            pending=state.pending, rate_limiter=state.rate_limiter,
-            blocklist=state.blocklist, audit_log=state.audit_log,
-            remote_addr="mcp",
-            can_auto_commit=_current_principal.get().can_auto_commit,
-            max_postimage_bytes=state.config.max_postimage_bytes,
-            max_files=state.config.max_bootstrap_files,
         )
         return resp.model_dump()
 
@@ -532,74 +402,217 @@ def build_app(
             return {"status": "rejected_invalid_input", "error": str(e)}
         return resp.model_dump()
 
-    @app.tool()
-    def kb_consult(
-        workspace: str, intent: str, source_session: str,
-        agent_identity: str,
-    ) -> dict[str, object]:
-        """Record a consultation for (source_session, workspace) and return the
-        governing rules for the intent. Call before code/architectural work."""
-        import time as _time
+    if not read_only:
+        # Write + enforcement-write surface. A read-only replica
+        # (issue #44) exposes none of these tools.
+        @app.tool()
+        def kb_propose_memory(
+            text: str, tags: list[str], source_session: str,
+            agent_identity: str, confidence: float,
+        ) -> dict[str, object]:
+            """Propose a new memory file. High confidence auto-commits and
+            enqueues for push; low confidence enters the pending queue for operator
+            review."""
+            if state.worktrees is None or state.push_queue is None or state.pending is None:
+                return {"status": "write_pipeline_disabled"}
+            assert state.worktrees is not None
+            assert state.push_queue is not None
+            assert state.pending is not None
+            assert state.rate_limiter is not None
+            assert state.blocklist is not None
+            from data_olympus.tools_write import kb_propose_memory_fn
+            resp = kb_propose_memory_fn(
+                text=text, tags=tags, source_session=source_session,
+                agent_identity=agent_identity, confidence=confidence,
+                confidence_threshold=state.config.confidence_threshold,
+                worktrees=state.worktrees, push_queue=state.push_queue,
+                pending=state.pending, rate_limiter=state.rate_limiter,
+                blocklist=state.blocklist, remote_addr="mcp",
+                audit_log=state.audit_log,
+                can_auto_commit=_current_principal.get().can_auto_commit,
+                max_text_bytes=state.config.max_text_bytes,
+            )
+            return resp.model_dump()
 
-        from data_olympus.tools_enforce import kb_consult_fn
-        resp = kb_consult_fn(
-            idx=state.idx, classifier=state.classifier, ledger=state.ledger,
-            workspace=workspace, intent=intent, source_session=source_session,
-            agent_identity=agent_identity,
-            ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
-            audit_log=state.audit_log,
-        )
-        return resp.model_dump()
+        @app.tool()
+        def kb_propose_edit(
+            target_path: str, postimage: str, base_commit: str,
+            base_blob_sha: str | None, target_file_hash: str | None,
+            reason: str, source_session: str, agent_identity: str, confidence: float,
+        ) -> dict[str, object]:
+            """Propose an edit to an existing (or new) markdown file under an
+            indexed tier. High confidence auto-commits + queues for push; low
+            confidence enters the pending queue for operator review."""
+            if state.worktrees is None or state.push_queue is None or state.pending is None:
+                return {"status": "write_pipeline_disabled"}
+            assert state.worktrees is not None
+            assert state.push_queue is not None
+            assert state.pending is not None
+            assert state.rate_limiter is not None
+            assert state.blocklist is not None
+            from data_olympus.tools_write import kb_propose_edit_fn
+            resp = kb_propose_edit_fn(
+                target_path=target_path, postimage=postimage, base_commit=base_commit,
+                base_blob_sha=base_blob_sha, target_file_hash=target_file_hash,
+                reason=reason, source_session=source_session, agent_identity=agent_identity,
+                confidence=confidence,
+                confidence_threshold=state.config.confidence_threshold,
+                worktrees=state.worktrees, push_queue=state.push_queue,
+                pending=state.pending, rate_limiter=state.rate_limiter,
+                blocklist=state.blocklist, remote_addr="mcp",
+                audit_log=state.audit_log,
+                can_auto_commit=_current_principal.get().can_auto_commit,
+                max_postimage_bytes=state.config.max_postimage_bytes,
+            )
+            return resp.model_dump()
 
-    @app.tool()
-    def kb_gate_check(
-        workspace: str, session_id: str, tool_name: str,
-        action_path: str | None = None, action_diff: str = "",
-    ) -> dict[str, object]:
-        """Return a verdict (allow | consult_required) for a pending code action.
-        Governed actions require a fresh consultation on record."""
-        import time as _time
+        @app.tool()
+        def kb_resolve_pending(
+            pending_id: str, decision: str, edited_text: str | None = None,
+            source_session: str = "operator-resolve", agent_identity: str = "operator",
+        ) -> dict[str, object]:
+            """Resolve a pending proposal: approve (optionally with edited text) or
+            reject. Approval commits + enqueues for push."""
+            if state.worktrees is None or state.push_queue is None or state.pending is None:
+                return {"status": "write_pipeline_disabled"}
+            assert state.worktrees is not None
+            assert state.push_queue is not None
+            assert state.pending is not None
+            from data_olympus.tools_write import kb_resolve_pending_fn
+            resp = kb_resolve_pending_fn(
+                pending_id=pending_id, decision=decision, edited_text=edited_text,
+                worktrees=state.worktrees, push_queue=state.push_queue,
+                pending=state.pending,
+                source_session=source_session, agent_identity=agent_identity,
+                audit_log=state.audit_log,
+            )
+            return resp.model_dump()
 
-        from data_olympus.tools_enforce import kb_gate_check_fn
-        resp = kb_gate_check_fn(
-            classifier=state.classifier, ledger=state.ledger,
-            workspace=workspace, session_id=session_id, tool_name=tool_name,
-            action_path=action_path, action_diff=action_diff,
-            now=_time.time(), ttl_sec=state.config.consult_ttl_sec,
-            audit_log=state.audit_log,
-        )
-        return resp.model_dump()
+        @app.tool()
+        def kb_list_pending() -> dict[str, object]:
+            """List currently pending proposals awaiting operator decision."""
+            assert state.pending is not None
+            from data_olympus.tools_write import kb_list_pending_fn
+            resp = kb_list_pending_fn(pending=state.pending)
+            return resp.model_dump()
 
-    @app.tool()
-    def kb_compliance(
-        since: float | None = None, agent: str | None = None,
-    ) -> dict[str, object]:
-        """Aggregate enforcement events (consult / gate_*) overall and per agent."""
-        if state.audit_log is None:
-            return {"counts": {}, "by_agent": {}}
-        from data_olympus.tools_enforce import kb_compliance_fn
-        resp = kb_compliance_fn(audit_log=state.audit_log, since=since, agent=agent)
-        return resp.model_dump()
+        @app.tool()
+        def kb_audit(
+            since: float | None = None, agent: str | None = None,
+            status: str | None = None, limit: int = 100,
+        ) -> dict[str, object]:
+            """Return recent audit events, most-recent first. Optional filters:
+            since (unix ts), agent (agent_identity), status (event status)."""
+            assert state.audit_log is not None
+            from data_olympus.tools_audit import kb_audit_fn
+            resp = kb_audit_fn(audit_log=state.audit_log, since=since,
+                              agent=agent, status=status, limit=limit)
+            return resp.model_dump()
 
-    @app.tool()
-    def kb_record_event(
-        event_type: str, workspace: str, agent_identity: str,
-        source_session: str, reason: str = "",
-    ) -> dict[str, object]:
-        """Record a gate_bypass or gate_degraded enforcement event in the audit."""
-        if state.audit_log is None:
-            return {"recorded": False, "event_type": event_type}
-        import time as _time
+        @app.tool()
+        def kb_bootstrap_project(
+            workspace: str, files: list[dict[str, str]],
+            source_session: str, agent_identity: str, confidence: float,
+            component: str | None = None,
+            workspace_remote_url: str | None = None,
+            component_remote_url: str | None = None,
+        ) -> dict[str, object]:
+            """Bootstrap a new workspace/component. Only valid when status=absent.
+            High confidence commits atomically; low confidence enqueues pending."""
+            if state.worktrees is None or state.push_queue is None or state.pending is None:
+                return {"status": "write_pipeline_disabled"}
+            assert state.worktrees is not None
+            assert state.push_queue is not None
+            assert state.pending is not None
+            assert state.rate_limiter is not None
+            assert state.blocklist is not None
+            from data_olympus.tools_onboarding import kb_bootstrap_project_fn
+            resp = kb_bootstrap_project_fn(
+                idx=state.idx, workspace=workspace, component=component,
+                workspace_remote_url=workspace_remote_url,
+                component_remote_url=component_remote_url,
+                files=files,
+                source_session=source_session, agent_identity=agent_identity,
+                confidence=confidence,
+                confidence_threshold=state.config.confidence_threshold,
+                worktrees=state.worktrees, push_queue=state.push_queue,
+                pending=state.pending, rate_limiter=state.rate_limiter,
+                blocklist=state.blocklist, audit_log=state.audit_log,
+                remote_addr="mcp",
+                can_auto_commit=_current_principal.get().can_auto_commit,
+                max_postimage_bytes=state.config.max_postimage_bytes,
+                max_files=state.config.max_bootstrap_files,
+            )
+            return resp.model_dump()
 
-        from data_olympus.tools_enforce import kb_record_event_fn
-        try:
-            resp = kb_record_event_fn(
-                audit_log=state.audit_log, event_type=event_type,
-                workspace=workspace, agent_identity=agent_identity,
-                source_session=source_session, reason=reason, now=_time.time())
-        except ValueError as e:
-            return {"recorded": False, "error": str(e)}
-        return resp.model_dump()
+        @app.tool()
+        def kb_consult(
+            workspace: str, intent: str, source_session: str,
+            agent_identity: str,
+        ) -> dict[str, object]:
+            """Record a consultation for (source_session, workspace) and return the
+            governing rules for the intent. Call before code/architectural work."""
+            import time as _time
+
+            from data_olympus.tools_enforce import kb_consult_fn
+            resp = kb_consult_fn(
+                idx=state.idx, classifier=state.classifier, ledger=state.ledger,
+                workspace=workspace, intent=intent, source_session=source_session,
+                agent_identity=agent_identity,
+                ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
+                audit_log=state.audit_log,
+            )
+            return resp.model_dump()
+
+        @app.tool()
+        def kb_gate_check(
+            workspace: str, session_id: str, tool_name: str,
+            action_path: str | None = None, action_diff: str = "",
+        ) -> dict[str, object]:
+            """Return a verdict (allow | consult_required) for a pending code action.
+            Governed actions require a fresh consultation on record."""
+            import time as _time
+
+            from data_olympus.tools_enforce import kb_gate_check_fn
+            resp = kb_gate_check_fn(
+                classifier=state.classifier, ledger=state.ledger,
+                workspace=workspace, session_id=session_id, tool_name=tool_name,
+                action_path=action_path, action_diff=action_diff,
+                now=_time.time(), ttl_sec=state.config.consult_ttl_sec,
+                audit_log=state.audit_log,
+            )
+            return resp.model_dump()
+
+        @app.tool()
+        def kb_compliance(
+            since: float | None = None, agent: str | None = None,
+        ) -> dict[str, object]:
+            """Aggregate enforcement events (consult / gate_*) overall and per agent."""
+            if state.audit_log is None:
+                return {"counts": {}, "by_agent": {}}
+            from data_olympus.tools_enforce import kb_compliance_fn
+            resp = kb_compliance_fn(audit_log=state.audit_log, since=since, agent=agent)
+            return resp.model_dump()
+
+        @app.tool()
+        def kb_record_event(
+            event_type: str, workspace: str, agent_identity: str,
+            source_session: str, reason: str = "",
+        ) -> dict[str, object]:
+            """Record a gate_bypass or gate_degraded enforcement event in the audit."""
+            if state.audit_log is None:
+                return {"recorded": False, "event_type": event_type}
+            import time as _time
+
+            from data_olympus.tools_enforce import kb_record_event_fn
+            try:
+                resp = kb_record_event_fn(
+                    audit_log=state.audit_log, event_type=event_type,
+                    workspace=workspace, agent_identity=agent_identity,
+                    source_session=source_session, reason=reason, now=_time.time())
+            except ValueError as e:
+                return {"recorded": False, "error": str(e)}
+            return resp.model_dump()
 
     registry = PrincipalRegistry(auth_token=auth_token, principals=auth_principals)
     # MCP-transport auth: enforce write-tool capabilities (REST is enforced in
@@ -607,7 +620,7 @@ def build_app(
     app.add_middleware(MCPAuthMiddleware(registry))
 
     from data_olympus.rest_api import register_routes
-    register_routes(app, state, registry)
+    register_routes(app, state, registry, read_only=read_only)
 
     from data_olympus.prompts import register_prompts
     register_prompts(app)
@@ -655,6 +668,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         session_idle_timeout_sec=config.session_idle_timeout_sec,
         session_reap_interval_sec=config.session_reap_interval_sec,
         status_weights=config.status_weights,
+        read_only=config.read_only,
     )
 
 
@@ -683,7 +697,11 @@ def main() -> None:
     app = build_app_from_config(config, bootstrap_now=True)
     # The state lives inside build_app's closure; expose via app attribute for the lifespan task
     state = app._dolympus_state  # type: ignore[attr-defined]  # set in build_app
-    log.info("starting streamable HTTP MCP on port %s", config.http_port)
+    log.info(
+        "starting streamable HTTP MCP on port %s (mode=%s)",
+        config.http_port,
+        "read-only replica" if config.read_only else "read-write",
+    )
 
     # Build the streamable-http ASGI app explicitly (rather than app.run_async)
     # so we own the app object: we install the session-activity middleware, wire

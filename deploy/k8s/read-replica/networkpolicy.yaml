@@ -1,0 +1,27 @@
+# Default-deny ingress for the read-replica pods, then allow only the ingress
+# controller and same-namespace clients (mirrors the writer's networkpolicy).
+# Egress is left open so each replica can reach the git remote and DNS to
+# refresh its snapshot; tighten it for your environment if required.
+#
+# Adjust the ingress-controller selector to match your cluster. If your CNI does
+# not enforce NetworkPolicy this manifest is a no-op; verify with your platform.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: data-olympus-mcp-read
+  namespace: data-olympus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: data-olympus-mcp-read
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              network-policy: ingress
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080

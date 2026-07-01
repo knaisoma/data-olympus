@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-olympus-mcp-read
+  namespace: data-olympus
+spec:
+  # ClusterIP load-balances read traffic across all replica pods. Point read
+  # clients at this Service; keep the writer's data-olympus-mcp Service for the
+  # single write-enabled endpoint.
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  selector:
+    app.kubernetes.io/name: data-olympus-mcp-read

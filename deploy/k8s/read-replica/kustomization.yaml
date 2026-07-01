@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: data-olympus
+# Read-only replica overlay (issue #44). Apply AFTER the base deploy/k8s/ stack,
+# which owns the namespace, the git-remote Secret (data-olympus-mcp, referenced
+# by the read Deployment for its deploy key), and the single StatefulSet writer.
+#
+#   kubectl apply -k deploy/k8s              # namespace + secret + writer
+#   kubectl apply -k deploy/k8s/read-replica # N read replicas
+#
+# Scale reads with: kubectl -n data-olympus scale deployment/data-olympus-mcp-read --replicas=N
+resources:
+  - configmap.yaml
+  - service.yaml
+  - networkpolicy.yaml
+  - deployment.yaml

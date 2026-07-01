@@ -223,13 +223,22 @@ async def _read_json_capped(
 
 
 def register_routes(
-    app: FastMCP, state: ServerState, registry: PrincipalRegistry
+    app: FastMCP,
+    state: ServerState,
+    registry: PrincipalRegistry,
+    *,
+    read_only: bool = False,
 ) -> None:
     """Mount REST routes under /api/v1/ on the FastMCP app.
 
     Write and enforcement-plane routes are authorized against ``registry``
     (see ``_authorize``). When no auth is configured every caller is trusted and
     behavior matches the pre-auth product. Read routes are always open.
+
+    When ``read_only`` is True (a scaling replica, issue #44) the write and
+    enforcement-write routes (propose / resolve / bootstrap / consult / gate /
+    record-event and the observability mirrors) are not registered at all, so
+    they return 404. Only the pure-read routes are mounted.
     """
 
     @app.custom_route("/api/v1/health", methods=["GET"])
@@ -296,251 +305,254 @@ def register_routes(
         resp = await _offload(kb_list_fn, idx=state.idx, tier=tier, category=category)
         return JSONResponse(resp.model_dump())
 
-    @app.custom_route("/api/v1/propose/memory", methods=["POST"])
-    async def propose_memory(request: Request) -> JSONResponse:
-        principal, denied = _authorize(request, registry, CAP_PROPOSE)
-        if denied is not None:
-            return denied
-        if (off := _write_pipeline_ready(state)) is not None:
-            return off
-        body, big = await _read_json_capped(request, state.config.max_body_bytes)
-        if big is not None:
-            return big
-        if (bad := _missing_fields_response(
-            body, ["text", "source_session", "agent_identity", "confidence"],
-        )) is not None:
-            return bad
-        confidence, bad = _parse_confidence(body)
-        if bad is not None:
-            return bad
-        assert state.worktrees is not None
-        assert state.push_queue is not None
-        assert state.pending is not None
-        assert state.rate_limiter is not None
-        assert state.blocklist is not None
-        from data_olympus.tools_write import kb_propose_memory_fn
-        resp = await _offload(
-            kb_propose_memory_fn,
-            text=body["text"], tags=body.get("tags", []),
-            source_session=body["source_session"],
-            agent_identity=body["agent_identity"],
-            confidence=confidence,
-            confidence_threshold=state.config.confidence_threshold,
-            worktrees=state.worktrees, push_queue=state.push_queue,
-            pending=state.pending, rate_limiter=state.rate_limiter,
-            blocklist=state.blocklist,
-            remote_addr=request.client.host if request.client else "unknown",
-            audit_log=state.audit_log,
-            can_auto_commit=principal.can_auto_commit,
-            max_text_bytes=state.config.max_text_bytes,
-        )
-        status = _propose_status(resp.status)
-        return JSONResponse(resp.model_dump(), status_code=status)
-
-    @app.custom_route("/api/v1/propose/edit", methods=["POST"])
-    async def propose_edit(request: Request) -> JSONResponse:
-        principal, denied = _authorize(request, registry, CAP_PROPOSE)
-        if denied is not None:
-            return denied
-        if (off := _write_pipeline_ready(state)) is not None:
-            return off
-        body, big = await _read_json_capped(request, state.config.max_body_bytes)
-        if big is not None:
-            return big
-        if (bad := _missing_fields_response(
-            body,
-            ["target_path", "postimage", "base_commit",
-             "source_session", "agent_identity", "confidence"],
-        )) is not None:
-            return bad
-        confidence, bad = _parse_confidence(body)
-        if bad is not None:
-            return bad
-        assert state.worktrees is not None
-        assert state.push_queue is not None
-        assert state.pending is not None
-        assert state.rate_limiter is not None
-        assert state.blocklist is not None
-        from data_olympus.tools_write import kb_propose_edit_fn
-        resp = await _offload(
-            kb_propose_edit_fn,
-            target_path=body["target_path"], postimage=body["postimage"],
-            base_commit=body["base_commit"],
-            base_blob_sha=body.get("base_blob_sha"),
-            target_file_hash=body.get("target_file_hash"),
-            reason=body.get("reason", ""),
-            source_session=body["source_session"],
-            agent_identity=body["agent_identity"],
-            confidence=confidence,
-            confidence_threshold=state.config.confidence_threshold,
-            worktrees=state.worktrees, push_queue=state.push_queue,
-            pending=state.pending, rate_limiter=state.rate_limiter,
-            blocklist=state.blocklist,
-            remote_addr=request.client.host if request.client else "unknown",
-            audit_log=state.audit_log,
-            can_auto_commit=principal.can_auto_commit,
-            max_postimage_bytes=state.config.max_postimage_bytes,
-        )
-        status = _propose_status(resp.status)
-        return JSONResponse(resp.model_dump(), status_code=status)
-
-    @app.custom_route("/api/v1/resolve/{pending_id}", methods=["POST"])
-    async def resolve_pending(request: Request) -> JSONResponse:
-        _principal, denied = _authorize(request, registry, CAP_RESOLVE)
-        if denied is not None:
-            return denied
-        if (off := _write_pipeline_ready(state)) is not None:
-            return off
-        pid = request.path_params["pending_id"]
-        body = await request.json()
-        if (bad := _missing_fields_response(body, ["decision"])) is not None:
-            return bad
-        assert state.worktrees is not None
-        assert state.push_queue is not None
-        assert state.pending is not None
-        from data_olympus.tools_write import kb_resolve_pending_fn
-        resp = await _offload(
-            kb_resolve_pending_fn,
-            pending_id=pid, decision=body["decision"],
-            edited_text=body.get("edited_text"),
-            worktrees=state.worktrees, push_queue=state.push_queue,
-            pending=state.pending,
-            source_session=body.get("source_session", "operator"),
-            agent_identity=body.get("agent_identity", "operator"),
-            audit_log=state.audit_log,
-        )
-        return JSONResponse(resp.model_dump())
-
-    @app.custom_route("/api/v1/pending", methods=["GET"])
-    async def list_pending(request: Request) -> JSONResponse:
-        # Observability routes leak target paths / agent identities, so when auth
-        # is configured they require an authenticated principal (open otherwise).
-        _principal, denied = _authorize(request, registry)
-        if denied is not None:
-            return denied
-        if state.pending is None:
-            return JSONResponse({"pending": []})
-        from data_olympus.tools_write import kb_list_pending_fn
-        resp = await _offload(kb_list_pending_fn, pending=state.pending)
-        return JSONResponse(resp.model_dump())
-
-    @app.custom_route("/api/v1/audit", methods=["GET"])
-    async def audit(request: Request) -> JSONResponse:
-        _principal, denied = _authorize(request, registry)
-        if denied is not None:
-            return denied
-        if state.audit_log is None:
-            return JSONResponse({"events": [], "returned": 0, "limit_hit": False})
-        from data_olympus.tools_audit import kb_audit_fn
-        qp = request.query_params
-        since = float(qp["since"]) if qp.get("since") else None
-        agent = qp.get("agent")
-        status_filter = qp.get("status")
-        limit = int(qp.get("limit", "100"))
-        resp = await _offload(kb_audit_fn, audit_log=state.audit_log, since=since,
-                              agent=agent, status=status_filter, limit=limit)
-        return JSONResponse(resp.model_dump())
-
-    @app.custom_route("/api/v1/audit/verify", methods=["GET"])
-    async def audit_verify(request: Request) -> JSONResponse:
-        _principal, denied = _authorize(request, registry)
-        if denied is not None:
-            return denied
-        if state.audit_log is None:
-            return JSONResponse({"ok": True, "first_broken_index": -1})
-        ok, idx = await _offload(state.audit_log.verify)
-        return JSONResponse({"ok": ok, "first_broken_index": idx})
-
-    @app.custom_route("/api/v1/consult", methods=["POST"])
-    async def consult(request: Request) -> JSONResponse:
-        _principal, denied = _authorize(request, registry)
-        if denied is not None:
-            return denied
-        import time as _time
-
-        from data_olympus.tools_enforce import kb_consult_fn
-        body = await request.json()
-        if (bad := _missing_fields_response(
-            body, ["workspace", "source_session"],
-        )) is not None:
-            return bad
-        resp = await _offload(
-            kb_consult_fn,
-            idx=state.idx, classifier=state.classifier, ledger=state.ledger,
-            workspace=body["workspace"], intent=body.get("intent", ""),
-            source_session=body["source_session"],
-            agent_identity=body.get("agent_identity", "unknown"),
-            ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
-            audit_log=state.audit_log,
-        )
-        return JSONResponse(resp.model_dump())
-
-    @app.custom_route("/api/v1/gate/check", methods=["POST"])
-    async def gate_check(request: Request) -> JSONResponse:
-        _principal, denied = _authorize(request, registry)
-        if denied is not None:
-            return denied
-        import time as _time
-
-        from data_olympus.tools_enforce import kb_gate_check_fn
-        body = await request.json()
-        if (bad := _missing_fields_response(
-            body, ["workspace", "session_id"],
-        )) is not None:
-            return bad
-        resp = await _offload(
-            kb_gate_check_fn,
-            classifier=state.classifier, ledger=state.ledger,
-            workspace=body["workspace"], session_id=body["session_id"],
-            tool_name=body.get("tool_name", ""),
-            action_path=body.get("action_path"),
-            action_diff=body.get("action_diff", ""),
-            now=_time.time(), ttl_sec=state.config.consult_ttl_sec,
-            audit_log=state.audit_log,
-        )
-        return JSONResponse(resp.model_dump())
-
-    @app.custom_route("/api/v1/compliance", methods=["GET"])
-    async def compliance(request: Request) -> JSONResponse:
-        # Enforcement aggregates are observability data; gate like /pending,
-        # /audit, /consult, /gate when auth is configured.
-        _principal, denied = _authorize(request, registry)
-        if denied is not None:
-            return denied
-        if state.audit_log is None:
-            return JSONResponse({"counts": {}, "by_agent": {}})
-        from data_olympus.tools_enforce import kb_compliance_fn
-        qp = request.query_params
-        since = float(qp["since"]) if qp.get("since") else None
-        agent = qp.get("agent")
-        resp = await _offload(
-            kb_compliance_fn, audit_log=state.audit_log, since=since, agent=agent)
-        return JSONResponse(resp.model_dump())
-
-    @app.custom_route("/api/v1/audit/event", methods=["POST"])
-    async def record_event(request: Request) -> JSONResponse:
-        _principal, denied = _authorize(request, registry, CAP_RECORD_EVENT)
-        if denied is not None:
-            return denied
-        if state.audit_log is None:
-            return JSONResponse({"recorded": False}, status_code=503)
-        import time as _time
-
-        body = await request.json()
-        if (bad := _missing_fields_response(body, ["event_type", "workspace"])) is not None:
-            return bad
-        from data_olympus.tools_enforce import kb_record_event_fn
-        try:
+    if not read_only:
+        # Write + enforcement-write REST surface. A read-only replica
+        # (issue #44) mounts none of these, so they return 404.
+        @app.custom_route("/api/v1/propose/memory", methods=["POST"])
+        async def propose_memory(request: Request) -> JSONResponse:
+            principal, denied = _authorize(request, registry, CAP_PROPOSE)
+            if denied is not None:
+                return denied
+            if (off := _write_pipeline_ready(state)) is not None:
+                return off
+            body, big = await _read_json_capped(request, state.config.max_body_bytes)
+            if big is not None:
+                return big
+            if (bad := _missing_fields_response(
+                body, ["text", "source_session", "agent_identity", "confidence"],
+            )) is not None:
+                return bad
+            confidence, bad = _parse_confidence(body)
+            if bad is not None:
+                return bad
+            assert state.worktrees is not None
+            assert state.push_queue is not None
+            assert state.pending is not None
+            assert state.rate_limiter is not None
+            assert state.blocklist is not None
+            from data_olympus.tools_write import kb_propose_memory_fn
             resp = await _offload(
-                kb_record_event_fn,
-                audit_log=state.audit_log, event_type=body["event_type"],
-                workspace=body["workspace"],
+                kb_propose_memory_fn,
+                text=body["text"], tags=body.get("tags", []),
+                source_session=body["source_session"],
+                agent_identity=body["agent_identity"],
+                confidence=confidence,
+                confidence_threshold=state.config.confidence_threshold,
+                worktrees=state.worktrees, push_queue=state.push_queue,
+                pending=state.pending, rate_limiter=state.rate_limiter,
+                blocklist=state.blocklist,
+                remote_addr=request.client.host if request.client else "unknown",
+                audit_log=state.audit_log,
+                can_auto_commit=principal.can_auto_commit,
+                max_text_bytes=state.config.max_text_bytes,
+            )
+            status = _propose_status(resp.status)
+            return JSONResponse(resp.model_dump(), status_code=status)
+
+        @app.custom_route("/api/v1/propose/edit", methods=["POST"])
+        async def propose_edit(request: Request) -> JSONResponse:
+            principal, denied = _authorize(request, registry, CAP_PROPOSE)
+            if denied is not None:
+                return denied
+            if (off := _write_pipeline_ready(state)) is not None:
+                return off
+            body, big = await _read_json_capped(request, state.config.max_body_bytes)
+            if big is not None:
+                return big
+            if (bad := _missing_fields_response(
+                body,
+                ["target_path", "postimage", "base_commit",
+                 "source_session", "agent_identity", "confidence"],
+            )) is not None:
+                return bad
+            confidence, bad = _parse_confidence(body)
+            if bad is not None:
+                return bad
+            assert state.worktrees is not None
+            assert state.push_queue is not None
+            assert state.pending is not None
+            assert state.rate_limiter is not None
+            assert state.blocklist is not None
+            from data_olympus.tools_write import kb_propose_edit_fn
+            resp = await _offload(
+                kb_propose_edit_fn,
+                target_path=body["target_path"], postimage=body["postimage"],
+                base_commit=body["base_commit"],
+                base_blob_sha=body.get("base_blob_sha"),
+                target_file_hash=body.get("target_file_hash"),
+                reason=body.get("reason", ""),
+                source_session=body["source_session"],
+                agent_identity=body["agent_identity"],
+                confidence=confidence,
+                confidence_threshold=state.config.confidence_threshold,
+                worktrees=state.worktrees, push_queue=state.push_queue,
+                pending=state.pending, rate_limiter=state.rate_limiter,
+                blocklist=state.blocklist,
+                remote_addr=request.client.host if request.client else "unknown",
+                audit_log=state.audit_log,
+                can_auto_commit=principal.can_auto_commit,
+                max_postimage_bytes=state.config.max_postimage_bytes,
+            )
+            status = _propose_status(resp.status)
+            return JSONResponse(resp.model_dump(), status_code=status)
+
+        @app.custom_route("/api/v1/resolve/{pending_id}", methods=["POST"])
+        async def resolve_pending(request: Request) -> JSONResponse:
+            _principal, denied = _authorize(request, registry, CAP_RESOLVE)
+            if denied is not None:
+                return denied
+            if (off := _write_pipeline_ready(state)) is not None:
+                return off
+            pid = request.path_params["pending_id"]
+            body = await request.json()
+            if (bad := _missing_fields_response(body, ["decision"])) is not None:
+                return bad
+            assert state.worktrees is not None
+            assert state.push_queue is not None
+            assert state.pending is not None
+            from data_olympus.tools_write import kb_resolve_pending_fn
+            resp = await _offload(
+                kb_resolve_pending_fn,
+                pending_id=pid, decision=body["decision"],
+                edited_text=body.get("edited_text"),
+                worktrees=state.worktrees, push_queue=state.push_queue,
+                pending=state.pending,
+                source_session=body.get("source_session", "operator"),
+                agent_identity=body.get("agent_identity", "operator"),
+                audit_log=state.audit_log,
+            )
+            return JSONResponse(resp.model_dump())
+
+        @app.custom_route("/api/v1/pending", methods=["GET"])
+        async def list_pending(request: Request) -> JSONResponse:
+            # Observability routes leak target paths / agent identities, so when auth
+            # is configured they require an authenticated principal (open otherwise).
+            _principal, denied = _authorize(request, registry)
+            if denied is not None:
+                return denied
+            if state.pending is None:
+                return JSONResponse({"pending": []})
+            from data_olympus.tools_write import kb_list_pending_fn
+            resp = await _offload(kb_list_pending_fn, pending=state.pending)
+            return JSONResponse(resp.model_dump())
+
+        @app.custom_route("/api/v1/audit", methods=["GET"])
+        async def audit(request: Request) -> JSONResponse:
+            _principal, denied = _authorize(request, registry)
+            if denied is not None:
+                return denied
+            if state.audit_log is None:
+                return JSONResponse({"events": [], "returned": 0, "limit_hit": False})
+            from data_olympus.tools_audit import kb_audit_fn
+            qp = request.query_params
+            since = float(qp["since"]) if qp.get("since") else None
+            agent = qp.get("agent")
+            status_filter = qp.get("status")
+            limit = int(qp.get("limit", "100"))
+            resp = await _offload(kb_audit_fn, audit_log=state.audit_log, since=since,
+                                  agent=agent, status=status_filter, limit=limit)
+            return JSONResponse(resp.model_dump())
+
+        @app.custom_route("/api/v1/audit/verify", methods=["GET"])
+        async def audit_verify(request: Request) -> JSONResponse:
+            _principal, denied = _authorize(request, registry)
+            if denied is not None:
+                return denied
+            if state.audit_log is None:
+                return JSONResponse({"ok": True, "first_broken_index": -1})
+            ok, idx = await _offload(state.audit_log.verify)
+            return JSONResponse({"ok": ok, "first_broken_index": idx})
+
+        @app.custom_route("/api/v1/consult", methods=["POST"])
+        async def consult(request: Request) -> JSONResponse:
+            _principal, denied = _authorize(request, registry)
+            if denied is not None:
+                return denied
+            import time as _time
+
+            from data_olympus.tools_enforce import kb_consult_fn
+            body = await request.json()
+            if (bad := _missing_fields_response(
+                body, ["workspace", "source_session"],
+            )) is not None:
+                return bad
+            resp = await _offload(
+                kb_consult_fn,
+                idx=state.idx, classifier=state.classifier, ledger=state.ledger,
+                workspace=body["workspace"], intent=body.get("intent", ""),
+                source_session=body["source_session"],
                 agent_identity=body.get("agent_identity", "unknown"),
-                source_session=body.get("source_session", ""),
-                reason=body.get("reason", ""), now=_time.time())
-        except ValueError as e:
-            return JSONResponse({"recorded": False, "error": str(e)}, status_code=400)
-        return JSONResponse(resp.model_dump())
+                ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
+                audit_log=state.audit_log,
+            )
+            return JSONResponse(resp.model_dump())
+
+        @app.custom_route("/api/v1/gate/check", methods=["POST"])
+        async def gate_check(request: Request) -> JSONResponse:
+            _principal, denied = _authorize(request, registry)
+            if denied is not None:
+                return denied
+            import time as _time
+
+            from data_olympus.tools_enforce import kb_gate_check_fn
+            body = await request.json()
+            if (bad := _missing_fields_response(
+                body, ["workspace", "session_id"],
+            )) is not None:
+                return bad
+            resp = await _offload(
+                kb_gate_check_fn,
+                classifier=state.classifier, ledger=state.ledger,
+                workspace=body["workspace"], session_id=body["session_id"],
+                tool_name=body.get("tool_name", ""),
+                action_path=body.get("action_path"),
+                action_diff=body.get("action_diff", ""),
+                now=_time.time(), ttl_sec=state.config.consult_ttl_sec,
+                audit_log=state.audit_log,
+            )
+            return JSONResponse(resp.model_dump())
+
+        @app.custom_route("/api/v1/compliance", methods=["GET"])
+        async def compliance(request: Request) -> JSONResponse:
+            # Enforcement aggregates are observability data; gate like /pending,
+            # /audit, /consult, /gate when auth is configured.
+            _principal, denied = _authorize(request, registry)
+            if denied is not None:
+                return denied
+            if state.audit_log is None:
+                return JSONResponse({"counts": {}, "by_agent": {}})
+            from data_olympus.tools_enforce import kb_compliance_fn
+            qp = request.query_params
+            since = float(qp["since"]) if qp.get("since") else None
+            agent = qp.get("agent")
+            resp = await _offload(
+                kb_compliance_fn, audit_log=state.audit_log, since=since, agent=agent)
+            return JSONResponse(resp.model_dump())
+
+        @app.custom_route("/api/v1/audit/event", methods=["POST"])
+        async def record_event(request: Request) -> JSONResponse:
+            _principal, denied = _authorize(request, registry, CAP_RECORD_EVENT)
+            if denied is not None:
+                return denied
+            if state.audit_log is None:
+                return JSONResponse({"recorded": False}, status_code=503)
+            import time as _time
+
+            body = await request.json()
+            if (bad := _missing_fields_response(body, ["event_type", "workspace"])) is not None:
+                return bad
+            from data_olympus.tools_enforce import kb_record_event_fn
+            try:
+                resp = await _offload(
+                    kb_record_event_fn,
+                    audit_log=state.audit_log, event_type=body["event_type"],
+                    workspace=body["workspace"],
+                    agent_identity=body.get("agent_identity", "unknown"),
+                    source_session=body.get("source_session", ""),
+                    reason=body.get("reason", ""), now=_time.time())
+            except ValueError as e:
+                return JSONResponse({"recorded": False, "error": str(e)}, status_code=400)
+            return JSONResponse(resp.model_dump())
 
     @app.custom_route("/api/v1/onboarding/status", methods=["GET"])
     async def onboarding_status(request: Request) -> JSONResponse:
@@ -556,52 +568,55 @@ def register_routes(
         )
         return JSONResponse(resp.model_dump())
 
-    @app.custom_route("/api/v1/onboarding/bootstrap", methods=["POST"])
-    async def onboarding_bootstrap(request: Request) -> JSONResponse:
-        principal, denied = _authorize(request, registry, CAP_BOOTSTRAP)
-        if denied is not None:
-            return denied
-        if (off := _write_pipeline_ready(state)) is not None:
-            return off
-        body, big = await _read_json_capped(request, state.config.max_body_bytes)
-        if big is not None:
-            return big
-        if (bad := _missing_fields_response(
-            body, ["workspace", "files", "source_session",
-                   "agent_identity", "confidence"],
-        )) is not None:
-            return bad
-        confidence, bad = _parse_confidence(body)
-        if bad is not None:
-            return bad
-        assert state.worktrees is not None
-        assert state.push_queue is not None
-        assert state.pending is not None
-        assert state.rate_limiter is not None
-        assert state.blocklist is not None
-        from data_olympus.tools_onboarding import kb_bootstrap_project_fn
-        resp = await _offload(
-            kb_bootstrap_project_fn,
-            idx=state.idx,
-            workspace=body["workspace"],
-            component=body.get("component"),
-            workspace_remote_url=body.get("workspace_remote_url"),
-            component_remote_url=body.get("component_remote_url"),
-            files=body["files"],
-            source_session=body["source_session"],
-            agent_identity=body["agent_identity"],
-            confidence=confidence,
-            confidence_threshold=state.config.confidence_threshold,
-            worktrees=state.worktrees, push_queue=state.push_queue,
-            pending=state.pending, rate_limiter=state.rate_limiter,
-            blocklist=state.blocklist, audit_log=state.audit_log,
-            remote_addr=request.client.host if request.client else "unknown",
-            can_auto_commit=principal.can_auto_commit,
-            max_postimage_bytes=state.config.max_postimage_bytes,
-            max_files=state.config.max_bootstrap_files,
-        )
-        status = _propose_status(resp.status)
-        return JSONResponse(resp.model_dump(), status_code=status)
+    if not read_only:
+        # Write route: bootstrapping a workspace is a commit. Absent on a
+        # read-only replica (issue #44).
+        @app.custom_route("/api/v1/onboarding/bootstrap", methods=["POST"])
+        async def onboarding_bootstrap(request: Request) -> JSONResponse:
+            principal, denied = _authorize(request, registry, CAP_BOOTSTRAP)
+            if denied is not None:
+                return denied
+            if (off := _write_pipeline_ready(state)) is not None:
+                return off
+            body, big = await _read_json_capped(request, state.config.max_body_bytes)
+            if big is not None:
+                return big
+            if (bad := _missing_fields_response(
+                body, ["workspace", "files", "source_session",
+                       "agent_identity", "confidence"],
+            )) is not None:
+                return bad
+            confidence, bad = _parse_confidence(body)
+            if bad is not None:
+                return bad
+            assert state.worktrees is not None
+            assert state.push_queue is not None
+            assert state.pending is not None
+            assert state.rate_limiter is not None
+            assert state.blocklist is not None
+            from data_olympus.tools_onboarding import kb_bootstrap_project_fn
+            resp = await _offload(
+                kb_bootstrap_project_fn,
+                idx=state.idx,
+                workspace=body["workspace"],
+                component=body.get("component"),
+                workspace_remote_url=body.get("workspace_remote_url"),
+                component_remote_url=body.get("component_remote_url"),
+                files=body["files"],
+                source_session=body["source_session"],
+                agent_identity=body["agent_identity"],
+                confidence=confidence,
+                confidence_threshold=state.config.confidence_threshold,
+                worktrees=state.worktrees, push_queue=state.push_queue,
+                pending=state.pending, rate_limiter=state.rate_limiter,
+                blocklist=state.blocklist, audit_log=state.audit_log,
+                remote_addr=request.client.host if request.client else "unknown",
+                can_auto_commit=principal.can_auto_commit,
+                max_postimage_bytes=state.config.max_postimage_bytes,
+                max_files=state.config.max_bootstrap_files,
+            )
+            status = _propose_status(resp.status)
+            return JSONResponse(resp.model_dump(), status_code=status)
 
     @app.custom_route("/api/v1/onboarding/playbook", methods=["GET"])
     async def onboarding_playbook(request: Request) -> JSONResponse:
