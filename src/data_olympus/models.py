@@ -276,3 +276,19 @@ class BootstrapResponse(BaseModel):
     rejected_paths: list[str] = []
     push_state: str | None = None
     operator_prompt: str | None = None
+
+
+class CleanupItem(BaseModel):
+    local_path: str
+    classification: str  # imported_duplicate | partial_overlap | unique
+    kb_id: str | None = None
+    kb_path: str | None = None
+    overlap_headings: list[str] = []
+    thin_pointer_text: str | None = None
+
+
+class CleanupPlanResponse(BaseModel):
+    workspace: str
+    component: str | None = None
+    items: list[CleanupItem] = []
+    summary: dict[str, int] = {}

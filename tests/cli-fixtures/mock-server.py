@@ -19,6 +19,8 @@ Read routes:
     GET /api/v1/onboarding/status       -> synthetic status:
                                             state=onboarded for workspace=example-project,
                                             state=absent for any other workspace.
+    GET /api/v1/onboarding/playbook     -> {"kind":..., "text":...} via the real
+                                            render_playbook() (single-sourced).
 
 Write routes:
     POST /api/v1/propose/memory         -> committed if confidence>=0.85,
@@ -35,6 +37,14 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 FIXTURE_DIR = Path(sys.argv[2])
+
+# Make the real render_playbook() importable so the mock server stays
+# single-sourced with the REST endpoint instead of hand-maintaining a canned
+# copy of the onboarding script text.
+_SRC_DIR = Path(__file__).resolve().parents[2] / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+from data_olympus.onboarding_playbook import render_playbook  # noqa: E402
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -121,6 +131,24 @@ class Handler(BaseHTTPRequestHandler):
                     "rename_candidates": [],
                 }
             self._send(200, json.dumps(body))
+        elif path == "/api/v1/onboarding/playbook":
+            kind = qs.get("kind", ["dispatch"])[0]
+            workspace = qs.get("workspace", [None])[0]
+            component = qs.get("component", [None])[0]
+            workspace_remote_url = qs.get("workspace_remote_url", [None])[0]
+            component_remote_url = qs.get("component_remote_url", [None])[0]
+            try:
+                text = render_playbook(
+                    kind,
+                    workspace=workspace,
+                    component=component,
+                    workspace_remote_url=workspace_remote_url,
+                    component_remote_url=component_remote_url,
+                )
+            except ValueError as e:
+                self._send(400, json.dumps({"error": str(e)}))
+                return
+            self._send(200, json.dumps({"kind": kind, "text": text}))
         elif path == "/api/v1/audit":
             self._send(
                 200,

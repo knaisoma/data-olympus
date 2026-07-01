@@ -473,6 +473,26 @@ def build_app(
         return resp.model_dump()
 
     @app.tool()
+    def kb_cleanup_plan(
+        workspace: str, local_files: list[dict[str, str]],
+        component: str | None = None, jaccard_threshold: float = 0.6,
+    ) -> dict[str, object]:
+        """Read-only. Classify local project-repo docs against KB content for this
+        workspace/component and return thin-pointer replacements for duplicates.
+        The agent applies confirmed edits locally; the server writes nothing."""
+        from data_olympus.tools_onboarding import CleanupInputError, kb_cleanup_plan_fn
+        try:
+            resp = kb_cleanup_plan_fn(
+                idx=state.idx, workspace=workspace, component=component,
+                local_files=local_files, jaccard_threshold=jaccard_threshold,
+                max_files=state.config.max_bootstrap_files,
+                max_content_bytes=state.config.max_postimage_bytes,
+            )
+        except CleanupInputError as e:
+            return {"status": "rejected_invalid_input", "error": str(e)}
+        return resp.model_dump()
+
+    @app.tool()
     def kb_consult(
         workspace: str, intent: str, source_session: str,
         agent_identity: str,
@@ -548,6 +568,9 @@ def build_app(
 
     from data_olympus.rest_api import register_routes
     register_routes(app, state, registry)
+
+    from data_olympus.prompts import register_prompts
+    register_prompts(app)
     # Attach state for lifespan to discover; not used by tests
     app._dolympus_state = state  # type: ignore[attr-defined]
     return app

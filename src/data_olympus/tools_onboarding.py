@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import contextlib
+import math
 from typing import TYPE_CHECKING
 
 from data_olympus.models import (
     BootstrapResponse,
+    CleanupItem,
+    CleanupPlanResponse,
     OnboardingStatusResponse,
     RenameCandidateModel,
 )
@@ -251,3 +254,118 @@ def _inject_remote_url(
                 continue
         out.append(f)
     return out
+
+
+_RANK = {"imported_duplicate": 2, "partial_overlap": 1, "unique": 0}
+
+
+class CleanupInputError(ValueError):
+    """Raised by kb_cleanup_plan_fn when local_files / jaccard_threshold input
+    fails validation. Both the REST route and the MCP tool catch this and
+    surface it as a 400 / rejected_invalid_input response respectively."""
+
+
+def kb_cleanup_plan_fn(
+    *,
+    idx: Index,
+    workspace: str,
+    component: str | None,
+    local_files: list[dict[str, str]],
+    jaccard_threshold: float = 0.6,
+    max_files: int = 0,
+    max_content_bytes: int = 0,
+) -> CleanupPlanResponse:
+    """Read-only: classify each local repo file against the KB content already
+    committed for this workspace/component, and render thin-pointer replacements
+    for exact duplicates. Server proposes; the agent applies edits locally.
+
+    Validation happens here (not just in the REST route) so that the MCP tool
+    path, which calls this function directly, is protected too. Raises
+    CleanupInputError on invalid input; callers translate that into their own
+    surface's error shape (REST: 400 JSON; MCP: rejected_invalid_input dict).
+    """
+    if not isinstance(local_files, list):
+        raise CleanupInputError("local_files must be a list")
+    validated_contents: list[str] = []
+    for entry in local_files:
+        if not isinstance(entry, dict):
+            raise CleanupInputError("each local_files entry must be an object")
+        if not isinstance(entry.get("path"), str):
+            raise CleanupInputError(
+                "each local_files entry must be an object with a string 'path'",
+            )
+        content = entry.get("content", "")
+        if not isinstance(content, str):
+            raise CleanupInputError(
+                "each local_files entry's 'content' must be a string",
+            )
+        if max_content_bytes > 0 and len(content.encode("utf-8")) > max_content_bytes:
+            raise CleanupInputError(
+                f"local_files entry '{entry.get('path')}' content exceeds "
+                f"max_content_bytes={max_content_bytes}",
+            )
+        validated_contents.append(content)
+
+    if max_files > 0 and len(local_files) > max_files:
+        raise CleanupInputError(f"too many files (max_files={max_files})")
+
+    try:
+        t = float(jaccard_threshold)
+    except (TypeError, ValueError) as e:
+        raise CleanupInputError("jaccard_threshold must be a number") from e
+    if not math.isfinite(t) or not (0.0 <= t <= 1.0):
+        raise CleanupInputError("jaccard_threshold must be a finite number in [0.0, 1.0]")
+    jaccard_threshold = t
+
+    from data_olympus.dedup import classify_overlap, jaccard, shingles
+    from data_olympus.thin_pointer import render_thin_pointer
+
+    prefix = f"projects/{workspace}/"
+    if component:
+        prefix = f"projects/{workspace}/components/{component}/"
+        entries = idx.list_by_prefix(prefix)
+    else:
+        entries = idx.list_by_prefix(prefix, exclude_under="components/")
+    kb_docs = []
+    for entry in entries:
+        doc = idx.get(entry["id"])
+        if doc is not None:
+            kb_docs.append(doc)
+
+    kind = "component" if component else "project"
+    items: list[CleanupItem] = []
+    summary = {"imported_duplicate": 0, "partial_overlap": 0, "unique": 0}
+
+    # Precompute each KB doc's shingles once, outside the per-local-file loop,
+    # rather than recomputing them for every local file (O(files * docs) shingle
+    # builds otherwise). classify_overlap() still recomputes internally for its
+    # own exact-hash + jaccard check; that duplication is harmless and kept
+    # simple/behavior-preserving here.
+    kb_docs_shingled = [(doc, shingles(doc.content_markdown)) for doc in kb_docs]
+
+    for lf, local_text in zip(local_files, validated_contents, strict=True):
+        best_cls, best_headings, best_doc, best_j = "unique", [], None, -1.0
+        local_shingles = shingles(local_text)
+        for doc, doc_shingles in kb_docs_shingled:
+            cls, headings = classify_overlap(
+                local_text, doc.content_markdown, jaccard_threshold=jaccard_threshold,
+            )
+            j = jaccard(local_shingles, doc_shingles)
+            if _RANK[cls] > _RANK[best_cls] or (_RANK[cls] == _RANK[best_cls] and j > best_j):
+                best_cls, best_headings, best_doc, best_j = cls, headings, doc, j
+
+        item = CleanupItem(local_path=lf.get("path", ""), classification=best_cls)
+        if best_doc is not None and best_cls == "imported_duplicate":
+            item.kb_id, item.kb_path = best_doc.id, best_doc.path
+            item.thin_pointer_text = render_thin_pointer(
+                kb_path=best_doc.path, kb_id=best_doc.id, kind=kind,
+            )
+        elif best_doc is not None and best_cls == "partial_overlap":
+            item.kb_id, item.kb_path = best_doc.id, best_doc.path
+            item.overlap_headings = best_headings
+        summary[best_cls] += 1
+        items.append(item)
+
+    return CleanupPlanResponse(
+        workspace=workspace, component=component, items=items, summary=summary,
+    )

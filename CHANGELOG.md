@@ -31,6 +31,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Cross-agent enforcement providers: `kb enforce install --agent codex|gemini|opencode|copilot-cli|copilot-ide` and `--all`. Codex and Gemini get hard PreToolUse/BeforeTool gates (merging into existing hooks), OpenCode gets a `tool.execute.before` plugin, and Copilot CLI/IDE get a soft instructions-file + MCP provider. Antigravity is a documented-unsupported stub. The `kb-enforce-hook` dispatcher gained a `--dialect gemini` output mode.
 - Detection floor for un-hookable agents: `kb enforce report` (and `data-olympus report`) correlates governed git commits against the consult audit and lists changes with no consultation on record. An opt-in repo-scoped git provider (`kb enforce install --agent git`) installs a post-commit warning hook, or a pre-commit blocking hook with `--block`. Reuses the existing audit endpoint; no server change.
 - Enforcement hardening and observability: gate_bypass and gate_degraded events are now recorded (via `data-olympus report --emit-events` / the git warn hook, and the pre-tool hook on a reachable-degraded gate), so `kb_compliance` surfaces them. The gate receives `action_diff` and the classifier uses word-boundary matching plus dependency-install command signals (Codex and Claude now gate the Bash tool). New `kb enforce install --mode off|soft|hard`, ledger persistence via `KB_LEDGER_PATH`, a friendly PATH hint for `kb enforce report`, and a CI guard requiring a changelog entry for functional changes.
+- Guided onboarding: MCP prompts `onboard`, `onboard_project`, and `onboard_component` walk an agent through bootstrapping a new workspace or component, backed by a single-sourced playbook (`render_playbook`). A read-only `kb_cleanup_plan` MCP tool plus `POST /api/v1/onboarding/cleanup-plan` classify local repo docs against KB content and propose thin-pointer replacements for duplicates. `GET /api/v1/onboarding/playbook` and `kb onboard playbook` expose the same script to agents without native MCP prompt support.
 
 ### Fixed
 
@@ -134,6 +135,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   write a file outside the worktree before `git add` aborted. The edit, resolve,
   and onboarding-bootstrap paths now use the same guard. Regression tests cover
   the helper directly and each write path.
+- Cleanup-plan input validation is now centralized in `kb_cleanup_plan_fn` itself,
+  so both `POST /api/v1/onboarding/cleanup-plan` and the MCP `kb_cleanup_plan`
+  tool are protected identically (previously only the REST route validated,
+  and the MCP tool called the function directly, unvalidated). The shared
+  function now rejects a non-list `local_files`, a non-object entry, a
+  non-string `path`, and a non-string `content` (including an explicit
+  `content: null`, which used to slip through `.get()` and crash later). It
+  also enforces a per-file `max_content_bytes` cap, an aggregate `max_files`
+  cap, and requires `jaccard_threshold` to be a finite number in `[0.0, 1.0]`
+  (rejecting `nan`, `inf`, and out-of-range values). REST and MCP callers pass
+  the existing `KB_MAX_BOOTSTRAP_FILES` / `KB_MAX_POSTIMAGE_BYTES` caps through
+  to the shared function.
 
 ### Changed
 
