@@ -29,10 +29,23 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Release ${TAG#v}"
+          # Idempotent: a re-run after a partial failure must not hard-fail on an
+          # existing tag or release.
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            git tag -a "$TAG" -m "Release ${TAG#v}"
+          fi
+          # This tag is pushed with the default GITHUB_TOKEN on purpose. GitHub does not
+          # trigger workflows from GITHUB_TOKEN-created events, so release-image.yml
+          # (on: push tags v*) does not fire here, and the build-image job below builds
+          # the image instead. release-image.yml's tag trigger remains the manual-tag
+          # fallback path (STD-U-810 section 9) for a human-pushed tag. If this push is
+          # ever switched to a PAT or GitHub App token, release-image.yml will also fire
+          # and double-build plus double-move latest. Keep it on GITHUB_TOKEN.
           git push origin "$TAG"
           NOTES="docs/releases/${TAG}.md"
-          if [ -f "$NOTES" ]; then
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists, skipping"
+          elif [ -f "$NOTES" ]; then
             gh release create "$TAG" --title "$TAG" --notes-file "$NOTES"
           else
             gh release create "$TAG" --title "$TAG" --generate-notes
