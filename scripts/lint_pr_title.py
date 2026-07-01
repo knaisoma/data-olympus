@@ -8,8 +8,15 @@ the bump engine exactly.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
-from scripts.compute_release import classify
+# Allow running as a plain script (python scripts/x.py): put repo root on the
+# path so `scripts.*` imports resolve the same way they do under pytest.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from scripts.compute_release import classify  # noqa: E402
 
 _ALLOWED = {
     "feat", "fix", "perf", "chore", "docs",

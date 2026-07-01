@@ -10,8 +10,16 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
+from pathlib import Path
 
-from scripts.check_changelog import _is_functional  # one definition of "functional"
+# Allow running as a plain script (python scripts/x.py): put repo root on the
+# path so `scripts.*` imports resolve the same way they do under pytest.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from scripts.check_changelog import _is_functional  # noqa: E402  # one definition of "functional"
 
 _SUBJECT_RE = re.compile(r"^(?P<type>[a-z]+)(?:\([^)]*\))?(?P<bang>!)?:\s")
 _BREAKING_FOOTER = re.compile(r"^BREAKING[ -]CHANGE:", re.MULTILINE)

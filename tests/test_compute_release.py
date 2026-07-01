@@ -1,7 +1,14 @@
 """Pure logic for the SemVer release computation (STD-U-810 pre-1.0 mapping)."""
 from __future__ import annotations
 
+import json
+import pathlib
+import subprocess
+import sys
+
 from scripts.compute_release import bump_for, classify, next_version
+
+_REPO = pathlib.Path(__file__).resolve().parents[1]
 
 
 def test_classify_plain_feat() -> None:
@@ -65,3 +72,12 @@ def test_next_version_minor_resets_patch() -> None:
 
 def test_next_version_none_is_unchanged() -> None:
     assert next_version("0.1.1", "none") == "0.1.1"
+
+
+def test_script_runs_as_direct_path() -> None:
+    r = subprocess.run(
+        [sys.executable, "scripts/compute_release.py"],
+        cwd=_REPO, capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout).get("bump") in {"none", "patch", "minor"}
