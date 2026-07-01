@@ -259,7 +259,11 @@ def build_app(
     # (issue #37) as its ``inner``, so among the remaining hits an active doc
     # still outranks the superseded one it replaced. status_weights=None uses the
     # built-in map; KB_STATUS_WEIGHTS overrides it.
-    idx = Index(kb_index_path)
+    idx = Index(
+        kb_index_path,
+        trigram_fallback=config.trigram_fallback_enabled,
+        trigram_fallback_threshold=config.trigram_fallback_threshold,
+    )
     synonym_expander = default_query_expander()
     cooc_expander = idx.cooccurrence_expander() if cooccurrence_enabled() else None
     idx.query_expander = compose_expanders(
