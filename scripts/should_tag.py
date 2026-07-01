@@ -11,14 +11,28 @@ import pathlib
 import re
 import subprocess
 
-_VERSION_RE = re.compile(r'^\s*version\s*=\s*"([^"]+)"', re.MULTILINE)
+_SECTION_RE = re.compile(r'^\s*\[([^\]]+)\]\s*$')
+_VERSION_RE = re.compile(r'^\s*version\s*=\s*"([^"]+)"')
 
 
 def project_version(text: str) -> str:
-    m = _VERSION_RE.search(text)
-    if not m:
-        raise ValueError("no version declared in pyproject.toml")
-    return m.group(1)
+    """Return the version declared under the [project] table.
+
+    Scoped to [project] so a same-named `version =` key under an unrelated
+    table (e.g. a [tool.*] config) is never mistaken for the project version.
+    """
+    in_project = False
+    for line in text.splitlines():
+        section_match = _SECTION_RE.match(line)
+        if section_match:
+            in_project = section_match.group(1).strip() == "project"
+            continue
+        if not in_project:
+            continue
+        version_match = _VERSION_RE.match(line)
+        if version_match:
+            return version_match.group(1)
+    raise ValueError("no version declared in [project] table of pyproject.toml")
 
 
 def tag_to_create(version: str, existing: set[str]) -> str | None:

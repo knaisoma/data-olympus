@@ -18,6 +18,30 @@ def test_project_version_missing_raises() -> None:
         project_version('[project]\nname = "x"\n')
 
 
+def test_project_version_ignores_tool_table_version_before_project() -> None:
+    text = (
+        '[tool.something]\n'
+        'version = "9.9.9"\n'
+        '\n'
+        '[project]\n'
+        'name = "data-olympus"\n'
+        'version = "0.1.2"\n'
+    )
+    assert project_version(text) == "0.1.2"
+
+
+def test_project_version_ignores_tool_table_version_after_project() -> None:
+    text = (
+        '[project]\n'
+        'name = "data-olympus"\n'
+        'version = "0.1.2"\n'
+        '\n'
+        '[tool.something]\n'
+        'version = "9.9.9"\n'
+    )
+    assert project_version(text) == "0.1.2"
+
+
 def test_tag_created_when_missing() -> None:
     assert tag_to_create("0.1.2", {"v0.1.0", "v0.1.1"}) == "v0.1.2"
 
