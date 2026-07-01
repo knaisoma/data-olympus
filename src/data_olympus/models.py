@@ -29,6 +29,10 @@ class HealthResponse(BaseModel):
     last_git_fetch_at: float | None = None
     last_successful_refresh_at: float | None = None
     remote_head_sha: str | None = None
+    # Live streamable-http transport sessions. None when the count cannot be
+    # observed (e.g. before the HTTP app's lifespan starts, or in-memory tests).
+    # Surfaced so session accumulation is diagnosable in production (issue #43).
+    live_sessions: int | None = None
 
 
 class CategoryCount(BaseModel):

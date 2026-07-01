@@ -42,6 +42,7 @@ def kb_health_fn(
     last_git_fetch_at: float | None = None,
     last_successful_refresh_at: float | None = None,
     remote_head_sha: str | None = None,
+    live_sessions: int | None = None,
 ) -> HealthResponse:
     state = snapshot(
         idx=idx,
@@ -59,6 +60,7 @@ def kb_health_fn(
         last_git_fetch_at=last_git_fetch_at,
         last_successful_refresh_at=last_successful_refresh_at,
         remote_head_sha=remote_head_sha,
+        live_sessions=live_sessions,
     )
     return HealthResponse(
         kb_commit=state.kb_commit,
@@ -81,6 +83,7 @@ def kb_health_fn(
         last_git_fetch_at=state.last_git_fetch_at,
         last_successful_refresh_at=state.last_successful_refresh_at,
         remote_head_sha=state.remote_head_sha,
+        live_sessions=state.live_sessions,
     )
 
 

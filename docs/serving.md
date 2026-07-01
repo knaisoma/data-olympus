@@ -42,6 +42,51 @@ reports `degraded: true` only when the index has not been rebuilt within
 For a local read-only demo with no remote, set `KB_REMOTE_URL=""`. The server
 stays healthy as long as the index builds successfully on startup.
 
+## Streamable-http session lifecycle and reaping
+
+Each session-less `POST /mcp` handshake makes the underlying MCP SDK create a
+transport, register it in an in-memory session table, and start a task that
+blocks waiting for further messages on that session. The SDK removes a session
+only on an explicit client `DELETE`, on the session task crashing, or on server
+shutdown. It also supports an idle timeout, but only when its session manager is
+constructed with one, and FastMCP does not wire one through: under its default
+construction the idle timeout is unset, so nothing reaps idle sessions.
+
+Consequence: a client that handshakes and drops the connection without sending
+`DELETE` (the common cause of repeated "Created new transport with session ID"
+log lines) leaves its transport resident. Over long uptime the session table
+grows without bound and leaks memory and tasks.
+
+data-olympus closes this two ways:
+
+- Observability: `health` reports `live_sessions`, the current live transport
+  count (or `null` before the HTTP app has started serving). The server also
+  logs the live count each reaper pass. A `live_sessions` value that only ever
+  climbs is the signal of a leak.
+- Bound: a background reaper terminates sessions idle beyond
+  `KB_SESSION_IDLE_TIMEOUT_SEC` (default 1800s / 30 min). It scans every
+  `KB_SESSION_REAP_INTERVAL_SEC` (default 60s). Set
+  `KB_SESSION_IDLE_TIMEOUT_SEC=0` to disable reaping and keep observability
+  only. Termination uses the SDK's own `terminate()` path, so a client that
+  reconnects simply gets a fresh session.
+
+Idle is measured from the last *request* seen for a session: the activity clock
+advances only when a request carrying that session's `mcp-session-id` header
+reaches the server. A client that keeps polling or making periodic calls is
+therefore never reaped, because each call re-stamps its activity.
+
+The consequence to be aware of is that "idle" is per-request, not
+per-connection. A quiet long-lived `GET` SSE stream that stays open but makes no
+periodic `POST` requests still stamps no activity, so after
+`KB_SESSION_IDLE_TIMEOUT_SEC` its session is reaped and the stream is torn down;
+the client must reconnect (it gets a fresh session on the next handshake). If
+your client relies on a long-lived stream without periodic requests, either
+raise `KB_SESSION_IDLE_TIMEOUT_SEC` above your longest expected quiet period,
+set it to `0` to disable reaping (observability only), or have the client send a
+periodic keep-alive request. Excluding sessions with an active open stream from
+reaping (so a live stream is never torn down) is a possible follow-up; the
+current behavior reaps purely on request-activity age.
+
 ## Taxonomy and writable paths
 
 The server maps each document's path to a `(tier, category)` pair. The built-in
