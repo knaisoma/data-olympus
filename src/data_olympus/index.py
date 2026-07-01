@@ -10,6 +10,18 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
+from data_olympus.cooccurrence import (
+    DEFAULT_K,
+    DEFAULT_MAX_TERMS,
+    RELATED_TERMS_SCHEMA,
+    build_cooccurrence_table,
+    cooccurrence_build_params,
+    cooccurrence_enabled,
+    lookup_related_terms,
+    make_cooccurrence_expander,
+    tokenize_doc,
+    write_cooccurrence_table,
+)
 from data_olympus.markdown_parse import parse_file
 
 if TYPE_CHECKING:
@@ -47,12 +59,13 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
-"""
+""" + RELATED_TERMS_SCHEMA
 
 # Informational only; recorded in the meta table for observability. Rebuild
 # is guaranteed by bootstrap_now=True calling Index.build() unconditionally
 # on container start, not by a version-mismatch check.
-_SCHEMA_VERSION = "5"
+# v6 adds the related_terms co-occurrence table (issue #40).
+_SCHEMA_VERSION = "6"
 
 
 # fts column order (excluding the UNINDEXED id at position 0).
@@ -420,6 +433,11 @@ class Index:
             conn.executescript(_SCHEMA)
             count = 0
             path_rules = _load_path_rules()
+            # Per-document token sets for the co-occurrence table (issue #40).
+            # Collected during the single indexing pass so the build stays one
+            # walk; only populated when co-occurrence expansion is enabled.
+            build_cooccurrence = cooccurrence_enabled()
+            doc_token_sets: list[set[str]] = []
             for md in files_to_index:
                 rel = md.relative_to(kb_root)
                 doc = parse_file(md)
@@ -445,7 +463,23 @@ class Index:
                     "VALUES (?, ?, ?, ?, ?, ?)",
                     (doc_id, doc.title, tags_str, applies_when_str, doc.description, doc.body),
                 )
+                if build_cooccurrence:
+                    doc_token_sets.append(
+                        tokenize_doc(doc.title, tags_str, doc.description, doc.body)
+                    )
                 count += 1
+            # Co-occurrence / PMI table (issue #40). Built into the SAME tmp DB
+            # and swapped atomically with the rest of the index below, so a query
+            # never sees a half-built related_terms table.
+            if build_cooccurrence:
+                params = cooccurrence_build_params()
+                table = build_cooccurrence_table(
+                    doc_token_sets,
+                    k=int(params["k"]),
+                    min_count=int(params["min_count"]),
+                    min_pmi=float(params["min_pmi"]),
+                )
+                write_cooccurrence_table(conn, table)
             now = time.time()
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('source_commit', ?)",
@@ -609,6 +643,44 @@ class Index:
                 raise ValueError(f"unknown fts column(s): {unknown}")
             return "{" + " ".join(columns) + "} : (" + quoted + ")"
         return quoted
+
+    def related_terms(self, term: str, *, limit: int) -> builtins.list[str]:
+        """Return up to ``limit`` corpus co-occurring terms for ``term``.
+
+        Reads the ``related_terms`` table populated at build time (issue #40),
+        strongest (highest-PMI) first. Opens a per-call connection so it always
+        reads the atomically-swapped current index. An index built before the
+        table existed (no ``related_terms`` table) or an unknown term yields the
+        empty list rather than raising. This is the query-time backing for the
+        co-occurrence expander wired via ``make_cooccurrence_expander``.
+        """
+        if limit <= 0 or not self._db_path.exists():
+            return []
+        conn = self._connect()
+        try:
+            return lookup_related_terms(conn, term, limit=limit)
+        except sqlite3.OperationalError:
+            # Table absent (index predates the schema); degrade to no expansion.
+            return []
+        finally:
+            conn.close()
+
+    def cooccurrence_expander(
+        self, *, k: int = DEFAULT_K, max_terms: int = DEFAULT_MAX_TERMS,
+    ) -> Callable[[list[str]], list[str]]:
+        """Return a ``query_expander`` backed by this index's related-terms table.
+
+        The expander appends, for each query term, up to ``k`` co-occurring terms
+        (down-weighted by appending after the originals), bounded overall by
+        ``max_terms``. Bound to ``self.related_terms`` so it always reads the
+        currently-swapped index. Compose it AFTER the synonym expander via
+        ``cooccurrence.compose_expanders``.
+        """
+        return make_cooccurrence_expander(
+            lambda term, kk: self.related_terms(term, limit=kk),
+            k=k,
+            max_terms=max_terms,
+        )
 
     def get(self, id: str) -> IndexedDoc | None:
         """Retrieve a single document by id. Returns None if not found."""
