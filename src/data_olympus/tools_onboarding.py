@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 from data_olympus.models import (
     BootstrapResponse,
+    CleanupItem,
+    CleanupPlanResponse,
     OnboardingStatusResponse,
     RenameCandidateModel,
 )
@@ -251,3 +253,62 @@ def _inject_remote_url(
                 continue
         out.append(f)
     return out
+
+
+_RANK = {"imported_duplicate": 2, "partial_overlap": 1, "unique": 0}
+
+
+def kb_cleanup_plan_fn(
+    *,
+    idx: Index,
+    workspace: str,
+    component: str | None,
+    local_files: list[dict[str, str]],
+    jaccard_threshold: float = 0.6,
+) -> CleanupPlanResponse:
+    """Read-only: classify each local repo file against the KB content already
+    committed for this workspace/component, and render thin-pointer replacements
+    for exact duplicates. Server proposes; the agent applies edits locally."""
+    from data_olympus.dedup import classify_overlap, jaccard, shingles
+    from data_olympus.thin_pointer import render_thin_pointer
+
+    prefix = f"projects/{workspace}/"
+    if component:
+        prefix = f"projects/{workspace}/components/{component}/"
+    kb_docs = []
+    for entry in idx.list_by_prefix(prefix):
+        doc = idx.get(entry["id"])
+        if doc is not None:
+            kb_docs.append(doc)
+
+    kind = "component" if component else "project"
+    items: list[CleanupItem] = []
+    summary = {"imported_duplicate": 0, "partial_overlap": 0, "unique": 0}
+
+    for lf in local_files:
+        local_text = lf.get("content", "")
+        best_cls, best_headings, best_doc, best_j = "unique", [], None, -1.0
+        local_shingles = shingles(local_text)
+        for doc in kb_docs:
+            cls, headings = classify_overlap(
+                local_text, doc.content_markdown, jaccard_threshold=jaccard_threshold,
+            )
+            j = jaccard(local_shingles, shingles(doc.content_markdown))
+            if _RANK[cls] > _RANK[best_cls] or (_RANK[cls] == _RANK[best_cls] and j > best_j):
+                best_cls, best_headings, best_doc, best_j = cls, headings, doc, j
+
+        item = CleanupItem(local_path=lf["path"], classification=best_cls)
+        if best_doc is not None and best_cls == "imported_duplicate":
+            item.kb_id, item.kb_path = best_doc.id, best_doc.path
+            item.thin_pointer_text = render_thin_pointer(
+                kb_path=best_doc.path, kb_id=best_doc.id, kind=kind,
+            )
+        elif best_doc is not None and best_cls == "partial_overlap":
+            item.kb_id, item.kb_path = best_doc.id, best_doc.path
+            item.overlap_headings = best_headings
+        summary[best_cls] += 1
+        items.append(item)
+
+    return CleanupPlanResponse(
+        workspace=workspace, component=component, items=items, summary=summary,
+    )
