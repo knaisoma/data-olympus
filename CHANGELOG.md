@@ -67,6 +67,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and query-expansion features compose without rewriting the core query. When a
   reranker is installed the query is matched against a wider BM25 candidate pool
   (over-fetched) and the reranked result is truncated back to the requested limit.
+- Read-only replica serving mode (`KB_READ_ONLY`, issue #44) for horizontal read scaling. When set, the server registers only the read tools and read REST routes; the write/enforcement-write tools and routes (propose/resolve/bootstrap/consult/gate/record-event plus the observability GETs `/api/v1/pending`, `/api/v1/audit`, `/api/v1/audit/verify`, `/api/v1/compliance`) are not registered and return 404, and the write pipeline (worktrees/push queue/pending) is never initialised, so a replica is never a git writer. A new `deploy/k8s/read-replica/` overlay (Deployment, Service, ConfigMap, NetworkPolicy, kustomization) runs N interchangeable read pods with per-pod ephemeral clone + index scratch and references a separate read-only git deploy key Secret (`data-olympus-mcp-readonly`). The replica logs an unambiguous "starting in READ-ONLY mode; write pipeline disabled" line at startup.
 
 ### Fixed
 

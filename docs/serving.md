@@ -25,11 +25,31 @@ race.
 
 ## Read-only mirrors may scale horizontally
 
-A read-only replica that serves only `kb_search`, `kb_get`, `kb_list`, and
-`kb_outline` need not maintain the write pipeline and may run as many instances
-as needed. For higher read throughput, place a caching reverse proxy in front
-of the single write instance, or run dedicated read-only replicas that
-periodically pull from the main instance's git remote.
+Set `KB_READ_ONLY=true` to run an instance as a read-only replica. In this mode
+the server registers only the read tools (`kb_search`, `kb_get`, `kb_list`,
+`kb_outline`, `kb_health`) and the read REST routes; the write and
+enforcement-write tools and routes (`propose`, `resolve`, `bootstrap`,
+`consult`, `gate`, `record-event`, and their observability mirrors) are not
+registered at all and return 404. The write pipeline (worktrees, push queue,
+pending) is never initialised, so no replica is a git writer.
+
+Crucially, the `git_pull_loop` still runs, so each replica keeps `KB_REMOTE_URL`
+set and refreshes its own index snapshot from the same git remote as the single
+writer. Run as many replicas as you need for read throughput; the single
+write-enabled instance remains the only owner of the git remote.
+
+`KB_READ_ONLY` is a truthy flag: `1`, `true`, `yes`, or `on` (case-insensitive)
+enable it; unset or anything else keeps the default read-write behaviour.
+
+See `deploy/k8s/read-replica/` for a ready-to-apply `Deployment` (not the
+StatefulSet writer) that runs N read replicas with per-pod ephemeral clone +
+index scratch. Apply the base stack first, then the overlay:
+
+```bash
+kubectl apply -k deploy/k8s              # namespace + secret + writer StatefulSet
+kubectl apply -k deploy/k8s/read-replica # N read replicas + read Service
+kubectl -n data-olympus scale deployment/data-olympus-mcp-read --replicas=5
+```
 
 ## Git pull loop
 
