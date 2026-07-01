@@ -75,6 +75,44 @@ def test_ids_with_exact_tag_no_substring_match(tmp_kb: Path, tmp_index_path: Pat
     assert idx.ids_with_exact_tag("") == set()
 
 
+def test_ids_with_exact_tag_escapes_like_wildcards(
+    tmp_kb: Path, tmp_index_path: Path
+) -> None:
+    """Tags carrying LIKE metacharacters ('_', '%') resolve to exact matches.
+
+    The stored ``tags`` column is space-joined, so a tag may legitimately carry
+    '_' or '%'. Final correctness comes from the split-recheck, but the LIKE
+    pre-filter now escapes '_'/'%' (ESCAPE '\\') so it stays a literal-substring
+    filter instead of treating '_' as 'any single char' and '%' as 'any run of
+    chars' (which would pre-select 'beXend' for 'be_end', or every doc for '%').
+    This pins the observable contract: (a) a genuine exact tag with '_'/'%' still
+    matches, and (b) a near-miss differing only at the metacharacter position
+    does NOT appear in the result.
+    """
+    foundation = tmp_kb / "universal" / "foundation"
+    # Target doc: exact tag 'be_end'.
+    (foundation / "STD-U-100-underscore.md").write_text(
+        "---\nid: STD-U-100\ntier: T1\ncategory: foundation\ntags: [be_end]\n"
+        "title: Underscore Tag\n---\n# STD-U-100\n\nBody.\n"
+    )
+    # Near-miss doc: tag 'beXend' would match '%be_end%' only if '_' were a
+    # wildcard. Also carries a '100%' tag to exercise the '%' escape.
+    (foundation / "STD-U-101-nearmiss.md").write_text(
+        "---\nid: STD-U-101\ntier: T1\ncategory: foundation\ntags: [beXend, 100%]\n"
+        "title: Near Miss Tag\n---\n# STD-U-101\n\nBody.\n"
+    )
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+
+    # (a) genuine exact tags containing metacharacters still match.
+    assert idx.ids_with_exact_tag("be_end") == {"STD-U-100"}
+    assert idx.ids_with_exact_tag("100%") == {"STD-U-101"}
+    # (b) '_' is literal: 'beXend' is not the queried tag 'be_end'.
+    assert "STD-U-101" not in idx.ids_with_exact_tag("be_end")
+    # (c) a bare '%' must not act as a wildcard selecting every doc.
+    assert idx.ids_with_exact_tag("%") == set()
+
+
 # --- exact-id short-circuit --------------------------------------------------
 
 

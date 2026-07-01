@@ -657,16 +657,20 @@ class Index:
         Tags are stored space-joined in ``docs.tags``. A LIKE query would match
         substrings ('style' inside 'styleguide'), so candidates are pre-filtered
         with LIKE for index use, then confirmed by splitting the stored value and
-        checking membership. An empty/blank tag yields the empty set.
+        checking membership. ``%`` and ``_`` in the tag are escaped so they are
+        matched literally rather than as LIKE wildcards, keeping the candidate
+        pre-filter tight. An empty/blank tag yields the empty set.
         """
         tag = tag.strip()
         if not tag:
             return set()
+        # Escape LIKE metacharacters so the pre-filter matches ``tag`` literally.
+        escaped = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT id, tags FROM docs WHERE tags LIKE ?",
-                (f"%{tag}%",),
+                "SELECT id, tags FROM docs WHERE tags LIKE ? ESCAPE '\\'",
+                (f"%{escaped}%",),
             ).fetchall()
         finally:
             conn.close()
