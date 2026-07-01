@@ -473,6 +473,21 @@ def build_app(
         return resp.model_dump()
 
     @app.tool()
+    def kb_cleanup_plan(
+        workspace: str, local_files: list[dict[str, str]],
+        component: str | None = None, jaccard_threshold: float = 0.6,
+    ) -> dict[str, object]:
+        """Read-only. Classify local project-repo docs against KB content for this
+        workspace/component and return thin-pointer replacements for duplicates.
+        The agent applies confirmed edits locally; the server writes nothing."""
+        from data_olympus.tools_onboarding import kb_cleanup_plan_fn
+        resp = kb_cleanup_plan_fn(
+            idx=state.idx, workspace=workspace, component=component,
+            local_files=local_files, jaccard_threshold=jaccard_threshold,
+        )
+        return resp.model_dump()
+
+    @app.tool()
     def kb_consult(
         workspace: str, intent: str, source_session: str,
         agent_identity: str,

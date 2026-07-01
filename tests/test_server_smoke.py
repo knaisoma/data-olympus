@@ -94,3 +94,16 @@ async def test_kb_list_round_trip(tmp_kb: Path, tmp_path: Path) -> None:
         text = str(result)
         # Expect at least STD-U-001 in the listing
         assert "STD-U-001" in text
+
+
+@pytest.mark.asyncio
+async def test_kb_cleanup_plan_tool_is_registered(tmp_kb: Path, tmp_path: Path) -> None:
+    app = build_app(
+        kb_main_path=tmp_kb,
+        kb_index_path=tmp_path / "idx.db",
+        sync_interval_sec=60,
+        staleness_degraded_sec=600,
+        bootstrap_now=True,
+    )
+    tools = await app.list_tools()
+    assert any(t.name == "kb_cleanup_plan" for t in tools)
