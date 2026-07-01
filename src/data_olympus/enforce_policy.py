@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from dataclasses import dataclass, field
 
 # Keyword signals that a user prompt is a governed code/architectural decision.
@@ -117,11 +118,39 @@ class ConsultationLedger:
     every ``record`` so consultations survive a server restart. A corrupt or
     unreadable file degrades to empty with a logged warning and never crashes."""
 
-    def __init__(self, path: str | None = None) -> None:
+    def __init__(
+        self,
+        path: str | None = None,
+        *,
+        retention_sec: float = 3600.0,
+        max_entries: int = 50_000,
+    ) -> None:
         self._path = path
         self._entries: dict[tuple[str, str], LedgerEntry] = {}
+        # An entry is a TTL freshness cache: once it is older than the consult
+        # TTL it can never be fresh again, so we evict it on the next record().
+        # ``retention_sec`` should be >= the ttl_sec passed to is_fresh (the
+        # server threads config.consult_ttl_sec in) so a still-fresh entry is
+        # never dropped. ``max_entries`` is a hard belt-and-suspenders cap that
+        # bounds memory/disk even under a flood of unique sessions inside one
+        # retention window. Together they stop _entries growing without bound and
+        # keep the per-record file rewrite O(active window) instead of O(all
+        # sessions ever seen).
+        self._retention_sec = retention_sec
+        self._max_entries = max_entries
+        # record() mutates _entries and rewrites the whole file; once consult
+        # handlers are offloaded to the anyio threadpool these can run
+        # concurrently. Without this lock, _save()'s iteration over _entries can
+        # race a concurrent insert (RuntimeError / dropped entries). Public
+        # methods take the lock; _save()/_evict() do not (called only while held).
+        self._lock = threading.Lock()
         if path:
             self._load()
+            # A ledger persisted by the previous unbounded implementation can be
+            # arbitrarily large; cap it on load so an oversized /state/ledger.json
+            # is not held in memory until the first record() prunes it. TTL
+            # eviction still runs on the first record() (it needs a caller "now").
+            self._enforce_cap()
 
     def _load(self) -> None:
         if not self._path or not os.path.exists(self._path):
@@ -163,21 +192,47 @@ class ConsultationLedger:
                 os.unlink(tmp)
             raise
 
+    def _evict(self, now: float) -> None:
+        """Drop entries that can no longer be fresh, then enforce the hard cap.
+
+        Caller must hold ``self._lock``. Reassigns ``self._entries`` to a pruned
+        dict; O(n) but n is exactly what this bounds.
+        """
+        cutoff = now - self._retention_sec
+        self._entries = {
+            key: e for key, e in self._entries.items() if e.consulted_at >= cutoff
+        }
+        self._enforce_cap()
+
+    def _enforce_cap(self) -> None:
+        """Bound _entries to the newest ``max_entries`` by consulted_at. Clock-free
+        so it can run on load (before any caller "now" is available). Caller holds
+        the lock, except the single-threaded construction-time call."""
+        if len(self._entries) > self._max_entries:
+            newest = sorted(
+                self._entries.items(), key=lambda kv: kv[1].consulted_at, reverse=True
+            )[: self._max_entries]
+            self._entries = dict(newest)
+
     def record(
         self, *, session_id: str, workspace: str, rule_ids: list[str], now: float
     ) -> None:
-        self._entries[(session_id, workspace)] = LedgerEntry(
-            consulted_at=now, rule_ids=list(rule_ids)
-        )
-        self._save()
+        with self._lock:
+            self._entries[(session_id, workspace)] = LedgerEntry(
+                consulted_at=now, rule_ids=list(rule_ids)
+            )
+            self._evict(now)
+            self._save()
 
     def is_fresh(
         self, *, session_id: str, workspace: str, now: float, ttl_sec: float
     ) -> bool:
-        entry = self._entries.get((session_id, workspace))
+        with self._lock:
+            entry = self._entries.get((session_id, workspace))
         if entry is None:
             return False
         return (now - entry.consulted_at) <= ttl_sec
 
     def get(self, *, session_id: str, workspace: str) -> LedgerEntry | None:
-        return self._entries.get((session_id, workspace))
+        with self._lock:
+            return self._entries.get((session_id, workspace))

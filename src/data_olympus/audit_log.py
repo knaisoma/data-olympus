@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,12 @@ class AuditLog:
     def __init__(self, *, log_path: str, hmac_key: str = "") -> None:
         self._path = log_path
         self._hmac_key = hmac_key or ""
+        # append() is a read-modify-write on _last_hash plus a file write. Once
+        # handlers are offloaded to the anyio threadpool, appends can run
+        # concurrently; without this lock two threads read the same _last_hash
+        # and produce sibling events that break the hash chain. Reads (verify /
+        # iter_filtered) take the same lock so they never observe a torn append.
+        self._lock = threading.Lock()
         self._last_hash = self._load_last_hash()
 
     # --- hashing helpers ---------------------------------------------------
@@ -70,14 +77,15 @@ class AuditLog:
         tests that never trigger a write) does not crash startup.
         """
         os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
-        chained = dict(event)
-        chained["event_id"] = uuid.uuid4().hex
-        chained["prev_hash"] = self._last_hash
-        chained["hash"] = self._digest(self._canonical(chained))
-        line = json.dumps(chained, ensure_ascii=False)
-        with open(self._path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-        self._last_hash = chained["hash"]
+        with self._lock:
+            chained = dict(event)
+            chained["event_id"] = uuid.uuid4().hex
+            chained["prev_hash"] = self._last_hash
+            chained["hash"] = self._digest(self._canonical(chained))
+            line = json.dumps(chained, ensure_ascii=False)
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+            self._last_hash = chained["hash"]
 
     def verify(self) -> tuple[bool, int]:
         """Recompute the hash chain over the log.
@@ -93,27 +101,30 @@ class AuditLog:
         """
         if not os.path.exists(self._path):
             return (True, -1)
+        # Snapshot the file under the lock (short hold), then verify in memory so
+        # a concurrent append cannot make us read a torn final line as tampering.
+        with self._lock, open(self._path, encoding="utf-8") as f:
+            raw_lines = f.readlines()
         prev = GENESIS
         seen_hashed = False
-        with open(self._path, encoding="utf-8") as f:
-            for i, raw in enumerate(f):
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    ev = json.loads(raw)
-                except json.JSONDecodeError:
-                    return (False, i)
-                if not (isinstance(ev, dict) and ev.get("hash")):
-                    if seen_hashed:
-                        return (False, i)  # unhashed line after the chain started
-                    continue  # legacy prefix, tolerated
-                if ev.get("prev_hash") != prev:
-                    return (False, i)
-                if self._digest(self._canonical(ev)) != ev["hash"]:
-                    return (False, i)
-                prev = ev["hash"]
-                seen_hashed = True
+        for i, raw in enumerate(raw_lines):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                ev = json.loads(raw)
+            except json.JSONDecodeError:
+                return (False, i)
+            if not (isinstance(ev, dict) and ev.get("hash")):
+                if seen_hashed:
+                    return (False, i)  # unhashed line after the chain started
+                continue  # legacy prefix, tolerated
+            if ev.get("prev_hash") != prev:
+                return (False, i)
+            if self._digest(self._canonical(ev)) != ev["hash"]:
+                return (False, i)
+            prev = ev["hash"]
+            seen_hashed = True
         return (True, -1)
 
     def iter_filtered(
@@ -126,7 +137,10 @@ class AuditLog:
         """Yield events matching the filters, most-recent first."""
         if not os.path.exists(self._path):
             return
-        with open(self._path, encoding="utf-8") as f:
+        # Read under the lock so we never see a torn append, then yield from the
+        # in-memory snapshot (holding the lock across yields would block appends
+        # for as long as the caller iterates).
+        with self._lock, open(self._path, encoding="utf-8") as f:
             lines = f.readlines()
         for line in reversed(lines):
             line = line.strip()

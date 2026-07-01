@@ -211,7 +211,12 @@ def build_app(
     config = Config(**config_kwargs)  # type: ignore[arg-type]
     idx = Index(kb_index_path)
     git = GitOps(kb_main_path)
-    ledger = ConsultationLedger(path=ledger_path)
+    # retention_sec = the consult TTL: an entry older than that can never be
+    # fresh, so it is safe to evict and keeps the ledger bounded (see
+    # ConsultationLedger). is_fresh is always called with this same ttl.
+    ledger = ConsultationLedger(
+        path=ledger_path, retention_sec=float(config.consult_ttl_sec)
+    )
     state = ServerState(idx=idx, git=git, config=config, ledger=ledger)
 
     if config.kb_remote_url:

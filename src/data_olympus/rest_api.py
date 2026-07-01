@@ -2,9 +2,11 @@
 so MCP + REST share one Starlette/uvicorn process."""
 from __future__ import annotations
 
+import functools
 import json
 from typing import TYPE_CHECKING, Any
 
+import anyio
 from starlette.responses import JSONResponse
 
 from data_olympus.principals import (
@@ -30,6 +32,21 @@ if TYPE_CHECKING:
     from data_olympus.models import HealthResponse
     from data_olympus.principals import Principal
     from data_olympus.server import ServerState
+
+
+async def _offload(fn: Any, /, *args: Any, **kwargs: Any) -> Any:
+    """Run a blocking callable in the anyio worker-thread pool.
+
+    Every REST handler's core is synchronous (SQLite reads, audit/ledger file
+    I/O, git worktree ops). Running it inline would block the single asyncio
+    event loop, and the k8s readiness probe (``GET /api/v1/health``, 1s timeout)
+    is served on that same loop: a stalled loop under load drops the probe, the
+    only pod is ejected from the Service, and nginx returns 503. Offloading keeps
+    the loop free to answer the probe. SQLite is safe here because ``Index`` opens
+    a connection per call; the stateful writers (AuditLog, ConsultationLedger)
+    are lock-guarded for concurrent thread access.
+    """
+    return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
 
 
 def _build_health(state: ServerState) -> HealthResponse:
@@ -216,6 +233,11 @@ def register_routes(
 
     @app.custom_route("/api/v1/health", methods=["GET"])
     async def health(_request: Request) -> JSONResponse:
+        # Served INLINE, not via _offload(): the readiness probe must never queue
+        # behind the shared anyio worker pool it exists to outlive. _build_health
+        # reads the cached Index.health() snapshot (memory in steady state; the
+        # rare cache-miss SQLite read is sub-millisecond on the loop), so keeping
+        # it off the limiter is the right trade for probe responsiveness.
         resp = _build_health(state)
         # Degraded health responses MUST return 503 so the
         # CLI's --no-stale contract (exit 2 on HTTP 200 or 503 degraded) is meaningful.
@@ -224,15 +246,15 @@ def register_routes(
 
     @app.custom_route("/api/v1/outline", methods=["GET"])
     async def outline(_request: Request) -> JSONResponse:
-        h = _build_health(state)
+        h = await _offload(_build_health, state)
         if h.degraded:
             return _degraded_response(h)
-        resp = kb_outline_fn(idx=state.idx)
+        resp = await _offload(kb_outline_fn, idx=state.idx)
         return JSONResponse(resp.model_dump())
 
     @app.custom_route("/api/v1/search", methods=["GET"])
     async def search(request: Request) -> JSONResponse:
-        h = _build_health(state)
+        h = await _offload(_build_health, state)
         if h.degraded:
             return _degraded_response(h)
         q = request.query_params.get("q", "")
@@ -244,31 +266,33 @@ def register_routes(
             return JSONResponse({"error": "bad_limit"}, status_code=400)
         tier = request.query_params.get("tier") or None
         category = request.query_params.get("category") or None
-        resp = kb_search_fn(idx=state.idx, query=q, limit=limit, tier=tier, category=category)
+        resp = await _offload(
+            kb_search_fn, idx=state.idx, query=q, limit=limit, tier=tier, category=category
+        )
         return JSONResponse(resp.model_dump())
 
     @app.custom_route("/api/v1/get/{id}", methods=["GET"])
     async def get(request: Request) -> JSONResponse:
-        h = _build_health(state)
+        h = await _offload(_build_health, state)
         if h.degraded:
             return _degraded_response(h)
         id_ = request.path_params["id"]
         try:
-            resp = kb_get_fn(idx=state.idx, id=id_)
+            resp = await _offload(kb_get_fn, idx=state.idx, id=id_)
         except KbNotFoundError as e:
             return JSONResponse({"error": "not_found", "message": str(e)}, status_code=404)
         return JSONResponse(resp.model_dump())
 
     @app.custom_route("/api/v1/list", methods=["GET"])
     async def list_(request: Request) -> JSONResponse:
-        h = _build_health(state)
+        h = await _offload(_build_health, state)
         if h.degraded:
             return _degraded_response(h)
         tier = request.query_params.get("tier")
         if not tier:
             return JSONResponse({"error": "missing_tier"}, status_code=400)
         category = request.query_params.get("category") or None
-        resp = kb_list_fn(idx=state.idx, tier=tier, category=category)
+        resp = await _offload(kb_list_fn, idx=state.idx, tier=tier, category=category)
         return JSONResponse(resp.model_dump())
 
     @app.custom_route("/api/v1/propose/memory", methods=["POST"])
@@ -294,7 +318,8 @@ def register_routes(
         assert state.rate_limiter is not None
         assert state.blocklist is not None
         from data_olympus.tools_write import kb_propose_memory_fn
-        resp = kb_propose_memory_fn(
+        resp = await _offload(
+            kb_propose_memory_fn,
             text=body["text"], tags=body.get("tags", []),
             source_session=body["source_session"],
             agent_identity=body["agent_identity"],
@@ -336,7 +361,8 @@ def register_routes(
         assert state.rate_limiter is not None
         assert state.blocklist is not None
         from data_olympus.tools_write import kb_propose_edit_fn
-        resp = kb_propose_edit_fn(
+        resp = await _offload(
+            kb_propose_edit_fn,
             target_path=body["target_path"], postimage=body["postimage"],
             base_commit=body["base_commit"],
             base_blob_sha=body.get("base_blob_sha"),
@@ -372,7 +398,8 @@ def register_routes(
         assert state.push_queue is not None
         assert state.pending is not None
         from data_olympus.tools_write import kb_resolve_pending_fn
-        resp = kb_resolve_pending_fn(
+        resp = await _offload(
+            kb_resolve_pending_fn,
             pending_id=pid, decision=body["decision"],
             edited_text=body.get("edited_text"),
             worktrees=state.worktrees, push_queue=state.push_queue,
@@ -393,7 +420,7 @@ def register_routes(
         if state.pending is None:
             return JSONResponse({"pending": []})
         from data_olympus.tools_write import kb_list_pending_fn
-        resp = kb_list_pending_fn(pending=state.pending)
+        resp = await _offload(kb_list_pending_fn, pending=state.pending)
         return JSONResponse(resp.model_dump())
 
     @app.custom_route("/api/v1/audit", methods=["GET"])
@@ -409,8 +436,8 @@ def register_routes(
         agent = qp.get("agent")
         status_filter = qp.get("status")
         limit = int(qp.get("limit", "100"))
-        resp = kb_audit_fn(audit_log=state.audit_log, since=since,
-                          agent=agent, status=status_filter, limit=limit)
+        resp = await _offload(kb_audit_fn, audit_log=state.audit_log, since=since,
+                              agent=agent, status=status_filter, limit=limit)
         return JSONResponse(resp.model_dump())
 
     @app.custom_route("/api/v1/audit/verify", methods=["GET"])
@@ -420,7 +447,7 @@ def register_routes(
             return denied
         if state.audit_log is None:
             return JSONResponse({"ok": True, "first_broken_index": -1})
-        ok, idx = state.audit_log.verify()
+        ok, idx = await _offload(state.audit_log.verify)
         return JSONResponse({"ok": ok, "first_broken_index": idx})
 
     @app.custom_route("/api/v1/consult", methods=["POST"])
@@ -436,7 +463,8 @@ def register_routes(
             body, ["workspace", "source_session"],
         )) is not None:
             return bad
-        resp = kb_consult_fn(
+        resp = await _offload(
+            kb_consult_fn,
             idx=state.idx, classifier=state.classifier, ledger=state.ledger,
             workspace=body["workspace"], intent=body.get("intent", ""),
             source_session=body["source_session"],
@@ -459,7 +487,8 @@ def register_routes(
             body, ["workspace", "session_id"],
         )) is not None:
             return bad
-        resp = kb_gate_check_fn(
+        resp = await _offload(
+            kb_gate_check_fn,
             classifier=state.classifier, ledger=state.ledger,
             workspace=body["workspace"], session_id=body["session_id"],
             tool_name=body.get("tool_name", ""),
@@ -483,7 +512,8 @@ def register_routes(
         qp = request.query_params
         since = float(qp["since"]) if qp.get("since") else None
         agent = qp.get("agent")
-        resp = kb_compliance_fn(audit_log=state.audit_log, since=since, agent=agent)
+        resp = await _offload(
+            kb_compliance_fn, audit_log=state.audit_log, since=since, agent=agent)
         return JSONResponse(resp.model_dump())
 
     @app.custom_route("/api/v1/audit/event", methods=["POST"])
@@ -500,7 +530,8 @@ def register_routes(
             return bad
         from data_olympus.tools_enforce import kb_record_event_fn
         try:
-            resp = kb_record_event_fn(
+            resp = await _offload(
+                kb_record_event_fn,
                 audit_log=state.audit_log, event_type=body["event_type"],
                 workspace=body["workspace"],
                 agent_identity=body.get("agent_identity", "unknown"),
@@ -514,7 +545,8 @@ def register_routes(
     async def onboarding_status(request: Request) -> JSONResponse:
         from data_olympus.tools_onboarding import kb_onboarding_status_fn
         qp = request.query_params
-        resp = kb_onboarding_status_fn(
+        resp = await _offload(
+            kb_onboarding_status_fn,
             idx=state.idx,
             workspace=qp.get("workspace", ""),
             component=qp.get("component") or None,
@@ -547,7 +579,8 @@ def register_routes(
         assert state.rate_limiter is not None
         assert state.blocklist is not None
         from data_olympus.tools_onboarding import kb_bootstrap_project_fn
-        resp = kb_bootstrap_project_fn(
+        resp = await _offload(
+            kb_bootstrap_project_fn,
             idx=state.idx,
             workspace=body["workspace"],
             component=body.get("component"),

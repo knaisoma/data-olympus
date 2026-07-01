@@ -5,6 +5,7 @@ import datetime
 import os
 import sqlite3
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -13,6 +14,7 @@ from data_olympus.markdown_parse import parse_file
 
 if TYPE_CHECKING:
     import builtins
+    from collections.abc import Callable
     from pathlib import Path
 
 _SCHEMA = """
@@ -58,6 +60,14 @@ _FTS_MATCH_COLUMNS: tuple[str, ...] = ("title", "tags", "applies_when", "descrip
 # bm25 weights, one per declared fts column INCLUDING the UNINDEXED id at index 0.
 # Title and applies_when are weighted highest; body lowest. Tune in D2.
 _DEFAULT_BM25_WEIGHTS: tuple[float, ...] = (0.0, 10.0, 5.0, 10.0, 4.0, 1.0)
+
+# When a reranker is installed, fetch a wider BM25 candidate pool than the caller
+# asked for so the reranker can promote a relevant doc sitting just outside the
+# top-N window, then truncate back to the requested limit. Bounded so a small
+# limit still gets a useful pool and a large one cannot drag in the whole corpus.
+_RERANK_OVERFETCH_FACTOR = 5
+_RERANK_MIN_POOL = 50
+_RERANK_MAX_POOL = 200
 
 # Generic, deployment-neutral default taxonomy. A deployment with a different
 # directory layout supplies its own table at runtime via KB_TAXONOMY_PATH (a
@@ -250,8 +260,39 @@ def _derive_id_from_path(rel: Path) -> str:
 class Index:
     """SQLite FTS5 index. Single-writer; safe for concurrent reads."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        health_ttl_sec: float = 5.0,
+        query_expander: Callable[[list[str]], list[str]] | None = None,
+        reranker: Callable[[str, list[SearchHit]], list[SearchHit]] | None = None,
+    ) -> None:
         self._db_path = db_path
+        # Search pipeline seams (issue #36). search() runs three stages:
+        #   expand-query -> match -> re-rank
+        # ``query_expander`` rewrites the term list before the FTS MATCH is built
+        # (synonym / co-occurrence expansion plug in here); ``reranker`` reorders
+        # or rescores the BM25-ordered hits (status/tier priors, hybrid blending
+        # plug in here). Both default to identity so the base behaviour is
+        # unchanged. Features set them without touching the other stages.
+        self.query_expander = query_expander
+        self.reranker = reranker
+        # health() is on the readiness-probe path and the degraded-precheck of
+        # every read route, so its SQLite read is cached for a short TTL to keep
+        # that path memory-only in steady state (the underlying values only
+        # change on build(), which invalidates the cache). ``clock`` is injected
+        # so the TTL is deterministically testable; monotonic avoids wall-clock
+        # jumps. The cache is guarded by a lock because reads may run in the
+        # anyio threadpool concurrently.
+        self._clock = clock
+        self._health_ttl = health_ttl_sec
+        self._health_lock = threading.Lock()
+        self._health_cache: tuple[float, dict[str, object]] | None = None
+        # Test/observability counter: how many times the DB was actually read
+        # (cache misses). Not part of the public contract.
+        self._health_uncached_calls = 0
 
     def _connect(self) -> sqlite3.Connection:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -374,6 +415,10 @@ class Index:
         # Atomic swap: the previous index file (if any) is replaced. Open fds on the
         # old inode keep reading from it until they close.
         os.replace(tmp_path, self._db_path)
+        # Invalidate the health cache so the next health() reflects the rebuild
+        # immediately rather than serving the pre-swap commit for up to the TTL.
+        with self._health_lock:
+            self._health_cache = None
         return IndexBuildResult(docs_indexed=count, source_commit=source_commit, built_at=now)
 
     def search(
@@ -403,17 +448,15 @@ class Index:
         fts column incl. the UNINDEXED id at index 0); default boosts
         title/applies_when, deprioritizes body.
         """
+        # Stage 1 (expand-query): term extraction + optional expansion hook.
         terms = query.split()
         if not terms:
             return []
-        quoted = " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
-        if columns:
-            unknown = [c for c in columns if c not in _FTS_MATCH_COLUMNS]
-            if unknown:
-                raise ValueError(f"unknown fts column(s): {unknown}")
-            match_query = "{" + " ".join(columns) + "} : (" + quoted + ")"
-        else:
-            match_query = quoted
+        if self.query_expander is not None:
+            terms = list(self.query_expander(terms))
+            if not terms:
+                return []
+        match_query = self._build_match_expr(terms, columns)
         weights = column_weights if column_weights is not None else _DEFAULT_BM25_WEIGHTS
         bm25_expr = "bm25(fts, " + ", ".join(repr(float(w)) for w in weights) + ")"
         conn = self._connect()
@@ -432,7 +475,18 @@ class Index:
             if doc_type:
                 where.append("docs.type = ?")
                 params.append(doc_type)
-            params.append(limit)
+            # Over-fetch a wider candidate pool when a reranker will reorder the
+            # hits (see stage 3); never fewer than `limit`.
+            candidate_limit = limit
+            if self.reranker is not None:
+                candidate_limit = max(
+                    limit,
+                    min(
+                        max(limit * _RERANK_OVERFETCH_FACTOR, _RERANK_MIN_POOL),
+                        _RERANK_MAX_POOL,
+                    ),
+                )
+            params.append(candidate_limit)
             sql = f"""
                 SELECT
                     fts.id AS id,
@@ -448,8 +502,9 @@ class Index:
                 ORDER BY score
                 LIMIT ?
             """
+            # Stage 2 (match): rows come back BM25-ordered from SQLite.
             rows = conn.execute(sql, params).fetchall()
-            return [
+            hits = [
                 SearchHit(
                     id=r["id"],
                     path=r["path"],
@@ -463,6 +518,28 @@ class Index:
             ]
         finally:
             conn.close()
+        # Stage 3 (re-rank): optional hook reorders/rescores (default identity),
+        # then truncate the (possibly wider / prepended) pool back to `limit`.
+        if self.reranker is not None:
+            hits = list(self.reranker(query, hits))[:limit]
+        return hits
+
+    def _build_match_expr(self, terms: list[str], columns: list[str] | None) -> str:
+        """Match stage: build the FTS5 MATCH expression from query terms.
+
+        Each term is quoted individually (doubling embedded quotes so user input
+        cannot break out of its phrase or inject FTS operators) and OR-joined, so
+        a natural-language query matches on any term, ranked by bm25. ``columns``
+        restricts the match to the given fts columns (ablation); an unknown column
+        is a ValueError rather than a silent no-op.
+        """
+        quoted = " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
+        if columns:
+            unknown = [c for c in columns if c not in _FTS_MATCH_COLUMNS]
+            if unknown:
+                raise ValueError(f"unknown fts column(s): {unknown}")
+            return "{" + " ".join(columns) + "} : (" + quoted + ")"
+        return quoted
 
     def get(self, id: str) -> IndexedDoc | None:
         """Retrieve a single document by id. Returns None if not found."""
@@ -544,7 +621,29 @@ class Index:
         return [{"name": k, "categories": v} for k, v in tiers.items()]
 
     def health(self) -> dict[str, object]:
-        """Return commit, built_at, total_docs, db_size_bytes."""
+        """Return commit, built_at, total_docs, db_size_bytes.
+
+        Cached for ``health_ttl_sec`` (see __init__): within the window the
+        cached snapshot is returned without touching SQLite, so the readiness
+        probe and per-route degraded-precheck stay off the DB under load. The
+        cache is invalidated by build(); the underlying values change nowhere
+        else.
+        """
+        now = self._clock()
+        with self._health_lock:
+            cached = self._health_cache
+            if cached is not None and (now - cached[0]) < self._health_ttl:
+                return dict(cached[1])
+        # Cache miss: read the DB outside the lock (the connection is per-call,
+        # so a concurrent miss is harmless — both compute the same snapshot).
+        snapshot = self._health_uncached()
+        with self._health_lock:
+            self._health_cache = (now, dict(snapshot))
+        return snapshot
+
+    def _health_uncached(self) -> dict[str, object]:
+        """The raw health read, bypassing the cache. See health()."""
+        self._health_uncached_calls += 1
         if not self._db_path.exists():
             return {
                 "source_commit": "",
