@@ -77,7 +77,14 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
             successThreshold: 1
-            failureThreshold: 3
+            # This is a single-replica StatefulSet, so ejecting the pod on a
+            # transient event-loop stall has no failover benefit: it just turns
+            # "briefly slow" into a hard 503 (nginx has zero endpoints). A
+            # tolerant probe (5s timeout x 5 failures ~= 50s of sustained stall
+            # before ejection) rides out load spikes. Default timeoutSeconds is
+            # 1s, which was the direct cause of the intermittent 503s.
+            timeoutSeconds: 5
+            failureThreshold: 5
           livenessProbe:
             tcpSocket:
               port: 8080
@@ -89,7 +96,11 @@ spec:
               cpu: 100m
               memory: 256Mi
             limits:
-              cpu: 1
+              # 2 cores so a background index rebuild (CPU-bound, runs in a
+              # worker thread) and the asyncio event loop can run on separate
+              # cores instead of contending for one, keeping the readiness probe
+              # responsive under load.
+              cpu: 2
               memory: 1Gi
       volumes:
         # Writable scratch for the read-only root filesystem: the entrypoint copies
