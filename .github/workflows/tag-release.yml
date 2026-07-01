@@ -1,0 +1,89 @@
+# .github/workflows/tag-release.yml
+name: Tag release on version bump
+
+on:
+  push:
+    branches: [main]
+
+# Serialize release runs on main so two close pushes (or a manual rerun) do not
+# race on creating and pushing the same tag. Never cancel an in-flight release.
+concurrency:
+  group: tag-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Decide tag from pyproject version
+        id: decide
+        run: |
+          TAG="$(python3 scripts/should_tag.py)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Create and push annotated tag
+        if: steps.decide.outputs.tag != ''
+        env:
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Idempotent: a re-run after a partial failure must not hard-fail on an
+          # existing tag.
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            git tag -a "$TAG" -m "Release ${TAG#v}"
+          fi
+          # This tag is pushed with the default GITHUB_TOKEN on purpose. GitHub does not
+          # trigger workflows from GITHUB_TOKEN-created events, so release-image.yml
+          # (on: push tags v*) does not fire here, and the build-image job below builds
+          # the image instead. release-image.yml's tag trigger remains the manual-tag
+          # fallback path (STD-U-810 section 9) for a human-pushed tag. If this push is
+          # ever switched to a PAT or GitHub App token, release-image.yml will also fire
+          # and double-build plus double-move latest. Keep it on GITHUB_TOKEN.
+          git push origin "$TAG"
+
+  # Build and publish the image BEFORE the GitHub Release is created, so a
+  # published Release always has its image. If this build fails, the tag exists
+  # but no Release is published; a rerun is safe (tag creation and this build are
+  # both idempotent).
+  build-image:
+    needs: decide
+    if: needs.decide.outputs.tag != ''
+    uses: ./.github/workflows/release-image-reusable.yml
+    with:
+      tag: ${{ needs.decide.outputs.tag }}
+      move_latest: true
+    permissions:
+      contents: read
+      packages: write
+
+  release:
+    needs: [decide, build-image]
+    if: needs.decide.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create GitHub Release (after the image is published)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.decide.outputs.tag }}
+        run: |
+          # Idempotent: skip if the release already exists (partial-failure rerun).
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists, skipping"
+            exit 0
+          fi
+          NOTES="docs/releases/${TAG}.md"
+          if [ -f "$NOTES" ]; then
+            gh release create "$TAG" --title "$TAG" --notes-file "$NOTES"
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi

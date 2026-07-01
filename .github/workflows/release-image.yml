@@ -1,3 +1,4 @@
+# .github/workflows/release-image.yml
 name: Release Docker Image
 
 on:
@@ -12,63 +13,24 @@ on:
         default: "edge"
 
 jobs:
-  build-push:
-    runs-on: ubuntu-latest
+  # A real release is a pushed `v*` tag: publish the semver tag AND move `latest`.
+  # A manual workflow_dispatch (default `edge`) is a pre-release build: publish
+  # ONLY its tag, never move `latest`.
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    uses: ./.github/workflows/release-image-reusable.yml
+    with:
+      tag: ${{ github.ref_name }}
+      move_latest: true
     permissions:
       contents: read
       packages: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute image tags
-        id: image-tag
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-          INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          # A real release is a pushed `v*` tag: publish the semver tag AND move
-          # the `latest` channel. A manual workflow_dispatch (default `edge`) is a
-          # pre-release build: publish ONLY its tag and never move `latest`, so
-          # `latest` always means "last promoted release", not "last manual build".
-          if [ "$EVENT_NAME" = "push" ] && [ "$REF_TYPE" = "tag" ]; then
-            {
-              echo "tags<<EOF"
-              echo "ghcr.io/knaisoma/data-olympus:$REF_NAME"
-              echo "ghcr.io/knaisoma/data-olympus:latest"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo "tags<<EOF"
-              echo "ghcr.io/knaisoma/data-olympus:$INPUT_TAG"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.image-tag.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+  prerelease:
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/release-image-reusable.yml
+    with:
+      tag: ${{ inputs.tag }}
+      move_latest: false
+    permissions:
+      contents: read
+      packages: write

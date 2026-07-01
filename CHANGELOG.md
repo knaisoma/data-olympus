@@ -14,6 +14,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Automated, human-gated release pipeline (conformant with the STD-U-810
+  versioning standard). A daily `data-olympus-release-cutter` routine computes the
+  SemVer bump from Conventional Commits and opens a release PR; merging that PR
+  cuts an annotated `vX.Y.Z` tag, a GitHub Release, and the container image via
+  CI. New helpers `scripts/compute_release.py`, `scripts/should_tag.py`,
+  `scripts/lint_pr_title.py` (a PR-title Conventional Commit check enforced by
+  `.github/workflows/pr-title-lint.yml`), and `scripts/compute-version.sh` (preview
+  version plus invariant check). New `tag-release.yml` cuts the tag on a
+  `pyproject.toml` version bump, builds the image via a reusable
+  `release-image-reusable.yml` (which also stamps OCI version and revision
+  labels), then publishes the GitHub Release.
+  Process is documented in `.rules/versioning.md` and `.rules/release-routine.md`.
+  No tags are ever cut unattended.
 - Trigram fuzzy-match fallback for typos and partial identifiers (issue #41). A
   secondary FTS5 table (`fts_trigram`, `trigram` tokenizer, schema v7) is built
   into the same tmp DB and swapped atomically with the primary FTS index, so it
