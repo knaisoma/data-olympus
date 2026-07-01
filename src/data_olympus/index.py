@@ -7,7 +7,7 @@ import sqlite3
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from data_olympus.markdown_parse import parse_file
@@ -68,6 +68,25 @@ _DEFAULT_BM25_WEIGHTS: tuple[float, ...] = (0.0, 10.0, 5.0, 10.0, 4.0, 1.0)
 _RERANK_OVERFETCH_FACTOR = 5
 _RERANK_MIN_POOL = 50
 _RERANK_MAX_POOL = 200
+
+# Status priors for the status-aware reranker (issue #37). search() orders by
+# bm25 ASCENDING (lower = better), so these deltas are ADDED to the raw score:
+# a NEGATIVE delta boosts (moves the hit earlier), a POSITIVE delta penalizes.
+# In-force statuses boost; retired/not-yet-in-force statuses penalize; anything
+# not in this map (incl. the empty string) is neutral and is never dropped. A
+# deployment overrides the whole map via KB_STATUS_WEIGHTS (see config.py).
+_DEFAULT_STATUS_WEIGHTS: dict[str, float] = {
+    # In-force: the guidance that currently applies. Boost.
+    "active": -1.0,
+    "accepted": -1.0,
+    # Retired or superseded: kept for history, must not outrank its replacement.
+    "superseded": 2.0,
+    "deprecated": 2.0,
+    "rejected": 2.0,
+    # Not yet in force: a draft should not beat an active doc.
+    "draft": 1.0,
+    "proposed": 1.0,
+}
 
 # Generic, deployment-neutral default taxonomy. A deployment with a different
 # directory layout supplies its own table at runtime via KB_TAXONOMY_PATH (a
@@ -198,6 +217,38 @@ class SearchHit:
     score: float
     status: str = ""
     doc_type: str = ""
+
+
+def make_status_reranker(
+    weights: dict[str, float] | None = None,
+) -> Callable[[str, list[SearchHit]], list[SearchHit]]:
+    """Build a reranker that nudges each hit's score by its ``status`` (issue #37).
+
+    Governance intent: a ``superseded``/``deprecated`` doc must not outrank the
+    ``active`` one that replaced it. The returned callable matches the ``reranker``
+    hook signature ``(query, hits) -> hits``.
+
+    ``score`` is a bm25 value ordered ASCENDING in search() (lower = better), so
+    the status delta is ADDED to the raw score: an in-force status carries a
+    NEGATIVE delta (boost, moves earlier) and a retired one a POSITIVE delta
+    (penalize, moves later). A status not present in ``weights`` (including the
+    empty string) is neutral (delta 0.0) and is never dropped. ``weights``
+    defaults to ``_DEFAULT_STATUS_WEIGHTS``; a caller-supplied map REPLACES it
+    rather than merging, so an override is fully explicit.
+
+    The re-sort is stable: hits with equal adjusted score keep their incoming
+    (bm25) order.
+    """
+    table = _DEFAULT_STATUS_WEIGHTS if weights is None else weights
+
+    def reranker(query: str, hits: list[SearchHit]) -> list[SearchHit]:  # noqa: ARG001
+        adjusted = [
+            replace(h, score=h.score + table.get(h.status, 0.0)) for h in hits
+        ]
+        adjusted.sort(key=lambda h: h.score)
+        return adjusted
+
+    return reranker
 
 
 @dataclass(frozen=True, slots=True)

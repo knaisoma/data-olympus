@@ -50,6 +50,32 @@ def test_load_config_rejects_bad_threshold(monkeypatch: pytest.MonkeyPatch) -> N
         load_config()
 
 
+def test_status_weights_default_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset KB_STATUS_WEIGHTS leaves the override empty (Index applies its
+    built-in default map)."""
+    monkeypatch.delenv("KB_STATUS_WEIGHTS", raising=False)
+    cfg = load_config()
+    assert cfg.status_weights is None
+
+
+def test_status_weights_parsed_from_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KB_STATUS_WEIGHTS", '{"active": -3.0, "deprecated": 4.0}')
+    cfg = load_config()
+    assert cfg.status_weights == {"active": -3.0, "deprecated": 4.0}
+
+
+def test_status_weights_rejects_bad_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KB_STATUS_WEIGHTS", "not-json")
+    with pytest.raises(ValueError, match="KB_STATUS_WEIGHTS"):
+        load_config()
+
+
+def test_status_weights_rejects_non_object(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KB_STATUS_WEIGHTS", '["active", -3.0]')
+    with pytest.raises(ValueError, match="KB_STATUS_WEIGHTS"):
+        load_config()
+
+
 def test_config_is_frozen() -> None:
     """Config instances are immutable."""
     cfg = Config(

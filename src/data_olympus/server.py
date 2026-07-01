@@ -25,7 +25,7 @@ from data_olympus.auth import PathBlocklist
 from data_olympus.config import Config, load_config
 from data_olympus.enforce_policy import ConsultationLedger, IntentClassifier
 from data_olympus.git_ops import GitOps
-from data_olympus.index import Index
+from data_olympus.index import Index, make_status_reranker
 from data_olympus.pending import PendingQueue
 from data_olympus.principals import (
     AUTH_REQUIRED_TOOLS,
@@ -192,6 +192,7 @@ def build_app(
     ledger_path: str | None = None,
     session_idle_timeout_sec: int = 1800,
     session_reap_interval_sec: int = 60,
+    status_weights: dict[str, float] | None = None,
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
 
@@ -226,14 +227,22 @@ def build_app(
         audit_hmac_key=audit_hmac_key,
         session_idle_timeout_sec=session_idle_timeout_sec,
         session_reap_interval_sec=session_reap_interval_sec,
+        status_weights=status_weights,
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
     config = Config(**config_kwargs)  # type: ignore[arg-type]
-    # Synonym/acronym query expansion (issue #38): broadens recall via the
-    # expand-query seam (issue #36). Enabled by default with the curated map;
-    # KB_SYNONYMS / KB_SYNONYMS_MODE tune or disable it (mode=off -> passthrough).
-    idx = Index(kb_index_path, query_expander=default_query_expander())
+    # Synonym/acronym query expansion (issue #38) via the expand-query seam, plus
+    # status-aware reranking (issue #37) via the re-rank seam. Both on by default:
+    # expansion broadens recall (KB_SYNONYMS / KB_SYNONYMS_MODE tune or disable it),
+    # and the status reranker keeps a superseded/deprecated doc from outranking the
+    # active one that replaced it (status_weights=None uses the built-in map;
+    # KB_STATUS_WEIGHTS overrides it).
+    idx = Index(
+        kb_index_path,
+        query_expander=default_query_expander(),
+        reranker=make_status_reranker(config.status_weights),
+    )
     git = GitOps(kb_main_path)
     # retention_sec = the consult TTL: an entry older than that can never be
     # fresh, so it is safe to evict and keeps the ledger bounded (see
@@ -644,6 +653,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         ledger_path=config.ledger_path,
         session_idle_timeout_sec=config.session_idle_timeout_sec,
         session_reap_interval_sec=config.session_reap_interval_sec,
+        status_weights=config.status_weights,
     )
 
 
