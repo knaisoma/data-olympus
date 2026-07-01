@@ -7,7 +7,6 @@ from data_olympus.dedup import (
     extract_headings,
     jaccard,
     normalize_markdown,
-    shingles,
 )
 
 
