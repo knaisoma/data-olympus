@@ -44,10 +44,37 @@ class Config:
     # reaper (observability-only). The scan runs every session_reap_interval_sec.
     session_idle_timeout_sec: int = 1800
     session_reap_interval_sec: int = 60
+    # Optional override for the status-aware reranker's status->weight map
+    # (issue #37). None means "use the Index built-in default map". A negative
+    # weight boosts an in-force status, a positive one penalizes a retired one.
+    status_weights: dict[str, float] | None = None
 
 
 def _split_csv(raw: str) -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def _load_status_weights(raw: str) -> dict[str, float] | None:
+    """Parse KB_STATUS_WEIGHTS: a JSON object of ``{status: weight}``.
+
+    Empty/unset returns None (the Index applies its built-in default map). A
+    malformed value raises ValueError rather than silently falling back, so a
+    misconfigured deployment fails loudly instead of shipping default ranking.
+    """
+    raw = raw.strip()
+    if not raw:
+        return None
+    import json
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"KB_STATUS_WEIGHTS must be a JSON object; {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError(
+            "KB_STATUS_WEIGHTS must be a JSON object of {status: weight}; "
+            f"got {type(data).__name__}"
+        )
+    return {str(k): float(v) for k, v in data.items()}
 
 
 def load_config() -> Config:
@@ -81,6 +108,7 @@ def load_config() -> Config:
     ledger_path = os.getenv("KB_LEDGER_PATH", "/state/ledger.json")
     session_idle_timeout_sec = int(os.getenv("KB_SESSION_IDLE_TIMEOUT_SEC", "1800"))
     session_reap_interval_sec = int(os.getenv("KB_SESSION_REAP_INTERVAL_SEC", "60"))
+    status_weights = _load_status_weights(os.getenv("KB_STATUS_WEIGHTS", ""))
     return Config(
         kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
         kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
@@ -112,4 +140,5 @@ def load_config() -> Config:
         ledger_path=ledger_path,
         session_idle_timeout_sec=session_idle_timeout_sec,
         session_reap_interval_sec=session_reap_interval_sec,
+        status_weights=status_weights,
     )
