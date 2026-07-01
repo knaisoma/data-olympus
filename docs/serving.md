@@ -108,6 +108,36 @@ time, with no code change:
 - `KB_MEMORY_INBOX_PREFIX`: directory new memory proposals are written under
   (default `memory/inbox/`).
 
+## Synonym / acronym query expansion
+
+Before building the FTS MATCH, the server rewrites the query term list through a
+curated, bidirectional synonym map. A short-form query (`k8s`, `rls`) also reaches
+documents that only use the long form (`kubernetes`, `row level security`), and
+vice versa; adjacent query tokens are scanned as n-grams so multi-word keys match
+from a long-form query. Expansion is bounded (32 terms) and de-duplicated, and the
+terms the user actually typed are ranked first. This is curated lexical expansion,
+not semantic (embedding) retrieval.
+
+The default map ships a small set of high-value, unambiguous technical acronyms
+(`k8s`/`kubernetes`, `authn`/`authz`, `rls`, `adr`, `rbac`, `sso`, `pii`, `iac`,
+`kb`). Ambiguous or generic short tokens are intentionally left out of the
+defaults to avoid recall noise; add them per deployment via `KB_SYNONYMS`.
+
+Two environment variables tune it:
+
+- `KB_SYNONYMS`: extra or override groups in `key=variant,variant;key2=variant`
+  form. Groups are `;`-separated; within a group the `key` is the canonical form
+  and the comma-separated tail are its variants. Whitespace is trimmed and empty
+  entries are dropped. Multi-word keys and variants are allowed (e.g.
+  `row level security=rls`). Example:
+  `KB_SYNONYMS="feature flag=ff,flag;service level objective=slo"`.
+- `KB_SYNONYMS_MODE`: how `KB_SYNONYMS` combines with the built-in defaults.
+  - `merge` (default): layer `KB_SYNONYMS` on top of the curated defaults; a key
+    present in both is overridden by `KB_SYNONYMS`.
+  - `replace`: use only `KB_SYNONYMS`; the curated defaults are dropped.
+  - `off`: disable expansion entirely (the expander becomes a passthrough, so
+    only the terms the user typed are matched).
+
 ## Authentication and network security
 
 The server supports optional bearer-token authentication with a per-principal

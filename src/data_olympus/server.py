@@ -35,6 +35,7 @@ from data_olympus.principals import (
     PrincipalRegistry,
 )
 from data_olympus.push_queue import PushQueue
+from data_olympus.query_expansion import default_query_expander
 from data_olympus.rate_limit import SlidingWindowLimiter
 from data_olympus.tools_read import kb_health_fn, kb_outline_fn, kb_search_fn
 from data_olympus.worktrees import WorktreeRegistry
@@ -229,7 +230,10 @@ def build_app(
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
     config = Config(**config_kwargs)  # type: ignore[arg-type]
-    idx = Index(kb_index_path)
+    # Synonym/acronym query expansion (issue #38): broadens recall via the
+    # expand-query seam (issue #36). Enabled by default with the curated map;
+    # KB_SYNONYMS / KB_SYNONYMS_MODE tune or disable it (mode=off -> passthrough).
+    idx = Index(kb_index_path, query_expander=default_query_expander())
     git = GitOps(kb_main_path)
     # retention_sec = the consult TTL: an entry older than that can never be
     # fresh, so it is safe to evict and keeps the ledger bounded (see

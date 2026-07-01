@@ -76,7 +76,7 @@ This is data-olympus's clearest accuracy differentiator, and it is genuinely dem
 
 ### Where data-olympus loses
 
-On **semantic** (paraphrase) queries, data-olympus achieves recall=0.036, ndcg=0.021. Paraphrases lack the keyword overlap the FTS index relies on, so every keyword method does poorly here (BM25 0.009, grep-read 0.022, whole-dump 0.022); none is practically useful. This is the category where dense retrieval has the largest advantage, and **vector-RAG (not included in this run, `[bench]` deps absent) is expected to win decisively**. It is data-olympus's genuine weakness: full-text search cannot follow synonyms.
+On **semantic** (paraphrase) queries, data-olympus achieves recall=0.036, ndcg=0.021. Paraphrases lack the keyword overlap the FTS index relies on, so every keyword method does poorly here (BM25 0.009, grep-read 0.022, whole-dump 0.022); none is practically useful. This is the category where dense retrieval has the largest advantage, and **vector-RAG (not included in this run, `[bench]` deps absent) is expected to win decisively**. It remains data-olympus's genuine weakness: a curated synonym/acronym expansion layer bridges known lexical variants (`k8s` -> `kubernetes`, `rls` -> `row level security`), but full-text search still cannot follow arbitrary paraphrases the way dense retrieval does.
 
 On **exact** queries, data-olympus (recall=0.858) trails BM25 (recall=1.000). BM25 ranks chunks by TF-IDF over full bodies, while data-olympus ranks by SQLite FTS5 bm25 over its indexed surface; the gap is the cost of the lighter index.
 
@@ -237,7 +237,7 @@ This is the nearest-adjacent category: tools that treat engineering decisions (A
 
 These are the areas where data-olympus is currently weakest, separate from deliberate scope decisions:
 
-- **Search is full-text only.** There is no semantic or embedding-based retrieval. Queries that depend on synonyms or conceptual proximity will miss results.
+- **Search is full-text, with curated lexical expansion but no semantics.** A curated, bidirectional synonym/acronym map expands the query before matching (so `k8s`/`kubernetes` and `rls`/`row level security` find each other), configurable via `KB_SYNONYMS` / `KB_SYNONYMS_MODE`. There is still no semantic or embedding-based retrieval: queries that depend on conceptual proximity or paraphrases outside the curated map will miss results.
 - **No automatic producer or ingestion agent.** Every concept must be authored or proposed by an agent, then reviewed and committed. There is no crawler, connector, or auto-enrichment pipeline.
 - **Pre-release specification (v0.1).** The SPEC is not yet frozen. Field names, required fields, and serving contracts may change before a stable release.
 - **Single-writer deployment required for writes.** The write pipeline assumes one server instance owns the git working tree. Horizontal write scaling requires a redesign of the lock and worktree model.
