@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.should_tag import project_version, tag_to_create
+from scripts.should_tag import project_version, release_action, tag_to_create
 
 PYPROJECT = '[project]\nname = "data-olympus"\nversion = "0.1.2"\n'
 
@@ -52,3 +52,25 @@ def test_no_tag_when_present() -> None:
 
 def test_no_tag_on_empty_repo_when_version_already_tagged() -> None:
     assert tag_to_create("0.1.1", {"v0.1.1"}) is None
+
+
+def test_release_action_emits_when_tag_missing() -> None:
+    # No matching tag: create it (tag_commit is irrelevant when the tag is absent).
+    assert release_action("0.1.2", {"v0.1.1"}, tag_commit=None, head_commit="abc123") == "v0.1.2"
+
+
+def test_release_action_reconciles_when_tag_points_at_head() -> None:
+    # Tag exists and points at the current commit: emit so the idempotent
+    # downstream image/release jobs run and reconcile a partial release.
+    result = release_action("0.1.2", {"v0.1.2"}, tag_commit="abc123", head_commit="abc123")
+    assert result == "v0.1.2"
+
+
+def test_release_action_noop_when_tag_points_elsewhere() -> None:
+    # Steady state: the tag exists on an older commit; nothing to do.
+    assert release_action("0.1.2", {"v0.1.2"}, tag_commit="old789", head_commit="new456") is None
+
+
+def test_release_action_noop_when_tag_commit_unresolved() -> None:
+    # Tag is in the set but its commit could not be resolved: do not emit.
+    assert release_action("0.1.2", {"v0.1.2"}, tag_commit=None, head_commit="new456") is None

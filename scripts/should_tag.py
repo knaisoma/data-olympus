@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Emit the tag to create when pyproject's version has no matching v* tag.
+"""Decide the release tag for tag-release.yml.
 
-Used by tag-release.yml: after a release PR merges (bumping pyproject), the
-version exceeds the latest tag, so this emits `vX.Y.Z` for CI to create. Normal
-PRs never touch the version, so this emits nothing and no tag is cut.
+After a release PR merges (bumping pyproject), the version has no matching tag,
+so this emits `vX.Y.Z` for CI to create, build, and release. Normal PRs never
+touch the version, so this emits nothing and no tag is cut.
+
+Crucially, it also emits the tag when it already exists AND points at the
+current commit. That is the "reconcile" case: a prior run created and pushed the
+tag but the image build or GitHub Release failed. Emitting the tag again lets the
+downstream (idempotent) build/release jobs re-run and finish the release, instead
+of being skipped on a full workflow rerun. When the tag exists on a different
+(older) commit, that is the steady state and this emits nothing.
 """
 from __future__ import annotations
 
@@ -40,15 +47,53 @@ def tag_to_create(version: str, existing: set[str]) -> str | None:
     return None if tag in existing else tag
 
 
+def release_action(
+    version: str,
+    existing: set[str],
+    tag_commit: str | None,
+    head_commit: str,
+) -> str | None:
+    """Return the tag to create-or-reconcile, or None for a no-op.
+
+    - tag missing -> emit (create, then build and release)
+    - tag exists and points at the current commit -> emit (reconcile a partial
+      release; the downstream tag/image/release steps are idempotent)
+    - tag exists on a different commit, or its commit is unknown -> None
+
+    `tag_commit` is the commit the existing tag points at, or None if the tag
+    does not exist (or could not be resolved).
+    """
+    to_create = tag_to_create(version, existing)
+    if to_create is not None:
+        return to_create
+    if tag_commit is not None and tag_commit == head_commit:
+        return f"v{version}"
+    return None
+
+
 def _existing_tags() -> set[str]:
     out = subprocess.run(["git", "tag", "--list", "v*"], capture_output=True, text=True)
     return set(out.stdout.split())
 
 
+def _tag_commit(tag: str) -> str | None:
+    """Return the commit the tag points at (dereferenced), or None if unresolved."""
+    out = subprocess.run(["git", "rev-list", "-n", "1", tag], capture_output=True, text=True)
+    commit = out.stdout.strip()
+    return commit if out.returncode == 0 and commit else None
+
+
+def _head_commit() -> str:
+    out = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+    return out.stdout.strip()
+
+
 def main() -> int:
     version = project_version(pathlib.Path("pyproject.toml").read_text())
-    tag = tag_to_create(version, _existing_tags())
-    print(tag or "")
+    existing = _existing_tags()
+    tag = f"v{version}"
+    tag_commit = _tag_commit(tag) if tag in existing else None
+    print(release_action(version, existing, tag_commit, _head_commit()) or "")
     return 0
 
 

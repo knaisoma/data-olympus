@@ -30,8 +30,11 @@ The project stays pre-1.0 until `v1.0.0` is cut deliberately. When it reaches
   PR: it bumps `pyproject.toml`, renames the CHANGELOG `[Unreleased]` block, and
   writes friendly notes to `docs/releases/vX.Y.Z.md`.
 - The human gate is the operator merging that PR.
-- `.github/workflows/tag-release.yml` cuts the annotated `vX.Y.Z` tag and GitHub
-  Release on merge (detected via the pyproject version bump), then builds the image.
+- `.github/workflows/tag-release.yml`, on merge (detected via the pyproject
+  version bump), cuts the annotated `vX.Y.Z` tag, builds the image, then
+  publishes the GitHub Release once the image is available. The tag decision is
+  reconcilable: a full rerun after a partial failure re-emits the tag while it
+  points at the current commit, so the idempotent image/release jobs finish.
 - `pyproject.toml` is the single version source of truth (STD-U-810 §11.4).
 
 ## PR discipline
