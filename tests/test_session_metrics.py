@@ -14,6 +14,7 @@ import pytest
 
 from data_olympus.server import build_app
 from data_olympus.session_metrics import (
+    SessionActivityMiddleware,
     SessionActivityTracker,
     count_live_sessions,
     find_session_manager,
@@ -170,6 +171,122 @@ def test_tracker_forgets_vanished_sessions() -> None:
     tracker.touch("a")
     tracker.idle_session_ids(live_ids=set(), idle_after_sec=30)
     assert tracker.last_seen("a") is None
+
+
+# ---------------------------------------------------------------------------
+# SessionActivityMiddleware
+# ---------------------------------------------------------------------------
+
+
+class _RecordingApp:
+    """A downstream ASGI app that records whether it was called."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def __call__(self, scope, _receive, _send) -> None:
+        self.calls.append(scope)
+
+
+async def _noop_receive():  # pragma: no cover - never awaited in these tests
+    return {"type": "http.request"}
+
+
+async def _noop_send(_message) -> None:  # pragma: no cover - never awaited
+    return None
+
+
+def _http_scope(headers: list[tuple[bytes, bytes]]) -> dict:
+    return {"type": "http", "headers": headers}
+
+
+@pytest.mark.asyncio
+async def test_middleware_stamps_activity_when_header_present() -> None:
+    now = _clock()
+    tracker = SessionActivityTracker(clock=now)
+    downstream = _RecordingApp()
+    mw = SessionActivityMiddleware(downstream, tracker)
+
+    scope = _http_scope([(b"mcp-session-id", b"sess-1")])
+    await mw(scope, _noop_receive, _noop_send)
+
+    # Activity was stamped for the header's session id...
+    assert tracker.last_seen("sess-1") == 1000.0
+    # ...and the request was passed through unchanged.
+    assert downstream.calls == [scope]
+
+
+@pytest.mark.asyncio
+async def test_middleware_header_casing_and_latin1_decode() -> None:
+    """ASGI header names arrive lowercased by spec, but the middleware lowercases
+    defensively; the value is decoded latin-1 (the SDK emits ascii uuids, but a
+    non-ascii byte must not raise)."""
+    now = _clock()
+    tracker = SessionActivityTracker(clock=now)
+    mw = SessionActivityMiddleware(_RecordingApp(), tracker)
+
+    # Mixed-case header key is still matched.
+    await mw(_http_scope([(b"Mcp-Session-Id", b"sess-cased")]), _noop_receive, _noop_send)
+    assert tracker.last_seen("sess-cased") == 1000.0
+
+    # A 0xff byte decodes cleanly under latin-1 (would raise under utf-8).
+    await mw(_http_scope([(b"mcp-session-id", b"sess-\xff")]), _noop_receive, _noop_send)
+    assert tracker.last_seen("sess-\xff".encode("latin-1").decode("latin-1")) == 1000.0
+
+
+@pytest.mark.asyncio
+async def test_middleware_noop_and_passthrough_when_header_absent() -> None:
+    tracker = SessionActivityTracker()
+    downstream = _RecordingApp()
+    mw = SessionActivityMiddleware(downstream, tracker)
+
+    scope = _http_scope([(b"content-type", b"application/json")])
+    await mw(scope, _noop_receive, _noop_send)
+
+    # No session id stamped, nothing tracked, and the request still passed through.
+    assert tracker.last_seen("content-type") is None
+    assert downstream.calls == [scope]
+
+
+@pytest.mark.asyncio
+async def test_middleware_empty_header_value_is_ignored() -> None:
+    tracker = SessionActivityTracker()
+    downstream = _RecordingApp()
+    mw = SessionActivityMiddleware(downstream, tracker)
+
+    # An empty value must not stamp (and must not crash).
+    await mw(_http_scope([(b"mcp-session-id", b"")]), _noop_receive, _noop_send)
+    assert tracker.last_seen("") is None
+    assert len(downstream.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_middleware_non_http_scope_passes_through() -> None:
+    tracker = SessionActivityTracker()
+    downstream = _RecordingApp()
+    mw = SessionActivityMiddleware(downstream, tracker)
+
+    # A lifespan/websocket scope has no headers to scan; must not crash.
+    scope = {"type": "lifespan"}
+    await mw(scope, _noop_receive, _noop_send)
+    assert downstream.calls == [scope]
+
+
+@pytest.mark.asyncio
+async def test_middleware_early_break_stamps_once_on_first_match() -> None:
+    """The header scan breaks on the first matching id, so a (malformed) request
+    with two session-id headers stamps only the first and does not double-scan."""
+    now = _clock()
+    tracker = SessionActivityTracker(clock=now)
+    mw = SessionActivityMiddleware(_RecordingApp(), tracker)
+
+    scope = _http_scope(
+        [(b"mcp-session-id", b"first"), (b"mcp-session-id", b"second")]
+    )
+    await mw(scope, _noop_receive, _noop_send)
+
+    assert tracker.last_seen("first") == 1000.0
+    assert tracker.last_seen("second") is None
 
 
 # ---------------------------------------------------------------------------

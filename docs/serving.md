@@ -70,8 +70,22 @@ data-olympus closes this two ways:
   only. Termination uses the SDK's own `terminate()` path, so a client that
   reconnects simply gets a fresh session.
 
-Idle is measured from the last request seen for a session; long-lived clients
-that poll or make periodic calls are never reaped.
+Idle is measured from the last *request* seen for a session: the activity clock
+advances only when a request carrying that session's `mcp-session-id` header
+reaches the server. A client that keeps polling or making periodic calls is
+therefore never reaped, because each call re-stamps its activity.
+
+The consequence to be aware of is that "idle" is per-request, not
+per-connection. A quiet long-lived `GET` SSE stream that stays open but makes no
+periodic `POST` requests still stamps no activity, so after
+`KB_SESSION_IDLE_TIMEOUT_SEC` its session is reaped and the stream is torn down;
+the client must reconnect (it gets a fresh session on the next handshake). If
+your client relies on a long-lived stream without periodic requests, either
+raise `KB_SESSION_IDLE_TIMEOUT_SEC` above your longest expected quiet period,
+set it to `0` to disable reaping (observability only), or have the client send a
+periodic keep-alive request. Excluding sessions with an active open stream from
+reaping (so a live stream is never torn down) is a possible follow-up; the
+current behavior reaps purely on request-activity age.
 
 ## Taxonomy and writable paths
 

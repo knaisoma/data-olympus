@@ -30,6 +30,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`KB_ENFORCE_FAIL_MODE`), consultation freshness via `KB_CONSULT_TTL_SEC`.
 - Cross-agent enforcement providers: `kb enforce install --agent codex|gemini|opencode|copilot-cli|copilot-ide` and `--all`. Codex and Gemini get hard PreToolUse/BeforeTool gates (merging into existing hooks), OpenCode gets a `tool.execute.before` plugin, and Copilot CLI/IDE get a soft instructions-file + MCP provider. Antigravity is a documented-unsupported stub. The `kb-enforce-hook` dispatcher gained a `--dialect gemini` output mode.
 - Detection floor for un-hookable agents: `kb enforce report` (and `data-olympus report`) correlates governed git commits against the consult audit and lists changes with no consultation on record. An opt-in repo-scoped git provider (`kb enforce install --agent git`) installs a post-commit warning hook, or a pre-commit blocking hook with `--block`. Reuses the existing audit endpoint; no server change.
+- Streamable-http session idle reaper bounds transport accumulation (issue #43).
+  A background loop terminates sessions with no request activity for longer than
+  `KB_SESSION_IDLE_TIMEOUT_SEC` (default 1800s / 30 min; `0` disables reaping and
+  keeps observability only), scanning every `KB_SESSION_REAP_INTERVAL_SEC`
+  (default 60s). `kb_health` and `/api/v1/health` gained a `live_sessions` field
+  reporting the current live transport count (`null` until the HTTP app is
+  serving); a value that only climbs signals leaked sessions.
 - Enforcement hardening and observability: gate_bypass and gate_degraded events are now recorded (via `data-olympus report --emit-events` / the git warn hook, and the pre-tool hook on a reachable-degraded gate), so `kb_compliance` surfaces them. The gate receives `action_diff` and the classifier uses word-boundary matching plus dependency-install command signals (Codex and Claude now gate the Bash tool). New `kb enforce install --mode off|soft|hard`, ledger persistence via `KB_LEDGER_PATH`, a friendly PATH hint for `kb enforce report`, and a CI guard requiring a changelog entry for functional changes.
 - Guided onboarding: MCP prompts `onboard`, `onboard_project`, and `onboard_component` walk an agent through bootstrapping a new workspace or component, backed by a single-sourced playbook (`render_playbook`). A read-only `kb_cleanup_plan` MCP tool plus `POST /api/v1/onboarding/cleanup-plan` classify local repo docs against KB content and propose thin-pointer replacements for duplicates. `GET /api/v1/onboarding/playbook` and `kb onboard playbook` expose the same script to agents without native MCP prompt support.
 - Composable search pipeline: `Index.search()` now runs expand-query / match /

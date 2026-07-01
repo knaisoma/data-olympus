@@ -149,8 +149,11 @@ class SessionActivityTracker:
     session manager is built with an idle timeout, which FastMCP does not do. We
     therefore keep our own map, updated from the ASGI middleware on every request
     that carries an ``mcp-session-id`` header (both the handshake response and
-    subsequent client requests carry it). ``touch`` is also called at session
-    creation so a brand-new session is not reaped before its first follow-up.
+    subsequent client requests carry it). There is no explicit ``touch`` at
+    session creation; instead :meth:`idle_session_ids` stamps any live session id
+    it has never seen before on that first pass (treating it as active-now), so a
+    brand-new session created between middleware touches gets a full idle window
+    before it can be reaped.
     """
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
@@ -256,12 +259,19 @@ async def session_reaper_loop(
     log_count: bool = True,
 ) -> None:
     """Background asyncio task: periodically reap idle sessions and log the live
-    session count for production observability. Cancellable via asyncio."""
+    session count for production observability. Cancellable via asyncio.
+
+    To keep log volume low on a busy-but-steady server (the loop runs every
+    ``interval_sec``, ~1440 passes/day at the 60s default), the live count is
+    logged only when it *changes* from the previous pass, plus whenever a pass
+    reaps at least one session. A steady-state server therefore emits at most
+    the one startup line, not a line per interval."""
     log.info(
         "session_reaper_loop started (idle_after=%ss interval=%ss)",
         idle_after_sec,
         interval_sec,
     )
+    prev_live: int | None = None
     while True:
         try:
             reaped = await reap_idle_sessions(
@@ -269,8 +279,12 @@ async def session_reaper_loop(
             )
             if log_count:
                 live = count_live_sessions(app)
+                if live is not None and (live != prev_live or reaped):
+                    log.info(
+                        "live streamable-http sessions: %d (reaped %d)", live, reaped
+                    )
                 if live is not None:
-                    log.info("live streamable-http sessions: %d (reaped %d)", live, reaped)
+                    prev_live = live
         except asyncio.CancelledError:
             log.info("session_reaper_loop cancelled")
             raise
