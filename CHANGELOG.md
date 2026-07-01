@@ -14,6 +14,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Search now short-circuits exact-id and exact-tag queries: a single-token query
+  that is a document id (e.g. `STD-U-002`, or a path-derived id) is surfaced as
+  the top hit via a direct lookup even when it is absent from the bm25 results,
+  and a single-token exact-tag query lifts docs carrying that tag ahead of the
+  rest. Implemented as a composable `reranker` (issue #39); the match stage and
+  `_build_match_expr` are untouched.
 - `kb_search` and `kb_get` now support and return `status` and `type`, making the
   documented "filter by status / tier / type" capability real (index schema v4).
 - Retrieval now indexes `applies_when` trigger metadata and `description` with

@@ -37,6 +37,7 @@ from data_olympus.principals import (
 from data_olympus.push_queue import PushQueue
 from data_olympus.query_expansion import default_query_expander
 from data_olympus.rate_limit import SlidingWindowLimiter
+from data_olympus.search_shortcut import make_id_tag_reranker
 from data_olympus.tools_read import kb_health_fn, kb_outline_fn, kb_search_fn
 from data_olympus.worktrees import WorktreeRegistry
 
@@ -232,16 +233,16 @@ def build_app(
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
     config = Config(**config_kwargs)  # type: ignore[arg-type]
-    # Synonym/acronym query expansion (issue #38) via the expand-query seam, plus
-    # status-aware reranking (issue #37) via the re-rank seam. Both on by default:
-    # expansion broadens recall (KB_SYNONYMS / KB_SYNONYMS_MODE tune or disable it),
-    # and the status reranker keeps a superseded/deprecated doc from outranking the
-    # active one that replaced it (status_weights=None uses the built-in map;
-    # KB_STATUS_WEIGHTS overrides it).
-    idx = Index(
-        kb_index_path,
-        query_expander=default_query_expander(),
-        reranker=make_status_reranker(config.status_weights),
+    # Composed search wiring. Expand-query seam: synonym/acronym expansion (issue
+    # #38, KB_SYNONYMS / KB_SYNONYMS_MODE). Re-rank seam: the exact-id / exact-tag
+    # short-circuit (issue #39) runs outermost -- a single-token query that is a
+    # document id or an exact tag ranks that document first -- and delegates to the
+    # status-aware reranker (issue #37) as its ``inner``, so among the remaining
+    # hits an active doc still outranks the superseded one it replaced.
+    # status_weights=None uses the built-in map; KB_STATUS_WEIGHTS overrides it.
+    idx = Index(kb_index_path, query_expander=default_query_expander())
+    idx.reranker = make_id_tag_reranker(
+        idx, inner=make_status_reranker(config.status_weights)
     )
     git = GitOps(kb_main_path)
     # retention_sec = the consult TTL: an entry older than that can never be

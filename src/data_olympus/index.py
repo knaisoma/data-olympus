@@ -651,6 +651,27 @@ class Index:
             description=row["description"] or "",
         )
 
+    def ids_with_exact_tag(self, tag: str) -> set[str]:
+        """Return the ids of docs carrying ``tag`` as an EXACT (whole) tag.
+
+        Tags are stored space-joined in ``docs.tags``. A LIKE query would match
+        substrings ('style' inside 'styleguide'), so candidates are pre-filtered
+        with LIKE for index use, then confirmed by splitting the stored value and
+        checking membership. An empty/blank tag yields the empty set.
+        """
+        tag = tag.strip()
+        if not tag:
+            return set()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT id, tags FROM docs WHERE tags LIKE ?",
+                (f"%{tag}%",),
+            ).fetchall()
+        finally:
+            conn.close()
+        return {r["id"] for r in rows if tag in (r["tags"] or "").split()}
+
     def list(self, *, tier: str, category: str | None = None) -> list[dict[str, str]]:
         """List docs in the given tier (and optional category), ordered by id ascending."""
         conn = self._connect()
