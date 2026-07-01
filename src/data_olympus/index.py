@@ -10,7 +10,26 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
+from data_olympus.cooccurrence import (
+    DEFAULT_K,
+    DEFAULT_MAX_TERMS,
+    RELATED_TERMS_SCHEMA,
+    build_cooccurrence_table,
+    cooccurrence_build_params,
+    cooccurrence_enabled,
+    lookup_related_terms,
+    make_cooccurrence_expander,
+    tokenize_doc,
+    write_cooccurrence_table,
+)
 from data_olympus.markdown_parse import parse_file
+from data_olympus.trigram import (
+    DEFAULT_FALLBACK_THRESHOLD as DEFAULT_TRIGRAM_FALLBACK_THRESHOLD,
+)
+from data_olympus.trigram import (
+    TRIGRAM_FTS_SCHEMA,
+    build_trigram_match_expr,
+)
 
 if TYPE_CHECKING:
     import builtins
@@ -47,12 +66,14 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
-"""
+""" + RELATED_TERMS_SCHEMA + TRIGRAM_FTS_SCHEMA
 
 # Informational only; recorded in the meta table for observability. Rebuild
 # is guaranteed by bootstrap_now=True calling Index.build() unconditionally
 # on container start, not by a version-mismatch check.
-_SCHEMA_VERSION = "5"
+# v6 adds the related_terms co-occurrence table (issue #40).
+# v7 adds the fts_trigram fuzzy-match table (issue #41).
+_SCHEMA_VERSION = "7"
 
 
 # fts column order (excluding the UNINDEXED id at position 0).
@@ -337,8 +358,22 @@ class Index:
         health_ttl_sec: float = 5.0,
         query_expander: Callable[[list[str]], list[str]] | None = None,
         reranker: Callable[[str, list[SearchHit]], list[SearchHit]] | None = None,
+        trigram_fallback: bool = False,
+        trigram_fallback_threshold: int | None = None,
     ) -> None:
         self._db_path = db_path
+        # Trigram fuzzy-match fallback (issue #41). When enabled, a primary FTS
+        # query that returns at or below ``trigram_fallback_threshold`` hits is
+        # backfilled from the secondary trigram-tokenized table so a typo or a
+        # partial identifier still reaches its document. Off by default so the
+        # base behaviour is unchanged; the server sets these from config. Trigram
+        # hits are only ever APPENDED after primary hits, never reordering them.
+        self.trigram_fallback = trigram_fallback
+        self.trigram_fallback_threshold = (
+            trigram_fallback_threshold
+            if trigram_fallback_threshold is not None
+            else DEFAULT_TRIGRAM_FALLBACK_THRESHOLD
+        )
         # Search pipeline seams (issue #36). search() runs three stages:
         #   expand-query -> match -> re-rank
         # ``query_expander`` rewrites the term list before the FTS MATCH is built
@@ -420,6 +455,11 @@ class Index:
             conn.executescript(_SCHEMA)
             count = 0
             path_rules = _load_path_rules()
+            # Per-document token sets for the co-occurrence table (issue #40).
+            # Collected during the single indexing pass so the build stays one
+            # walk; only populated when co-occurrence expansion is enabled.
+            build_cooccurrence = cooccurrence_enabled()
+            doc_token_sets: list[set[str]] = []
             for md in files_to_index:
                 rel = md.relative_to(kb_root)
                 doc = parse_file(md)
@@ -445,7 +485,32 @@ class Index:
                     "VALUES (?, ?, ?, ?, ?, ?)",
                     (doc_id, doc.title, tags_str, applies_when_str, doc.description, doc.body),
                 )
+                # Secondary trigram index (issue #41), built into the SAME tmp DB
+                # so it is swapped atomically with the primary fts table below.
+                # A query never sees a half-built trigram table.
+                conn.execute(
+                    "INSERT INTO fts_trigram "
+                    "(id, title, tags, applies_when, description, body) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (doc_id, doc.title, tags_str, applies_when_str, doc.description, doc.body),
+                )
+                if build_cooccurrence:
+                    doc_token_sets.append(
+                        tokenize_doc(doc.title, tags_str, doc.description, doc.body)
+                    )
                 count += 1
+            # Co-occurrence / PMI table (issue #40). Built into the SAME tmp DB
+            # and swapped atomically with the rest of the index below, so a query
+            # never sees a half-built related_terms table.
+            if build_cooccurrence:
+                params = cooccurrence_build_params()
+                table = build_cooccurrence_table(
+                    doc_token_sets,
+                    k=int(params["k"]),
+                    min_count=int(params["min_count"]),
+                    min_pmi=float(params["min_pmi"]),
+                )
+                write_cooccurrence_table(conn, table)
             now = time.time()
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('source_commit', ?)",
@@ -585,6 +650,24 @@ class Index:
                 )
                 for r in rows
             ]
+            # Stage 2b (fuzzy fallback, issue #41): only when enabled AND the
+            # primary query returned few/no hits. Trigram hits are APPENDED after
+            # the primary hits and given scores strictly worse than any primary
+            # hit, so an exact/primary match is never diluted or reordered by a
+            # fuzzy hit (even if a later reranker re-sorts by score). The fallback
+            # backfills up to the same candidate_limit.
+            if (
+                self.trigram_fallback
+                and len(hits) <= self.trigram_fallback_threshold
+            ):
+                hits = self._trigram_backfill(
+                    conn,
+                    query,
+                    primary_hits=hits,
+                    base_where=where[1:],
+                    base_params=params[1:-1],
+                    candidate_limit=candidate_limit,
+                )
         finally:
             conn.close()
         # Stage 3 (re-rank): optional hook reorders/rescores (default identity),
@@ -609,6 +692,115 @@ class Index:
                 raise ValueError(f"unknown fts column(s): {unknown}")
             return "{" + " ".join(columns) + "} : (" + quoted + ")"
         return quoted
+
+    def _trigram_backfill(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        *,
+        primary_hits: list[SearchHit],
+        base_where: list[str],
+        base_params: list[object],
+        candidate_limit: int,
+    ) -> list[SearchHit]:
+        """Backfill few/no primary hits with trigram fuzzy matches (issue #41).
+
+        Runs the trigram (substring) MATCH built from the query's own trigrams,
+        excluding ids already returned by the primary query, and appends the
+        results AFTER the primary hits. Each appended hit is given a score
+        strictly worse (larger, since bm25 is ordered ascending) than any primary
+        hit, so a downstream reranker that re-sorts by score cannot lift a fuzzy
+        hit above an exact/primary one. The same tier/category/status/doc_type
+        filters (``base_where`` / ``base_params``) are applied. A query with no
+        trigram (shorter than 3 chars) no-ops and the primary hits are returned
+        unchanged.
+        """
+        trigram_expr = build_trigram_match_expr(query)
+        if trigram_expr is None:
+            return primary_hits
+        seen_ids = {h.id for h in primary_hits}
+        # Worst (largest) primary score, so appended trigram scores sort strictly
+        # after every primary hit. bm25 scores are <= 0 here; use 0.0 as the floor
+        # when there are no primary hits so appended scores stay finite/ordered.
+        worst_primary = max((h.score for h in primary_hits), default=0.0)
+        where = ["fts_trigram MATCH ?", *base_where]
+        params: list[object] = [trigram_expr, *base_params, candidate_limit]
+        sql = f"""
+            SELECT
+                fts_trigram.id AS id,
+                docs.path AS path,
+                COALESCE(docs.title, '') AS title,
+                COALESCE(docs.status, '') AS status,
+                COALESCE(docs.type, '') AS doc_type,
+                COALESCE(docs.description, '') AS description,
+                bm25(fts_trigram) AS tscore
+            FROM fts_trigram
+            JOIN docs ON docs.id = fts_trigram.id
+            WHERE {' AND '.join(where)}
+            ORDER BY tscore
+            LIMIT ?
+        """
+        rows = conn.execute(sql, params).fetchall()
+        appended: list[SearchHit] = []
+        # Assign monotonically increasing scores strictly above worst_primary so
+        # the trigram hits keep their own relative (bm25) order but always sort
+        # after the primaries.
+        offset = 1.0
+        for r in rows:
+            if r["id"] in seen_ids:
+                continue
+            seen_ids.add(r["id"])
+            appended.append(
+                SearchHit(
+                    id=r["id"],
+                    path=r["path"],
+                    title=r["title"],
+                    snippet=r["description"],
+                    score=worst_primary + offset,
+                    status=r["status"],
+                    doc_type=r["doc_type"],
+                )
+            )
+            offset += 1.0
+        return [*primary_hits, *appended]
+
+    def related_terms(self, term: str, *, limit: int) -> builtins.list[str]:
+        """Return up to ``limit`` corpus co-occurring terms for ``term``.
+
+        Reads the ``related_terms`` table populated at build time (issue #40),
+        strongest (highest-PMI) first. Opens a per-call connection so it always
+        reads the atomically-swapped current index. An index built before the
+        table existed (no ``related_terms`` table) or an unknown term yields the
+        empty list rather than raising. This is the query-time backing for the
+        co-occurrence expander wired via ``make_cooccurrence_expander``.
+        """
+        if limit <= 0 or not self._db_path.exists():
+            return []
+        conn = self._connect()
+        try:
+            return lookup_related_terms(conn, term, limit=limit)
+        except sqlite3.OperationalError:
+            # Table absent (index predates the schema); degrade to no expansion.
+            return []
+        finally:
+            conn.close()
+
+    def cooccurrence_expander(
+        self, *, k: int = DEFAULT_K, max_terms: int = DEFAULT_MAX_TERMS,
+    ) -> Callable[[list[str]], list[str]]:
+        """Return a ``query_expander`` backed by this index's related-terms table.
+
+        The expander appends, for each query term, up to ``k`` co-occurring terms
+        (down-weighted by appending after the originals), bounded overall by
+        ``max_terms``. Bound to ``self.related_terms`` so it always reads the
+        currently-swapped index. Compose it AFTER the synonym expander via
+        ``cooccurrence.compose_expanders``.
+        """
+        return make_cooccurrence_expander(
+            lambda term, kk: self.related_terms(term, limit=kk),
+            k=k,
+            max_terms=max_terms,
+        )
 
     def get(self, id: str) -> IndexedDoc | None:
         """Retrieve a single document by id. Returns None if not found."""

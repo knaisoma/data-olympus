@@ -49,6 +49,25 @@ class Config:
     # weight boosts an in-force status, a positive one penalizes a retired one.
     status_weights: dict[str, float] | None = None
     read_only: bool = False
+    # Corpus co-occurrence query expansion (issue #40). Default ON. The build-time
+    # table is bounded by ``cooccurrence_k`` related terms per term above the
+    # ``cooccurrence_min_count`` / ``cooccurrence_min_pmi`` thresholds. These are
+    # surfaced here for discoverability; the build path in Index.build reads the
+    # same env vars directly (mirroring the synonym expander), so the CLI indexer
+    # honours them without threading Config through.
+    cooccurrence_enabled: bool = True
+    cooccurrence_k: int = 5
+    cooccurrence_min_count: int = 2
+    cooccurrence_min_pmi: float = 0.0
+    # Trigram fuzzy-match fallback (issue #41). Default OFF so existing search
+    # behaviour is unchanged. When on, a primary FTS query returning at or below
+    # ``trigram_fallback_threshold`` hits is backfilled from the trigram index so
+    # a typo or partial identifier still reaches its document; the backfill only
+    # ever appends after primary hits. Surfaced here for discoverability; the
+    # build always creates the trigram table (cost is one extra insert/doc), and
+    # Index.search reads these to gate the query-time fallback.
+    trigram_fallback_enabled: bool = False
+    trigram_fallback_threshold: int = 3
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -115,6 +134,22 @@ def load_config() -> Config:
     session_reap_interval_sec = int(os.getenv("KB_SESSION_REAP_INTERVAL_SEC", "60"))
     status_weights = _load_status_weights(os.getenv("KB_STATUS_WEIGHTS", ""))
     read_only = _env_bool(os.getenv("KB_READ_ONLY", ""))
+    from data_olympus.cooccurrence import (
+        cooccurrence_build_params,
+    )
+    from data_olympus.cooccurrence import (
+        cooccurrence_enabled as _cooc_enabled,
+    )
+    cooc_enabled = _cooc_enabled()
+    cooc_params = cooccurrence_build_params()
+    from data_olympus.trigram import (
+        trigram_fallback_enabled as _trigram_enabled,
+    )
+    from data_olympus.trigram import (
+        trigram_fallback_threshold as _trigram_threshold,
+    )
+    trigram_enabled = _trigram_enabled()
+    trigram_threshold = _trigram_threshold()
     return Config(
         kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
         kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
@@ -148,4 +183,10 @@ def load_config() -> Config:
         session_reap_interval_sec=session_reap_interval_sec,
         status_weights=status_weights,
         read_only=read_only,
+        cooccurrence_enabled=cooc_enabled,
+        cooccurrence_k=int(cooc_params["k"]),
+        cooccurrence_min_count=int(cooc_params["min_count"]),
+        cooccurrence_min_pmi=float(cooc_params["min_pmi"]),
+        trigram_fallback_enabled=trigram_enabled,
+        trigram_fallback_threshold=trigram_threshold,
     )

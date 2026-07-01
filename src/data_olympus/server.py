@@ -23,6 +23,11 @@ if TYPE_CHECKING:
 from data_olympus.audit_log import AuditLog
 from data_olympus.auth import PathBlocklist
 from data_olympus.config import Config, load_config
+from data_olympus.cooccurrence import (
+    DEFAULT_MAX_TERMS,
+    compose_expanders,
+    cooccurrence_enabled,
+)
 from data_olympus.enforce_policy import ConsultationLedger, IntentClassifier
 from data_olympus.git_ops import GitOps
 from data_olympus.index import Index, make_status_reranker
@@ -242,13 +247,28 @@ def build_app(
         config_kwargs["audit_log_path"] = audit_log_path
     config = Config(**config_kwargs)  # type: ignore[arg-type]
     # Composed search wiring. Expand-query seam: synonym/acronym expansion (issue
-    # #38, KB_SYNONYMS / KB_SYNONYMS_MODE). Re-rank seam: the exact-id / exact-tag
-    # short-circuit (issue #39) runs outermost -- a single-token query that is a
-    # document id or an exact tag ranks that document first -- and delegates to the
-    # status-aware reranker (issue #37) as its ``inner``, so among the remaining
-    # hits an active doc still outranks the superseded one it replaced.
-    # status_weights=None uses the built-in map; KB_STATUS_WEIGHTS overrides it.
-    idx = Index(kb_index_path, query_expander=default_query_expander())
+    # #38, KB_SYNONYMS / KB_SYNONYMS_MODE) composed with corpus co-occurrence
+    # expansion (issue #40, KB_COOCCURRENCE_*). Synonyms run FIRST, then
+    # co-occurrence broadens the synonym-expanded set from the corpus-learned
+    # related_terms table; the composed output is de-duplicated and bounded.
+    # Co-occurrence is bound to this Index (it reads the swapped related_terms
+    # table), so we build ``idx`` first and set the composed expander after.
+    # Re-rank seam: the exact-id / exact-tag short-circuit (issue #39) runs
+    # outermost -- a single-token query that is a document id or an exact tag
+    # ranks that document first -- and delegates to the status-aware reranker
+    # (issue #37) as its ``inner``, so among the remaining hits an active doc
+    # still outranks the superseded one it replaced. status_weights=None uses the
+    # built-in map; KB_STATUS_WEIGHTS overrides it.
+    idx = Index(
+        kb_index_path,
+        trigram_fallback=config.trigram_fallback_enabled,
+        trigram_fallback_threshold=config.trigram_fallback_threshold,
+    )
+    synonym_expander = default_query_expander()
+    cooc_expander = idx.cooccurrence_expander() if cooccurrence_enabled() else None
+    idx.query_expander = compose_expanders(
+        synonym_expander, cooc_expander, max_terms=DEFAULT_MAX_TERMS
+    )
     idx.reranker = make_id_tag_reranker(
         idx, inner=make_status_reranker(config.status_weights)
     )

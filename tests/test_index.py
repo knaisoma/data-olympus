@@ -127,8 +127,9 @@ def test_index_records_schema_version(tmp_kb: Path, tmp_index_path: Path) -> Non
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     conn.close()
     assert row is not None
-    assert row[0] == "5", (
-        f"schema_version must be '5' after applies_when/description columns; got {row[0]!r}"
+    assert row[0] == "7", (
+        f"schema_version must be '7' after the fts_trigram fuzzy-match table; "
+        f"got {row[0]!r}"
     )
 
 

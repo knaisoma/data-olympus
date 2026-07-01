@@ -27,6 +27,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   labels), then publishes the GitHub Release.
   Process is documented in `.rules/versioning.md` and `.rules/release-routine.md`.
   No tags are ever cut unattended.
+- Trigram fuzzy-match fallback for typos and partial identifiers (issue #41). A
+  secondary FTS5 table (`fts_trigram`, `trigram` tokenizer, schema v7) is built
+  into the same tmp DB and swapped atomically with the primary FTS index, so it
+  rebuilds atomically. At query time it is used only as a FALLBACK: the primary
+  `porter unicode61` FTS query runs first and, only when it returns at or below a
+  small threshold of hits, a trigram match (an OR of the query's own quoted
+  trigrams, so no FTS operator injection) backfills the results. Trigram hits are
+  APPENDED after the primary hits and scored strictly worse than any primary hit,
+  so an exact/primary match is never diluted or reordered by a fuzzy hit, and a
+  query with good primary hits is unaffected. A query shorter than 3 chars safely
+  no-ops the fallback. Opt-in and off by default (existing search behaviour is
+  unchanged): `KB_TRIGRAM_MODE` (on/off, default off) and
+  `KB_TRIGRAM_FALLBACK_THRESHOLD` (default 3).
+- Corpus co-occurrence query expansion (embedding-free semantics, issue #40).
+  At index-build time the indexer learns, per term, the top-k terms it most
+  strongly co-occurs with across documents (pointwise mutual information at
+  document granularity) into a bounded `related_terms` table (schema v6) built
+  into the same tmp DB and swapped atomically with the FTS index. At query time
+  a `query_expander` appends a term's related terms, down-weighted by appending
+  them after the originals so BM25 still favours typed terms, bounded to <= 32
+  terms. It composes WITH the synonym expander (issue #38) rather than replacing
+  it: synonyms run first, then co-occurrence broadens the synonym-expanded set
+  (`compose_expanders`). Config knobs: `KB_COOCCURRENCE_MODE` (on/off, default
+  on), `KB_COOCCURRENCE_K` (default 5), `KB_COOCCURRENCE_MIN_COUNT` (default 2),
+  `KB_COOCCURRENCE_MIN_PMI` (default 0.0). Stopword-like and short tokens are
+  skipped so the table stays focused and build cost negligible.
 - Search now short-circuits exact-id and exact-tag queries: a single-token query
   that is a document id (e.g. `STD-U-002`, or a path-derived id) is surfaced as
   the top hit via a direct lookup even when it is absent from the bm25 results,
