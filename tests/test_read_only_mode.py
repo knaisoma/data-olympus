@@ -145,6 +145,30 @@ async def test_read_only_write_routes_absent(tmp_kb: Path, tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_read_only_observability_get_routes_absent(
+    tmp_kb: Path, tmp_path: Path
+) -> None:
+    """The observability GET routes sit behind the same read-only gate as the
+    write routes (register_routes' `if not read_only:` block), so a replica must
+    404 them too -- otherwise a replica would expose the writer's pending /
+    audit / compliance surface without the write pipeline that backs it."""
+    app = _read_only_app(tmp_kb, tmp_path)
+    transport = httpx.ASGITransport(app=app.http_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        for path in [
+            "/api/v1/pending",
+            "/api/v1/audit",
+            "/api/v1/audit/verify",
+            "/api/v1/compliance",
+        ]:
+            resp = await client.get(path)
+            assert resp.status_code == 404, (
+                f"GET {path} should be absent in read-only mode, got "
+                f"{resp.status_code}"
+            )
+
+
+@pytest.mark.asyncio
 async def test_default_mode_still_registers_write_tools(
     tmp_kb: Path, tmp_path: Path
 ) -> None:

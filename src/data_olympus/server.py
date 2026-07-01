@@ -261,6 +261,14 @@ def build_app(
     )
     state = ServerState(idx=idx, git=git, config=config, ledger=ledger)
 
+    if config.read_only:
+        # Unambiguous startup marker: if a replica is misconfigured (e.g. built
+        # from an image that predates KB_READ_ONLY, or the flag failed to reach
+        # the pod), this line is absent from the logs and the misconfiguration
+        # is visible. A read-only replica never initialises the write pipeline
+        # below and never becomes a git writer.
+        log.warning("starting in READ-ONLY mode; write pipeline disabled")
+
     # A read-only replica sets kb_remote_url (so the git_pull_loop has a remote
     # to refresh from) but must NOT bring up the write pipeline.
     if config.kb_remote_url and not config.read_only:

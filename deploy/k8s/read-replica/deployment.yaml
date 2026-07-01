@@ -31,8 +31,15 @@ spec:
           type: RuntimeDefault
       containers:
         - name: data-olympus-mcp
-          # Same image as the writer; behaviour differs only by KB_READ_ONLY.
-          image: ghcr.io/knaisoma/data-olympus:v0.1.1  # replace with your registry/tag or digest
+          # SAFETY: this image MUST be built from a revision that understands the
+          # KB_READ_ONLY flag. Do NOT use the writer's published v0.1.1 tag: that
+          # image predates KB_READ_ONLY, ignores the flag, and would initialise
+          # the write pipeline -- turning this replica into a SECOND git writer.
+          # Build and publish an image from this feature branch first (see the
+          # README in this directory), then pin it here by tag or, preferably,
+          # by immutable digest. The placeholder tag below will fail to pull
+          # until the operator replaces it, which is intentional.
+          image: ghcr.io/knaisoma/data-olympus:read-only-preview  # REPLACE: build from a KB_READ_ONLY-capable revision; pin by digest
           imagePullPolicy: IfNotPresent
           # The entrypoint starts as root to copy/chown the deploy key and clone
           # /kb-main, then drops to uid 65534 via gosu. Same hardening as the
@@ -54,18 +61,22 @@ spec:
             - configMapRef:
                 name: data-olympus-mcp-read
           env:
-            # The deploy key only needs read (fetch/clone) access for a replica,
-            # but we reuse the same Secret as the writer for simplicity. Grant a
-            # read-only key here if your platform supports per-workload keys.
+            # SECURITY: a replica only needs read (fetch/clone) access, so it
+            # references its OWN Secret `data-olympus-mcp-readonly` -- NOT the
+            # writer's `data-olympus-mcp` Secret, whose deploy key has write
+            # (push) access to the git remote. The operator must provision a
+            # separate, read-only deploy key for this Secret (see the README in
+            # this directory). This keeps a write-capable key off read pods by
+            # default.
             - name: KB_GIT_REMOTE_URL
               valueFrom:
                 secretKeyRef:
-                  name: data-olympus-mcp
+                  name: data-olympus-mcp-readonly
                   key: KB_GIT_REMOTE_URL
             - name: KB_REMOTE_URL
               valueFrom:
                 secretKeyRef:
-                  name: data-olympus-mcp
+                  name: data-olympus-mcp-readonly
                   key: KB_GIT_REMOTE_URL
           volumeMounts:
             - name: kb-main
@@ -109,8 +120,10 @@ spec:
         - name: tmp
           emptyDir: {}
         - name: git-key
+          # Read-only deploy key (see the env block above and the README): this
+          # is the operator-provisioned read-only Secret, not the writer's.
           secret:
-            secretName: data-olympus-mcp
+            secretName: data-olympus-mcp-readonly
             defaultMode: 0400
             items:
               - key: git-key
