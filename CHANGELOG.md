@@ -14,6 +14,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Corpus co-occurrence query expansion (embedding-free semantics, issue #40).
+  At index-build time the indexer learns, per term, the top-k terms it most
+  strongly co-occurs with across documents (pointwise mutual information at
+  document granularity) into a bounded `related_terms` table (schema v6) built
+  into the same tmp DB and swapped atomically with the FTS index. At query time
+  a `query_expander` appends a term's related terms, down-weighted by appending
+  them after the originals so BM25 still favours typed terms, bounded to <= 32
+  terms. It composes WITH the synonym expander (issue #38) rather than replacing
+  it: synonyms run first, then co-occurrence broadens the synonym-expanded set
+  (`compose_expanders`). Config knobs: `KB_COOCCURRENCE_MODE` (on/off, default
+  on), `KB_COOCCURRENCE_K` (default 5), `KB_COOCCURRENCE_MIN_COUNT` (default 2),
+  `KB_COOCCURRENCE_MIN_PMI` (default 0.0). Stopword-like and short tokens are
+  skipped so the table stays focused and build cost negligible.
 - Search now short-circuits exact-id and exact-tag queries: a single-token query
   that is a document id (e.g. `STD-U-002`, or a path-derived id) is surfaced as
   the top hit via a direct lookup even when it is absent from the bm25 results,
