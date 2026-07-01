@@ -108,6 +108,36 @@ async def test_rest_cleanup_plan_bad_jaccard_threshold_returns_400(http_app) -> 
 
 
 @pytest.mark.asyncio
+async def test_rest_cleanup_plan_null_content_returns_400(http_app) -> None:
+    """{"content": null} must be rejected as a 400, not raise a 500 (entry.get
+    returns None for an explicit JSON null, not the "" default)."""
+    body = {
+        "workspace": "foo",
+        "local_files": [{"path": "README.md", "content": None}],
+    }
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/v1/onboarding/cleanup-plan", json=body)
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_threshold", ["nan", "2.0", "-1"])
+async def test_rest_cleanup_plan_out_of_range_jaccard_threshold_returns_400(
+    http_app, bad_threshold: str,
+) -> None:
+    body = {
+        "workspace": "foo",
+        "local_files": [{"path": "README.md", "content": "hello"}],
+        "jaccard_threshold": bad_threshold,
+    }
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/v1/onboarding/cleanup-plan", json=body)
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_rest_cleanup_plan_too_many_files_returns_400(http_app) -> None:
     # Config default (KB_MAX_BOOTSTRAP_FILES) is 50; comfortably exceed it.
     body = {

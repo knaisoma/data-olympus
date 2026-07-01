@@ -52,3 +52,10 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"Onboarding project: foo"* ]]
 }
+
+@test "kb onboard playbook with bad kind fails cleanly, no traceback" {
+  run "$KB" onboard playbook --kind bogus
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"Traceback"* ]]
+  [[ "$output" == *"kb:"* ]]
+}

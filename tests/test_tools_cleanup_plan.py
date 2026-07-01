@@ -1,10 +1,13 @@
 """Tests for kb_cleanup_plan_fn (read-only dedup + thin-pointer plan)."""
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from data_olympus.tools_onboarding import kb_cleanup_plan_fn
+import pytest
+
+from data_olympus.tools_onboarding import CleanupInputError, kb_cleanup_plan_fn
 
 
 def _idx_with_doc(doc_id: str, path: str, content: str) -> MagicMock:
@@ -69,20 +72,19 @@ def test_workspace_prefix_excludes_components() -> None:
     )
 
 
-def test_entry_missing_path_does_not_raise() -> None:
-    """kb_cleanup_plan_fn is also invoked directly by the MCP tool path, which
-    does not go through the REST route's input validation, so a local_files
-    entry missing 'path' must not raise -- it should classify normally with an
-    empty local_path."""
+def test_entry_missing_path_raises() -> None:
+    """Validation is now centralized in kb_cleanup_plan_fn itself so BOTH the
+    REST route and the MCP tool path are protected identically. entry.get("path")
+    is None when the key is missing, which is not a str, so this must raise
+    CleanupInputError rather than silently classifying with an empty local_path."""
     idx = _idx_with_doc(
         "projects-foo-README", "projects/foo/README.md", "# Purpose\n\naaa bbb ccc\n",
     )
-    resp = kb_cleanup_plan_fn(
-        idx=idx, workspace="foo", component=None,
-        local_files=[{"content": "# Deploy\n\nzzz yyy xxx\n"}],
-    )
-    assert len(resp.items) == 1
-    assert resp.items[0].local_path == ""
+    with pytest.raises(CleanupInputError):
+        kb_cleanup_plan_fn(
+            idx=idx, workspace="foo", component=None,
+            local_files=[{"content": "# Deploy\n\nzzz yyy xxx\n"}],
+        )
 
 
 def test_best_match_wins_over_partial_overlap_by_rank() -> None:
@@ -116,3 +118,100 @@ def test_best_match_wins_over_partial_overlap_by_rank() -> None:
     item = resp.items[0]
     assert item.classification == "imported_duplicate"
     assert item.kb_id == "projects-foo-exact"
+
+
+def test_local_files_not_a_list_raises() -> None:
+    idx = MagicMock()
+    with pytest.raises(CleanupInputError):
+        kb_cleanup_plan_fn(idx=idx, workspace="foo", component=None, local_files="nope")  # type: ignore[arg-type]
+
+
+def test_entry_not_a_dict_raises() -> None:
+    idx = MagicMock()
+    with pytest.raises(CleanupInputError):
+        kb_cleanup_plan_fn(idx=idx, workspace="foo", component=None, local_files=["nope"])  # type: ignore[list-item]
+
+
+def test_entry_path_not_str_raises() -> None:
+    idx = MagicMock()
+    with pytest.raises(CleanupInputError):
+        kb_cleanup_plan_fn(
+            idx=idx, workspace="foo", component=None,
+            local_files=[{"path": 123, "content": "x"}],
+        )
+
+
+def test_entry_content_none_raises() -> None:
+    """{"content": null} must be REJECTED, not silently treated as empty string.
+
+    entry.get("content", "") returns None (not the default) when the key is
+    present with an explicit JSON null, so the fn must check isinstance
+    explicitly rather than relying on the .get default alone.
+    """
+    idx = MagicMock()
+    with pytest.raises(CleanupInputError):
+        kb_cleanup_plan_fn(
+            idx=idx, workspace="foo", component=None,
+            local_files=[{"path": "README.md", "content": None}],
+        )
+
+
+def test_entry_content_non_str_raises() -> None:
+    idx = MagicMock()
+    with pytest.raises(CleanupInputError):
+        kb_cleanup_plan_fn(
+            idx=idx, workspace="foo", component=None,
+            local_files=[{"path": "README.md", "content": 42}],
+        )
+
+
+def test_max_content_bytes_exceeded_raises() -> None:
+    idx = _idx_with_doc("projects-foo-README", "projects/foo/README.md", "x")
+    with pytest.raises(CleanupInputError):
+        kb_cleanup_plan_fn(
+            idx=idx, workspace="foo", component=None,
+            local_files=[{"path": "README.md", "content": "a" * 100}],
+            max_content_bytes=10,
+        )
+
+
+def test_max_files_exceeded_raises() -> None:
+    idx = _idx_with_doc("projects-foo-README", "projects/foo/README.md", "x")
+    local_files = [{"path": f"f{i}.md", "content": "x"} for i in range(5)]
+    with pytest.raises(CleanupInputError):
+        kb_cleanup_plan_fn(
+            idx=idx, workspace="foo", component=None,
+            local_files=local_files, max_files=3,
+        )
+
+
+@pytest.mark.parametrize("bad_threshold", [math.nan, math.inf, -math.inf, -0.5, 2.0, "nan"])
+def test_bad_jaccard_threshold_raises(bad_threshold: object) -> None:
+    idx = _idx_with_doc("projects-foo-README", "projects/foo/README.md", "x")
+    with pytest.raises(CleanupInputError):
+        kb_cleanup_plan_fn(
+            idx=idx, workspace="foo", component=None,
+            local_files=[{"path": "README.md", "content": "x"}],
+            jaccard_threshold=bad_threshold,  # type: ignore[arg-type]
+        )
+
+
+def test_jaccard_threshold_not_coercible_raises() -> None:
+    idx = _idx_with_doc("projects-foo-README", "projects/foo/README.md", "x")
+    with pytest.raises(CleanupInputError):
+        kb_cleanup_plan_fn(
+            idx=idx, workspace="foo", component=None,
+            local_files=[{"path": "README.md", "content": "x"}],
+            jaccard_threshold="not-a-number",  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("boundary", [0.0, 1.0])
+def test_jaccard_threshold_bounds_accepted(boundary: float) -> None:
+    idx = _idx_with_doc("projects-foo-README", "projects/foo/README.md", "x")
+    resp = kb_cleanup_plan_fn(
+        idx=idx, workspace="foo", component=None,
+        local_files=[{"path": "README.md", "content": "x"}],
+        jaccard_threshold=boundary,
+    )
+    assert resp.workspace == "foo"

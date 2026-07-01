@@ -107,3 +107,32 @@ async def test_kb_cleanup_plan_tool_is_registered(tmp_kb: Path, tmp_path: Path) 
     )
     tools = await app.list_tools()
     assert any(t.name == "kb_cleanup_plan" for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_kb_cleanup_plan_tool_rejects_invalid_input(tmp_kb: Path, tmp_path: Path) -> None:
+    """The MCP tool calls kb_cleanup_plan_fn directly (no REST layer in front
+    of it), so validation must live in the shared fn. An out-of-range
+    jaccard_threshold must surface as a rejected_invalid_input response, not an
+    unhandled exception. (A null/non-str 'content' entry is instead rejected
+    earlier, by FastMCP's own pydantic schema for the declared
+    list[dict[str, str]] parameter type, before kb_cleanup_plan_fn runs; that
+    path is covered at the fn level in test_tools_cleanup_plan.py.)"""
+    app = build_app(
+        kb_main_path=tmp_kb,
+        kb_index_path=tmp_path / "idx.db",
+        sync_interval_sec=60,
+        staleness_degraded_sec=600,
+        bootstrap_now=True,
+    )
+    async with Client(app) as client:
+        result = await client.call_tool(
+            "kb_cleanup_plan",
+            {
+                "workspace": "foo",
+                "local_files": [{"path": "README.md", "content": "x"}],
+                "jaccard_threshold": 2.0,
+            },
+        )
+        text = str(result)
+        assert "rejected_invalid_input" in text

@@ -480,11 +480,16 @@ def build_app(
         """Read-only. Classify local project-repo docs against KB content for this
         workspace/component and return thin-pointer replacements for duplicates.
         The agent applies confirmed edits locally; the server writes nothing."""
-        from data_olympus.tools_onboarding import kb_cleanup_plan_fn
-        resp = kb_cleanup_plan_fn(
-            idx=state.idx, workspace=workspace, component=component,
-            local_files=local_files, jaccard_threshold=jaccard_threshold,
-        )
+        from data_olympus.tools_onboarding import CleanupInputError, kb_cleanup_plan_fn
+        try:
+            resp = kb_cleanup_plan_fn(
+                idx=state.idx, workspace=workspace, component=component,
+                local_files=local_files, jaccard_threshold=jaccard_threshold,
+                max_files=state.config.max_bootstrap_files,
+                max_content_bytes=state.config.max_postimage_bytes,
+            )
+        except CleanupInputError as e:
+            return {"status": "rejected_invalid_input", "error": str(e)}
         return resp.model_dump()
 
     @app.tool()

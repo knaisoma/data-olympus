@@ -587,16 +587,32 @@ cmd_onboard_playbook() {
   local q="kind=$(url_encode "$kind")"
   [[ -n "$workspace" ]] && q="$q&workspace=$(url_encode "$workspace")"
   [[ -n "$component" ]] && q="$q&component=$(url_encode "$component")"
-  local tmpfile
+  local tmpfile REST_STATUS
   tmpfile=$(mktemp)
-  if ! curl --silent --max-time 10 --output "$tmpfile" \
-        "$KB_ENDPOINT/api/v1/onboarding/playbook?$q" 2>/dev/null; then
+  if ! REST_STATUS=$(curl --silent --max-time 10 --output "$tmpfile" \
+        --write-out "%{http_code}" \
+        "$KB_ENDPOINT/api/v1/onboarding/playbook?$q" 2>/dev/null); then
     rm -f "$tmpfile"
     echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2
     exit 1
   fi
   REST_BODY=$(cat "$tmpfile"); rm -f "$tmpfile"
-  python3 -c 'import sys,json; print(json.load(sys.stdin)["text"])' <<<"$REST_BODY"
+  if [[ "$REST_STATUS" == 2* ]]; then
+    python3 -c 'import sys,json; print(json.load(sys.stdin)["text"])' <<<"$REST_BODY"
+    return 0
+  fi
+  local err
+  err=$(python3 -c 'import sys,json
+try:
+    print(json.load(sys.stdin).get("error", ""))
+except Exception:
+    print("")' <<<"$REST_BODY" 2>/dev/null) || err=""
+  if [[ -n "$err" ]]; then
+    echo "kb: $err" >&2
+  else
+    echo "kb: server returned HTTP $REST_STATUS" >&2
+  fi
+  exit 1
 }
 
 # Subcommand: kb audit [--since EPOCH] [--agent A] [--status S] [--limit N] [-o json|plain]
