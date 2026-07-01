@@ -72,3 +72,12 @@ Example: `feat(cli): add export command`
 ## Code of Conduct
 
 By contributing you agree to abide by the project's [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Releases
+
+Releases follow STD-U-810 and are documented in `.rules/versioning.md`. In short:
+
+- Merge PRs with squash-merge; the PR title must be a Conventional Commit.
+- A daily routine opens a release PR when `main` has releasable changes.
+- Merging the release PR cuts an annotated `vX.Y.Z` tag, a GitHub Release, and
+  the Docker image. No tags are cut by hand under normal operation.
