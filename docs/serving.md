@@ -86,6 +86,39 @@ set it to `0` to disable reaping (observability only), or have the client send a
 periodic keep-alive request. Excluding sessions with an active open stream from
 reaping (so a live stream is never torn down) is a possible follow-up; the
 current behavior reaps purely on request-activity age.
+## Search ranking
+
+`kb_search` orders hits by BM25 relevance and then applies a **status-aware
+rerank on top of that score, enabled by default**. The rerank exists so a
+retired document does not outrank the live one that replaced it: for a query that
+matches both, the in-force doc is promoted and the retired one demoted.
+
+The built-in status-to-weight map is:
+
+- In-force (boosted): `active`, `accepted`, `approved`.
+- Retired (penalized): `superseded`, `deprecated`, `rejected`.
+- Not yet in force (penalized): `draft`, `proposed`.
+
+A negative weight boosts (moves a hit earlier), a positive weight penalizes
+(moves it later). Status matching is case-insensitive, so `Active` in frontmatter
+ranks like `active`. Any status not in the map (including an empty status) is
+neutral and is never dropped from results.
+
+Because this reorders results, a query that previously surfaced a `superseded`
+doc first may now surface the `active` one first. This is the intended behavior
+change.
+
+Override the map at deploy time, with no code change:
+
+- `KB_STATUS_WEIGHTS`: a JSON object of `{status: weight}` that **replaces** the
+  built-in map (it is not merged). Keys are statuses (matched
+  case-insensitively), values are numeric deltas: negative boosts an in-force
+  status, positive penalizes a retired one. A malformed value fails startup
+  loudly rather than silently shipping default ranking. Unset (the default) uses
+  the built-in map above.
+
+  Example: `KB_STATUS_WEIGHTS='{"active": -1.0, "approved": -1.0, "superseded":
+  2.0, "draft": 1.0}'`.
 
 ## Taxonomy and writable paths
 

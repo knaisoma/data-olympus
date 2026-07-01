@@ -164,6 +164,39 @@ def test_default_status_weights_shape() -> None:
     assert _DEFAULT_STATUS_WEIGHTS["draft"] > 0
 
 
+def test_default_status_weights_include_approved_as_in_force() -> None:
+    # The target KB marks in-force decisions ``approved``; it must boost like
+    # ``accepted`` rather than fall through to neutral.
+    assert "approved" in _DEFAULT_STATUS_WEIGHTS
+    assert _DEFAULT_STATUS_WEIGHTS["approved"] == _DEFAULT_STATUS_WEIGHTS["accepted"]
+
+
+def test_status_reranker_boosts_approved() -> None:
+    reranker = make_status_reranker()
+    (adjusted,) = reranker("q", [_hit("x", 0.0, "approved")])
+    assert adjusted.score < 0.0, "approved is in-force and must LOWER the score"
+
+
+def test_status_reranker_status_match_is_case_insensitive() -> None:
+    # Mixed-case frontmatter (e.g. ``Active``, ``SUPERSEDED``) must match the
+    # lowercase weight keys, not be silently treated as neutral.
+    reranker = make_status_reranker()
+    (boosted,) = reranker("q", [_hit("a", 0.0, "Active")])
+    assert boosted.score == _DEFAULT_STATUS_WEIGHTS["active"]
+    (penalized,) = reranker("q", [_hit("s", 0.0, "SUPERSEDED")])
+    assert penalized.score == _DEFAULT_STATUS_WEIGHTS["superseded"]
+
+
+def test_status_reranker_case_insensitive_override_keys() -> None:
+    # A caller-supplied map with a mixed-case key still matches a mixed-case
+    # (or any-case) document status.
+    reranker = make_status_reranker({"Draft": -5.0})
+    (adjusted,) = reranker("q", [_hit("x", 0.0, "draft")])
+    assert adjusted.score == -5.0
+    (adjusted,) = reranker("q", [_hit("y", 0.0, "DRAFT")])
+    assert adjusted.score == -5.0
+
+
 def test_status_reranker_end_to_end_ranks_active_first(
     status_kb: Path, tmp_index_path: Path
 ) -> None:

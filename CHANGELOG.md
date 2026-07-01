@@ -19,6 +19,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Retrieval now indexes `applies_when` trigger metadata and `description` with
   column-weighted ranking, improving coding-intent to governing-rule matching
   (index schema v5). `kb_get` returns both fields.
+- Status-aware search ranking (enabled by default): `kb_search` reranks hits by a
+  status prior on top of BM25, so an in-force doc (`active`, `accepted`,
+  `approved`) outranks a `superseded`/`deprecated`/`rejected` one that matches the
+  same query, and drafts do not beat live guidance. Status matching is
+  case-insensitive; unknown or empty statuses stay neutral and are never dropped.
+  This changes result ordering for queries that hit both a live and a retired doc.
+  A deployment overrides the built-in status->weight map via `KB_STATUS_WEIGHTS`
+  (a JSON object of `{status: weight}`, negative boosts, positive penalizes).
 - Enforcement core: data-olympus can now act as a gated, mandatory consultation
   proxy for code/architectural decisions, not only an advisory KB. New MCP tools
   `kb_consult`, `kb_gate_check`, `kb_compliance` and REST endpoints
