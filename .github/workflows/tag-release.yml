@@ -1,0 +1,50 @@
+# .github/workflows/tag-release.yml
+name: Tag release on version bump
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  decide:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Decide tag from pyproject version
+        id: decide
+        run: |
+          TAG="$(python3 scripts/should_tag.py)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Create annotated tag + GitHub Release
+        if: steps.decide.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release ${TAG#v}"
+          git push origin "$TAG"
+          NOTES="docs/releases/${TAG}.md"
+          if [ -f "$NOTES" ]; then
+            gh release create "$TAG" --title "$TAG" --notes-file "$NOTES"
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+
+  build-image:
+    needs: decide
+    if: needs.decide.outputs.tag != ''
+    uses: ./.github/workflows/release-image-reusable.yml
+    with:
+      tag: ${{ needs.decide.outputs.tag }}
+      move_latest: true
+    permissions:
+      contents: read
+      packages: write
