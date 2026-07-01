@@ -568,3 +568,20 @@ def register_routes(
         )
         status = _propose_status(resp.status)
         return JSONResponse(resp.model_dump(), status_code=status)
+
+    @app.custom_route("/api/v1/onboarding/cleanup-plan", methods=["POST"])
+    async def onboarding_cleanup_plan(request: Request) -> JSONResponse:
+        body, big = await _read_json_capped(request, state.config.max_body_bytes)
+        if big is not None:
+            return big
+        if (bad := _missing_fields_response(body, ["workspace", "local_files"])) is not None:
+            return bad
+        from data_olympus.tools_onboarding import kb_cleanup_plan_fn
+        resp = kb_cleanup_plan_fn(
+            idx=state.idx,
+            workspace=body["workspace"],
+            component=body.get("component"),
+            local_files=body["local_files"],
+            jaccard_threshold=float(body.get("jaccard_threshold", 0.6)),
+        )
+        return JSONResponse(resp.model_dump())

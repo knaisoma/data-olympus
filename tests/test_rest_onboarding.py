@@ -52,3 +52,19 @@ async def test_rest_onboarding_status_returns_onboarded_for_example_project(http
     body = resp.json()
     # Fixture has projects/example-project/README.md but no AGENTS.md, so partial.
     assert body["state"] in ("onboarded", "partial")
+
+
+@pytest.mark.asyncio
+async def test_rest_cleanup_plan_returns_200_and_classifies(http_app) -> None:
+    body = {
+        "workspace": "foo",
+        "component": None,
+        "local_files": [{"path": "README.md", "content": "# X\n\nunique local text\n"}],
+    }
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/v1/onboarding/cleanup-plan", json=body)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "items" in data and "summary" in data
+    assert len(data["items"]) == 1
