@@ -23,6 +23,13 @@ from data_olympus.cooccurrence import (
     write_cooccurrence_table,
 )
 from data_olympus.markdown_parse import parse_file
+from data_olympus.trigram import (
+    DEFAULT_FALLBACK_THRESHOLD as DEFAULT_TRIGRAM_FALLBACK_THRESHOLD,
+)
+from data_olympus.trigram import (
+    TRIGRAM_FTS_SCHEMA,
+    build_trigram_match_expr,
+)
 
 if TYPE_CHECKING:
     import builtins
@@ -59,13 +66,14 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
-""" + RELATED_TERMS_SCHEMA
+""" + RELATED_TERMS_SCHEMA + TRIGRAM_FTS_SCHEMA
 
 # Informational only; recorded in the meta table for observability. Rebuild
 # is guaranteed by bootstrap_now=True calling Index.build() unconditionally
 # on container start, not by a version-mismatch check.
 # v6 adds the related_terms co-occurrence table (issue #40).
-_SCHEMA_VERSION = "6"
+# v7 adds the fts_trigram fuzzy-match table (issue #41).
+_SCHEMA_VERSION = "7"
 
 
 # fts column order (excluding the UNINDEXED id at position 0).
@@ -350,8 +358,22 @@ class Index:
         health_ttl_sec: float = 5.0,
         query_expander: Callable[[list[str]], list[str]] | None = None,
         reranker: Callable[[str, list[SearchHit]], list[SearchHit]] | None = None,
+        trigram_fallback: bool = False,
+        trigram_fallback_threshold: int | None = None,
     ) -> None:
         self._db_path = db_path
+        # Trigram fuzzy-match fallback (issue #41). When enabled, a primary FTS
+        # query that returns at or below ``trigram_fallback_threshold`` hits is
+        # backfilled from the secondary trigram-tokenized table so a typo or a
+        # partial identifier still reaches its document. Off by default so the
+        # base behaviour is unchanged; the server sets these from config. Trigram
+        # hits are only ever APPENDED after primary hits, never reordering them.
+        self.trigram_fallback = trigram_fallback
+        self.trigram_fallback_threshold = (
+            trigram_fallback_threshold
+            if trigram_fallback_threshold is not None
+            else DEFAULT_TRIGRAM_FALLBACK_THRESHOLD
+        )
         # Search pipeline seams (issue #36). search() runs three stages:
         #   expand-query -> match -> re-rank
         # ``query_expander`` rewrites the term list before the FTS MATCH is built
@@ -460,6 +482,15 @@ class Index:
                 )
                 conn.execute(
                     "INSERT INTO fts (id, title, tags, applies_when, description, body) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (doc_id, doc.title, tags_str, applies_when_str, doc.description, doc.body),
+                )
+                # Secondary trigram index (issue #41), built into the SAME tmp DB
+                # so it is swapped atomically with the primary fts table below.
+                # A query never sees a half-built trigram table.
+                conn.execute(
+                    "INSERT INTO fts_trigram "
+                    "(id, title, tags, applies_when, description, body) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
                     (doc_id, doc.title, tags_str, applies_when_str, doc.description, doc.body),
                 )
@@ -619,6 +650,24 @@ class Index:
                 )
                 for r in rows
             ]
+            # Stage 2b (fuzzy fallback, issue #41): only when enabled AND the
+            # primary query returned few/no hits. Trigram hits are APPENDED after
+            # the primary hits and given scores strictly worse than any primary
+            # hit, so an exact/primary match is never diluted or reordered by a
+            # fuzzy hit (even if a later reranker re-sorts by score). The fallback
+            # backfills up to the same candidate_limit.
+            if (
+                self.trigram_fallback
+                and len(hits) <= self.trigram_fallback_threshold
+            ):
+                hits = self._trigram_backfill(
+                    conn,
+                    query,
+                    primary_hits=hits,
+                    base_where=where[1:],
+                    base_params=params[1:-1],
+                    candidate_limit=candidate_limit,
+                )
         finally:
             conn.close()
         # Stage 3 (re-rank): optional hook reorders/rescores (default identity),
@@ -643,6 +692,77 @@ class Index:
                 raise ValueError(f"unknown fts column(s): {unknown}")
             return "{" + " ".join(columns) + "} : (" + quoted + ")"
         return quoted
+
+    def _trigram_backfill(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        *,
+        primary_hits: list[SearchHit],
+        base_where: list[str],
+        base_params: list[object],
+        candidate_limit: int,
+    ) -> list[SearchHit]:
+        """Backfill few/no primary hits with trigram fuzzy matches (issue #41).
+
+        Runs the trigram (substring) MATCH built from the query's own trigrams,
+        excluding ids already returned by the primary query, and appends the
+        results AFTER the primary hits. Each appended hit is given a score
+        strictly worse (larger, since bm25 is ordered ascending) than any primary
+        hit, so a downstream reranker that re-sorts by score cannot lift a fuzzy
+        hit above an exact/primary one. The same tier/category/status/doc_type
+        filters (``base_where`` / ``base_params``) are applied. A query with no
+        trigram (shorter than 3 chars) no-ops and the primary hits are returned
+        unchanged.
+        """
+        trigram_expr = build_trigram_match_expr(query)
+        if trigram_expr is None:
+            return primary_hits
+        seen_ids = {h.id for h in primary_hits}
+        # Worst (largest) primary score, so appended trigram scores sort strictly
+        # after every primary hit. bm25 scores are <= 0 here; use 0.0 as the floor
+        # when there are no primary hits so appended scores stay finite/ordered.
+        worst_primary = max((h.score for h in primary_hits), default=0.0)
+        where = ["fts_trigram MATCH ?", *base_where]
+        params: list[object] = [trigram_expr, *base_params, candidate_limit]
+        sql = f"""
+            SELECT
+                fts_trigram.id AS id,
+                docs.path AS path,
+                COALESCE(docs.title, '') AS title,
+                COALESCE(docs.status, '') AS status,
+                COALESCE(docs.type, '') AS doc_type,
+                COALESCE(docs.description, '') AS description,
+                bm25(fts_trigram) AS tscore
+            FROM fts_trigram
+            JOIN docs ON docs.id = fts_trigram.id
+            WHERE {' AND '.join(where)}
+            ORDER BY tscore
+            LIMIT ?
+        """
+        rows = conn.execute(sql, params).fetchall()
+        appended: list[SearchHit] = []
+        # Assign monotonically increasing scores strictly above worst_primary so
+        # the trigram hits keep their own relative (bm25) order but always sort
+        # after the primaries.
+        offset = 1.0
+        for r in rows:
+            if r["id"] in seen_ids:
+                continue
+            seen_ids.add(r["id"])
+            appended.append(
+                SearchHit(
+                    id=r["id"],
+                    path=r["path"],
+                    title=r["title"],
+                    snippet=r["description"],
+                    score=worst_primary + offset,
+                    status=r["status"],
+                    doc_type=r["doc_type"],
+                )
+            )
+            offset += 1.0
+        return [*primary_hits, *appended]
 
     def related_terms(self, term: str, *, limit: int) -> builtins.list[str]:
         """Return up to ``limit`` corpus co-occurring terms for ``term``.
