@@ -76,6 +76,41 @@ def test_expander_passthrough_when_no_match() -> None:
     assert expander(["hello", "world"]) == ["hello", "world"]
 
 
+def test_expander_matches_multiword_key_from_long_form() -> None:
+    # A multi-word canonical key must be reachable from a long-form query even
+    # though the upstream tokenizer only yields single tokens. The expander scans
+    # adjacent-token n-grams to find the key.
+    expander = make_synonym_expander({"row level security": ["rls"]})
+    out = expander(["row", "level", "security"])
+    assert out[:3] == ["row", "level", "security"]  # originals first, in order
+    assert "rls" in out  # long form -> acronym via n-gram lookup
+
+
+def test_expander_matches_multiword_key_embedded_in_query() -> None:
+    # The multi-word key sits inside a longer natural-language query.
+    expander = make_synonym_expander({"row level security": ["rls"]})
+    out = expander(["enable", "row", "level", "security", "policy"])
+    assert "rls" in out
+    # single-token synonyms still work alongside the n-gram scan.
+    expander2 = make_synonym_expander(
+        {"row level security": ["rls"], "kubernetes": ["k8s"]}
+    )
+    out2 = expander2(["kubernetes", "row", "level", "security"])
+    assert "k8s" in out2
+    assert "rls" in out2
+
+
+def test_expander_multiword_respects_bound() -> None:
+    # n-gram expansion still honours the cap and keeps originals.
+    expander = make_synonym_expander(
+        {"row level security": [f"syn{i}" for i in range(50)]}, max_terms=6
+    )
+    out = expander(["row", "level", "security", "extra"])
+    assert len(out) <= 6
+    for t in ("row", "level", "security", "extra"):
+        assert t in out
+
+
 def test_default_map_covers_expected_acronyms() -> None:
     sym = build_synonym_map(DEFAULT_SYNONYMS)
     assert "kubernetes" in sym["k8s"]
@@ -112,6 +147,23 @@ def test_search_long_form_finds_short_form(tmp_kb: Path, tmp_index_path: Path) -
     hits = idx.search("kubernetes", limit=10)
     assert hits, "kubernetes query should reach the k8s doc via synonym expansion"
     assert any("k8s" in (h.snippet + h.title).lower() for h in hits)
+
+
+def test_search_multiword_long_form_finds_acronym(
+    tmp_kb: Path, tmp_index_path: Path
+) -> None:
+    # A long-form multi-word query ("row level security") must reach a doc that
+    # only uses the acronym ("rls"). This is the multi-word direction that a pure
+    # single-token lookup misses.
+    (tmp_kb / "tooling" / "rls-notes.md").write_text(
+        "# RLS notes\n\nTenant isolation is enforced with rls policies.\n"
+    )
+    expander = make_synonym_expander(build_synonym_map(DEFAULT_SYNONYMS))
+    idx = Index(tmp_index_path, query_expander=expander)
+    idx.build(tmp_kb, source_commit="abc")
+    hits = idx.search("row level security", limit=10)
+    assert hits, "long-form query should reach the rls doc via n-gram expansion"
+    assert any("rls" in (h.snippet + h.title).lower() for h in hits)
 
 
 def test_search_without_expander_misses_synonym(

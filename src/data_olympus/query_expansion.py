@@ -29,19 +29,20 @@ if TYPE_CHECKING:
 # Curated default groups: canonical form -> its acronyms / long forms / variants.
 # Keep groups small and unambiguous; a synonym that is a common English word in
 # other contexts (e.g. "role") is deliberately avoided to keep recall precise.
+#
+# Only high-value, unambiguous technical acronyms are default-on. Ambiguous or
+# generic short tokens were deliberately dropped from the defaults because they
+# add recall noise more than signal (they already match literally without
+# expansion): "ci"/"cd" (shell/CD collisions, and the "continuous integration/
+# delivery" groups had no other variant), "pr"/"mr" and the "pull request" group,
+# "config", "repo", "db", "docs". Deployments that want them can add them back
+# via ``KB_SYNONYMS`` (merge mode).
 DEFAULT_SYNONYMS: dict[str, list[str]] = {
     "kubernetes": ["k8s", "microk8s"],
     "authentication": ["auth", "authn"],
     "authorization": ["authz"],
     "row level security": ["rls"],
     "architecture decision record": ["adr"],
-    "continuous integration": ["ci"],
-    "continuous delivery": ["cd"],
-    "pull request": ["pr", "mr", "merge request"],
-    "configuration": ["config"],
-    "repository": ["repo"],
-    "database": ["db"],
-    "documentation": ["docs"],
     "knowledge base": ["kb"],
     "personally identifiable information": ["pii"],
     "single sign on": ["sso"],
@@ -97,6 +98,11 @@ def make_synonym_expander(
     ``Callable[[list[str]], list[str]]`` signature the ``Index`` expects.
     """
     lookup = dict(_prebuilt) if _prebuilt is not None else build_synonym_map(groups or {})
+    # Longest multi-word key (in tokens), so a long-form query like
+    # "row level security" can match the 3-token canonical key. 1 when every key
+    # is a single token (the common case), which reduces the scan to single-token
+    # lookups only.
+    max_key_len = max((len(k.split()) for k in lookup), default=1)
 
     def expander(terms: list[str]) -> list[str]:
         # Original terms first (order-stable, de-duplicated), then synonyms.
@@ -106,13 +112,34 @@ def make_synonym_expander(
             if t not in seen:
                 out.append(t)
                 seen.add(t)
-        for t in terms:
-            for syn in lookup.get(t.lower(), ()):
+
+        def add_synonyms(key: str) -> bool:
+            # Append synonyms of `key`; return False once the cap is reached so
+            # the caller stops scanning. Originals are never dropped by the cap.
+            for syn in lookup.get(key, ()):
                 if len(out) >= max_terms:
-                    return out
+                    return False
                 if syn not in seen:
                     out.append(syn)
                     seen.add(syn)
+            return True
+
+        # Single-token lookups (fast path, preserves prior behaviour).
+        for t in terms:
+            if not add_synonyms(t.lower()):
+                return out
+        # Adjacent-token n-gram lookups, so multi-word canonical keys (e.g.
+        # "row level security", "pull request") match from a long-form query.
+        # `query.split()` upstream only yields single tokens, so without this a
+        # multi-word key is never looked up. Windows of length 2..max_key_len are
+        # joined by a single space to match the lower-cased keys.
+        if max_key_len >= 2:
+            lowered = [t.lower() for t in terms]
+            n = len(lowered)
+            for size in range(2, max_key_len + 1):
+                for start in range(0, n - size + 1):
+                    if not add_synonyms(" ".join(lowered[start : start + size])):
+                        return out
         return out
 
     return expander
