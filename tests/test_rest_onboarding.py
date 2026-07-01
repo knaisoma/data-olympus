@@ -68,3 +68,22 @@ async def test_rest_cleanup_plan_returns_200_and_classifies(http_app) -> None:
     data = resp.json()
     assert "items" in data and "summary" in data
     assert len(data["items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_rest_playbook_returns_text(http_app) -> None:
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/onboarding/playbook?kind=project&workspace=foo")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["kind"] == "project"
+    assert "foo" in data["text"]
+
+
+@pytest.mark.asyncio
+async def test_rest_playbook_invalid_kind_returns_400(http_app) -> None:
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/onboarding/playbook?kind=bogus")
+    assert resp.status_code == 400

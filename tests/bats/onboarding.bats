@@ -46,3 +46,9 @@ teardown() {
   [[ "$output" == *'"state"'* ]]
   [[ "$output" == *'"onboarded"'* ]]
 }
+
+@test "kb onboard playbook prints project script" {
+  run "$KB" onboard playbook --kind project --workspace foo
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Onboarding project: foo"* ]]
+}

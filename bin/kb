@@ -18,6 +18,7 @@
 #   kb onboard project <workspace>
 #   kb onboard component <workspace> <component>
 #   kb onboard rename <from> <to>
+#   kb onboard playbook [--kind dispatch|project|component] [--workspace W] [--component C]
 #   kb enforce install|uninstall|status|doctor [--agent NAME | --all] [--settings PATH]
 #   kb enforce report [--workspace W] [--range A..B | --since S] [--json] [--fail-on-unverified]
 #
@@ -569,6 +570,35 @@ Not automated in this slice. The rename_candidate detection in
 EOF
 }
 
+# Subcommand: kb onboard playbook [--kind dispatch|project|component]
+#                                  [--workspace W] [--component C]
+# Cross-agent fallback: prints the same guided-onboarding script the MCP
+# prompts surface, for agents that cannot use native MCP prompts.
+cmd_onboard_playbook() {
+  local kind="dispatch" workspace="" component=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --kind) need_value "$1" "${2:-}"; kind="$2"; shift 2 ;;
+      --workspace) need_value "$1" "${2:-}"; workspace="$2"; shift 2 ;;
+      --component) need_value "$1" "${2:-}"; component="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  local q="kind=$(url_encode "$kind")"
+  [[ -n "$workspace" ]] && q="$q&workspace=$(url_encode "$workspace")"
+  [[ -n "$component" ]] && q="$q&component=$(url_encode "$component")"
+  local tmpfile
+  tmpfile=$(mktemp)
+  if ! curl --silent --max-time 10 --output "$tmpfile" \
+        "$KB_ENDPOINT/api/v1/onboarding/playbook?$q" 2>/dev/null; then
+    rm -f "$tmpfile"
+    echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2
+    exit 1
+  fi
+  REST_BODY=$(cat "$tmpfile"); rm -f "$tmpfile"
+  python3 -c 'import sys,json; print(json.load(sys.stdin)["text"])' <<<"$REST_BODY"
+}
+
 # Subcommand: kb audit [--since EPOCH] [--agent A] [--status S] [--limit N] [-o json|plain]
 cmd_audit() {
   local fmt="json" since="" agent="" status_f="" limit="100" verify=""
@@ -666,13 +696,14 @@ case "$SUBCMD" in
     ;;
   onboarding-check) cmd_onboarding_check "$@"; exit $? ;;
   onboard)
-    [[ $# -ge 1 ]] || { echo "kb: onboard requires subcommand (status|project|component|rename)" >&2; exit 64; }
+    [[ $# -ge 1 ]] || { echo "kb: onboard requires subcommand (status|project|component|rename|playbook)" >&2; exit 64; }
     SUB2="$1"; shift
     case "$SUB2" in
       status) cmd_onboard_status "$@"; exit $? ;;
       project) cmd_onboard_project "$@"; exit $? ;;
       component) cmd_onboard_component "$@"; exit $? ;;
       rename) cmd_onboard_rename "$@"; exit $? ;;
+      playbook) cmd_onboard_playbook "$@"; exit $? ;;
       *) echo "kb: unknown onboard subcommand: $SUB2" >&2; exit 64 ;;
     esac
     ;;

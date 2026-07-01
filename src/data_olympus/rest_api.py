@@ -569,6 +569,23 @@ def register_routes(
         status = _propose_status(resp.status)
         return JSONResponse(resp.model_dump(), status_code=status)
 
+    @app.custom_route("/api/v1/onboarding/playbook", methods=["GET"])
+    async def onboarding_playbook(request: Request) -> JSONResponse:
+        from data_olympus.onboarding_playbook import render_playbook
+        qp = request.query_params
+        kind = qp.get("kind", "dispatch")
+        try:
+            text = render_playbook(
+                kind,
+                workspace=qp.get("workspace") or None,
+                component=qp.get("component") or None,
+                workspace_remote_url=qp.get("workspace_remote_url") or None,
+                component_remote_url=qp.get("component_remote_url") or None,
+            )
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"kind": kind, "text": text})
+
     @app.custom_route("/api/v1/onboarding/cleanup-plan", methods=["POST"])
     async def onboarding_cleanup_plan(request: Request) -> JSONResponse:
         body, big = await _read_json_capped(request, state.config.max_body_bytes)
