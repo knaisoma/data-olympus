@@ -69,6 +69,22 @@ def test_workspace_prefix_excludes_components() -> None:
     )
 
 
+def test_entry_missing_path_does_not_raise() -> None:
+    """kb_cleanup_plan_fn is also invoked directly by the MCP tool path, which
+    does not go through the REST route's input validation, so a local_files
+    entry missing 'path' must not raise -- it should classify normally with an
+    empty local_path."""
+    idx = _idx_with_doc(
+        "projects-foo-README", "projects/foo/README.md", "# Purpose\n\naaa bbb ccc\n",
+    )
+    resp = kb_cleanup_plan_fn(
+        idx=idx, workspace="foo", component=None,
+        local_files=[{"content": "# Deploy\n\nzzz yyy xxx\n"}],
+    )
+    assert len(resp.items) == 1
+    assert resp.items[0].local_path == ""
+
+
 def test_best_match_wins_over_partial_overlap_by_rank() -> None:
     """When multiple KB docs exist, the exact-duplicate doc (higher rank) must
     win over a merely partially-overlapping doc, regardless of list order."""

@@ -593,12 +593,32 @@ def register_routes(
             return big
         if (bad := _missing_fields_response(body, ["workspace", "local_files"])) is not None:
             return bad
+        local_files = body["local_files"]
+        if not isinstance(local_files, list):
+            return JSONResponse(
+                {"error": "local_files must be a list"}, status_code=400,
+            )
+        for entry in local_files:
+            if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+                return JSONResponse(
+                    {"error": "each local_files entry must be an object with a "
+                              "string 'path'"},
+                    status_code=400,
+                )
+        if len(local_files) > state.config.max_bootstrap_files:
+            return JSONResponse({"error": "too many files"}, status_code=400)
+        try:
+            jaccard_threshold = float(body.get("jaccard_threshold", 0.6))
+        except (TypeError, ValueError):
+            return JSONResponse(
+                {"error": "jaccard_threshold must be a number"}, status_code=400,
+            )
         from data_olympus.tools_onboarding import kb_cleanup_plan_fn
         resp = kb_cleanup_plan_fn(
             idx=state.idx,
             workspace=body["workspace"],
             component=body.get("component"),
-            local_files=body["local_files"],
-            jaccard_threshold=float(body.get("jaccard_threshold", 0.6)),
+            local_files=local_files,
+            jaccard_threshold=jaccard_threshold,
         )
         return JSONResponse(resp.model_dump())

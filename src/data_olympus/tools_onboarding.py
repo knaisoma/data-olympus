@@ -288,19 +288,26 @@ def kb_cleanup_plan_fn(
     items: list[CleanupItem] = []
     summary = {"imported_duplicate": 0, "partial_overlap": 0, "unique": 0}
 
+    # Precompute each KB doc's shingles once, outside the per-local-file loop,
+    # rather than recomputing them for every local file (O(files * docs) shingle
+    # builds otherwise). classify_overlap() still recomputes internally for its
+    # own exact-hash + jaccard check; that duplication is harmless and kept
+    # simple/behavior-preserving here.
+    kb_docs_shingled = [(doc, shingles(doc.content_markdown)) for doc in kb_docs]
+
     for lf in local_files:
         local_text = lf.get("content", "")
         best_cls, best_headings, best_doc, best_j = "unique", [], None, -1.0
         local_shingles = shingles(local_text)
-        for doc in kb_docs:
+        for doc, doc_shingles in kb_docs_shingled:
             cls, headings = classify_overlap(
                 local_text, doc.content_markdown, jaccard_threshold=jaccard_threshold,
             )
-            j = jaccard(local_shingles, shingles(doc.content_markdown))
+            j = jaccard(local_shingles, doc_shingles)
             if _RANK[cls] > _RANK[best_cls] or (_RANK[cls] == _RANK[best_cls] and j > best_j):
                 best_cls, best_headings, best_doc, best_j = cls, headings, doc, j
 
-        item = CleanupItem(local_path=lf["path"], classification=best_cls)
+        item = CleanupItem(local_path=lf.get("path", ""), classification=best_cls)
         if best_doc is not None and best_cls == "imported_duplicate":
             item.kb_id, item.kb_path = best_doc.id, best_doc.path
             item.thin_pointer_text = render_thin_pointer(
