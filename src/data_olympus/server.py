@@ -563,6 +563,9 @@ def build_app(
 
     from data_olympus.rest_api import register_routes
     register_routes(app, state, registry)
+
+    from data_olympus.prompts import register_prompts
+    register_prompts(app)
     # Attach state for lifespan to discover; not used by tests
     app._dolympus_state = state  # type: ignore[attr-defined]
     return app
