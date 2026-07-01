@@ -54,3 +54,49 @@ def test_component_prefix_is_used() -> None:
         local_files=[{"path": "AGENTS.md", "content": "x"}],
     )
     idx.list_by_prefix.assert_called_once_with("projects/foo/components/svc/")
+
+
+def test_workspace_prefix_excludes_components() -> None:
+    idx = _idx_with_doc(
+        "projects-foo-README", "projects/foo/README.md", "# Purpose\n\naaa bbb ccc\n",
+    )
+    kb_cleanup_plan_fn(
+        idx=idx, workspace="foo", component=None,
+        local_files=[{"path": "README.md", "content": "x"}],
+    )
+    idx.list_by_prefix.assert_called_once_with(
+        "projects/foo/", exclude_under="components/",
+    )
+
+
+def test_best_match_wins_over_partial_overlap_by_rank() -> None:
+    """When multiple KB docs exist, the exact-duplicate doc (higher rank) must
+    win over a merely partially-overlapping doc, regardless of list order."""
+    local_body = "# Purpose\n\nThe gateway routes requests to services.\n"
+    partial_doc = SimpleNamespace(
+        id="projects-foo-partial", path="projects/foo/partial.md",
+        content_markdown="# Purpose\n\nThe gateway does something else entirely.\n",
+    )
+    exact_doc = SimpleNamespace(
+        id="projects-foo-exact", path="projects/foo/README.md",
+        content_markdown=local_body,
+    )
+    idx = MagicMock()
+    idx.list_by_prefix.return_value = [
+        {"id": "projects-foo-partial", "path": "projects/foo/partial.md",
+         "tier": "T3", "git_remote_url": None},
+        {"id": "projects-foo-exact", "path": "projects/foo/README.md",
+         "tier": "T3", "git_remote_url": None},
+    ]
+    idx.get.side_effect = lambda doc_id: {
+        "projects-foo-partial": partial_doc,
+        "projects-foo-exact": exact_doc,
+    }[doc_id]
+
+    resp = kb_cleanup_plan_fn(
+        idx=idx, workspace="foo", component=None,
+        local_files=[{"path": "README.md", "content": local_body}],
+    )
+    item = resp.items[0]
+    assert item.classification == "imported_duplicate"
+    assert item.kb_id == "projects-foo-exact"

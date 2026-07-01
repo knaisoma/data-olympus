@@ -275,8 +275,11 @@ def kb_cleanup_plan_fn(
     prefix = f"projects/{workspace}/"
     if component:
         prefix = f"projects/{workspace}/components/{component}/"
+        entries = idx.list_by_prefix(prefix)
+    else:
+        entries = idx.list_by_prefix(prefix, exclude_under="components/")
     kb_docs = []
-    for entry in idx.list_by_prefix(prefix):
+    for entry in entries:
         doc = idx.get(entry["id"])
         if doc is not None:
             kb_docs.append(doc)
