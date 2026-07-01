@@ -71,7 +71,12 @@ def test_trigram_table_created_at_build(tmp_kb: Path, tmp_index_path: Path) -> N
     assert row is not None, "build() must create the fts_trigram virtual table"
 
 
-def test_schema_version_bumped_to_7(tmp_kb: Path, tmp_index_path: Path) -> None:
+def test_schema_version_at_least_7_with_trigram(
+    tmp_kb: Path, tmp_index_path: Path
+) -> None:
+    # The trigram table (fts_trigram) landed at schema v7. Later features bump
+    # the version further (v8 adds doc_vectors), so assert the trigram table is
+    # present AND the recorded version is at least 7 rather than pinning to 7.
     idx = Index(tmp_index_path)
     idx.build(tmp_kb, source_commit="x")
     conn = sqlite3.connect(tmp_index_path)
@@ -79,10 +84,14 @@ def test_schema_version_bumped_to_7(tmp_kb: Path, tmp_index_path: Path) -> None:
         row = conn.execute(
             "SELECT value FROM meta WHERE key = 'schema_version'"
         ).fetchone()
+        has_trigram = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fts_trigram'"
+        ).fetchone()
     finally:
         conn.close()
-    assert row is not None and row[0] == "7", (
-        "schema_version must be '7' after the trigram table is added; "
+    assert has_trigram is not None, "fts_trigram table must exist"
+    assert row is not None and int(row[0]) >= 7, (
+        "schema_version must be >= 7 once the trigram table exists; "
         f"got {row[0] if row else None!r}"
     )
 

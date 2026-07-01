@@ -22,6 +22,15 @@ from data_olympus.cooccurrence import (
     tokenize_doc,
     write_cooccurrence_table,
 )
+from data_olympus.embeddings import (
+    EMBEDDINGS_SCHEMA,
+    Embedder,
+    deserialize_vector,
+    embeddings_config,
+    embeddings_enabled,
+    make_hybrid_reranker,
+    serialize_vector,
+)
 from data_olympus.markdown_parse import parse_file
 from data_olympus.trigram import (
     DEFAULT_FALLBACK_THRESHOLD as DEFAULT_TRIGRAM_FALLBACK_THRESHOLD,
@@ -66,14 +75,15 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
-""" + RELATED_TERMS_SCHEMA + TRIGRAM_FTS_SCHEMA
+""" + RELATED_TERMS_SCHEMA + TRIGRAM_FTS_SCHEMA + EMBEDDINGS_SCHEMA
 
 # Informational only; recorded in the meta table for observability. Rebuild
 # is guaranteed by bootstrap_now=True calling Index.build() unconditionally
 # on container start, not by a version-mismatch check.
 # v6 adds the related_terms co-occurrence table (issue #40).
 # v7 adds the fts_trigram fuzzy-match table (issue #41).
-_SCHEMA_VERSION = "7"
+# v8 adds the doc_vectors table (issue #42, populated only when embeddings on).
+_SCHEMA_VERSION = "8"
 
 
 # fts column order (excluding the UNINDEXED id at position 0).
@@ -89,6 +99,11 @@ _DEFAULT_BM25_WEIGHTS: tuple[float, ...] = (0.0, 10.0, 5.0, 10.0, 4.0, 1.0)
 _RERANK_OVERFETCH_FACTOR = 5
 _RERANK_MIN_POOL = 50
 _RERANK_MAX_POOL = 200
+
+# Cap on the characters embedded per doc at build time (issue #42). The head of
+# a doc carries its topical signal; bounding it keeps a very long doc from
+# overrunning the model's context window and keeps build cost predictable.
+_EMBED_TEXT_MAX_CHARS = 4000
 
 # Status priors for the status-aware reranker (issue #37). search() orders by
 # bm25 ASCENDING (lower = better), so these deltas are ADDED to the raw score:
@@ -460,6 +475,19 @@ class Index:
             # walk; only populated when co-occurrence expansion is enabled.
             build_cooccurrence = cooccurrence_enabled()
             doc_token_sets: list[set[str]] = []
+            # Embedding vectors (issue #42). Only when the feature is enabled do
+            # we load the (optional) model and collect per-doc embedding text; a
+            # default build never touches the embedding dependency. Each entry is
+            # (doc_id, text_to_embed), embedded in one batch after the walk and
+            # written into the SAME tmp DB so vectors swap atomically with the
+            # rest of the index. build_embedder raises loudly if enabled but the
+            # dep/model is unavailable, so a misconfigured build fails visibly.
+            build_embeddings = embeddings_enabled()
+            embedder: Embedder | None = None
+            embed_inputs: list[tuple[str, str]] = []
+            if build_embeddings:
+                from data_olympus.embeddings import build_embedder
+                embedder = build_embedder(embeddings_config())
             for md in files_to_index:
                 rel = md.relative_to(kb_root)
                 doc = parse_file(md)
@@ -498,7 +526,27 @@ class Index:
                     doc_token_sets.append(
                         tokenize_doc(doc.title, tags_str, doc.description, doc.body)
                     )
+                if build_embeddings:
+                    # Embed title + description + body: the retrievable semantic
+                    # content of the doc. Bounded to keep a huge doc from blowing
+                    # the model's context; the head carries the topical signal.
+                    embed_text = "\n".join(
+                        p for p in (doc.title, doc.description, doc.body) if p
+                    )[:_EMBED_TEXT_MAX_CHARS]
+                    embed_inputs.append((doc_id, embed_text))
                 count += 1
+            # Embedding vectors (issue #42): one batched embed of all docs, then
+            # persist into the tmp DB. Kept inside the build so vectors are part
+            # of the same atomic swap and a query never sees a half-built table.
+            if build_embeddings and embedder is not None and embed_inputs:
+                vectors = embedder.embed_many([t for _id, t in embed_inputs])
+                conn.executemany(
+                    "INSERT OR REPLACE INTO doc_vectors (id, vector) VALUES (?, ?)",
+                    [
+                        (doc_id, serialize_vector(vec))
+                        for (doc_id, _t), vec in zip(embed_inputs, vectors, strict=True)
+                    ],
+                )
             # Co-occurrence / PMI table (issue #40). Built into the SAME tmp DB
             # and swapped atomically with the rest of the index below, so a query
             # never sees a half-built related_terms table.
@@ -800,6 +848,50 @@ class Index:
             lambda term, kk: self.related_terms(term, limit=kk),
             k=k,
             max_terms=max_terms,
+        )
+
+    def get_vector(self, id: str) -> builtins.list[float] | None:
+        """Return the stored embedding vector for ``id``, or None (issue #42).
+
+        Reads the ``doc_vectors`` table populated at build time only when the
+        embeddings feature was enabled. A build that predates the table, a doc
+        with no vector, or the feature being off all yield None (the hybrid
+        reranker treats a missing vector as a neutral cosine, never a drop).
+        Opens a per-call connection so it always reads the atomically-swapped
+        current index.
+        """
+        if not self._db_path.exists():
+            return None
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT vector FROM doc_vectors WHERE id = ?", (id,)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            # Table absent (index predates the schema); degrade to no vector.
+            return None
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        return deserialize_vector(row["vector"])
+
+    def make_hybrid_reranker(
+        self, embedder: Embedder, *, weight: float,
+    ) -> Callable[[str, list[SearchHit]], list[SearchHit]]:
+        """Return a hybrid reranker bound to this index's stored vectors.
+
+        Blends normalised bm25 with query-doc cosine (issue #42). ``embedder``
+        embeds the query once per search; ``weight`` in [0, 1] is the cosine
+        fraction of the blended score. The query is embedded lazily (only when a
+        search actually runs), and a query the model cannot embed degrades to
+        bm25 ordering. Compose this as the ``inner`` reranker under the id/tag
+        short-circuit so an exact id/tag still wins (see server.build_app).
+        """
+        return make_hybrid_reranker(
+            embed_query=lambda q: embedder.embed_one(q) if q.strip() else None,
+            get_vector=self.get_vector,
+            weight=weight,
         )
 
     def get(self, id: str) -> IndexedDoc | None:
