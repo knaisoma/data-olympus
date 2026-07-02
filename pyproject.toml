@@ -1,6 +1,6 @@
 [project]
 name = "data-olympus"
-version = "0.1.1"
+version = "0.1.2"
 description = "Governance-grade knowledge-base format (OKF-compatible) plus CLI and single-writer MCP server"
 requires-python = ">=3.13"
 license = { text = "Apache-2.0" }
