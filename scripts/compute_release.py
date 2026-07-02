@@ -53,7 +53,7 @@ def bump_for(commits: list[tuple[str, str]], functional_changed: bool) -> tuple[
             rank = max(rank, _MINOR)
         elif ctype == _FEATURE:
             features.append(subject)
-            rank = max(rank, _PATCH)
+            rank = max(rank, _MINOR)  # pre-1.0 features-as-minor (see .rules/versioning.md)
         elif ctype in _FIXES:
             fixes.append(subject)
             rank = max(rank, _PATCH)
