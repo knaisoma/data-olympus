@@ -55,7 +55,11 @@ def discover_bundle_files(root: str | Path) -> list[Path]:
     root = Path(root)
     files: list[Path] = []
     for md in sorted(root.rglob("*.md")):
-        if any(part in _SKIP_DIRS for part in md.parts):
+        # Match skip-dirs only among components INSIDE the bundle. Using the
+        # absolute path here would skip the whole bundle whenever an ancestor
+        # directory happens to be named like a skip-dir (e.g. a checkout under
+        # `.worktrees/`), silently discovering zero files.
+        if any(part in _SKIP_DIRS for part in md.relative_to(root).parts):
             continue
         if md.parent == root and md.name in _ROOT_META_FILES:
             continue

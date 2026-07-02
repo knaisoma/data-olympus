@@ -157,6 +157,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Enforcement consult gates now agree on a worktree-invariant workspace key. The
+  pre-tool gate and the pre-commit `data-olympus report --staged` gate derived the
+  workspace differently (the hook from the detector or raw cwd, the report from
+  `Path.cwd().name`), so a single `kb_consult` could not clear both gates from a
+  linked git worktree. Both now resolve to the main worktree's basename (via
+  `git --git-common-dir`): `report`'s default `--workspace`, and the hook's
+  `resolve_workspace` fallback when the `KB_WORKSPACES_ROOT` detector does not
+  match. A new `kb-enforce-hook resolve-workspace [dir]` prints the resolved key.
+- `data-olympus lint` (and `discover_bundle_files`) no longer discovers zero files
+  when the bundle sits under an ancestor directory named like a skip-dir (for
+  example a checkout under `.worktrees/`, `.git/`, or `node_modules/`). Skip-dir
+  matching now applies only to path components inside the bundle, not the absolute
+  ancestor path.
 - Intermittent `503 Service Unavailable` from the single-replica MCP under load.
   The readiness probe was too aggressive (`timeoutSeconds: 1`) while every
   REST/enforcement handler ran synchronous work on the one asyncio event loop, so

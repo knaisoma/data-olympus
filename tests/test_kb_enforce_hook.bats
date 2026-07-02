@@ -113,3 +113,30 @@ teardown() {
   KB_ENFORCE_FAIL_MODE=closed run bash -c 'echo "{\"session_id\":\"x\",\"cwd\":\"/tmp/proj\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/proj/boom.toml\"}}" | "'"$HOOK"'" pre-tool'
   [ "$status" -eq 2 ]
 }
+
+@test "resolve-workspace yields the SAME label from the main checkout and a linked worktree" {
+  # Regression: the workspace key must be worktree-invariant so one consult
+  # clears both the pre-tool and pre-commit gates. Detector is bypassed here
+  # (repo is not under KB_WORKSPACES_ROOT), exercising the git-common-dir path.
+  local root="${BATS_TEST_TMPDIR}/wsroot"
+  mkdir -p "$root/mainrepo"
+  git -C "$root/mainrepo" init -q --initial-branch=main
+  git -C "$root/mainrepo" -c user.email=t@e.com -c user.name=t commit -q --allow-empty -m init
+  git -C "$root/mainrepo" worktree add -q -b wt "$root/linked"
+
+  run "$HOOK" resolve-workspace "$root/mainrepo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "mainrepo" ]
+
+  run "$HOOK" resolve-workspace "$root/linked"
+  [ "$status" -eq 0 ]
+  [ "$output" = "mainrepo" ]
+}
+
+@test "resolve-workspace does not hang without stdin and falls back outside git" {
+  # No stdin redirect: the mode must not block on cat. A non-git dir falls back
+  # to the raw path (never empty), so the gate always has a concrete key.
+  run "$HOOK" resolve-workspace "${BATS_TEST_TMPDIR}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "${BATS_TEST_TMPDIR}" ]
+}

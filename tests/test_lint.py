@@ -188,6 +188,20 @@ def test_discover_bundle_files_excludes_reserved_files(tmp_path: Path):
     assert discover_bundle_files(tmp_path) == [tmp_path / "STD-A.md"]
 
 
+def test_discover_bundle_files_ignores_skip_dir_in_ancestor_path(tmp_path: Path):
+    # Regression: only skip-dirs WITHIN the bundle are excluded. A bundle located
+    # under an ancestor named like a skip-dir (e.g. `.worktrees`, the operator's
+    # mandated layout) must still discover its concepts, not silently find zero.
+    bundle = tmp_path / ".worktrees" / "wt" / "bundle"
+    bundle.mkdir(parents=True)
+    (bundle / "STD-A.md").write_text(_GOOD_FM, encoding="utf-8")
+    archive = bundle / "archive"
+    archive.mkdir()
+    (archive / "old.md").write_text(_GOOD_FM, encoding="utf-8")  # in-bundle skip still applies
+
+    assert discover_bundle_files(bundle) == [bundle / "STD-A.md"]
+
+
 def test_example_bundle_discovery_matches_concept_files():
     """Regression for the false-green CI gate: linting the shipped example-bundle
     must discover every concept file and nothing reserved. The bundle has no

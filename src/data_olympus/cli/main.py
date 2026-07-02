@@ -61,9 +61,9 @@ def _cmd_visualize(args: argparse.Namespace) -> int:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    from data_olympus.cli.report_cmd import run_report
+    from data_olympus.cli.report_cmd import resolve_default_workspace, run_report
     return run_report(
-        workspace=args.workspace or Path.cwd().name,
+        workspace=args.workspace or resolve_default_workspace(),
         rng=args.range,
         since=args.since,
         window_sec=args.window_sec,
@@ -91,7 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_viz.add_argument("--name", default=None, help="display name in the viewer header")
     p_viz.set_defaults(func=_cmd_visualize)
     p_report = sub.add_parser("report", help="report governed changes lacking a consultation")
-    p_report.add_argument("--workspace", default=None, help="workspace label (default: cwd name)")
+    p_report.add_argument("--workspace", default=None,
+                          help="workspace label (default: main-worktree basename)")
     p_report.add_argument("--range", default=None, help="git revision range, e.g. HEAD~5..HEAD")
     p_report.add_argument("--since", default="7 days ago", help="git --since when no --range")
     p_report.add_argument("--window-sec", type=int, default=3600,

@@ -29,16 +29,21 @@ DIALECT="claude"
 # compliance view is correct. The same dispatcher serves claude/codex/gemini, so
 # a hardcoded identity would mis-attribute every non-claude consultation.
 AGENT="unknown"
+POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dialect) DIALECT="${2:-claude}"; shift; shift || true ;;
     --agent) AGENT="${2:-unknown}"; shift; shift || true ;;
-    *) shift ;;
+    *) POSITIONAL+=("$1"); shift ;;
   esac
 done
 
-# Read entire stdin payload.
-PAYLOAD="$(cat || true)"
+# Read entire stdin payload. Skip for resolve-workspace: it is a stdin-free
+# diagnostic (resolve and print a workspace label), so reading stdin would hang.
+PAYLOAD=""
+if [[ "$MODE" != "resolve-workspace" ]]; then
+  PAYLOAD="$(cat || true)"
+fi
 
 json_field() {
   # json_field <dotted.path> ; reads $PAYLOAD, prints value or empty.
@@ -65,7 +70,12 @@ except Exception:
 }
 
 resolve_workspace() {
-  # Echo a workspace label from cwd using the existing detector; fall back to cwd.
+  # Echo a stable workspace label for cwd. Preference order:
+  #   1. the workspaces-root detector (KB_WORKSPACES_ROOT), when it resolves;
+  #   2. the MAIN git worktree basename, which is identical from the main
+  #      checkout and any linked worktree (so one consult clears both the
+  #      pre-tool and pre-commit gates, and matches `report`'s default);
+  #   3. the raw cwd, as a last resort outside a git repo.
   local cwd="$1"
   if [[ -r "$HERE/_kb_detect_workspace.sh" ]]; then
     # shellcheck disable=SC1091
@@ -73,6 +83,12 @@ resolve_workspace() {
     if detect_workspace_and_component "$cwd" 2>/dev/null; then
       echo "$WORKSPACE"; return 0
     fi
+  fi
+  local common
+  common="$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ -n "$common" ]]; then
+    # `--git-common-dir` is the shared `.git`; its parent is the main worktree.
+    basename "$(dirname "$common")"; return 0
   fi
   echo "$cwd"
 }
@@ -246,8 +262,15 @@ print(json.dumps({"workspace":sys.argv[1],"session_id":sys.argv[2],
   stop)
     exit 0
     ;;
+  resolve-workspace)
+    # Diagnostic: print the workspace label this hook resolves for a directory
+    # (default: $PWD). Same resolution the pre-tool gate applies, so operators
+    # can see exactly which key a consult must target.
+    resolve_workspace "${POSITIONAL[0]:-$PWD}"
+    exit 0
+    ;;
   *)
-    echo "kb-enforce-hook: unknown mode '$MODE' (want session-start|user-prompt|pre-tool|stop)" >&2
+    echo "kb-enforce-hook: unknown mode '$MODE' (want session-start|user-prompt|pre-tool|stop|resolve-workspace)" >&2
     exit 64
     ;;
 esac
