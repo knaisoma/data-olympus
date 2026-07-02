@@ -117,7 +117,7 @@ teardown() {
 @test "resolve-workspace yields the SAME label from the main checkout and a linked worktree" {
   # Regression: the workspace key must be worktree-invariant so one consult
   # clears both the pre-tool and pre-commit gates. Detector is bypassed here
-  # (repo is not under KB_WORKSPACES_ROOT), exercising the git-common-dir path.
+  # (repo is not under KB_WORKSPACES_ROOT), exercising the git worktree path.
   local root="${BATS_TEST_TMPDIR}/wsroot"
   mkdir -p "$root/mainrepo"
   git -C "$root/mainrepo" init -q --initial-branch=main
@@ -129,6 +129,22 @@ teardown() {
   [ "$output" = "mainrepo" ]
 
   run "$HOOK" resolve-workspace "$root/linked"
+  [ "$status" -eq 0 ]
+  [ "$output" = "mainrepo" ]
+}
+
+@test "resolve-workspace prefers the git main worktree even when KB_WORKSPACES_ROOT resolves the linked worktree" {
+  # Blocker regression: git resolution must run BEFORE the detector. With
+  # KB_WORKSPACES_ROOT pointed at the linked worktree's parent, the detector
+  # would return the worktree basename (linked2), disagreeing with `report`'s
+  # git-based default. Git-first keeps both gates on the main repo key.
+  local root="${BATS_TEST_TMPDIR}/wsroot2"
+  mkdir -p "$root/mainrepo" "$root/wts"
+  git -C "$root/mainrepo" init -q --initial-branch=main
+  git -C "$root/mainrepo" -c user.email=t@e.com -c user.name=t commit -q --allow-empty -m init
+  git -C "$root/mainrepo" worktree add -q -b wt2 "$root/wts/linked2"
+
+  run env KB_WORKSPACES_ROOT="$root/wts" "$HOOK" resolve-workspace "$root/wts/linked2"
   [ "$status" -eq 0 ]
   [ "$output" = "mainrepo" ]
 }

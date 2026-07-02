@@ -71,24 +71,27 @@ except Exception:
 
 resolve_workspace() {
   # Echo a stable workspace label for cwd. Preference order:
-  #   1. the workspaces-root detector (KB_WORKSPACES_ROOT), when it resolves;
-  #   2. the MAIN git worktree basename, which is identical from the main
+  #   1. the MAIN git worktree basename, which is identical from the main
   #      checkout and any linked worktree (so one consult clears both the
   #      pre-tool and pre-commit gates, and matches `report`'s default);
-  #   3. the raw cwd, as a last resort outside a git repo.
+  #   2. the workspaces-root detector (KB_WORKSPACES_ROOT), for non-git dirs;
+  #   3. the raw cwd, as a last resort.
+  # Git resolution is tried FIRST (not the detector) so the two gates never
+  # disagree on a linked worktree, even when KB_WORKSPACES_ROOT resolves that
+  # worktree to its own basename. `git worktree list` reports the main worktree
+  # as its first entry and is correct for separate-git-dir layouts.
   local cwd="$1"
+  local main_wt
+  main_wt="$(git -C "$cwd" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10); exit}')"
+  if [[ -n "$main_wt" ]]; then
+    basename "$main_wt"; return 0
+  fi
   if [[ -r "$HERE/_kb_detect_workspace.sh" ]]; then
     # shellcheck disable=SC1091
     . "$HERE/_kb_detect_workspace.sh"
     if detect_workspace_and_component "$cwd" 2>/dev/null; then
       echo "$WORKSPACE"; return 0
     fi
-  fi
-  local common
-  common="$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-  if [[ -n "$common" ]]; then
-    # `--git-common-dir` is the shared `.git`; its parent is the main worktree.
-    basename "$(dirname "$common")"; return 0
   fi
   echo "$cwd"
 }

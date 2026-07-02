@@ -34,19 +34,21 @@ def resolve_default_workspace(start: str | None = None) -> str:
     base = Path(start) if start else Path.cwd()
     try:
         out = subprocess.run(
-            ["git", "-C", str(base), "rev-parse",
-             "--path-format=absolute", "--git-common-dir"],
+            ["git", "-C", str(base), "worktree", "list", "--porcelain"],
             capture_output=True, text=True,
         )
     except OSError:
         return base.name
-    common = out.stdout.strip()
-    if out.returncode == 0 and common:
-        # `--git-common-dir` points at the shared `.git`; its parent is the main
-        # worktree root, whose basename is the stable, worktree-invariant key.
-        ws = Path(common).parent.name
-        if ws:
-            return ws
+    if out.returncode == 0:
+        for line in out.stdout.splitlines():
+            # The FIRST `worktree` entry is always the main worktree, regardless
+            # of which linked worktree we run from. This is correct even for
+            # separate-git-dir layouts where the git dir is not `<worktree>/.git`.
+            if line.startswith("worktree "):
+                main_wt = line[len("worktree "):].strip()
+                if main_wt:
+                    return Path(main_wt).name
+                break
     return base.name
 
 
