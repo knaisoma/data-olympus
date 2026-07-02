@@ -119,3 +119,32 @@ def test_enabled_active_still_outranks_superseded(
     hits = idx.search("caching", limit=5)
     order = [h.id for h in hits]
     assert order.index("STD-U-001") < order.index("STD-U-002")
+
+
+@_needs_model
+def test_config_model_honored_over_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reviewer concern 2: the programmatic ``embeddings_model`` passed via
+    build_app/Config is the single source of truth. Even when the environment
+    names a DIFFERENT model, the Index (and its embedder) must use the Config
+    value, not re-read ``KB_EMBEDDINGS_MODEL`` from env."""
+    # Env names a bogus model that would fail to load if it were consulted.
+    monkeypatch.setenv("KB_EMBEDDINGS_MODE", "on")
+    monkeypatch.setenv("KB_EMBEDDINGS_MODEL", "env/nonexistent-model-should-be-ignored")
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    _kb(kb)
+    # If the enabled path re-read env, build_embedder would raise on the bogus
+    # env model; instead it must honour the real Config model and succeed.
+    app = _build(
+        kb,
+        tmp_path / "kb.db",
+        embeddings_enabled=True,
+        embeddings_model="BAAI/bge-small-en-v1.5",
+        embeddings_weight=0.3,
+    )
+    idx = app._dolympus_state.idx  # type: ignore[attr-defined]
+    embedder = idx._resolve_embedder()  # type: ignore[attr-defined]
+    assert embedder is not None
+    assert embedder.model_name == "BAAI/bge-small-en-v1.5"

@@ -28,6 +28,7 @@ from data_olympus.cooccurrence import (
     compose_expanders,
     cooccurrence_enabled,
 )
+from data_olympus.embeddings import EmbeddingsConfig, build_embedder
 from data_olympus.enforce_policy import ConsultationLedger, IntentClassifier
 from data_olympus.git_ops import GitOps
 from data_olympus.index import Index, SearchHit, make_status_reranker
@@ -265,10 +266,25 @@ def build_app(
     # (issue #37) as its ``inner``, so among the remaining hits an active doc
     # still outranks the superseded one it replaced. status_weights=None uses the
     # built-in map; KB_STATUS_WEIGHTS overrides it.
+    # Embeddings (issue #42) are resolved ONCE here from Config (reviewer concern
+    # 2), never re-read from env on the enabled path. The resolved EmbeddingsConfig
+    # and the shared embedder are threaded into the Index so build() embeds the
+    # corpus and search()'s dense candidate source both honour the programmatic
+    # Config, not KB_EMBEDDINGS_* env. The embedder is loaded once (loud failure if
+    # enabled but unavailable) and reused by the hybrid reranker below.
+    emb_config: EmbeddingsConfig | None = None
+    embedder = None
+    if config.embeddings_enabled:
+        emb_config = EmbeddingsConfig(
+            model_name=config.embeddings_model, weight=config.embeddings_weight
+        )
+        embedder = build_embedder(emb_config)
     idx = Index(
         kb_index_path,
         trigram_fallback=config.trigram_fallback_enabled,
         trigram_fallback_threshold=config.trigram_fallback_threshold,
+        embeddings=emb_config,
+        embedder=embedder,
     )
     synonym_expander = default_query_expander()
     cooc_expander = idx.cooccurrence_expander() if cooccurrence_enabled() else None
@@ -285,9 +301,7 @@ def build_app(
     # embedder is loaded once here (loud failure if enabled but unavailable).
     status_reranker = make_status_reranker(config.status_weights)
     inner_reranker = status_reranker
-    if config.embeddings_enabled:
-        from data_olympus.embeddings import build_embedder, embeddings_config
-        embedder = build_embedder(embeddings_config())
+    if config.embeddings_enabled and embedder is not None:
         hybrid_reranker = idx.make_hybrid_reranker(
             embedder, weight=config.embeddings_weight
         )

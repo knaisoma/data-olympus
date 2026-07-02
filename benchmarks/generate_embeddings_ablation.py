@@ -67,12 +67,22 @@ def main() -> None:
         # Dense DB (embeddings on): stores per-doc vectors for the hybrid configs.
         os.environ["KB_EMBEDDINGS_MODE"] = "on"
         cfg = embeddings_config()
-        Index(tmp_path / "hyb.db").build(_CORPUS_DIR, source_commit="emb-ablation-hyb")
+        # Build vectors by THREADING the resolved config into the Index (reviewer
+        # concern 2), sharing one embedder, instead of relying on an env re-read.
         embedder = build_embedder(cfg)
+        Index(tmp_path / "hyb.db", embeddings=cfg, embedder=embedder).build(
+            _CORPUS_DIR, source_commit="emb-ablation-hyb"
+        )
         print(f"Dense index: vectors built, model={cfg.model_name}, weight={cfg.weight}.")
 
         def _hybrid(path: Path) -> Index:
-            i = Index(path)
+            # Thread the SAME resolved config + embedder into the Index so the
+            # dense candidate SOURCE (reviewer concern 1) is active: search()
+            # unions cosine neighbours into the FTS pool before the hybrid
+            # reranker blends. Without this, the reranker would only reorder the
+            # FTS pool, and a paraphrase with zero lexical overlap would never be
+            # retrieved (exactly the paraphrase_uncovered stratum).
+            i = Index(path, embeddings=cfg, embedder=embedder)
             i.reranker = i.make_hybrid_reranker(embedder, weight=cfg.weight)
             return i
 

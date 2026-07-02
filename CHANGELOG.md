@@ -50,6 +50,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the corpus at `Index.build` (seconds for a small KB, no network at query
   time); storage cost is 384 x 4 bytes (~1.5 KB) per doc in `doc_vectors`.
   Install with `uv sync --extra embeddings`.
+  When enabled, `Index.search` now adds a semantic candidate SOURCE (not just a
+  reranker over the FTS pool): the top dense neighbours by query-doc cosine are
+  unioned into the FTS candidate pool before the hybrid blend, so a paraphrase
+  with ZERO lexical overlap (e.g. querying "car" against a corpus that only says
+  "automobile") is retrieved where bm25 alone returned nothing. A minimum-cosine
+  threshold guards abstention: an out-of-scope query whose nearest neighbour is
+  only weakly similar pulls in nothing. A dense-only candidate (absent from the
+  FTS results) is scored at the pool's worst (neutral-floor) bm25 so the blend
+  ranks it by its cosine component. Two new `Index` knobs (dense candidate count,
+  default 10; minimum cosine, default 0.5). With embeddings OFF (the default)
+  `search` is byte-for-byte pure FTS. Embeddings settings
+  (`KB_EMBEDDINGS_MODE`/`MODEL`/`WEIGHT`) are now read from env ONLY in
+  `load_config` and threaded into the `Index` (and its embedder) via `Config`;
+  the build and query paths no longer re-read the environment, so a programmatic
+  caller's `Config` values are honoured.
 - Trigram fuzzy-match fallback for typos and partial identifiers (issue #41). A
   secondary FTS5 table (`fts_trigram`, `trigram` tokenizer, schema v7) is built
   into the same tmp DB and swapped atomically with the primary FTS index, so it
