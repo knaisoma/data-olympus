@@ -191,6 +191,55 @@ Two environment variables tune it:
   - `off`: disable expansion entirely (the expander becomes a passthrough, so
     only the terms the user typed are matched).
 
+## Optional local-embedding hybrid ranking
+
+For real paraphrase / synonymy handling (a query that shares no tokens with the
+relevant doc, e.g. `car` for a doc about `automobile`), the server can blend BM25
+with LOCAL embedding similarity. This is **optional and OFF by default**: with
+the feature off and the `embeddings` extra uninstalled, nothing imports the
+embedding stack and the default lexical product is unchanged. There is **no
+external API and no network call at query time**; a small ONNX model runs
+in-process.
+
+When enabled, each document is embedded at index-build time and its vector is
+stored in a `doc_vectors` table (schema v8) written into the same tmp database
+and swapped atomically with the rest of the index, so vectors rebuild
+atomically. At query time a hybrid reranker embeds the query once and blends
+**normalised BM25** with **cosine similarity** over the candidate hits' stored
+vectors, then re-sorts. It composes UNDER the exact-id / exact-tag short-circuit
+(so an exact id or tag still ranks first) and wraps the status-aware rerank (so
+an active doc still outranks the superseded one it replaced). When disabled the
+reranker stack is exactly the status + id/tag behaviour described under **Search
+ranking**.
+
+Enable and tune it with:
+
+- `KB_EMBEDDINGS_MODE`: `on` to enable; any other value (including unset) leaves
+  it off.
+- `KB_EMBEDDINGS_MODEL`: the local model name (default `BAAI/bge-small-en-v1.5`,
+  a 384-dimensional MiniLM-class model). Any `fastembed`-supported model works.
+- `KB_EMBEDDINGS_WEIGHT`: the cosine fraction of the blended score, in `[0, 1]`
+  (default `0.35`). `0.0` is pure lexical (BM25) ordering, `1.0` is pure
+  semantic. A malformed or out-of-range value fails startup loudly.
+
+Install the extra to make the model runner available:
+
+```bash
+uv sync --extra embeddings   # or: pip install 'data-olympus[embeddings]'
+```
+
+The extra pulls in `fastembed`, which bundles `onnxruntime` (there is no torch
+dependency). The default model ships as a ~33 MB quantised ONNX file that is
+fetched once when the feature is first enabled and cached locally; after that
+there is no network access. If `KB_EMBEDDINGS_MODE=on` but the extra or the model
+is unavailable, **startup fails loudly** with an actionable message rather than
+silently reverting to lexical-only ranking.
+
+Cost: build adds one batched local embedding pass over the corpus (seconds for a
+small KB); storage adds `dim x 4` bytes per document in `doc_vectors` (~1.5 KB
+per doc for the 384-dim default). Query-time cost is one query embedding plus a
+cosine over the (bounded) candidate pool.
+
 ## Authentication and network security
 
 The server supports optional bearer-token authentication with a per-principal

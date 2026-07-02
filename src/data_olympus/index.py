@@ -22,6 +22,16 @@ from data_olympus.cooccurrence import (
     tokenize_doc,
     write_cooccurrence_table,
 )
+from data_olympus.embeddings import (
+    EMBEDDINGS_SCHEMA,
+    Embedder,
+    EmbeddingsConfig,
+    build_embedder,
+    cosine,
+    deserialize_vector,
+    make_hybrid_reranker,
+    serialize_vector,
+)
 from data_olympus.markdown_parse import parse_file
 from data_olympus.trigram import (
     DEFAULT_FALLBACK_THRESHOLD as DEFAULT_TRIGRAM_FALLBACK_THRESHOLD,
@@ -66,14 +76,15 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
-""" + RELATED_TERMS_SCHEMA + TRIGRAM_FTS_SCHEMA
+""" + RELATED_TERMS_SCHEMA + TRIGRAM_FTS_SCHEMA + EMBEDDINGS_SCHEMA
 
 # Informational only; recorded in the meta table for observability. Rebuild
 # is guaranteed by bootstrap_now=True calling Index.build() unconditionally
 # on container start, not by a version-mismatch check.
 # v6 adds the related_terms co-occurrence table (issue #40).
 # v7 adds the fts_trigram fuzzy-match table (issue #41).
-_SCHEMA_VERSION = "7"
+# v8 adds the doc_vectors table (issue #42, populated only when embeddings on).
+_SCHEMA_VERSION = "8"
 
 
 # fts column order (excluding the UNINDEXED id at position 0).
@@ -89,6 +100,23 @@ _DEFAULT_BM25_WEIGHTS: tuple[float, ...] = (0.0, 10.0, 5.0, 10.0, 4.0, 1.0)
 _RERANK_OVERFETCH_FACTOR = 5
 _RERANK_MIN_POOL = 50
 _RERANK_MAX_POOL = 200
+
+# Cap on the characters embedded per doc at build time (issue #42). The head of
+# a doc carries its topical signal; bounding it keeps a very long doc from
+# overrunning the model's context window and keeps build cost predictable.
+_EMBED_TEXT_MAX_CHARS = 4000
+
+# Dense (semantic) candidate SOURCE defaults (issue #42, reviewer concern 1).
+# When embeddings are enabled, search() unions the top-N docs by query-doc cosine
+# into the FTS candidate pool so a paraphrase with ZERO lexical overlap can still
+# retrieve its doc (bm25 alone never surfaces it). Two knobs, both config-driven:
+#   * DEFAULT_DENSE_CANDIDATE_COUNT: how many nearest neighbours to consider.
+#   * DEFAULT_DENSE_MIN_COSINE: a minimum cosine a neighbour must clear to be
+#     added. This is the abstention guard: a negative / out-of-scope query whose
+#     nearest neighbour is only weakly similar pulls in NOTHING, so the dense
+#     source does not blow up the false-positive rate on the negative stratum.
+DEFAULT_DENSE_CANDIDATE_COUNT = 10
+DEFAULT_DENSE_MIN_COSINE = 0.5
 
 # Status priors for the status-aware reranker (issue #37). search() orders by
 # bm25 ASCENDING (lower = better), so these deltas are ADDED to the raw score:
@@ -360,8 +388,25 @@ class Index:
         reranker: Callable[[str, list[SearchHit]], list[SearchHit]] | None = None,
         trigram_fallback: bool = False,
         trigram_fallback_threshold: int | None = None,
+        embeddings: EmbeddingsConfig | None = None,
+        embedder: Embedder | None = None,
+        dense_candidate_count: int = DEFAULT_DENSE_CANDIDATE_COUNT,
+        dense_min_cosine: float = DEFAULT_DENSE_MIN_COSINE,
     ) -> None:
         self._db_path = db_path
+        # Embeddings (issue #42) are threaded in from Config, NOT re-read from env
+        # here (reviewer concern 2): Config (via load_config) is the single source
+        # of truth for KB_EMBEDDINGS_MODE/MODEL/WEIGHT. ``embeddings`` being non-
+        # None is what turns the feature on for THIS index; ``embedder`` is the
+        # (lazily loadable) model shared between build() and the query-time dense
+        # source. When ``embeddings`` is None the embedding path is fully inert:
+        # build() stores no vectors and search() is byte-for-byte pure FTS.
+        self._embeddings = embeddings
+        self._embedder = embedder
+        # Dense candidate SOURCE knobs (reviewer concern 1). Only consulted when
+        # both an embeddings config and an embedder are present.
+        self._dense_candidate_count = dense_candidate_count
+        self._dense_min_cosine = dense_min_cosine
         # Trigram fuzzy-match fallback (issue #41). When enabled, a primary FTS
         # query that returns at or below ``trigram_fallback_threshold`` hits is
         # backfilled from the secondary trigram-tokenized table so a typo or a
@@ -397,6 +442,23 @@ class Index:
         # Test/observability counter: how many times the DB was actually read
         # (cache misses). Not part of the public contract.
         self._health_uncached_calls = 0
+
+    def _resolve_embedder(self) -> Embedder | None:
+        """Return the embedder to use, loading it from the threaded config once.
+
+        Returns None when embeddings are not configured for this index (feature
+        off). When configured, an explicitly-injected ``embedder`` (e.g. shared
+        with the query-time reranker, or a test double) is preferred; otherwise
+        the model is loaded from ``self._embeddings`` on first use and cached, so
+        build() and the query-time dense source share a single loaded model.
+        ``build_embedder`` raises loudly if the dep/model is unavailable, so a
+        misconfigured build fails visibly rather than silently shipping lexical.
+        """
+        if self._embeddings is None:
+            return None
+        if self._embedder is None:
+            self._embedder = build_embedder(self._embeddings)
+        return self._embedder
 
     def _connect(self) -> sqlite3.Connection:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -460,6 +522,20 @@ class Index:
             # walk; only populated when co-occurrence expansion is enabled.
             build_cooccurrence = cooccurrence_enabled()
             doc_token_sets: list[set[str]] = []
+            # Embedding vectors (issue #42). Whether/what to embed is decided from
+            # the threaded ``self._embeddings`` config (reviewer concern 2), NOT
+            # from an env re-read: Config is the single source of truth. Only when
+            # a config is present do we load the (optional) model and collect
+            # per-doc embedding text; a default build never touches the embedding
+            # dependency. Each entry is (doc_id, text_to_embed), embedded in one
+            # batch after the walk and written into the SAME tmp DB so vectors
+            # swap atomically with the rest of the index. _resolve_embedder raises
+            # loudly if enabled but the dep/model is unavailable.
+            build_embeddings = self._embeddings is not None
+            embedder: Embedder | None = None
+            embed_inputs: list[tuple[str, str]] = []
+            if build_embeddings:
+                embedder = self._resolve_embedder()
             for md in files_to_index:
                 rel = md.relative_to(kb_root)
                 doc = parse_file(md)
@@ -498,7 +574,27 @@ class Index:
                     doc_token_sets.append(
                         tokenize_doc(doc.title, tags_str, doc.description, doc.body)
                     )
+                if build_embeddings:
+                    # Embed title + description + body: the retrievable semantic
+                    # content of the doc. Bounded to keep a huge doc from blowing
+                    # the model's context; the head carries the topical signal.
+                    embed_text = "\n".join(
+                        p for p in (doc.title, doc.description, doc.body) if p
+                    )[:_EMBED_TEXT_MAX_CHARS]
+                    embed_inputs.append((doc_id, embed_text))
                 count += 1
+            # Embedding vectors (issue #42): one batched embed of all docs, then
+            # persist into the tmp DB. Kept inside the build so vectors are part
+            # of the same atomic swap and a query never sees a half-built table.
+            if build_embeddings and embedder is not None and embed_inputs:
+                vectors = embedder.embed_many([t for _id, t in embed_inputs])
+                conn.executemany(
+                    "INSERT OR REPLACE INTO doc_vectors (id, vector) VALUES (?, ?)",
+                    [
+                        (doc_id, serialize_vector(vec))
+                        for (doc_id, _t), vec in zip(embed_inputs, vectors, strict=True)
+                    ],
+                )
             # Co-occurrence / PMI table (issue #40). Built into the SAME tmp DB
             # and swapped atomically with the rest of the index below, so a query
             # never sees a half-built related_terms table.
@@ -670,11 +766,72 @@ class Index:
                 )
         finally:
             conn.close()
+        # Stage 2c (dense candidate SOURCE, issue #42, reviewer concern 1). Only
+        # when embeddings are configured for this index (guarded on the embedder
+        # being present) do we ADD semantic neighbours to the pool; when off this
+        # whole block is skipped and search() is byte-for-byte pure FTS. A
+        # paraphrase with zero lexical overlap never entered the FTS pool above, so
+        # without this the hybrid reranker could not help it. The dense hits are
+        # UNIONED (dedup by id) into the pool; a dense-only hit (no bm25 score)
+        # gets a neutral floor score (the worst bm25 in the pool, or 0.0 for an
+        # empty pool) so the hybrid blend ranks it by its cosine component. The
+        # reranker below then blends and truncates to ``limit``.
+        if self._embeddings is not None:
+            hits = self._union_dense_candidates(
+                query,
+                hits,
+                dense_limit=self._dense_candidate_count,
+                tier=tier,
+                category=category,
+                status=status,
+                doc_type=doc_type,
+            )
         # Stage 3 (re-rank): optional hook reorders/rescores (default identity),
         # then truncate the (possibly wider / prepended) pool back to `limit`.
         if self.reranker is not None:
             hits = list(self.reranker(query, hits))[:limit]
         return hits
+
+    def _union_dense_candidates(
+        self,
+        query: str,
+        fts_hits: builtins.list[SearchHit],
+        *,
+        dense_limit: int,
+        tier: str | None,
+        category: str | None,
+        status: str | None,
+        doc_type: str | None,
+    ) -> builtins.list[SearchHit]:
+        """Union dense (cosine) candidates into the FTS pool (reviewer concern 1).
+
+        Dense hits already present in ``fts_hits`` (matched lexically too) are
+        dropped so an FTS hit keeps its real bm25 score. A dense-ONLY hit has no
+        bm25 signal, so it is given the worst (largest, since bm25 is ordered
+        ascending) score in the current pool as a neutral floor; the hybrid
+        reranker then decides its rank purely by its cosine component. With an
+        empty FTS pool the floor is 0.0 (a finite, ordered anchor). Dense-only
+        hits are APPENDED after the FTS hits; the reranker re-sorts the whole pool.
+        """
+        dense = self.dense_candidates(
+            query,
+            limit=dense_limit,
+            min_cosine=self._dense_min_cosine,
+            tier=tier,
+            category=category,
+            status=status,
+            doc_type=doc_type,
+        )
+        if not dense:
+            return fts_hits
+        seen = {h.id for h in fts_hits}
+        # Worst (largest) bm25 in the pool as the neutral floor for dense-only
+        # hits; 0.0 when the FTS pool is empty so scores stay finite and ordered.
+        floor = max((h.score for h in fts_hits), default=0.0)
+        appended = [
+            replace(h, score=floor) for h in dense if h.id not in seen
+        ]
+        return [*fts_hits, *appended]
 
     def _build_match_expr(self, terms: list[str], columns: list[str] | None) -> str:
         """Match stage: build the FTS5 MATCH expression from query terms.
@@ -800,6 +957,144 @@ class Index:
             lambda term, kk: self.related_terms(term, limit=kk),
             k=k,
             max_terms=max_terms,
+        )
+
+    def get_vector(self, id: str) -> builtins.list[float] | None:
+        """Return the stored embedding vector for ``id``, or None (issue #42).
+
+        Reads the ``doc_vectors`` table populated at build time only when the
+        embeddings feature was enabled. A build that predates the table, a doc
+        with no vector, or the feature being off all yield None (the hybrid
+        reranker treats a missing vector as a neutral cosine, never a drop).
+        Opens a per-call connection so it always reads the atomically-swapped
+        current index.
+        """
+        if not self._db_path.exists():
+            return None
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT vector FROM doc_vectors WHERE id = ?", (id,)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            # Table absent (index predates the schema); degrade to no vector.
+            return None
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        return deserialize_vector(row["vector"])
+
+    def dense_candidates(
+        self,
+        query: str,
+        *,
+        limit: int,
+        min_cosine: float,
+        tier: str | None = None,
+        category: str | None = None,
+        status: str | None = None,
+        doc_type: str | None = None,
+    ) -> builtins.list[SearchHit]:
+        """Return up to ``limit`` docs most similar to ``query`` by cosine (issue #42).
+
+        This is the semantic candidate SOURCE that reviewer concern 1 requires: a
+        paraphrase with zero lexical overlap never enters the FTS pool, so search()
+        unions these dense hits in before the reranker runs. Reuses ``cosine`` over
+        the stored ``doc_vectors`` (read via the same deserialize path as
+        ``get_vector``). Only neighbours clearing ``min_cosine`` are returned, so a
+        negative / out-of-scope query whose nearest doc is only weakly similar pulls
+        in nothing (abstention guard). The same tier/category/status/doc_type
+        filters are applied so a filtered search does not leak an off-facet doc.
+
+        Returns the empty list when embeddings are not configured, the query cannot
+        be embedded, or the index predates the ``doc_vectors`` table. Each hit
+        carries its cosine in ``score`` (higher = better here); search() re-scores
+        dense-only hits onto the bm25 convention before the blend.
+        """
+        embedder = self._resolve_embedder()
+        if embedder is None or limit <= 0 or not self._db_path.exists():
+            return []
+        qvec = embedder.embed_one(query) if query.strip() else None
+        if not qvec:
+            return []
+        where = ["dv.vector IS NOT NULL"]
+        params: list[object] = []
+        if tier:
+            where.append("docs.tier = ?")
+            params.append(tier)
+        if category:
+            where.append("docs.category = ?")
+            params.append(category)
+        if status:
+            where.append("docs.status = ?")
+            params.append(status)
+        if doc_type:
+            where.append("docs.type = ?")
+            params.append(doc_type)
+        sql = f"""
+            SELECT
+                dv.id AS id,
+                dv.vector AS vector,
+                docs.path AS path,
+                COALESCE(docs.title, '') AS title,
+                COALESCE(docs.status, '') AS status,
+                COALESCE(docs.type, '') AS doc_type,
+                COALESCE(docs.description, '') AS description
+            FROM doc_vectors dv
+            JOIN docs ON docs.id = dv.id
+            WHERE {' AND '.join(where)}
+        """
+        conn = self._connect()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError:
+            # doc_vectors table absent (index predates schema v8): no dense source.
+            return []
+        finally:
+            conn.close()
+        scored: list[tuple[float, SearchHit]] = []
+        for r in rows:
+            dvec = deserialize_vector(r["vector"])
+            if len(dvec) != len(qvec):
+                continue
+            sim = cosine(qvec, dvec)
+            if sim < min_cosine:
+                continue
+            scored.append(
+                (
+                    sim,
+                    SearchHit(
+                        id=r["id"],
+                        path=r["path"],
+                        title=r["title"],
+                        snippet=r["description"],
+                        score=sim,
+                        status=r["status"],
+                        doc_type=r["doc_type"],
+                    ),
+                )
+            )
+        # Strongest cosine first, then truncate to ``limit``.
+        scored.sort(key=lambda t: -t[0])
+        return [hit for _sim, hit in scored[:limit]]
+
+    def make_hybrid_reranker(
+        self, embedder: Embedder, *, weight: float,
+    ) -> Callable[[str, list[SearchHit]], list[SearchHit]]:
+        """Return a hybrid reranker bound to this index's stored vectors.
+
+        Blends normalised bm25 with query-doc cosine (issue #42). ``embedder``
+        embeds the query once per search; ``weight`` in [0, 1] is the cosine
+        fraction of the blended score. The query is embedded lazily (only when a
+        search actually runs), and a query the model cannot embed degrades to
+        bm25 ordering. Compose this as the ``inner`` reranker under the id/tag
+        short-circuit so an exact id/tag still wins (see server.build_app).
+        """
+        return make_hybrid_reranker(
+            embed_query=lambda q: embedder.embed_one(q) if q.strip() else None,
+            get_vector=self.get_vector,
+            weight=weight,
         )
 
     def get(self, id: str) -> IndexedDoc | None:

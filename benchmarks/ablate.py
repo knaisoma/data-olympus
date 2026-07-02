@@ -248,21 +248,31 @@ def run_ablation(
     queries: list[GovQuery],
     tokenizer: Tokenizer,
     k: int = 5,
+    extra_configs: list[tuple[str, dict[str, object] | None, Index]] | None = None,
 ) -> AblationReport:
-    """Run all four ablation configs over governance queries.
+    """Run the ablation configs over governance queries.
 
     Returns an AblationReport with one AblationRow per (config, stratum) cell.
+    ``extra_configs`` appends caller-supplied ``(label, search_kwargs, index)``
+    rows run over the same queries. This is how the dense configs are added: an
+    index with query expanders (the lexical default) and one that also carries
+    per-doc vectors with the hybrid reranker, so the marginal value of embeddings
+    over the shipping lexical stack is measured directly. Empty ``search_kwargs``
+    means production default columns; the expanders/reranker live on the index.
     """
-    all_configs: list[tuple[str, dict[str, object] | None]] = [
-        *[(label, kwargs) for label, kwargs in _FTS_CONFIGS],
-        (_BM25_LABEL, None),
+    # Each entry is (label, search_kwargs | None, index_to_use).
+    all_configs: list[tuple[str, dict[str, object] | None, Index]] = [
+        *[(label, kwargs, idx) for label, kwargs in _FTS_CONFIGS],
+        (_BM25_LABEL, None, idx),
     ]
+    if extra_configs:
+        all_configs.extend(extra_configs)
 
     rows: list[AblationRow] = []
 
-    for config_label, search_kwargs in all_configs:
+    for config_label, search_kwargs, cfg_idx in all_configs:
         qr_list = _run_config(
-            queries, idx, corpus_root, tokenizer, k, search_kwargs
+            queries, cfg_idx, corpus_root, tokenizer, k, search_kwargs
         )
 
         # Group by stratum.
@@ -385,6 +395,37 @@ def write_ablation(report: AblationReport, out_dir: Path) -> None:
             "dense/semantic methods would be expected to do better."
         )
     lines.append("")
+
+    # Marginal value of embeddings: each "<base>+embeddings" config vs its base.
+    emb_configs = [c for c in configs if c.endswith("+embeddings")]
+    for emb in emb_configs:
+        base_label = emb[: -len("+embeddings")]
+        if not any(r.config == base_label for r in report.rows):
+            continue
+        lines += [f"## Marginal value of embeddings: {emb} vs {base_label}", ""]
+        for stratum in _STRATA_ORDER:
+            base = next(
+                (r for r in report.rows
+                 if r.config == base_label and r.stratum == stratum), None)
+            hyb = next(
+                (r for r in report.rows
+                 if r.config == emb and r.stratum == stratum), None)
+            if not (base and hyb):
+                continue
+            if stratum == "negative":
+                lines.append(
+                    f"**negative** false-positive rate: {base.false_positive_rate:.3f} "
+                    f"-> {hyb.false_positive_rate:.3f} (a dense blend can cost "
+                    "abstention by always having a nearest neighbour)."
+                )
+            else:
+                lines.append(
+                    f"**{stratum}** recall@{report.k}: {base.recall:.3f} -> "
+                    f"{hyb.recall:.3f} ({hyb.recall - base.recall:+.3f}); "
+                    f"mrr {base.mrr:.3f} -> {hyb.mrr:.3f} "
+                    f"({hyb.mrr - base.mrr:+.3f})."
+                )
+        lines.append("")
 
     # Negative-query false positive rate
     lines += ["## Negative queries — false positive / abstention", ""]

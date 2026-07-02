@@ -28,9 +28,10 @@ from data_olympus.cooccurrence import (
     compose_expanders,
     cooccurrence_enabled,
 )
+from data_olympus.embeddings import EmbeddingsConfig, build_embedder
 from data_olympus.enforce_policy import ConsultationLedger, IntentClassifier
 from data_olympus.git_ops import GitOps
-from data_olympus.index import Index, make_status_reranker
+from data_olympus.index import Index, SearchHit, make_status_reranker
 from data_olympus.pending import PendingQueue
 from data_olympus.principals import (
     AUTH_REQUIRED_TOOLS,
@@ -200,6 +201,9 @@ def build_app(
     session_reap_interval_sec: int = 60,
     status_weights: dict[str, float] | None = None,
     read_only: bool = False,
+    embeddings_enabled: bool = False,
+    embeddings_weight: float = 0.35,
+    embeddings_model: str = "BAAI/bge-small-en-v1.5",
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
 
@@ -242,6 +246,9 @@ def build_app(
         session_reap_interval_sec=session_reap_interval_sec,
         status_weights=status_weights,
         read_only=read_only,
+        embeddings_enabled=embeddings_enabled,
+        embeddings_weight=embeddings_weight,
+        embeddings_model=embeddings_model,
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
@@ -259,19 +266,55 @@ def build_app(
     # (issue #37) as its ``inner``, so among the remaining hits an active doc
     # still outranks the superseded one it replaced. status_weights=None uses the
     # built-in map; KB_STATUS_WEIGHTS overrides it.
+    # Embeddings (issue #42) are resolved ONCE here from Config (reviewer concern
+    # 2), never re-read from env on the enabled path. The resolved EmbeddingsConfig
+    # and the shared embedder are threaded into the Index so build() embeds the
+    # corpus and search()'s dense candidate source both honour the programmatic
+    # Config, not KB_EMBEDDINGS_* env. The embedder is loaded once (loud failure if
+    # enabled but unavailable) and reused by the hybrid reranker below.
+    emb_config: EmbeddingsConfig | None = None
+    embedder = None
+    if config.embeddings_enabled:
+        emb_config = EmbeddingsConfig(
+            model_name=config.embeddings_model, weight=config.embeddings_weight
+        )
+        embedder = build_embedder(emb_config)
     idx = Index(
         kb_index_path,
         trigram_fallback=config.trigram_fallback_enabled,
         trigram_fallback_threshold=config.trigram_fallback_threshold,
+        embeddings=emb_config,
+        embedder=embedder,
     )
     synonym_expander = default_query_expander()
     cooc_expander = idx.cooccurrence_expander() if cooccurrence_enabled() else None
     idx.query_expander = compose_expanders(
         synonym_expander, cooc_expander, max_terms=DEFAULT_MAX_TERMS
     )
-    idx.reranker = make_id_tag_reranker(
-        idx, inner=make_status_reranker(config.status_weights)
-    )
+    # Re-rank stack (innermost first): status prior -> optional hybrid embedding
+    # blend (issue #42) -> id/tag short-circuit (outermost). The hybrid layer,
+    # when enabled, blends normalised bm25 with query-doc cosine over the
+    # candidate pool; it is composed as the ``inner`` of the id/tag short-circuit
+    # so an exact id/tag still wins, and it wraps the status reranker so an active
+    # doc still outranks the superseded one among semantically-blended hits. When
+    # disabled the stack is exactly today's (status inner, id/tag outer). The
+    # embedder is loaded once here (loud failure if enabled but unavailable).
+    status_reranker = make_status_reranker(config.status_weights)
+    inner_reranker = status_reranker
+    if config.embeddings_enabled and embedder is not None:
+        hybrid_reranker = idx.make_hybrid_reranker(
+            embedder, weight=config.embeddings_weight
+        )
+
+        def _status_then_hybrid(
+            query: str, hits: list[SearchHit]
+        ) -> list[SearchHit]:
+            # Status prior first (so an active doc's boost feeds the blend's bm25
+            # component), then the semantic blend re-sorts the pool.
+            return hybrid_reranker(query, list(status_reranker(query, hits)))
+
+        inner_reranker = _status_then_hybrid
+    idx.reranker = make_id_tag_reranker(idx, inner=inner_reranker)
     git = GitOps(kb_main_path)
     # retention_sec = the consult TTL: an entry older than that can never be
     # fresh, so it is safe to evict and keeps the ledger bounded (see
@@ -697,6 +740,9 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         session_reap_interval_sec=config.session_reap_interval_sec,
         status_weights=config.status_weights,
         read_only=config.read_only,
+        embeddings_enabled=config.embeddings_enabled,
+        embeddings_weight=config.embeddings_weight,
+        embeddings_model=config.embeddings_model,
     )
 
 

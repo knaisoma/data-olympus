@@ -68,6 +68,17 @@ class Config:
     # Index.search reads these to gate the query-time fallback.
     trigram_fallback_enabled: bool = False
     trigram_fallback_threshold: int = 3
+    # Optional local-embedding hybrid ranking (issue #42). Default OFF so the
+    # zero-dependency lexical mode stays the default and no embedding library is
+    # imported. When on, docs are embedded at build time (schema v8 doc_vectors)
+    # and a hybrid reranker blends normalised bm25 with query-doc cosine.
+    # ``embeddings_weight`` in [0, 1] is the cosine fraction of the blend;
+    # ``embeddings_model`` names the local ONNX model. Surfaced here for
+    # discoverability; the build path reads the same env vars directly (mirroring
+    # the trigram/co-occurrence features), so the CLI indexer honours them.
+    embeddings_enabled: bool = False
+    embeddings_weight: float = 0.35
+    embeddings_model: str = "BAAI/bge-small-en-v1.5"
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -150,6 +161,14 @@ def load_config() -> Config:
     )
     trigram_enabled = _trigram_enabled()
     trigram_threshold = _trigram_threshold()
+    from data_olympus.embeddings import (
+        embeddings_config as _embeddings_config,
+    )
+    from data_olympus.embeddings import (
+        embeddings_enabled as _embeddings_enabled,
+    )
+    emb_enabled = _embeddings_enabled()
+    emb_cfg = _embeddings_config()
     return Config(
         kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
         kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
@@ -189,4 +208,7 @@ def load_config() -> Config:
         cooccurrence_min_pmi=float(cooc_params["min_pmi"]),
         trigram_fallback_enabled=trigram_enabled,
         trigram_fallback_threshold=trigram_threshold,
+        embeddings_enabled=emb_enabled,
+        embeddings_weight=emb_cfg.weight,
+        embeddings_model=emb_cfg.model_name,
     )

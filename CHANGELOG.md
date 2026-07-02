@@ -27,6 +27,44 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   labels), then publishes the GitHub Release.
   Process is documented in `.rules/versioning.md` and `.rules/release-routine.md`.
   No tags are ever cut unattended.
+- Optional local-embedding hybrid ranking (issue #42). Real paraphrase / synonymy
+  handling via a LOCAL ONNX MiniLM-class model (no external API, no query-time
+  network), blended with BM25. OFF by default (`KB_EMBEDDINGS_MODE`, default off):
+  with the feature off and the `embeddings` extra uninstalled, nothing imports
+  the embedding stack and the lexical product is byte-for-byte unchanged. When
+  enabled, each doc is embedded at `Index.build` time into a new `doc_vectors`
+  table (schema v8, float32 blobs) written into the same tmp DB and swapped
+  atomically, so vectors rebuild atomically with the rest of the index. A hybrid
+  reranker embeds the query once and blends NORMALISED bm25 with cosine over the
+  candidate hits' stored vectors, then re-sorts. It composes as the INNER layer
+  under the exact-id/exact-tag short-circuit (so an exact id/tag still wins) and
+  wraps the status prior (so an active doc still outranks the superseded one it
+  replaced); when disabled the reranker stack is exactly today's. If enabled but
+  the extra/model is unavailable, startup fails LOUDLY with an actionable message
+  rather than silently reverting to lexical-only. Config: `KB_EMBEDDINGS_MODE`
+  (on/off, default off), `KB_EMBEDDINGS_MODEL` (default `BAAI/bge-small-en-v1.5`,
+  384-dim), `KB_EMBEDDINGS_WEIGHT` (cosine fraction of the blend in [0, 1],
+  default 0.35). The extra pulls in `fastembed` (which bundles `onnxruntime`; no
+  torch); the default model is a ~33 MB quantised ONNX file fetched once at
+  enable time and cached locally. Build cost: one batched local embed pass over
+  the corpus at `Index.build` (seconds for a small KB, no network at query
+  time); storage cost is 384 x 4 bytes (~1.5 KB) per doc in `doc_vectors`.
+  Install with `uv sync --extra embeddings`.
+  When enabled, `Index.search` now adds a semantic candidate SOURCE (not just a
+  reranker over the FTS pool): the top dense neighbours by query-doc cosine are
+  unioned into the FTS candidate pool before the hybrid blend, so a paraphrase
+  with ZERO lexical overlap (e.g. querying "car" against a corpus that only says
+  "automobile") is retrieved where bm25 alone returned nothing. A minimum-cosine
+  threshold guards abstention: an out-of-scope query whose nearest neighbour is
+  only weakly similar pulls in nothing. A dense-only candidate (absent from the
+  FTS results) is scored at the pool's worst (neutral-floor) bm25 so the blend
+  ranks it by its cosine component. Two new `Index` knobs (dense candidate count,
+  default 10; minimum cosine, default 0.5). With embeddings OFF (the default)
+  `search` is byte-for-byte pure FTS. Embeddings settings
+  (`KB_EMBEDDINGS_MODE`/`MODEL`/`WEIGHT`) are now read from env ONLY in
+  `load_config` and threaded into the `Index` (and its embedder) via `Config`;
+  the build and query paths no longer re-read the environment, so a programmatic
+  caller's `Config` values are honoured.
 - Trigram fuzzy-match fallback for typos and partial identifiers (issue #41). A
   secondary FTS5 table (`fts_trigram`, `trigram` tokenizer, schema v7) is built
   into the same tmp DB and swapped atomically with the primary FTS index, so it
