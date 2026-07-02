@@ -3,7 +3,7 @@
 Point this at YOUR own KB directory and a query set to measure what the optional
 embedding hybrid (issue #42) adds over the lexical stack (FTS + synonym +
 co-occurrence expansion) on your corpus. It is deliberately content-free: it
-prints only aggregate metrics (recall@k, MRR, recovered/regressed counts), never
+prints only aggregate metrics (recall@k, MRR@k, recovered/regressed counts), never
 document text, so a run over a private KB leaks nothing.
 
     uv run --extra embeddings python -m benchmarks.real_corpus_eval \
