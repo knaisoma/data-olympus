@@ -14,6 +14,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Content-free real-corpus retrieval eval harness (`benchmarks/real_corpus_eval.py`
+  + `benchmarks/real_corpus_eval.md`). Point it at your own KB directory and a
+  labeled query set to measure what the optional local-embedding hybrid (issue
+  #42) adds over the lexical stack (FTS + synonym + co-occurrence expansion) on
+  your corpus; it prints only aggregate metrics (recall@k, MRR, recovered /
+  regressed counts) and never document text, so it is safe to run over a private
+  KB. The writeup includes a worked private-corpus example and an honest reading
+  positioning embeddings as opt-in rather than default-on.
+
 - Automated, human-gated release pipeline (conformant with the STD-U-810
   versioning standard). A daily `data-olympus-release-cutter` routine computes the
   SemVer bump from Conventional Commits and opens a release PR; merging that PR
