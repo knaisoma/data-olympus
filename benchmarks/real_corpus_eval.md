@@ -44,7 +44,7 @@ that reflects your content.
 |---|---|---|---|
 | recall@5 | 0.898 | 0.916 | +0.019 |
 | recall@10 | 0.953 | 0.967 | +0.014 |
-| MRR | 0.756 | 0.770 | +0.013 |
+| MRR@5 | 0.756 | 0.770 | +0.013 |
 
 Hybrid **recovered 4 / 215** queries at k=5 and **regressed 0 / 215**. Three of
 the four recoveries were token-disjoint queries (zero title-token overlap with

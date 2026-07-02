@@ -22,18 +22,10 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import sys
 from pathlib import Path
 
-
-def recall_at_k(ranked: list[str], gold: set[str], k: int) -> float:
-    return 1.0 if gold and any(r in gold for r in ranked[:k]) else 0.0
-
-
-def mrr(ranked: list[str], gold: set[str]) -> float:
-    for i, r in enumerate(ranked, 1):
-        if r in gold:
-            return 1.0 / i
-    return 0.0
+from benchmarks.metrics import mrr, recall_at_k
 
 
 def _build_expanders(index):  # noqa: ANN001 - Index, avoid import at module load
@@ -68,6 +60,8 @@ def main() -> None:
     raw = json.loads(Path(args.queries).read_text(encoding="utf-8"))
     queries = [q for q in raw if q.get("gold_ids")]
     print(f"corpus={corpus} queries={len(raw)} (labeled={len(queries)}) k={args.k}")
+    if not queries:
+        sys.exit("no labeled queries found: every entry has empty/missing gold_ids")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -96,7 +90,7 @@ def main() -> None:
             gold = set(q["gold_ids"])
             lr = [h.id for h in lex.search(q["text"], limit=args.k)]
             hr = [h.id for h in hyb.search(q["text"], limit=args.k)]
-            lrec, hrec = recall_at_k(lr, gold, args.k), recall_at_k(hr, gold, args.k)
+            lrec, hrec = recall_at_k(lr, gold, k=args.k), recall_at_k(hr, gold, k=args.k)
             lex_recall.append(lrec)
             hyb_recall.append(hrec)
             lex_mrr.append(mrr(lr, gold))
@@ -108,7 +102,8 @@ def main() -> None:
     lm_m, hm_m = statistics.mean(lex_mrr), statistics.mean(hyb_mrr)
     print("\n== lexical stack vs hybrid (+embeddings), default config ==")
     print(f"  recall@{args.k}: {lr_m:.3f} -> {hr_m:.3f} ({hr_m - lr_m:+.3f})")
-    print(f"  MRR:        {lm_m:.3f} -> {hm_m:.3f} ({hm_m - lm_m:+.3f})")
+    # MRR is computed over the k-truncated ranking (limit=k above), i.e. MRR@k.
+    print(f"  MRR@{args.k}:     {lm_m:.3f} -> {hm_m:.3f} ({hm_m - lm_m:+.3f})")
     print(f"  hybrid recovered: {recovered}/{len(queries)}   regressed: {regressed}/{len(queries)}")
 
 
