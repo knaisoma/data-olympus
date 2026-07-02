@@ -82,7 +82,14 @@ resolve_workspace() {
   # as its first entry and is correct for separate-git-dir layouts.
   local cwd="$1"
   local main_wt
-  main_wt="$(git -C "$cwd" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10); exit}')"
+  # First NON-bare worktree record. The main worktree is listed first, but a bare
+  # repo's first record is the bare git dir (marked `bare`), not a real checkout;
+  # skip it so the key is a worktree basename, not `repo.git`.
+  main_wt="$(git -C "$cwd" worktree list --porcelain 2>/dev/null | awk '
+    /^worktree /{p=substr($0,10); b=0}
+    /^bare$/{b=1}
+    /^$/{ if(p!="" && b==0){print p; exit} p=""; b=0 }
+    END{ if(p!="" && b==0) print p }')"
   if [[ -n "$main_wt" ]]; then
     basename "$main_wt"; return 0
   fi

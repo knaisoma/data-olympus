@@ -149,6 +149,21 @@ teardown() {
   [ "$output" = "mainrepo" ]
 }
 
+@test "resolve-workspace skips the bare record for a worktree attached to a bare repo" {
+  # A bare repo's porcelain lists the bare git dir first (marked `bare`); the key
+  # must be the real checkout basename (work), not the bare repo name (origin.git).
+  local root="${BATS_TEST_TMPDIR}/bareroot"
+  mkdir -p "$root"
+  git -C "$root" init -q --initial-branch=main src
+  git -C "$root/src" -c user.email=t@e.com -c user.name=t commit -q --allow-empty -m init
+  git -C "$root" clone -q --bare src origin.git
+  git -C "$root/origin.git" worktree add -q "$root/work" main
+
+  run "$HOOK" resolve-workspace "$root/work"
+  [ "$status" -eq 0 ]
+  [ "$output" = "work" ]
+}
+
 @test "resolve-workspace does not hang without stdin and falls back outside git" {
   # No stdin redirect: the mode must not block on cat. A non-git dir falls back
   # to the raw path (never empty), so the gate always has a concrete key.

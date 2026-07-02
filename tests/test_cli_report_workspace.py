@@ -62,6 +62,22 @@ def test_default_workspace_non_git_falls_back_to_basename(tmp_path: Path) -> Non
     assert resolve_default_workspace(str(d)) == "plain"
 
 
+def test_default_workspace_bare_repo_uses_first_nonbare_worktree(tmp_path: Path) -> None:
+    # A worktree attached to a BARE repo: `git worktree list` lists the bare git
+    # dir first (marked `bare`), which is not a real checkout. The key must be the
+    # actual worktree basename ("work"), not the bare repo name ("origin.git").
+    src = tmp_path / "src"
+    src.mkdir()
+    _git(src, "init", "--initial-branch=main")
+    (src / "README.md").write_text("x")
+    _git(src, "add", "-A")
+    _git(src, "commit", "-m", "init")
+    _git(tmp_path, "clone", "--bare", "src", "origin.git")
+    work = tmp_path / "work"
+    _git(tmp_path / "origin.git", "worktree", "add", str(work), "main")
+    assert resolve_default_workspace(str(work)) == "work"
+
+
 @contextmanager
 def _stub_audit(consult_ts: float, target_path: str) -> Iterator[str]:
     payload = json.dumps({

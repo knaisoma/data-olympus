@@ -40,15 +40,23 @@ def resolve_default_workspace(start: str | None = None) -> str:
     except OSError:
         return base.name
     if out.returncode == 0:
-        for line in out.stdout.splitlines():
-            # The FIRST `worktree` entry is always the main worktree, regardless
-            # of which linked worktree we run from. This is correct even for
-            # separate-git-dir layouts where the git dir is not `<worktree>/.git`.
+        # Return the first NON-bare worktree record. `git worktree list` reports
+        # the main worktree first, but for a bare repo the first record is the
+        # bare git dir (marked `bare`), which is not a real worktree; skipping it
+        # yields the first actual checkout. Correct for separate-git-dir layouts
+        # too, where the git dir is not `<worktree>/.git`.
+        path: str | None = None
+        is_bare = False
+        for line in [*out.stdout.splitlines(), ""]:  # trailing "" flushes last record
             if line.startswith("worktree "):
-                main_wt = line[len("worktree "):].strip()
-                if main_wt:
-                    return Path(main_wt).name
-                break
+                path = line[len("worktree "):].strip()
+                is_bare = False
+            elif line == "bare":
+                is_bare = True
+            elif line == "":
+                if path and not is_bare:
+                    return Path(path).name
+                path, is_bare = None, False
     return base.name
 
 

@@ -162,7 +162,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   workspace differently (the hook from the detector or raw cwd, the report from
   `Path.cwd().name`), so a single `kb_consult` could not clear both gates from a
   linked git worktree. Both now resolve to the main worktree's basename (the first
-  entry of `git worktree list`, correct for separate-git-dir layouts): `report`'s
+  non-bare entry of `git worktree list`, correct for separate-git-dir and
+  bare-repo layouts): `report`'s
   default `--workspace`, and the hook's `resolve_workspace`, which now tries git
   first so it never disagrees with the report even when `KB_WORKSPACES_ROOT`
   resolves the linked worktree. A new `kb-enforce-hook resolve-workspace [dir]`
