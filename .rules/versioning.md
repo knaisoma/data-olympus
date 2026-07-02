@@ -7,21 +7,29 @@ Governing standard: STD-U-810
 
 ## Bump mapping (pre-1.0)
 
-data-olympus is pre-1.0. Conventional Commit types on commits since the last tag
-drive the bump:
+data-olympus is pre-1.0. STD-U-810 §3.1.1 lets a pre-1.0 project adopt a
+features-as-minor mapping instead of the squashed default, provided the choice is
+documented in the project's local rules. data-olympus adopts it: a `feat:` drives
+a MINOR bump, so shipped features are visible in the version number. Conventional
+Commit types on commits since the last tag drive the bump:
 
-- `feat!:`, any `type!:`, or a `BREAKING CHANGE:` footer -> minor (breaking, needs migration; stays pre-1.0, e.g. 0.1.x -> 0.2.0)
-- `feat:` -> patch
+- `feat:` -> minor (new functionality; resets patch, e.g. 0.1.x -> 0.2.0)
+- `feat!:`, any `type!:`, or a `BREAKING CHANGE:` footer -> minor (a breaking change pre-1.0 stays pre-1.0; it does NOT force 1.0.0)
 - `fix:` / `perf:` -> patch
 - `chore/docs/ci/build/refactor/test/style` -> no release, EXCEPT floored to patch when a functional path changed
+
+This DEVIATES from the STD-U-810 §3.1.1 default (which maps pre-1.0 `feat:` to a
+patch); the deviation is the documented project choice §3.1.1 requires. Pre-1.0 a
+breaking change is a minor bump, not major, so the project stays in the `0.x`
+series until `v1.0.0` is cut deliberately.
 
 "Functional path" is the exact set `scripts/check_changelog.py` defines: `src/`,
 `bin/`, `deploy/`, and `SPEC.md`. This safety net guarantees source changes are
 never left unreleased even if the commit type is non-user-facing.
 
 The project stays pre-1.0 until `v1.0.0` is cut deliberately. When it reaches
-1.0, `bump_for` in `scripts/compute_release.py` switches breaking -> major and
-`feat:` -> minor, and this rule is updated.
+1.0, `bump_for` in `scripts/compute_release.py` switches breaking -> major
+(`feat:` already maps to minor), and this rule is updated.
 
 ## Engine
 

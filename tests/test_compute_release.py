@@ -29,9 +29,10 @@ def test_classify_non_conventional_returns_none() -> None:
     assert classify("Merge pull request #55 from x", "") == (None, False)
 
 
-def test_feat_bumps_patch_pre_1_0() -> None:
-    bump, changes = bump_for([("feat: x", "")], functional_changed=True)
-    assert bump == "patch"
+def test_feat_bumps_minor_pre_1_0() -> None:
+    # data-olympus adopts the features-as-minor mapping (STD-U-810 §3.1.1 opt-in).
+    bump, changes = bump_for([("feat: x", "")], functional_changed=False)
+    assert bump == "minor"
     assert changes["features"] == ["feat: x"]
 
 
