@@ -48,6 +48,24 @@ def test_breaking_bumps_minor_and_wins() -> None:
     assert changes["breaking"] == ["feat!: c"]
 
 
+def test_breaking_bang_alone_bumps_minor_not_major_pre_1_0() -> None:
+    # Isolated from feat->minor: a breaking change with NO feat commit must still
+    # map to minor (never major) pre-1.0. Guards the breaking branch on its own,
+    # so a regression there cannot hide behind a feature commit that is also minor.
+    bump, changes = bump_for([("refactor!: rework store", "")], functional_changed=False)
+    assert bump == "minor"
+    assert changes["breaking"] == ["refactor!: rework store"]
+
+
+def test_breaking_footer_alone_bumps_minor_not_major_pre_1_0() -> None:
+    bump, changes = bump_for(
+        [("refactor: rework store", "BREAKING CHANGE: migration required")],
+        functional_changed=False,
+    )
+    assert bump == "minor"
+    assert changes["breaking"] == ["refactor: rework store"]
+
+
 def test_chore_only_no_functional_change_is_none() -> None:
     bump, _ = bump_for([("chore: deps", ""), ("ci: bump", "")], functional_changed=False)
     assert bump == "none"
