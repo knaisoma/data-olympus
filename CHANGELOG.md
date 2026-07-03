@@ -78,7 +78,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `example-bundle/index.md` no longer claims to demonstrate "all supported
   concept types" (it has no `memory`, `reference`, or `superseded` example
   documents).
->>>>>>> origin/release/0.3.0
 
 ## [0.2.0] - 2026-07-03
 
