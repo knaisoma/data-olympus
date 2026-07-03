@@ -18,6 +18,11 @@ class HealthResponse(BaseModel):
     db_size_bytes: int
     pending_count: int = 0
     push_queue_size: int = 0
+    # Push-queue entries that hit max_attempts and were frozen for operator
+    # inspection. Frozen entries are skipped by the retry loop, so a nonzero
+    # value means writes are stuck and need manual intervention (see the
+    # operator unfreeze path in docs/serving.md).
+    push_queue_frozen: int = 0
     path_locks_held: int = 0
     last_index_build_status: str = "ok"
     last_index_error: str | None = None

@@ -107,6 +107,90 @@ def test_worktree_add_idempotent_existing_wt_returns_existing(tmp_path) -> None:
     git.worktree_add(str(wt), branch="kb-session/abc")
 
 
+def _seed_repo_with_commit(tmp_path):
+    repo = tmp_path / "main"
+    repo.mkdir()
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=repo, check=True, env=_git_env())
+    (repo / "a.md").write_text("x")
+    subprocess.run(["git", "add", "a.md"], cwd=repo, check=True, env=_git_env())
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, env=_git_env())
+    return repo
+
+
+def test_push_times_out_and_raises_timeout_expired(tmp_path, monkeypatch) -> None:
+    """A hanging origin must not block forever: push passes a timeout to
+    subprocess and TimeoutExpired propagates (drain classifies it retryable)."""
+    git = GitOps(_seed_repo_with_commit(tmp_path))
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(subprocess.TimeoutExpired):
+        git.push("/tmp/whatever", timeout_sec=1)
+    assert captured.get("timeout") == 1
+
+
+def test_delete_branch_is_idempotent_and_removes_branch(tmp_path) -> None:
+    repo = _seed_repo_with_commit(tmp_path)
+    git = GitOps(repo)
+    # Deleting a non-existent branch must not raise.
+    git.delete_branch("kb-session/does-not-exist")
+    # Create a branch, then delete it via the API.
+    subprocess.run(["git", "-C", str(repo), "branch", "kb-session/abc"],
+                   check=True, env=_git_env())
+    assert git._branch_exists("kb-session/abc")
+    git.delete_branch("kb-session/abc")
+    assert not git._branch_exists("kb-session/abc")
+
+
+def test_worktree_add_reuses_existing_branch(tmp_path) -> None:
+    """Regression for the coupled GC bug: if the kb-session branch already
+    exists (residual from a crashed GC), worktree_add must attach to it rather
+    than fail with 'branch already exists'."""
+    repo = _seed_repo_with_commit(tmp_path)
+    git = GitOps(repo)
+    # Pre-create the branch to simulate a leftover.
+    subprocess.run(["git", "-C", str(repo), "branch", "kb-session/abc"],
+                   check=True, env=_git_env())
+    wt = tmp_path / "wt" / "session-abc"
+    # Must not raise despite the pre-existing branch.
+    git.worktree_add(str(wt), branch="kb-session/abc")
+    assert wt.is_dir()
+
+
+def test_list_unpushed_shas_finds_commits_not_on_origin_main(tmp_path) -> None:
+    """A commit reachable from HEAD but not origin/main is listed; empty
+    otherwise. Backs push-queue init-recovery."""
+    # Bare remote + clone so origin/main exists.
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote)],
+                   check=True, env=_git_env())
+    work = tmp_path / "work"
+    subprocess.run(["git", "clone", str(remote), str(work)], check=True, env=_git_env())
+    (work / "a.md").write_text("x")
+    subprocess.run(["git", "-C", str(work), "add", "a.md"], check=True, env=_git_env())
+    subprocess.run(["git", "-C", str(work), "commit", "-m", "init"], check=True, env=_git_env())
+    subprocess.run(["git", "-C", str(work), "push", "origin", "main"], check=True, env=_git_env())
+
+    git = GitOps(work)
+    # After push, HEAD == origin/main => nothing unpushed.
+    subprocess.run(["git", "-C", str(work), "fetch", "origin"], check=True, env=_git_env())
+    assert git.list_unpushed_shas(str(work)) == []
+
+    # New local commit, not pushed => it is unpushed.
+    (work / "b.md").write_text("y")
+    subprocess.run(["git", "-C", str(work), "add", "b.md"], check=True, env=_git_env())
+    subprocess.run(["git", "-C", str(work), "commit", "-m", "orphan"], check=True, env=_git_env())
+    unpushed = git.list_unpushed_shas(str(work))
+    assert len(unpushed) == 1
+    head = subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"],
+                          check=True, capture_output=True, text=True, env=_git_env()).stdout.strip()
+    assert unpushed[0] == head
+
+
 def test_normalize_remote_url_collapses_ssh_https():
     from data_olympus.git_ops import normalize_remote_url
     a = normalize_remote_url("git@github.com:org/repo.git")

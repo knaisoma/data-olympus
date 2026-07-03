@@ -26,6 +26,7 @@ class HealthState:
     db_size_bytes: int
     pending_count: int = 0
     push_queue_size: int = 0
+    push_queue_frozen: int = 0
     last_index_build_status: str = "ok"
     last_index_error: str | None = None
     last_index_error_at: float | None = None
@@ -46,6 +47,7 @@ def snapshot(
     last_git_push_at: float | None = None,
     pending_count: int = 0,
     push_queue_size: int = 0,
+    push_queue_frozen: int = 0,
     last_index_build_status: str = "ok",
     last_index_error: str | None = None,
     last_index_error_at: float | None = None,
@@ -83,6 +85,7 @@ def snapshot(
         db_size_bytes=int(h["db_size_bytes"]) if isinstance(h["db_size_bytes"], int) else 0,
         pending_count=pending_count,
         push_queue_size=push_queue_size,
+        push_queue_frozen=push_queue_frozen,
         last_index_build_status=last_index_build_status,
         last_index_error=last_index_error,
         last_index_error_at=last_index_error_at,

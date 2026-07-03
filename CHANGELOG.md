@@ -12,6 +12,37 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Write-pipeline visibility (issue #72, Wave 0). `kb_health` and `/health` now
+  report the **live** pending-queue and push-queue sizes (previously hardwired to
+  zero because the counters were static attributes that were never updated), plus
+  a new `push_queue_frozen` count so a stuck write path is observable.
+- Startup push recovery. On boot the server scans every per-session worktree and
+  re-enqueues any commit reachable from its HEAD but not from `origin/main`,
+  recovering commits orphaned by a crash between `git commit` and the push-queue
+  enqueue. Already-queued shas are skipped, so recovery cannot double-enqueue.
+- Periodic worktree GC. A background task honors `KB_WORKTREE_IDLE_SEC` to remove
+  idle per-session worktrees (deferring any with unpushed commits) so KB
+  checkouts no longer accumulate one-per-session forever. GC also deletes the
+  session's `kb-session/<safe_id>` branch, so a returning session can create its
+  worktree again instead of hitting a fatal "branch already exists" error.
+
+### Changed
+
+- Frozen push-queue entries (those that hit `max_attempts`) are now **skipped**
+  by the retry loop instead of being retried every interval forever; the freeze
+  is logged once at WARN and surfaced via `push_queue_frozen` in health. See
+  `docs/serving.md` for the operator unfreeze procedure.
+- The push-retry loop now drains the push queue in a thread executor (like the
+  git-pull loop) rather than on the event loop, and `GitOps.push` takes a bounded
+  timeout (default 60s), so a hung git remote can no longer block the loop that
+  answers the readiness probe. A push timeout is classified as a retryable
+  failure.
+
+> Scope note: this wave makes write-path failures **visible** and recovers
+> orphaned commits. It does **not** fix the non-fast-forward publication stall
+> itself (rebase-retry redesign); that is tracked separately as Wave 1.
 ### Fixed
 
 - `scripts/run-local.sh` no longer deletes an arbitrary user-supplied `$1`
