@@ -112,6 +112,35 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "resolve", "auto_commit", "bootstrap", "record_event"]}`. The single
   `KB_AUTH_TOKEN` operator principal is unaffected and still receives all
   capabilities.
+- **Search pipeline hardening (WP2b, epic #75): false-positive reduction,
+  dense-channel fixes, and index/query performance.**
+  - Penalized expansion backfill (finding a). Query expansion (synonym #38 +
+    co-occurrence #40) previously folded derived terms into the single FTS5
+    `MATCH`; bm25 has no positional preference, so a doc matching only a synonym
+    got full idf weight and could outrank a doc matching the user's actual term.
+    `Index.search` now matches the user's own terms in a PRIMARY pass and the
+    expansion terms in a SEPARATE penalized backfill pass whose hits can only
+    rank BELOW the worst primary hit. The "expansion is down-weighted" claim in
+    the `query_expansion` / `cooccurrence` docstrings is now actually true.
+  - Rank-class invariant (finding d). `SearchHit` gained a `rank_class`
+    (`RANK_CLASS_PRIMARY` / `RANK_CLASS_BACKFILL`); the status and hybrid
+    rerankers now sort by `(rank_class, score)`. This makes the documented
+    "backfill hits are never reordered above primaries" invariant genuinely true
+    (the previous score-only "strictly worse" floor could be lifted by an
+    active-status boost or the hybrid re-normalisation).
+  - Co-occurrence defaults hardened (finding b): `min_count` 2->3, `min_pmi`
+    0.0->0.1, plus a corpus-size floor (`KB_COOCCURRENCE_MIN_DOCS`, default 50)
+    that auto-disables the table on small corpora where PMI is noise, and a
+    per-doc unique-token cap (`KB_COOCCURRENCE_MAX_DOC_TOKENS`, default 400) that
+    bounds the O(n^2) pair counting so a multi-thousand-word doc is no longer a
+    build-time memory cliff.
+  - Gated trigram index (finding c): the `fts_trigram` secondary table (a full
+    second tokenized copy of the corpus, ~2-3x index-size / build-time tax) is
+    now built and populated ONLY when the trigram fallback is enabled
+    (`KB_TRIGRAM_MODE=on`), not unconditionally.
+  - Dense-channel intent vocabulary (finding f): the text embedded at build time
+    now includes `applies_when` and `tags` (the curated intent phrases a
+    paraphrase query embeds near), not just title/description/body.
 - **Enforcement gate policy: the gate now clears only on an explicit
   consultation, not on any recent consult (behavioral change).** Previously the
   gate meant "an HTTP call to `/consult` happened recently in this session", so
@@ -142,6 +171,29 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > itself (rebase-retry redesign); that is tracked separately as Wave 1.
 ### Fixed
 
+- Search pipeline hardening (WP2b, epic #75), bug + perf fixes:
+  - `Index.search` could return MORE than `limit` hits when embeddings were
+    configured but no reranker was set (finding h): the dense union widened the
+    pool but truncation lived only inside the reranker branch. Truncation to
+    `limit` is now unconditional.
+  - Vectors are batch-fetched once per build and cached as an in-memory
+    id->vector matrix (finding g). The hybrid reranker previously opened one
+    SQLite connection per candidate hit via `get_vector`, and `dense_candidates`
+    re-read + re-deserialized the whole `doc_vectors` table on every query. The
+    cache is keyed by the db file's (size, mtime) so the atomic build swap
+    invalidates it transparently.
+  - `Index.build` now runs a single `git log --name-only` pass for every file's
+    last-commit time instead of one `git log` subprocess per file, and reads +
+    parses each markdown file exactly once (previously three times: two parses
+    plus a separate content read) (finding i). Per-file `(last_modified, source)`
+    metadata is byte-for-byte identical.
+  - Malformed front matter is no longer silently swallowed (finding j): a doc
+    whose front-matter block is present but is invalid YAML (so its
+    `status`/`supersedes` are dropped, quietly disabling staleness protection)
+    is now logged at WARN per doc, counted, and surfaced via
+    `Index.malformed_frontmatter_count` and the `malformed_frontmatter` field in
+    `health()`. (Wiring this count into the `/health` degraded signal is a
+    tracked follow-up.)
 - OpenCode gate (`data-olympus-gate.ts`): resolves the workspace to the main git
   worktree **basename** (matching the key every other surface records consults
   under) instead of the raw absolute path, which could never match; and passes

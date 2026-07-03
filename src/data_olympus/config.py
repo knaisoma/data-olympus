@@ -57,8 +57,12 @@ class Config:
     # honours them without threading Config through.
     cooccurrence_enabled: bool = True
     cooccurrence_k: int = 5
-    cooccurrence_min_count: int = 2
-    cooccurrence_min_pmi: float = 0.0
+    cooccurrence_min_count: int = 3
+    cooccurrence_min_pmi: float = 0.1
+    # Corpus-size floor below which co-occurrence is auto-disabled, and per-doc
+    # unique-token cap on O(n^2) pair counting (finding (b), WP2b).
+    cooccurrence_min_docs: int = 50
+    cooccurrence_max_doc_tokens: int = 400
     # Trigram fuzzy-match fallback (issue #41). Default OFF so existing search
     # behaviour is unchanged. When on, a primary FTS query returning at or below
     # ``trigram_fallback_threshold`` hits is backfilled from the trigram index so
@@ -206,6 +210,8 @@ def load_config() -> Config:
         cooccurrence_k=int(cooc_params["k"]),
         cooccurrence_min_count=int(cooc_params["min_count"]),
         cooccurrence_min_pmi=float(cooc_params["min_pmi"]),
+        cooccurrence_min_docs=int(cooc_params["min_docs"]),
+        cooccurrence_max_doc_tokens=int(cooc_params["max_doc_tokens"]),
         trigram_fallback_enabled=trigram_enabled,
         trigram_fallback_threshold=trigram_threshold,
         embeddings_enabled=emb_enabled,

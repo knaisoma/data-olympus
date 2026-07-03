@@ -59,7 +59,9 @@ def _fuzzy_kb(kb: Path) -> None:
 
 
 def test_trigram_table_created_at_build(tmp_kb: Path, tmp_index_path: Path) -> None:
-    idx = Index(tmp_index_path)
+    # Finding (c): the trigram table is created ONLY when the fallback is enabled
+    # for this index.
+    idx = Index(tmp_index_path, trigram_fallback=True)
     idx.build(tmp_kb, source_commit="x")
     conn = sqlite3.connect(tmp_index_path)
     try:
@@ -68,7 +70,49 @@ def test_trigram_table_created_at_build(tmp_kb: Path, tmp_index_path: Path) -> N
         ).fetchone()
     finally:
         conn.close()
-    assert row is not None, "build() must create the fts_trigram virtual table"
+    assert row is not None, (
+        "build() with trigram_fallback=True must create the fts_trigram table"
+    )
+
+
+def test_trigram_table_absent_when_fallback_off(
+    tmp_kb: Path, tmp_index_path: Path
+) -> None:
+    """Finding (c): with the fallback OFF the trigram table is NOT built, so a
+    default deployment does not pay the 2-3x index-size / build-time tax."""
+    idx = Index(tmp_index_path)  # default: trigram_fallback=False
+    assert idx.trigram_fallback is False
+    idx.build(tmp_kb, source_commit="x")
+    conn = sqlite3.connect(tmp_index_path)
+    try:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fts_trigram'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is None, (
+        "fts_trigram must NOT exist when the fallback is disabled (finding c)"
+    )
+
+
+def test_trigram_off_build_is_smaller_than_on(
+    tmp_path: Path,
+) -> None:
+    """Finding (c): the trigram-off build is materially smaller than the trigram-on
+    build over the same corpus (the second tokenized copy is the tax we removed)."""
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    _fuzzy_kb(kb)
+    off_path = tmp_path / "off.db"
+    on_path = tmp_path / "on.db"
+    Index(off_path).build(kb, source_commit="x")
+    Index(on_path, trigram_fallback=True).build(kb, source_commit="x")
+    off_size = off_path.stat().st_size
+    on_size = on_path.stat().st_size
+    assert on_size > off_size, (
+        "trigram-on build must be larger than trigram-off "
+        f"(on={on_size} off={off_size}); the removed second index is the tax"
+    )
 
 
 def test_schema_version_at_least_7_with_trigram(
@@ -77,7 +121,8 @@ def test_schema_version_at_least_7_with_trigram(
     # The trigram table (fts_trigram) landed at schema v7. Later features bump
     # the version further (v8 adds doc_vectors), so assert the trigram table is
     # present AND the recorded version is at least 7 rather than pinning to 7.
-    idx = Index(tmp_index_path)
+    # Finding (c): must build with the fallback on for the table to exist.
+    idx = Index(tmp_index_path, trigram_fallback=True)
     idx.build(tmp_kb, source_commit="x")
     conn = sqlite3.connect(tmp_index_path)
     try:
@@ -100,7 +145,7 @@ def test_trigram_table_populated(tmp_path: Path, tmp_index_path: Path) -> None:
     kb = tmp_path / "kb"
     kb.mkdir()
     _fuzzy_kb(kb)
-    idx = Index(tmp_index_path)
+    idx = Index(tmp_index_path, trigram_fallback=True)
     idx.build(kb, source_commit="x")
     conn = sqlite3.connect(tmp_index_path)
     try:
@@ -126,7 +171,7 @@ def test_trigram_table_rebuilt_atomically(
     kb = tmp_path / "kb"
     kb.mkdir()
     _fuzzy_kb(kb)
-    idx = Index(tmp_index_path)
+    idx = Index(tmp_index_path, trigram_fallback=True)
     idx.build(kb, source_commit="first")
 
     old_conn = sqlite3.connect(tmp_index_path)
@@ -177,8 +222,11 @@ def test_typo_query_finds_doc_via_trigram_fallback(
         "primary FTS should not match the misspelling on its own"
     )
 
-    # Fallback ON -> the typo backfills to the intended document.
+    # Fallback ON -> the typo backfills to the intended document. Must rebuild:
+    # the trigram table only exists on a build whose Index had the fallback on
+    # (finding (c)), and the `plain` build above (fallback off) created none.
     fuzzy = Index(tmp_index_path, trigram_fallback=True)
+    fuzzy.build(kb, source_commit="x")
     fuzzy_ids = {h.id for h in fuzzy.search("observabilty", limit=20)}
     assert "STD-OBSERVABILITY" in fuzzy_ids, (
         "trigram fallback should reach the intended doc for a one-edit typo"
@@ -212,7 +260,10 @@ def test_good_primary_hits_are_not_diluted_by_trigram(
     baseline = [h.id for h in plain.search("kubernetes helm deployment", limit=20)]
     assert baseline and baseline[0] == "STD-KUBERNETES"
 
+    # Rebuild with the fallback on so the trigram table exists (finding (c));
+    # a well-matched query still must not let the fallback dilute the result.
     fuzzy = Index(tmp_index_path, trigram_fallback=True)
+    fuzzy.build(kb, source_commit="x")
     with_fallback = [
         h.id for h in fuzzy.search("kubernetes helm deployment", limit=20)
     ]
