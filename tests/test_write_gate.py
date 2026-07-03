@@ -283,3 +283,20 @@ def test_cas_head_sentinel_stays_advisory(tmp_path) -> None:
     r = check_cas(worktree_path=str(tmp_path), target_path="f.md",
                   base_commit="HEAD", base_blob_sha=None, target_file_hash=None)
     assert r.ok
+
+
+# ---- Codex round-2 Concern 1: unknown base_commit rejected (not conflated) ----
+
+
+def test_cas_unknown_base_commit_rejected(tmp_path) -> None:
+    """A pinned base_commit that does not resolve to a commit is not an enforceable
+    base and is rejected, instead of passing via the "" == "" absent-file path."""
+    import subprocess as sp
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    sp.run(["git", "init", "--initial-branch=main", str(wt)], check=True, env=_env())
+    # target does not exist; caller supplies an unknown commit sha.
+    r = check_cas(worktree_path=str(wt), target_path="new.md",
+                  base_commit="0" * 40, base_blob_sha=None, target_file_hash=None)
+    assert not r.ok
+    assert "unknown" in r.reason.lower()

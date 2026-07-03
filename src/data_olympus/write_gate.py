@@ -159,6 +159,15 @@ def check_cas(
         # The blob the caller read at base_commit must still be the current blob.
         # base_commit is None-checked by _is_enforceable_base_commit.
         assert base_commit is not None
+        if not _commit_exists(worktree_path, base_commit):
+            # An unknown/unreachable pinned commit is not an enforceable base: it
+            # cannot vouch for the current content, so reject rather than silently
+            # passing (a "" base blob would otherwise match a "" absent-target blob
+            # and let a stale write through -- Codex round-2 Concern 1).
+            return CasResult(
+                ok=False,
+                reason=f"base_commit unknown/unreachable: {base_commit}",
+            )
         base_blob = _git_blob_at(worktree_path, base_commit, target_path)
         if base_blob != current_blob:
             return CasResult(
@@ -170,6 +179,16 @@ def check_cas(
                 ),
             )
     return CasResult(ok=True)
+
+
+def _commit_exists(worktree_path: str, commit: str) -> bool:
+    """True if ``commit`` resolves to a commit object in the worktree."""
+    result = subprocess.run(
+        ["git", "-C", worktree_path, "rev-parse", "--verify", "--quiet",
+         f"{commit}^{{commit}}"],
+        check=False, capture_output=True, text=True,
+    )
+    return result.returncode == 0
 
 
 def _git_blob_at(worktree_path: str, commit: str, target_path: str) -> str:

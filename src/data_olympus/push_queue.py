@@ -152,7 +152,7 @@ class PushQueue:
                     continue
                 self._record_retry(entry, entry_path,
                                    f"non_fast_forward: {nff.detail}",
-                                   max_attempts=max_attempts)
+                                   max_attempts=max_attempts, reset_non_ff=False)
                 continue
             except Exception as exc:  # noqa: BLE001 -- intentional: capture any push failure
                 self._record_retry(entry, entry_path, str(exc),
@@ -198,12 +198,22 @@ class PushQueue:
         error: str,
         *,
         max_attempts: int | None = None,
+        reset_non_ff: bool = True,
     ) -> None:
         """Record a retryable push failure: increment attempts, store the error,
-        and (when ``max_attempts`` is given and reached) freeze the entry."""
+        and (when ``max_attempts`` is given and reached) freeze the entry.
+
+        ``reset_non_ff`` (default True) zeroes the ``non_ff_attempts`` counter so
+        it counts CONSECUTIVE non-fast-forward failures only (Codex round-2
+        Concern 2): a network/other failure between two non-FF failures resets the
+        contention streak, so a mixed failure history does not accumulate toward
+        the non-FF demotion threshold. The non-FF branch passes False so its own
+        increment survives."""
         entry["attempts"] = entry.get("attempts", 0) + 1
         entry["last_error"] = error
         entry["last_error_at"] = time.time()
+        if reset_non_ff and entry.get("non_ff_attempts"):
+            entry["non_ff_attempts"] = 0
         if max_attempts is not None and entry["attempts"] >= max_attempts:
             entry["frozen"] = True
             log.warning(

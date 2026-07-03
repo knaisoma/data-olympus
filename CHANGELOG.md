@@ -58,7 +58,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     concurrent resolves of the same id both committed. Resolution now claims the
     entry via `os.rename` before reading (test-and-set); the loser gets
     `already_resolved` / not-found. Orphaned path locks (a crash between lock
-    create and entry write) are reclaimed by the pending GC loop.
+    create and entry write) are reclaimed by the pending GC loop. The gated
+    resolve path holds the claim + path lock across the CAS/validation gates and
+    restores the pending entry if a gate rejects, so an operator's proposal is
+    never consumed without a commit.
+  - **Post-commit enqueue is best-effort.** A push-queue enqueue failure after a
+    successful commit no longer turns a made commit into an exception path: the
+    commit is durable on the session branch and startup `init_recovery`
+    re-enqueues it, so callers (e.g. the bootstrap in-flight guard) are not misled
+    into a non-committed outcome.
   - **Unique memory filenames.** `<date>-<slug>.md` collided for same-day,
     same-slug memories and the second auto-commit silently overwrote the first; a
     short session/body-derived uniquifier is now appended.

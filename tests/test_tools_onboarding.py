@@ -677,3 +677,33 @@ def test_high_conf_bootstrap_rejects_invalid_document(tmp_path, monkeypatch) -> 
     st = subprocess.check_output(
         ["git", "-C", wt.path, "status", "--porcelain"], text=True)
     assert st.strip() == ""
+
+
+def test_bootstrap_rejects_intra_bundle_duplicate_id(tmp_path, monkeypatch) -> None:
+    """Two files in one bootstrap bundle carrying the SAME effective id at
+    different paths are rejected before any commit (Codex round-2 Blocker A):
+    neither is in the index/tree yet, so per-file validation alone would miss it."""
+    for k, v in {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}.items():
+        monkeypatch.setenv(k, v)
+    idx = MagicMock()
+    idx.list_by_prefix.return_value = []
+    idx.list_with_remote_url.return_value = []
+    idx.id_to_path_map.return_value = {}
+    reg, pq, pen, rl, bl = _real_bootstrap_pieces(tmp_path)
+    files = [
+        {"target_path": "projects/p/README.md",
+         "postimage": "---\nid: DUP\ntype: project\nstatus: active\ntier: T3\n---\nA\n"},
+        {"target_path": "projects/p/AGENTS.md",
+         "postimage": "---\nid: DUP\ntype: project\nstatus: active\ntier: T3\n---\nB\n"},
+    ]
+    resp = kb_bootstrap_project_fn(
+        idx=idx, workspace="p", component=None,
+        workspace_remote_url=None, component_remote_url=None,
+        files=files, source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+    )
+    assert resp.status == "rejected_invalid_document"
+    assert pq.size() == 0
+    assert pen.locks_held() == 0

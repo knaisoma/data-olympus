@@ -218,10 +218,11 @@ class PendingQueue:
         self._release_lock(target_path)
         atomic_remove(os.path.join(self._root, f"{pending_id}.claimed"))
 
-    def approve(self, pending_id: str, *, edited_text: str | None = None) -> ResolvedPending:
-        entry = self._claim(pending_id)
+    def _to_resolved(
+        self, pending_id: str, entry: dict[str, Any], edited_text: str | None,
+    ) -> ResolvedPending:
         postimage = edited_text if edited_text is not None else entry["postimage"]
-        resolved = ResolvedPending(
+        return ResolvedPending(
             pending_id=pending_id,
             proposal_type=entry["proposal_type"],
             target_path=entry["target_path"],
@@ -231,12 +232,46 @@ class PendingQueue:
             target_file_hash=entry["target_file_hash"],
             meta=entry["meta"],
         )
-        # Release the lock + remove the (claimed) entry. The CALLER applies the
-        # postimage in the worktree and produces the commit; the CAS/validation
-        # gate may still reject after this, but the entry is already consumed so a
-        # rejected approval does not leave a re-approvable duplicate.
+
+    def approve(self, pending_id: str, *, edited_text: str | None = None) -> ResolvedPending:
+        """Claim + consume in one step (path lock released, entry removed).
+
+        Kept for callers that commit unconditionally. The gated resolve path uses
+        ``claim_for_resolve`` / ``finalize_resolve`` / ``restore_resolve`` instead,
+        so a post-claim gate rejection can put the entry back (Codex round-2
+        Blocker B)."""
+        entry = self._claim(pending_id)
+        resolved = self._to_resolved(pending_id, entry, edited_text)
         self._finish_claim(pending_id, entry["target_path"])
         return resolved
+
+    def claim_for_resolve(
+        self, pending_id: str, *, edited_text: str | None = None,
+    ) -> ResolvedPending:
+        """Atomically claim the entry for a GATED resolve, HOLDING the path lock and
+        the ``.claimed`` sidecar (Codex round-2 Blocker B).
+
+        Unlike ``approve``, this does NOT release the lock or delete the entry: the
+        caller runs the CAS/validation gates and then calls ``finalize_resolve`` on
+        success or ``restore_resolve`` on a gate rejection. The path lock is the one
+        acquired at ``enqueue`` time and stays held throughout, so no other write
+        can grab the path in the window between claim and commit, and the operator's
+        proposal is never lost to a post-claim gate rejection."""
+        entry = self._claim(pending_id)
+        return self._to_resolved(pending_id, entry, edited_text)
+
+    def finalize_resolve(self, pending_id: str, target_path: str) -> None:
+        """Commit succeeded: release the path lock and remove the claimed entry."""
+        self._finish_claim(pending_id, target_path)
+
+    def restore_resolve(self, pending_id: str) -> None:
+        """A gate rejected the claimed entry: rename ``<pid>.claimed`` back to
+        ``<pid>.json`` so the operator can re-resolve it, keeping the path lock
+        held (it was never released). Idempotent: a missing sidecar is a no-op."""
+        claimed = os.path.join(self._root, f"{pending_id}.claimed")
+        live = os.path.join(self._root, f"{pending_id}.json")
+        with contextlib.suppress(FileNotFoundError):
+            os.rename(claimed, live)
 
     def reject(self, pending_id: str) -> None:
         entry = self._claim(pending_id)

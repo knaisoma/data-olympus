@@ -644,3 +644,38 @@ def test_double_resolve_second_reports_already_resolved_or_not_found(
         )
     # Still exactly one commit enqueued.
     assert pq.size() == 1
+
+
+# ---- Codex round-2 Blocker B: resolve gate rejection restores the pending entry ----
+
+
+def test_resolve_stale_base_restores_pending_entry(tmp_path, monkeypatch) -> None:
+    """If CAS rejects during a resolve, the pending entry is put back (not lost)
+    and the path lock stays held, so the operator can re-resolve it."""
+    _set_git_env(monkeypatch)
+    from data_olympus.write_gate import _blob_sha
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    target, _blob = _seed_t1_file(repo)
+    # Park a low-conf edit as pending with a STALE base_blob_sha so the resolve's
+    # CAS gate rejects it.
+    stale = _blob_sha(b"content the proposer wrongly believed\n")
+    m = kb_propose_edit_fn(
+        target_path=target, postimage="new body\n", base_commit="HEAD",
+        base_blob_sha=stale, target_file_hash=None, reason="lowconf",
+        source_session="s", agent_identity="claude", confidence=0.3,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    assert m.status == "pending_confirmation"
+    assert pen.size() == 1
+    resp = kb_resolve_pending_fn(
+        pending_id=m.pending_id, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=pq, pending=pen,
+        source_session="s", agent_identity="operator",
+    )
+    assert resp.status == "rejected_stale_base"
+    assert pq.size() == 0
+    # The entry is restored (not consumed) so it can be re-resolved.
+    assert pen.size() == 1
+    assert pen.locks_held() == 1  # path lock still held by the restored entry

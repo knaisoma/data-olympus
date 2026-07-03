@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import logging
 import os
 import re
 import subprocess
@@ -16,6 +17,7 @@ from data_olympus.auth import (
     normalize_target_path,
     safe_join_under_root,
 )
+from data_olympus.format.frontmatter import parse_frontmatter
 from data_olympus.models import (
     PendingEntry,
     PendingListResponse,
@@ -45,6 +47,8 @@ if TYPE_CHECKING:
 # process). Threading one explicit instance from the server is what makes the
 # guarantee hold across REST + MCP surfaces.
 _DEFAULT_SERIALIZER = WriteSerializer()
+
+_log = logging.getLogger("data_olympus.tools_write")
 
 
 def _slugify(text: str) -> str:
@@ -148,6 +152,7 @@ def _commit_in_worktree(
     target_file_hash: str | None = None,
     push_meta: dict[str, Any] | None = None,
     lock_owner: str | None = None,
+    hold_path_lock: bool = False,
 ) -> str:
     """Serialized write -> git add -> commit -> enqueue critical section.
 
@@ -155,6 +160,12 @@ def _commit_in_worktree(
     honor identical integrity gates (scope items 1, 3, 4, 8). Returns the commit
     sha. Raises :class:`_WriteRejected` (carrying the ProposeResponse) when a gate
     rejects, or :class:`PathLockBusyError` when the per-path advisory lock is held.
+
+    ``hold_path_lock`` (resolve path): when True the caller ALREADY holds the
+    per-path advisory lock (the one acquired at ``enqueue`` time and kept through
+    ``claim_for_resolve``), so this does not re-acquire it. Re-acquiring the same
+    file-based lock would self-deadlock / raise PathLockBusyError (Codex round-2
+    Blocker B). When False (the propose path) the lock is acquired here.
 
     Order of operations, all under the process-wide write lock AND the per-path
     advisory lock (shared with the pending queue):
@@ -173,7 +184,11 @@ def _commit_in_worktree(
     """
     with serializer:
         owner = lock_owner or f"auto-commit:{source_session}"
-        with pending.path_lock(target_path, owner=owner):
+        path_lock_ctx = (
+            contextlib.nullcontext() if hold_path_lock
+            else pending.path_lock(target_path, owner=owner)
+        )
+        with path_lock_ctx:
             wt = worktrees.get_or_create(
                 source_session=source_session, agent_identity=agent_identity
             )
@@ -244,9 +259,33 @@ def _commit_in_worktree(
                 with contextlib.suppress(Exception):
                     reset_worktree(wt.path)
                 raise
-            push_queue.enqueue(
-                sha=sha, worktree_path=wt.path, meta=push_meta or {})
+            # Enqueue is best-effort ONCE the commit is durable: the commit lives on
+            # the session branch, and startup init_recovery re-enqueues any commit
+            # not reachable from origin/main, so a failed enqueue publishes late
+            # rather than being lost (and the caller still sees a committed sha, so
+            # a bootstrap's in-flight guard is not dropped -- Codex round-2
+            # Blocker C).
+            _enqueue_best_effort(push_queue, sha, wt.path, push_meta)
             return sha
+
+
+def _enqueue_best_effort(
+    push_queue: PushQueue, sha: str, worktree_path: str,
+    push_meta: dict[str, Any] | None,
+) -> None:
+    """Enqueue a committed sha for push; on failure log and continue.
+
+    The commit is already durable on the session branch, so a queue-write failure
+    is recoverable by startup init_recovery. Swallowing it here means a caller that
+    treats a returned sha as 'committed' (e.g. the bootstrap in-flight guard) is not
+    misled into a non-committed path by a post-commit enqueue error."""
+    try:
+        push_queue.enqueue(sha=sha, worktree_path=worktree_path,
+                           meta=push_meta or {})
+    except Exception:
+        _log.exception(
+            "push-queue enqueue failed after commit %s; commit is durable and "
+            "will be recovered by startup init_recovery", sha)
 
 
 def commit_multifile_in_worktree(
@@ -296,6 +335,30 @@ def commit_multifile_in_worktree(
             target_tier=target_tier, target_path=target_path_for_msg,
         )
 
+        # Intra-bundle duplicate-id check (Codex round-2 Blocker A): the per-file
+        # validate_postimage below only sees the live index + the committed tree,
+        # neither of which yet contains this bundle. Two bundle files carrying the
+        # SAME effective id at different paths would both pass and then poison the
+        # next index rebuild. Catch it up front by computing each file's effective
+        # id (explicit or path-derived, matching the rebuild) and rejecting any id
+        # claimed by more than one path in the bundle.
+        from data_olympus.write_gate import _effective_doc_id
+        seen_ids: dict[str, str] = {}
+        for f in files:
+            tp, pi = f["target_path"], f["postimage"]
+            try:
+                bfm, _ = parse_frontmatter(pi)
+            except ValueError:
+                bfm = {}
+            eid = _effective_doc_id(bfm, tp)
+            if eid and eid in seen_ids and seen_ids[eid] != tp:
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_invalid_document", target_path=tp,
+                    reason=(f"id '{eid}' used by two files in the same bundle: "
+                            f"'{seen_ids[eid]}' and '{tp}'")))
+            if eid:
+                seen_ids[eid] = tp
+
         # Containment + validation for every file BEFORE any write.
         for f in files:
             tp, pi = f["target_path"], f["postimage"]
@@ -328,8 +391,7 @@ def commit_multifile_in_worktree(
             with contextlib.suppress(Exception):
                 reset_worktree(wt.path)
             raise
-        push_queue.enqueue(
-            sha=sha, worktree_path=wt.path, meta=push_meta or {})
+        _enqueue_best_effort(push_queue, sha, wt.path, push_meta)
         return sha
 
 
@@ -687,9 +749,13 @@ def kb_resolve_pending_fn(
                     **{**audit_base, "status": "rejected_edited_text_too_large"})
         return ResolvePendingResponse(status="rejected_edited_text_too_large")
 
-    # Atomic claim: exactly one concurrent resolve of this id proceeds (item 5).
+    # Atomic claim that HOLDS the path lock + the claimed entry through the gates
+    # (Codex round-2 Blocker B): a post-claim CAS/validation rejection puts the
+    # entry back (restore_resolve) instead of losing the operator's proposal, and
+    # no other write can grab the path in the claim->commit window. Exactly one
+    # concurrent resolve of this id proceeds (item 5).
     try:
-        resolved = pending.approve(pending_id, edited_text=edited_text)
+        resolved = pending.claim_for_resolve(pending_id, edited_text=edited_text)
     except PendingAlreadyResolvedError:
         _emit_audit(audit_log, **{**audit_base, "status": "already_resolved"})
         return ResolvePendingResponse(status="already_resolved")
@@ -704,6 +770,8 @@ def kb_resolve_pending_fn(
 
     # Serialized commit + CAS (from the pending entry's base markers) + validation
     # + reset-on-late-failure, shared with the auto-commit path (items 1, 3, 4, 8).
+    # hold_path_lock=True: the lock is already held from enqueue via the claim, so
+    # _commit_in_worktree must not re-acquire it (would deadlock / raise busy).
     try:
         sha = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
@@ -721,12 +789,24 @@ def kb_resolve_pending_fn(
             target_file_hash=resolved.target_file_hash,
             push_meta={},
             lock_owner=f"resolve:{pending_id}",
+            hold_path_lock=True,
         )
     except _WriteRejected as rej:
+        # Gate rejected AFTER the claim: put the entry back so the operator can
+        # re-resolve it (the postimage is not lost). The path lock stays held.
+        pending.restore_resolve(pending_id)
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
                                    "reason": resp.reason})
         return ResolvePendingResponse(status=resp.status, reason=resp.reason)
+    except Exception:
+        # A git/enqueue failure after the claim: restore the entry rather than
+        # silently consuming it, so the write is recoverable.
+        with contextlib.suppress(Exception):
+            pending.restore_resolve(pending_id)
+        raise
+    # Commit + enqueue succeeded: now consume the entry and release the lock.
+    pending.finalize_resolve(pending_id, resolved.target_path)
     _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
     return ResolvePendingResponse(status="committed", commit_sha=sha)
 
