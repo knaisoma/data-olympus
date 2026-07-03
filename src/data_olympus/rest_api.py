@@ -83,6 +83,14 @@ def _degraded_response(health: HealthResponse) -> JSONResponse:
     return JSONResponse(body, status_code=503)
 
 
+def _query_bool(raw: str | None) -> bool:
+    """Parse a boolean query-string flag. True for 1/true/yes/on (case-insensitive);
+    everything else (incl. absent/empty) is False, so a missing flag defaults off."""
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _authorize(
     request: Request,
     registry: PrincipalRegistry,
@@ -278,8 +286,11 @@ def register_routes(
             return JSONResponse({"error": "bad_limit"}, status_code=400)
         tier = request.query_params.get("tier") or None
         category = request.query_params.get("category") or None
+        in_force = _query_bool(request.query_params.get("in_force"))
+        abstain = _query_bool(request.query_params.get("abstain"))
         resp = await _offload(
-            kb_search_fn, idx=state.idx, query=q, limit=limit, tier=tier, category=category
+            kb_search_fn, idx=state.idx, query=q, limit=limit, tier=tier,
+            category=category, in_force=in_force, abstain=abstain,
         )
         return JSONResponse(resp.model_dump())
 

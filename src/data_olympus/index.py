@@ -32,6 +32,7 @@ from data_olympus.embeddings import (
     make_hybrid_reranker,
     serialize_vector,
 )
+from data_olympus.format.validate import IN_FORCE_STATUSES
 from data_olympus.markdown_parse import parse_file
 from data_olympus.trigram import (
     DEFAULT_FALLBACK_THRESHOLD as DEFAULT_TRIGRAM_FALLBACK_THRESHOLD,
@@ -129,12 +130,11 @@ DEFAULT_DENSE_MIN_COSINE = 0.5
 # casefolded before lookup), so mixed-case frontmatter (e.g. ``Active``) is not
 # silently treated as neutral. Keep the keys here lowercase.
 _DEFAULT_STATUS_WEIGHTS: dict[str, float] = {
-    # In-force: the guidance that currently applies. Boost. ``approved`` is the
-    # in-force status the target KB uses for accepted decisions, alongside the
-    # spec's ``accepted``; both carry the same boost.
-    "active": -1.0,
-    "accepted": -1.0,
-    "approved": -1.0,
+    # In-force: the guidance that currently applies. Boost. The in-force class
+    # (active/accepted/approved, incl. the target KB's ``approved``) is defined
+    # once in format.validate.IN_FORCE_STATUSES and expanded here so the soft
+    # rerank and the hard ``in_force`` filter share a single source of truth.
+    **{s: -1.0 for s in sorted(IN_FORCE_STATUSES)},
     # Retired or superseded: kept for history, must not outrank its replacement.
     "superseded": 2.0,
     "deprecated": 2.0,
@@ -143,6 +143,12 @@ _DEFAULT_STATUS_WEIGHTS: dict[str, float] = {
     "draft": 1.0,
     "proposed": 1.0,
 }
+
+# Deterministic, sorted materialisation of the in-force class for use as SQL
+# ``IN (...)`` parameters by search(in_force=True) and dense_candidates. Sorted
+# so the generated SQL/params are stable across runs. Derived from the single
+# source (format.validate.IN_FORCE_STATUSES); do not hand-list statuses here.
+_IN_FORCE_STATUS_LIST: tuple[str, ...] = tuple(sorted(IN_FORCE_STATUSES))
 
 # Generic, deployment-neutral default taxonomy. A deployment with a different
 # directory layout supplies its own table at runtime via KB_TAXONOMY_PATH (a
@@ -659,6 +665,7 @@ class Index:
         tier: str | None = None,
         category: str | None = None,
         status: str | None = None,
+        in_force: bool = False,
         doc_type: str | None = None,
         columns: list[str] | None = None,
         column_weights: tuple[float, ...] | None = None,
@@ -677,6 +684,16 @@ class Index:
         matches all. `column_weights` overrides bm25 weights (one per declared
         fts column incl. the UNINDEXED id at index 0); default boosts
         title/applies_when, deprioritizes body.
+
+        `status` filters to a single exact status. `in_force` is a HARD
+        pre-ranking filter restricting results to the in-force status class
+        (format.validate.IN_FORCE_STATUSES: active/accepted/approved), so a
+        superseded/deprecated doc is EXCLUDED before ranking rather than merely
+        soft-downranked by the status reranker. The two compose: passing both a
+        single `status` and `in_force=True` requires the doc match `status` AND
+        be in-force (an empty result if `status` is not itself in-force). The
+        filter is applied to both the FTS candidate pool and the dense
+        (embedding) candidate source so neither leaks an out-of-force doc.
         """
         # Stage 1 (expand-query): term extraction + optional expansion hook.
         terms = query.split()
@@ -702,6 +719,10 @@ class Index:
             if status:
                 where.append("docs.status = ?")
                 params.append(status)
+            if in_force:
+                placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
+                where.append(f"docs.status IN ({placeholders})")
+                params.extend(_IN_FORCE_STATUS_LIST)
             if doc_type:
                 where.append("docs.type = ?")
                 params.append(doc_type)
@@ -784,6 +805,7 @@ class Index:
                 tier=tier,
                 category=category,
                 status=status,
+                in_force=in_force,
                 doc_type=doc_type,
             )
         # Stage 3 (re-rank): optional hook reorders/rescores (default identity),
@@ -801,6 +823,7 @@ class Index:
         tier: str | None,
         category: str | None,
         status: str | None,
+        in_force: bool,
         doc_type: str | None,
     ) -> builtins.list[SearchHit]:
         """Union dense (cosine) candidates into the FTS pool (reviewer concern 1).
@@ -820,6 +843,7 @@ class Index:
             tier=tier,
             category=category,
             status=status,
+            in_force=in_force,
             doc_type=doc_type,
         )
         if not dense:
@@ -994,6 +1018,7 @@ class Index:
         tier: str | None = None,
         category: str | None = None,
         status: str | None = None,
+        in_force: bool = False,
         doc_type: str | None = None,
     ) -> builtins.list[SearchHit]:
         """Return up to ``limit`` docs most similar to ``query`` by cosine (issue #42).
@@ -1029,6 +1054,10 @@ class Index:
         if status:
             where.append("docs.status = ?")
             params.append(status)
+        if in_force:
+            placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
+            where.append(f"docs.status IN ({placeholders})")
+            params.extend(_IN_FORCE_STATUS_LIST)
         if doc_type:
             where.append("docs.type = ?")
             params.append(doc_type)

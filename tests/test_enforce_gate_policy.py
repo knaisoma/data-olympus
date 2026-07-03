@@ -18,7 +18,8 @@ from data_olympus.tools_enforce import kb_consult_fn, kb_gate_check_fn
 
 
 class _FakeIndex:
-    def search(self, query, limit=20, tier=None, category=None, status=None, doc_type=None):  # noqa: ARG002
+    def search(self, query, limit=20, tier=None, category=None, status=None,  # noqa: ARG002
+               in_force=False, doc_type=None, **kwargs):  # noqa: ARG002
         return []
 
     def health(self):

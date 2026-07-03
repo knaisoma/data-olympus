@@ -443,16 +443,31 @@ def build_app(
         tier: str | None = None,
         category: str | None = None,
         status: str | None = None,
+        in_force: bool = False,
         doc_type: str | None = None,
+        abstain: bool = False,
     ) -> dict[str, object]:
         """Full-text search across the KB.
 
         Optional tier/category/status/type filters (status e.g. 'active',
         doc_type e.g. 'decision'). Returns ranked hits with snippets.
+
+        in_force: when true, HARD-filter to the in-force status class
+        (active/accepted/approved) before ranking, EXCLUDING superseded and
+        deprecated docs rather than only soft-downranking them. Composes with an
+        explicit `status` (both must hold). Use this when you want only guidance
+        that currently applies.
+
+        abstain: when true, apply the signal gate. If the query matches no
+        discriminating column (title/tags/applies_when) it is treated as
+        out-of-scope and the search returns NO hits with `abstained: true` and an
+        `abstain_reason`, instead of surfacing a weak keyword match. A query with
+        a real signal retrieves normally. Distinguish `abstained: true` (no
+        governing rule) from an ordinary empty result (`abstained: false`).
         """
         resp = kb_search_fn(
             idx=state.idx, query=query, limit=limit, tier=tier, category=category,
-            status=status, doc_type=doc_type,
+            status=status, in_force=in_force, doc_type=doc_type, abstain=abstain,
         )
         return resp.model_dump()
 

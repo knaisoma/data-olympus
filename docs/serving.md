@@ -206,6 +206,41 @@ Override the map at deploy time, with no code change:
   Example: `KB_STATUS_WEIGHTS='{"active": -1.0, "approved": -1.0, "superseded":
   2.0, "draft": 1.0}'`.
 
+## `in_force`: hard in-force filter
+
+`kb_search` accepts an `in_force: bool = False` parameter (MCP tool and
+`GET /api/v1/search?in_force=true`). When set, results are HARD-filtered to the
+in-force status class (`active`, `accepted`, `approved`) BEFORE ranking, so a
+`superseded`, `deprecated`, `draft`, or `proposed` doc is excluded entirely
+rather than merely soft-downranked by the status rerank above.
+
+Use it when you want only guidance that currently applies and a demoted-but-
+present retired doc is not acceptable. It differs from the status rerank: the
+rerank always keeps every hit and only reorders; `in_force` drops out-of-force
+hits. The in-force class is defined once (`format.validate.IN_FORCE_STATUSES`)
+and shared by both the rerank boosts and this filter.
+
+`in_force` composes with the single-status `status` filter: passing both
+requires a doc match `status` AND be in-force (so `status=superseded` with
+`in_force=true` yields nothing). The filter also applies to the dense
+(embedding) candidate source, so a hybrid deployment never leaks an out-of-force
+doc through the semantic path.
+
+## `abstain`: signal-gated abstention
+
+`kb_search` accepts an `abstain: bool = False` parameter (MCP tool and
+`GET /api/v1/search?abstain=true`). When set, the query is first run restricted
+to the discriminating columns (`title`, `tags`, `applies_when`). If it matches
+none of them, the query is treated as out-of-scope and the search returns NO
+hits with `abstained: true` and `abstain_reason: "no_signal_match"`, instead of
+surfacing a weak match on generic body prose. A query with a real signal
+retrieves normally over all columns (recall is preserved).
+
+The response distinguishes a deliberate abstention from an ordinary empty
+result: a normal search that simply finds nothing returns `abstained: false`.
+The gate logic is single-sourced in `data_olympus.search_gate`; the benchmark
+ablation imports it rather than reimplementing it.
+
 ## Taxonomy and writable paths
 
 The server maps each document's path to a `(tier, category)` pair. The built-in

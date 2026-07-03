@@ -14,6 +14,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Deployable `in_force` and `abstain` modes on `kb_search` (issue #68, epic #75).
+  `kb_search` (MCP tool and `GET /api/v1/search`) gains two parameters:
+  - `in_force: bool` HARD-filters results to the in-force status class
+    (`active`/`accepted`/`approved`) before ranking, excluding
+    superseded/deprecated docs entirely rather than soft-downranking them. The
+    class is defined once in `format.validate.IN_FORCE_STATUSES` and shared by
+    the status reranker and this filter; `Index.search` gained an `in_force`
+    parameter (the single-status `status` filter is unchanged and composes with
+    it). The filter also applies to the dense (embedding) candidate source.
+  - `abstain: bool` applies a signal gate: a query that matches no
+    discriminating column (title/tags/applies_when) returns no hits with
+    `abstained: true` and `abstain_reason: "no_signal_match"` (distinct from an
+    ordinary empty result). The gate logic is single-sourced in
+    `data_olympus.search_gate`; the benchmark ablation now imports it.
+  Fixes benchmark bug B1: `benchmarks/methods/data_olympus.py` switched from the
+  `status="active"` filter (which silently dropped `accepted` gold decision docs)
+  to `in_force=True`. Committed benchmark numbers, `report.md`, and
+  `docs/comparison.md` are intentionally NOT re-cut here (a later package does).
 - Actionable gate deny message: the BLOCKED text (and the `consult_required`
   verdict `reason`) now includes the exact workspace key, the session id (the one
   parameter an agent cannot guess), and a copy-pasteable
