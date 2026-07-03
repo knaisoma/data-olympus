@@ -185,6 +185,10 @@ class ResolvePendingResponse(BaseModel):
     # Machine-readable rejection detail for the CAS / validation gates
     # (rejected_stale_base, rejected_invalid_document) on the resolve path.
     reason: str | None = None
+    # Truthful publish state on a committed resolve: "queued" when the push-queue
+    # entry landed, else "enqueue_failed_recovery_pending" (the commit is durable
+    # but is recovered by in-process/startup recovery, not queued this attempt).
+    push_state: str | None = None
 
 
 class PendingEntry(BaseModel):

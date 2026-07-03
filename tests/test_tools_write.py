@@ -734,3 +734,31 @@ def test_enqueue_recovery_retry_succeeds_reports_queued(tmp_path, monkeypatch) -
     assert resp.status == "committed"
     assert resp.push_state == "queued"
     assert fq.enqueued == [resp.commit_sha]
+
+
+def test_resolve_enqueue_failure_reports_recovery_pending(tmp_path, monkeypatch) -> None:
+    """Codex round-4: a resolve whose post-commit enqueue fails surfaces the
+    truthful push_state on ResolvePendingResponse (not a bare committed), while
+    still consuming the pending entry (the commit is durable)."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    # Park a low-conf memory as pending using the real queue.
+    m = kb_propose_memory_fn(
+        text="note", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.3, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+
+    class FailingPushQueue:
+        def enqueue(self, **_kwargs):
+            raise OSError("state volume full")
+
+    resp = kb_resolve_pending_fn(
+        pending_id=m.pending_id, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=FailingPushQueue(), pending=pen,
+        source_session="s", agent_identity="operator",
+    )
+    assert resp.status == "committed"
+    assert resp.commit_sha
+    assert resp.push_state == "enqueue_failed_recovery_pending"
+    assert pen.size() == 0  # entry consumed (commit exists; recovery republishes)

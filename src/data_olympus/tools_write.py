@@ -798,7 +798,7 @@ def kb_resolve_pending_fn(
     # hold_path_lock=True: the lock is already held from enqueue via the claim, so
     # _commit_in_worktree must not re-acquire it (would deadlock / raise busy).
     try:
-        sha, _push_state = _commit_in_worktree(
+        sha, push_state = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
             source_session=resolved.meta.get("source_session", source_session),
@@ -830,10 +830,16 @@ def kb_resolve_pending_fn(
         with contextlib.suppress(Exception):
             pending.restore_resolve(pending_id)
         raise
-    # Commit + enqueue succeeded: now consume the entry and release the lock.
+    # Commit succeeded: consume the entry and release the lock. The commit is
+    # durable regardless of push_state (which is surfaced truthfully below): even
+    # an enqueue_failed_recovery_pending commit exists on the branch and is
+    # republished by in-process/startup recovery, so re-resolving would duplicate
+    # it -- the entry must be consumed, not restored (Codex round-4).
     pending.finalize_resolve(pending_id, resolved.target_path)
-    _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
-    return ResolvePendingResponse(status="committed", commit_sha=sha)
+    _emit_audit(audit_log, **{**audit_base, "status": "committed",
+                               "commit_sha": sha})
+    return ResolvePendingResponse(status="committed", commit_sha=sha,
+                                  push_state=push_state)
 
 
 def kb_list_pending_fn(*, pending: PendingQueue) -> PendingListResponse:
