@@ -38,6 +38,7 @@ class DataOlympusMethod:
     """Retrieval method using data-olympus Index (selective loading)."""
 
     name = "data-olympus"
+    ranks = True  # FTS bm25 order is a real ranking signal
 
     def __init__(self, idx: Index, limit: int = 5) -> None:
         self._idx = idx

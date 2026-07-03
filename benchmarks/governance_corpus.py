@@ -87,18 +87,112 @@ _GOV_TOPICS: dict[str, tuple[list[str], list[str]]] = {
         ["idempotency key", "deduplication id", "at-most-once", "retry safe"],
         ["duplicate request", "safe to retry", "send twice"],
     ),
+    "rate-limiting": (
+        ["token bucket", "leaky bucket", "429 response", "rate limit header"],
+        ["throttle callers", "cap requests per second", "protect the api"],
+    ),
+    "connection-pooling": (
+        ["pgbouncer", "pool size", "max connections", "connection pool"],
+        ["reuse database connections", "too many db connections", "pool exhaustion"],
+    ),
+    "feature-flags": (
+        ["launchdarkly", "flag toggle", "kill switch", "gradual rollout flag"],
+        ["turn a feature on and off", "dark launch", "runtime toggle"],
+    ),
+    "pagination": (
+        ["cursor pagination", "offset limit", "page token", "keyset pagination"],
+        ["return results in pages", "paginate a large list", "next page link"],
+    ),
+    "caching-strategy": (
+        ["cache-aside", "write-through", "ttl eviction", "cache invalidation"],
+        ["store computed results", "avoid recomputation", "speed up reads"],
+    ),
+    "retry-policy": (
+        ["exponential backoff", "jitter", "max attempts", "retry budget"],
+        ["reattempt failed calls", "handle transient errors", "flaky dependency"],
+    ),
+    "schema-evolution": (
+        ["avro schema", "backward compatible", "schema registry", "field deprecation"],
+        ["change a data contract", "add a field safely", "evolve the payload"],
+    ),
+    "dead-letter-queues": (
+        ["dlq", "poison message", "redrive policy", "max receive count"],
+        ["capture unprocessable messages", "handle failed events", "quarantine bad data"],
+    ),
+    "tracing": (
+        ["opentelemetry", "trace context", "span propagation", "w3c traceparent"],
+        ["follow a request across services", "distributed trace", "correlation id"],
+    ),
+    "config-management": (
+        ["configmap", "env overlay", "hot reload", "config precedence"],
+        ["change settings without redeploy", "environment specific config", "runtime config"],
+    ),
+    "backpressure": (
+        ["bounded queue", "reactive streams", "flow control", "buffer limit"],
+        ["slow down producers", "overwhelmed consumer", "prevent memory blowup"],
+    ),
+    "blue-green-deploys": (
+        ["blue green", "traffic cutover", "environment swap", "instant rollback"],
+        ["zero downtime release", "switch between environments", "safe deploy"],
+    ),
+    "saga-orchestration": (
+        ["saga pattern", "compensating transaction", "orchestrator", "choreography"],
+        ["distributed transaction", "roll back across services", "multi step workflow"],
+    ),
+    "api-versioning": (
+        ["url versioning", "accept header version", "sunset header", "deprecation policy"],
+        ["evolve a public api", "breaking change to endpoint", "support old clients"],
+    ),
+    "audit-logging": (
+        ["audit trail", "tamper evident log", "actor attribution", "immutable log"],
+        ["record sensitive actions", "compliance logging", "track access"],
+    ),
 }
 
 # "Distractor" topic names — no governing doc exists (used for negative queries).
+# A governance tool should ABSTAIN on these; the negative stratum measures the
+# false-positive rate. Grown to >= 30 so the FP-rate estimate has a usable
+# denominator and a bootstrap CI that is not degenerate.
 _DISTRACTOR_TOPICS: list[str] = [
     "microservice-naming",
     "test-naming-conventions",
     "ui-color-palette",
     "sprint-ceremony-schedule",
     "team-offsite-planning",
+    "desk-seating-plan",
+    "coffee-machine-rota",
+    "slack-emoji-etiquette",
+    "meeting-room-booking",
+    "parking-allocation",
+    "onboarding-buddy-pairing",
+    "lunch-vendor-rotation",
+    "conference-travel-budget",
+    "swag-order-process",
+    "birthday-celebration-policy",
+    "standup-time-preference",
+    "keyboard-brand-preference",
+    "monitor-arm-selection",
+    "office-plant-care",
+    "whiteboard-marker-restocking",
+    "friday-demo-signup",
+    "book-club-selection",
+    "hackathon-team-formation",
+    "mentorship-matching",
+    "internal-newsletter-cadence",
+    "wiki-gardening-schedule",
+    "photo-wall-curation",
+    "team-mascot-naming",
+    "retro-format-choice",
+    "pto-calendar-color",
+    "chair-ergonomics-survey",
 ]
 
-_SUPERSEDE_FRACTION = 0.15
+# Fraction of governance topics that get a superseded predecessor. Realised as
+# ``(topic_idx + seed) % 3 == 0`` below, which yields >= 10 supersession pairs at
+# 30 topics (grown from the earlier %6 that produced only ~3-5). This keeps the
+# supersession stratum large enough for a non-degenerate CI.
+_SUPERSEDE_FRACTION = 0.33
+_SUPERSEDE_MODULUS = 3
 
 _TIERS = ["T1", "T2", "T3", "T4"]
 _TYPES = ["standard", "decision", "workflow", "reference"]
@@ -266,7 +360,7 @@ def generate_governance_corpus(
 
         # Deterministic supersession pairs by position (seed shifts the phase),
         # so a fixed fraction of topics always have a superseded predecessor.
-        make_pair = ((topic_idx + seed) % 6 == 0)
+        make_pair = ((topic_idx + seed) % _SUPERSEDE_MODULUS == 0)
 
         if make_pair:
             old_id = f"GOV-OLD-{topic_key}".upper().replace("-", "_")

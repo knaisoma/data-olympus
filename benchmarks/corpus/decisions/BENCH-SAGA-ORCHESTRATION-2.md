@@ -6,9 +6,10 @@ tier: meta
 title: saga-orchestration-2
 ---
 
-# saga-orchestration-2 (current)
+# saga-orchestration-2
 
-This concept defines the current guidance for saga-orchestration-2. When working with saga-orchestration-2, follow the current rules below. The saga-orchestration-2 approach affects reliability and developer ergonomics.
+This concept defines the governance for saga-orchestration-2. When working with saga-orchestration-2, follow the rules below. The saga-orchestration-2 approach affects maintainability, latency, durability, resilience.
 
 - Prefer the documented saga-orchestration-2 pattern.
 - Record exceptions to the saga-orchestration-2 rule.
+- Weigh the maintainability and resilience implications.

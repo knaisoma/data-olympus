@@ -1,0 +1,10 @@
+{
+  "provenance": "lexical stack (FTS + synonym + co-occurrence expansion), embeddings OFF; committed example-bundle corpus; queries are hand-authored paraphrases that avoid each doc's distinctive title terms",
+  "corpus": "example-bundle",
+  "docs_indexed": 18,
+  "labeled_queries": 9,
+  "k": 5,
+  "recall@5": 0.7778,
+  "recall@10": 0.8889,
+  "mrr@5": 0.7778
+}

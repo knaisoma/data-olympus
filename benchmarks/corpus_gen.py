@@ -3,6 +3,22 @@
 Honesty: this corpus is SYNTHETIC, generated, and does not represent any real
 KB. It exists to exercise scale, supersession chains, and type/status diversity
 under controlled, reproducible conditions.
+
+De-leaking (0.3.0): the earlier generator wrote the lifecycle words a query
+searches for straight into the doc it was supposed to retrieve. Stale docs said
+"previous", current docs said "current", and titles carried "(old)"/"(current)"
+qualifiers — the exact words the ``status``/``graph`` queries used ("current
+rule for X", "what replaced the previous X guidance"). A keyword method could
+then win those categories by echoing a string rather than by understanding
+lifecycle. The lifecycle signal now lives ONLY in the ``status`` frontmatter and
+the ``supersedes``/``superseded_by`` chain (which is where a real KB carries
+it); the body prose is lifecycle-neutral and shared across the old/new pair,
+plus every doc mixes in a pool of shared "distractor" vocabulary so a query term
+is not a near-unique fingerprint of its gold doc. Remaining known leak: the
+``exact`` query still echoes the topic word, which also appears in the title and
+body. That is intentional and documented in ``benchmarks/README.md`` — ``exact``
+is meant to be the literal-term category; it is not claimed to measure anything
+harder than keyword lookup.
 """
 from __future__ import annotations
 
@@ -23,6 +39,19 @@ TOPICS = [
     "blue-green-deploys", "dead-letter-queues", "saga-orchestration",
 ]
 
+# Shared "distractor" vocabulary sprinkled into every body. These are common
+# engineering words that appear across many docs, so a body is not a near-unique
+# bag of its own topic terms; a keyword method must actually rank on the topic
+# signal rather than trivially isolating one document. Deterministically sampled
+# per doc from the seeded RNG.
+_SHARED_VOCAB = [
+    "reliability", "latency", "throughput", "consistency", "observability",
+    "resilience", "scalability", "maintainability", "operability", "durability",
+    "rollback", "deployment", "configuration", "monitoring", "alerting",
+    "dependency", "contract", "boundary", "invariant", "guardrail",
+    "review", "rationale", "tradeoff", "constraint", "convention",
+]
+
 # (tier, type) assignments cycle so the corpus spans all tiers and types.
 _TIERS = ["T1", "T2", "T3", "T4", "meta"]
 _TYPES = ["standard", "decision", "workflow", "project", "reference", "memory"]
@@ -37,14 +66,25 @@ _DIR_FOR_TIER = {
 _SUPERSEDE_FRACTION = 0.15
 
 
-def _body(topic: str, qualifier: str) -> str:
+def _body(topic: str, distractors: list[str]) -> str:
+    """Lifecycle-neutral body for a topic.
+
+    Contains the topic word (so the ``exact`` category still works) plus shared
+    distractor vocabulary, but deliberately NO lifecycle words ("previous",
+    "current", "replaced", "old", "new"). The old-vs-new distinction is carried
+    entirely by ``status`` frontmatter and the supersedes chain, so lifecycle
+    queries cannot be answered by string-echo of a qualifier written into the
+    body. The prose is identical for the old and new doc of a supersession pair.
+    """
+    d = ", ".join(distractors)
     return (
-        f"# {topic} ({qualifier})\n\n"
-        f"This concept defines the {qualifier} guidance for {topic}. "
-        f"When working with {topic}, follow the {qualifier} rules below. "
-        f"The {topic} approach affects reliability and developer ergonomics.\n\n"
+        f"# {topic}\n\n"
+        f"This concept defines the governance for {topic}. "
+        f"When working with {topic}, follow the rules below. "
+        f"The {topic} approach affects {d}.\n\n"
         f"- Prefer the documented {topic} pattern.\n"
         f"- Record exceptions to the {topic} rule.\n"
+        f"- Weigh the {distractors[0]} and {distractors[-1]} implications.\n"
     )
 
 
@@ -86,18 +126,25 @@ def generate_corpus(dest: Path, *, n: int = 250, seed: int = 0) -> CorpusManifes
         directory = _DIR_FOR_TIER[tier]
         make_pair = rng.random() < _SUPERSEDE_FRACTION and count + 1 < n
 
+        # Deterministically pick shared distractor vocab for this topic. The old
+        # and new doc of a pair share the SAME body (including distractors), so
+        # the only differences between them are id, status, title suffix, and the
+        # supersedes/superseded_by chain — never the searchable prose.
+        distractors = rng.sample(_SHARED_VOCAB, k=4)
+        body = _body(topic_key, distractors)
+
         if make_pair:
             old_id = f"BENCH-OLD-{topic_key}".upper()
             new_id = f"BENCH-NEW-{topic_key}".upper()
             old = Concept(
                 id=old_id, path=f"{directory}/{old_id}.md", tier=tier, type=ctype,
-                status="superseded", title=f"{topic_key} (old)", topic=topic_key,
-                body=_body(topic_key, "previous"),
+                status="superseded", title=f"{topic_key}", topic=topic_key,
+                body=body,
             )
             new = Concept(
                 id=new_id, path=f"{directory}/{new_id}.md", tier=tier, type=ctype,
-                status="active", title=f"{topic_key} (current)", topic=topic_key,
-                body=_body(topic_key, "current"),
+                status="active", title=f"{topic_key}", topic=topic_key,
+                body=body,
             )
             concepts.extend([old, new])
             topics.append(TopicRecord(topic_key, current_id=new_id, current_type=ctype,
@@ -109,7 +156,7 @@ def generate_corpus(dest: Path, *, n: int = 250, seed: int = 0) -> CorpusManifes
             concepts.append(Concept(
                 id=cid, path=f"{directory}/{cid}.md", tier=tier, type=ctype,
                 status=status, title=f"{topic_key}", topic=topic_key,
-                body=_body(topic_key, "current"),
+                body=body,
             ))
             topics.append(TopicRecord(topic_key, current_id=cid, current_type=ctype,
                                       stale_id=None))

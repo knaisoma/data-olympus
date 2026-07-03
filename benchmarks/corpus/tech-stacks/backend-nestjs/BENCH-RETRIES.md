@@ -6,9 +6,10 @@ tier: T2
 title: retries
 ---
 
-# retries (current)
+# retries
 
-This concept defines the current guidance for retries. When working with retries, follow the current rules below. The retries approach affects reliability and developer ergonomics.
+This concept defines the governance for retries. When working with retries, follow the rules below. The retries approach affects dependency, configuration, durability, deployment.
 
 - Prefer the documented retries pattern.
 - Record exceptions to the retries rule.
+- Weigh the dependency and deployment implications.

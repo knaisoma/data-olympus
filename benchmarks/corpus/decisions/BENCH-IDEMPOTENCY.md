@@ -6,9 +6,10 @@ tier: meta
 title: idempotency
 ---
 
-# idempotency (current)
+# idempotency
 
-This concept defines the current guidance for idempotency. When working with idempotency, follow the current rules below. The idempotency approach affects reliability and developer ergonomics.
+This concept defines the governance for idempotency. When working with idempotency, follow the rules below. The idempotency approach affects guardrail, observability, durability, consistency.
 
 - Prefer the documented idempotency pattern.
 - Record exceptions to the idempotency rule.
+- Weigh the guardrail and consistency implications.

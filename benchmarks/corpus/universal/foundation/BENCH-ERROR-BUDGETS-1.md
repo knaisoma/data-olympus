@@ -6,9 +6,10 @@ tier: T1
 title: error-budgets-1
 ---
 
-# error-budgets-1 (current)
+# error-budgets-1
 
-This concept defines the current guidance for error-budgets-1. When working with error-budgets-1, follow the current rules below. The error-budgets-1 approach affects reliability and developer ergonomics.
+This concept defines the governance for error-budgets-1. When working with error-budgets-1, follow the rules below. The error-budgets-1 approach affects latency, boundary, operability, observability.
 
 - Prefer the documented error-budgets-1 pattern.
 - Record exceptions to the error-budgets-1 rule.
+- Weigh the latency and observability implications.

@@ -37,15 +37,27 @@
 - text: rate limiting
   category: exact
   gold_ids:
-  - BENCH-RATE-LIMITING
-  current_id: BENCH-RATE-LIMITING
-  stale_id: null
+  - BENCH-NEW-RATE-LIMITING
+  current_id: BENCH-NEW-RATE-LIMITING
+  stale_id: BENCH-OLD-RATE-LIMITING
 - text: throttling requests to protect downstream capacity
   category: semantic
   gold_ids:
-  - BENCH-RATE-LIMITING
-  current_id: BENCH-RATE-LIMITING
-  stale_id: null
+  - BENCH-NEW-RATE-LIMITING
+  current_id: BENCH-NEW-RATE-LIMITING
+  stale_id: BENCH-OLD-RATE-LIMITING
+- text: current rule for rate limiting
+  category: status
+  gold_ids:
+  - BENCH-NEW-RATE-LIMITING
+  current_id: BENCH-NEW-RATE-LIMITING
+  stale_id: BENCH-OLD-RATE-LIMITING
+- text: what replaced the previous rate limiting guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-RATE-LIMITING
+  current_id: BENCH-NEW-RATE-LIMITING
+  stale_id: BENCH-OLD-RATE-LIMITING
 - text: idempotency
   category: exact
   gold_ids:
@@ -73,15 +85,27 @@
 - text: tracing
   category: exact
   gold_ids:
-  - BENCH-TRACING
-  current_id: BENCH-TRACING
-  stale_id: null
+  - BENCH-NEW-TRACING
+  current_id: BENCH-NEW-TRACING
+  stale_id: BENCH-OLD-TRACING
 - text: propagating correlation context across service boundaries
   category: semantic
   gold_ids:
-  - BENCH-TRACING
-  current_id: BENCH-TRACING
-  stale_id: null
+  - BENCH-NEW-TRACING
+  current_id: BENCH-NEW-TRACING
+  stale_id: BENCH-OLD-TRACING
+- text: current rule for tracing
+  category: status
+  gold_ids:
+  - BENCH-NEW-TRACING
+  current_id: BENCH-NEW-TRACING
+  stale_id: BENCH-OLD-TRACING
+- text: what replaced the previous tracing guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-TRACING
+  current_id: BENCH-NEW-TRACING
+  stale_id: BENCH-OLD-TRACING
 - text: secrets handling
   category: exact
   gold_ids:
@@ -301,27 +325,15 @@
 - text: caching 1
   category: exact
   gold_ids:
-  - BENCH-NEW-CACHING-1
-  current_id: BENCH-NEW-CACHING-1
-  stale_id: BENCH-OLD-CACHING-1
+  - BENCH-CACHING-1
+  current_id: BENCH-CACHING-1
+  stale_id: null
 - text: storing computed results to avoid recomputation
   category: semantic
   gold_ids:
-  - BENCH-NEW-CACHING-1
-  current_id: BENCH-NEW-CACHING-1
-  stale_id: BENCH-OLD-CACHING-1
-- text: current rule for caching 1
-  category: status
-  gold_ids:
-  - BENCH-NEW-CACHING-1
-  current_id: BENCH-NEW-CACHING-1
-  stale_id: BENCH-OLD-CACHING-1
-- text: what replaced the previous caching 1 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-CACHING-1
-  current_id: BENCH-NEW-CACHING-1
-  stale_id: BENCH-OLD-CACHING-1
+  - BENCH-CACHING-1
+  current_id: BENCH-CACHING-1
+  stale_id: null
 - text: retries 1
   category: exact
   gold_ids:
@@ -457,15 +469,27 @@
 - text: connection pooling 1
   category: exact
   gold_ids:
-  - BENCH-CONNECTION-POOLING-1
-  current_id: BENCH-CONNECTION-POOLING-1
-  stale_id: null
+  - BENCH-NEW-CONNECTION-POOLING-1
+  current_id: BENCH-NEW-CONNECTION-POOLING-1
+  stale_id: BENCH-OLD-CONNECTION-POOLING-1
 - text: reusing persistent connections across requests
   category: semantic
   gold_ids:
-  - BENCH-CONNECTION-POOLING-1
-  current_id: BENCH-CONNECTION-POOLING-1
-  stale_id: null
+  - BENCH-NEW-CONNECTION-POOLING-1
+  current_id: BENCH-NEW-CONNECTION-POOLING-1
+  stale_id: BENCH-OLD-CONNECTION-POOLING-1
+- text: current rule for connection pooling 1
+  category: status
+  gold_ids:
+  - BENCH-NEW-CONNECTION-POOLING-1
+  current_id: BENCH-NEW-CONNECTION-POOLING-1
+  stale_id: BENCH-OLD-CONNECTION-POOLING-1
+- text: what replaced the previous connection pooling 1 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-CONNECTION-POOLING-1
+  current_id: BENCH-NEW-CONNECTION-POOLING-1
+  stale_id: BENCH-OLD-CONNECTION-POOLING-1
 - text: feature flags 1
   category: exact
   gold_ids:
@@ -505,27 +529,15 @@
 - text: schema evolution 1
   category: exact
   gold_ids:
-  - BENCH-NEW-SCHEMA-EVOLUTION-1
-  current_id: BENCH-NEW-SCHEMA-EVOLUTION-1
-  stale_id: BENCH-OLD-SCHEMA-EVOLUTION-1
+  - BENCH-SCHEMA-EVOLUTION-1
+  current_id: BENCH-SCHEMA-EVOLUTION-1
+  stale_id: null
 - text: backward-compatible changes to data contracts
   category: semantic
   gold_ids:
-  - BENCH-NEW-SCHEMA-EVOLUTION-1
-  current_id: BENCH-NEW-SCHEMA-EVOLUTION-1
-  stale_id: BENCH-OLD-SCHEMA-EVOLUTION-1
-- text: current rule for schema evolution 1
-  category: status
-  gold_ids:
-  - BENCH-NEW-SCHEMA-EVOLUTION-1
-  current_id: BENCH-NEW-SCHEMA-EVOLUTION-1
-  stale_id: BENCH-OLD-SCHEMA-EVOLUTION-1
-- text: what replaced the previous schema evolution 1 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-SCHEMA-EVOLUTION-1
-  current_id: BENCH-NEW-SCHEMA-EVOLUTION-1
-  stale_id: BENCH-OLD-SCHEMA-EVOLUTION-1
+  - BENCH-SCHEMA-EVOLUTION-1
+  current_id: BENCH-SCHEMA-EVOLUTION-1
+  stale_id: null
 - text: backpressure 1
   category: exact
   gold_ids:
@@ -625,15 +637,27 @@
 - text: saga orchestration 1
   category: exact
   gold_ids:
-  - BENCH-SAGA-ORCHESTRATION-1
-  current_id: BENCH-SAGA-ORCHESTRATION-1
-  stale_id: null
+  - BENCH-NEW-SAGA-ORCHESTRATION-1
+  current_id: BENCH-NEW-SAGA-ORCHESTRATION-1
+  stale_id: BENCH-OLD-SAGA-ORCHESTRATION-1
 - text: coordinating distributed transactions via compensating steps
   category: semantic
   gold_ids:
-  - BENCH-SAGA-ORCHESTRATION-1
-  current_id: BENCH-SAGA-ORCHESTRATION-1
-  stale_id: null
+  - BENCH-NEW-SAGA-ORCHESTRATION-1
+  current_id: BENCH-NEW-SAGA-ORCHESTRATION-1
+  stale_id: BENCH-OLD-SAGA-ORCHESTRATION-1
+- text: current rule for saga orchestration 1
+  category: status
+  gold_ids:
+  - BENCH-NEW-SAGA-ORCHESTRATION-1
+  current_id: BENCH-NEW-SAGA-ORCHESTRATION-1
+  stale_id: BENCH-OLD-SAGA-ORCHESTRATION-1
+- text: what replaced the previous saga orchestration 1 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-SAGA-ORCHESTRATION-1
+  current_id: BENCH-NEW-SAGA-ORCHESTRATION-1
+  stale_id: BENCH-OLD-SAGA-ORCHESTRATION-1
 - text: caching 2
   category: exact
   gold_ids:
@@ -661,27 +685,15 @@
 - text: pagination 2
   category: exact
   gold_ids:
-  - BENCH-NEW-PAGINATION-2
-  current_id: BENCH-NEW-PAGINATION-2
-  stale_id: BENCH-OLD-PAGINATION-2
+  - BENCH-PAGINATION-2
+  current_id: BENCH-PAGINATION-2
+  stale_id: null
 - text: splitting large result sets across multiple responses
   category: semantic
   gold_ids:
-  - BENCH-NEW-PAGINATION-2
-  current_id: BENCH-NEW-PAGINATION-2
-  stale_id: BENCH-OLD-PAGINATION-2
-- text: current rule for pagination 2
-  category: status
-  gold_ids:
-  - BENCH-NEW-PAGINATION-2
-  current_id: BENCH-NEW-PAGINATION-2
-  stale_id: BENCH-OLD-PAGINATION-2
-- text: what replaced the previous pagination 2 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-PAGINATION-2
-  current_id: BENCH-NEW-PAGINATION-2
-  stale_id: BENCH-OLD-PAGINATION-2
+  - BENCH-PAGINATION-2
+  current_id: BENCH-PAGINATION-2
+  stale_id: null
 - text: rate limiting 2
   category: exact
   gold_ids:
@@ -721,27 +733,15 @@
 - text: tracing 2
   category: exact
   gold_ids:
-  - BENCH-NEW-TRACING-2
-  current_id: BENCH-NEW-TRACING-2
-  stale_id: BENCH-OLD-TRACING-2
+  - BENCH-TRACING-2
+  current_id: BENCH-TRACING-2
+  stale_id: null
 - text: propagating correlation context across service boundaries
   category: semantic
   gold_ids:
-  - BENCH-NEW-TRACING-2
-  current_id: BENCH-NEW-TRACING-2
-  stale_id: BENCH-OLD-TRACING-2
-- text: current rule for tracing 2
-  category: status
-  gold_ids:
-  - BENCH-NEW-TRACING-2
-  current_id: BENCH-NEW-TRACING-2
-  stale_id: BENCH-OLD-TRACING-2
-- text: what replaced the previous tracing 2 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-TRACING-2
-  current_id: BENCH-NEW-TRACING-2
-  stale_id: BENCH-OLD-TRACING-2
+  - BENCH-TRACING-2
+  current_id: BENCH-TRACING-2
+  stale_id: null
 - text: secrets handling 2
   category: exact
   gold_ids:
@@ -769,15 +769,27 @@
 - text: auth tokens 2
   category: exact
   gold_ids:
-  - BENCH-AUTH-TOKENS-2
-  current_id: BENCH-AUTH-TOKENS-2
-  stale_id: null
+  - BENCH-NEW-AUTH-TOKENS-2
+  current_id: BENCH-NEW-AUTH-TOKENS-2
+  stale_id: BENCH-OLD-AUTH-TOKENS-2
 - text: issuing and verifying bearer credentials for identity
   category: semantic
   gold_ids:
-  - BENCH-AUTH-TOKENS-2
-  current_id: BENCH-AUTH-TOKENS-2
-  stale_id: null
+  - BENCH-NEW-AUTH-TOKENS-2
+  current_id: BENCH-NEW-AUTH-TOKENS-2
+  stale_id: BENCH-OLD-AUTH-TOKENS-2
+- text: current rule for auth tokens 2
+  category: status
+  gold_ids:
+  - BENCH-NEW-AUTH-TOKENS-2
+  current_id: BENCH-NEW-AUTH-TOKENS-2
+  stale_id: BENCH-OLD-AUTH-TOKENS-2
+- text: what replaced the previous auth tokens 2 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-AUTH-TOKENS-2
+  current_id: BENCH-NEW-AUTH-TOKENS-2
+  stale_id: BENCH-OLD-AUTH-TOKENS-2
 - text: database migrations 2
   category: exact
   gold_ids:
@@ -805,15 +817,27 @@
 - text: feature flags 2
   category: exact
   gold_ids:
-  - BENCH-FEATURE-FLAGS-2
-  current_id: BENCH-FEATURE-FLAGS-2
-  stale_id: null
+  - BENCH-NEW-FEATURE-FLAGS-2
+  current_id: BENCH-NEW-FEATURE-FLAGS-2
+  stale_id: BENCH-OLD-FEATURE-FLAGS-2
 - text: toggling behavior at runtime without deployment
   category: semantic
   gold_ids:
-  - BENCH-FEATURE-FLAGS-2
-  current_id: BENCH-FEATURE-FLAGS-2
-  stale_id: null
+  - BENCH-NEW-FEATURE-FLAGS-2
+  current_id: BENCH-NEW-FEATURE-FLAGS-2
+  stale_id: BENCH-OLD-FEATURE-FLAGS-2
+- text: current rule for feature flags 2
+  category: status
+  gold_ids:
+  - BENCH-NEW-FEATURE-FLAGS-2
+  current_id: BENCH-NEW-FEATURE-FLAGS-2
+  stale_id: BENCH-OLD-FEATURE-FLAGS-2
+- text: what replaced the previous feature flags 2 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-FEATURE-FLAGS-2
+  current_id: BENCH-NEW-FEATURE-FLAGS-2
+  stale_id: BENCH-OLD-FEATURE-FLAGS-2
 - text: circuit breakers 2
   category: exact
   gold_ids:
@@ -925,15 +949,27 @@
 - text: blue green deploys 2
   category: exact
   gold_ids:
-  - BENCH-BLUE-GREEN-DEPLOYS-2
-  current_id: BENCH-BLUE-GREEN-DEPLOYS-2
-  stale_id: null
+  - BENCH-NEW-BLUE-GREEN-DEPLOYS-2
+  current_id: BENCH-NEW-BLUE-GREEN-DEPLOYS-2
+  stale_id: BENCH-OLD-BLUE-GREEN-DEPLOYS-2
 - text: switching live traffic between two identical environments
   category: semantic
   gold_ids:
-  - BENCH-BLUE-GREEN-DEPLOYS-2
-  current_id: BENCH-BLUE-GREEN-DEPLOYS-2
-  stale_id: null
+  - BENCH-NEW-BLUE-GREEN-DEPLOYS-2
+  current_id: BENCH-NEW-BLUE-GREEN-DEPLOYS-2
+  stale_id: BENCH-OLD-BLUE-GREEN-DEPLOYS-2
+- text: current rule for blue green deploys 2
+  category: status
+  gold_ids:
+  - BENCH-NEW-BLUE-GREEN-DEPLOYS-2
+  current_id: BENCH-NEW-BLUE-GREEN-DEPLOYS-2
+  stale_id: BENCH-OLD-BLUE-GREEN-DEPLOYS-2
+- text: what replaced the previous blue green deploys 2 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-BLUE-GREEN-DEPLOYS-2
+  current_id: BENCH-NEW-BLUE-GREEN-DEPLOYS-2
+  stale_id: BENCH-OLD-BLUE-GREEN-DEPLOYS-2
 - text: dead letter queues 2
   category: exact
   gold_ids:
@@ -961,27 +997,15 @@
 - text: caching 3
   category: exact
   gold_ids:
-  - BENCH-NEW-CACHING-3
-  current_id: BENCH-NEW-CACHING-3
-  stale_id: BENCH-OLD-CACHING-3
+  - BENCH-CACHING-3
+  current_id: BENCH-CACHING-3
+  stale_id: null
 - text: storing computed results to avoid recomputation
   category: semantic
   gold_ids:
-  - BENCH-NEW-CACHING-3
-  current_id: BENCH-NEW-CACHING-3
-  stale_id: BENCH-OLD-CACHING-3
-- text: current rule for caching 3
-  category: status
-  gold_ids:
-  - BENCH-NEW-CACHING-3
-  current_id: BENCH-NEW-CACHING-3
-  stale_id: BENCH-OLD-CACHING-3
-- text: what replaced the previous caching 3 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-CACHING-3
-  current_id: BENCH-NEW-CACHING-3
-  stale_id: BENCH-OLD-CACHING-3
+  - BENCH-CACHING-3
+  current_id: BENCH-CACHING-3
+  stale_id: null
 - text: retries 3
   category: exact
   gold_ids:
@@ -1105,15 +1129,27 @@
 - text: connection pooling 3
   category: exact
   gold_ids:
-  - BENCH-CONNECTION-POOLING-3
-  current_id: BENCH-CONNECTION-POOLING-3
-  stale_id: null
+  - BENCH-NEW-CONNECTION-POOLING-3
+  current_id: BENCH-NEW-CONNECTION-POOLING-3
+  stale_id: BENCH-OLD-CONNECTION-POOLING-3
 - text: reusing persistent connections across requests
   category: semantic
   gold_ids:
-  - BENCH-CONNECTION-POOLING-3
-  current_id: BENCH-CONNECTION-POOLING-3
-  stale_id: null
+  - BENCH-NEW-CONNECTION-POOLING-3
+  current_id: BENCH-NEW-CONNECTION-POOLING-3
+  stale_id: BENCH-OLD-CONNECTION-POOLING-3
+- text: current rule for connection pooling 3
+  category: status
+  gold_ids:
+  - BENCH-NEW-CONNECTION-POOLING-3
+  current_id: BENCH-NEW-CONNECTION-POOLING-3
+  stale_id: BENCH-OLD-CONNECTION-POOLING-3
+- text: what replaced the previous connection pooling 3 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-CONNECTION-POOLING-3
+  current_id: BENCH-NEW-CONNECTION-POOLING-3
+  stale_id: BENCH-OLD-CONNECTION-POOLING-3
 - text: feature flags 3
   category: exact
   gold_ids:
@@ -1153,15 +1189,27 @@
 - text: schema evolution 3
   category: exact
   gold_ids:
-  - BENCH-SCHEMA-EVOLUTION-3
-  current_id: BENCH-SCHEMA-EVOLUTION-3
-  stale_id: null
+  - BENCH-NEW-SCHEMA-EVOLUTION-3
+  current_id: BENCH-NEW-SCHEMA-EVOLUTION-3
+  stale_id: BENCH-OLD-SCHEMA-EVOLUTION-3
 - text: backward-compatible changes to data contracts
   category: semantic
   gold_ids:
-  - BENCH-SCHEMA-EVOLUTION-3
-  current_id: BENCH-SCHEMA-EVOLUTION-3
-  stale_id: null
+  - BENCH-NEW-SCHEMA-EVOLUTION-3
+  current_id: BENCH-NEW-SCHEMA-EVOLUTION-3
+  stale_id: BENCH-OLD-SCHEMA-EVOLUTION-3
+- text: current rule for schema evolution 3
+  category: status
+  gold_ids:
+  - BENCH-NEW-SCHEMA-EVOLUTION-3
+  current_id: BENCH-NEW-SCHEMA-EVOLUTION-3
+  stale_id: BENCH-OLD-SCHEMA-EVOLUTION-3
+- text: what replaced the previous schema evolution 3 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-SCHEMA-EVOLUTION-3
+  current_id: BENCH-NEW-SCHEMA-EVOLUTION-3
+  stale_id: BENCH-OLD-SCHEMA-EVOLUTION-3
 - text: backpressure 3
   category: exact
   gold_ids:
@@ -1213,15 +1261,27 @@
 - text: error budgets 3
   category: exact
   gold_ids:
-  - BENCH-ERROR-BUDGETS-3
-  current_id: BENCH-ERROR-BUDGETS-3
-  stale_id: null
+  - BENCH-NEW-ERROR-BUDGETS-3
+  current_id: BENCH-NEW-ERROR-BUDGETS-3
+  stale_id: BENCH-OLD-ERROR-BUDGETS-3
 - text: quantified tolerance for service unreliability
   category: semantic
   gold_ids:
-  - BENCH-ERROR-BUDGETS-3
-  current_id: BENCH-ERROR-BUDGETS-3
-  stale_id: null
+  - BENCH-NEW-ERROR-BUDGETS-3
+  current_id: BENCH-NEW-ERROR-BUDGETS-3
+  stale_id: BENCH-OLD-ERROR-BUDGETS-3
+- text: current rule for error budgets 3
+  category: status
+  gold_ids:
+  - BENCH-NEW-ERROR-BUDGETS-3
+  current_id: BENCH-NEW-ERROR-BUDGETS-3
+  stale_id: BENCH-OLD-ERROR-BUDGETS-3
+- text: what replaced the previous error budgets 3 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-ERROR-BUDGETS-3
+  current_id: BENCH-NEW-ERROR-BUDGETS-3
+  stale_id: BENCH-OLD-ERROR-BUDGETS-3
 - text: canary rollouts 3
   category: exact
   gold_ids:
@@ -1237,39 +1297,39 @@
 - text: blue green deploys 3
   category: exact
   gold_ids:
-  - BENCH-NEW-BLUE-GREEN-DEPLOYS-3
-  current_id: BENCH-NEW-BLUE-GREEN-DEPLOYS-3
-  stale_id: BENCH-OLD-BLUE-GREEN-DEPLOYS-3
+  - BENCH-BLUE-GREEN-DEPLOYS-3
+  current_id: BENCH-BLUE-GREEN-DEPLOYS-3
+  stale_id: null
 - text: switching live traffic between two identical environments
   category: semantic
   gold_ids:
-  - BENCH-NEW-BLUE-GREEN-DEPLOYS-3
-  current_id: BENCH-NEW-BLUE-GREEN-DEPLOYS-3
-  stale_id: BENCH-OLD-BLUE-GREEN-DEPLOYS-3
-- text: current rule for blue green deploys 3
-  category: status
-  gold_ids:
-  - BENCH-NEW-BLUE-GREEN-DEPLOYS-3
-  current_id: BENCH-NEW-BLUE-GREEN-DEPLOYS-3
-  stale_id: BENCH-OLD-BLUE-GREEN-DEPLOYS-3
-- text: what replaced the previous blue green deploys 3 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-BLUE-GREEN-DEPLOYS-3
-  current_id: BENCH-NEW-BLUE-GREEN-DEPLOYS-3
-  stale_id: BENCH-OLD-BLUE-GREEN-DEPLOYS-3
+  - BENCH-BLUE-GREEN-DEPLOYS-3
+  current_id: BENCH-BLUE-GREEN-DEPLOYS-3
+  stale_id: null
 - text: dead letter queues 3
   category: exact
   gold_ids:
-  - BENCH-DEAD-LETTER-QUEUES-3
-  current_id: BENCH-DEAD-LETTER-QUEUES-3
-  stale_id: null
+  - BENCH-NEW-DEAD-LETTER-QUEUES-3
+  current_id: BENCH-NEW-DEAD-LETTER-QUEUES-3
+  stale_id: BENCH-OLD-DEAD-LETTER-QUEUES-3
 - text: capturing unprocessable messages for later inspection
   category: semantic
   gold_ids:
-  - BENCH-DEAD-LETTER-QUEUES-3
-  current_id: BENCH-DEAD-LETTER-QUEUES-3
-  stale_id: null
+  - BENCH-NEW-DEAD-LETTER-QUEUES-3
+  current_id: BENCH-NEW-DEAD-LETTER-QUEUES-3
+  stale_id: BENCH-OLD-DEAD-LETTER-QUEUES-3
+- text: current rule for dead letter queues 3
+  category: status
+  gold_ids:
+  - BENCH-NEW-DEAD-LETTER-QUEUES-3
+  current_id: BENCH-NEW-DEAD-LETTER-QUEUES-3
+  stale_id: BENCH-OLD-DEAD-LETTER-QUEUES-3
+- text: what replaced the previous dead letter queues 3 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-DEAD-LETTER-QUEUES-3
+  current_id: BENCH-NEW-DEAD-LETTER-QUEUES-3
+  stale_id: BENCH-OLD-DEAD-LETTER-QUEUES-3
 - text: saga orchestration 3
   category: exact
   gold_ids:
@@ -1333,27 +1393,15 @@
 - text: idempotency 4
   category: exact
   gold_ids:
-  - BENCH-NEW-IDEMPOTENCY-4
-  current_id: BENCH-NEW-IDEMPOTENCY-4
-  stale_id: BENCH-OLD-IDEMPOTENCY-4
+  - BENCH-IDEMPOTENCY-4
+  current_id: BENCH-IDEMPOTENCY-4
+  stale_id: null
 - text: ensuring repeated operations produce the same result
   category: semantic
   gold_ids:
-  - BENCH-NEW-IDEMPOTENCY-4
-  current_id: BENCH-NEW-IDEMPOTENCY-4
-  stale_id: BENCH-OLD-IDEMPOTENCY-4
-- text: current rule for idempotency 4
-  category: status
-  gold_ids:
-  - BENCH-NEW-IDEMPOTENCY-4
-  current_id: BENCH-NEW-IDEMPOTENCY-4
-  stale_id: BENCH-OLD-IDEMPOTENCY-4
-- text: what replaced the previous idempotency 4 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-IDEMPOTENCY-4
-  current_id: BENCH-NEW-IDEMPOTENCY-4
-  stale_id: BENCH-OLD-IDEMPOTENCY-4
+  - BENCH-IDEMPOTENCY-4
+  current_id: BENCH-IDEMPOTENCY-4
+  stale_id: null
 - text: logging 4
   category: exact
   gold_ids:
@@ -1429,27 +1477,15 @@
 - text: database migrations 4
   category: exact
   gold_ids:
-  - BENCH-NEW-DATABASE-MIGRATIONS-4
-  current_id: BENCH-NEW-DATABASE-MIGRATIONS-4
-  stale_id: BENCH-OLD-DATABASE-MIGRATIONS-4
+  - BENCH-DATABASE-MIGRATIONS-4
+  current_id: BENCH-DATABASE-MIGRATIONS-4
+  stale_id: null
 - text: versioned schema changes applied incrementally
   category: semantic
   gold_ids:
-  - BENCH-NEW-DATABASE-MIGRATIONS-4
-  current_id: BENCH-NEW-DATABASE-MIGRATIONS-4
-  stale_id: BENCH-OLD-DATABASE-MIGRATIONS-4
-- text: current rule for database migrations 4
-  category: status
-  gold_ids:
-  - BENCH-NEW-DATABASE-MIGRATIONS-4
-  current_id: BENCH-NEW-DATABASE-MIGRATIONS-4
-  stale_id: BENCH-OLD-DATABASE-MIGRATIONS-4
-- text: what replaced the previous database migrations 4 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-DATABASE-MIGRATIONS-4
-  current_id: BENCH-NEW-DATABASE-MIGRATIONS-4
-  stale_id: BENCH-OLD-DATABASE-MIGRATIONS-4
+  - BENCH-DATABASE-MIGRATIONS-4
+  current_id: BENCH-DATABASE-MIGRATIONS-4
+  stale_id: null
 - text: connection pooling 4
   category: exact
   gold_ids:
@@ -1465,27 +1501,15 @@
 - text: feature flags 4
   category: exact
   gold_ids:
-  - BENCH-NEW-FEATURE-FLAGS-4
-  current_id: BENCH-NEW-FEATURE-FLAGS-4
-  stale_id: BENCH-OLD-FEATURE-FLAGS-4
+  - BENCH-FEATURE-FLAGS-4
+  current_id: BENCH-FEATURE-FLAGS-4
+  stale_id: null
 - text: toggling behavior at runtime without deployment
   category: semantic
   gold_ids:
-  - BENCH-NEW-FEATURE-FLAGS-4
-  current_id: BENCH-NEW-FEATURE-FLAGS-4
-  stale_id: BENCH-OLD-FEATURE-FLAGS-4
-- text: current rule for feature flags 4
-  category: status
-  gold_ids:
-  - BENCH-NEW-FEATURE-FLAGS-4
-  current_id: BENCH-NEW-FEATURE-FLAGS-4
-  stale_id: BENCH-OLD-FEATURE-FLAGS-4
-- text: what replaced the previous feature flags 4 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-FEATURE-FLAGS-4
-  current_id: BENCH-NEW-FEATURE-FLAGS-4
-  stale_id: BENCH-OLD-FEATURE-FLAGS-4
+  - BENCH-FEATURE-FLAGS-4
+  current_id: BENCH-FEATURE-FLAGS-4
+  stale_id: null
 - text: circuit breakers 4
   category: exact
   gold_ids:
@@ -1537,27 +1561,15 @@
 - text: graceful shutdown 4
   category: exact
   gold_ids:
-  - BENCH-NEW-GRACEFUL-SHUTDOWN-4
-  current_id: BENCH-NEW-GRACEFUL-SHUTDOWN-4
-  stale_id: BENCH-OLD-GRACEFUL-SHUTDOWN-4
+  - BENCH-GRACEFUL-SHUTDOWN-4
+  current_id: BENCH-GRACEFUL-SHUTDOWN-4
+  stale_id: null
 - text: draining in-flight work before process termination
   category: semantic
   gold_ids:
-  - BENCH-NEW-GRACEFUL-SHUTDOWN-4
-  current_id: BENCH-NEW-GRACEFUL-SHUTDOWN-4
-  stale_id: BENCH-OLD-GRACEFUL-SHUTDOWN-4
-- text: current rule for graceful shutdown 4
-  category: status
-  gold_ids:
-  - BENCH-NEW-GRACEFUL-SHUTDOWN-4
-  current_id: BENCH-NEW-GRACEFUL-SHUTDOWN-4
-  stale_id: BENCH-OLD-GRACEFUL-SHUTDOWN-4
-- text: what replaced the previous graceful shutdown 4 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-GRACEFUL-SHUTDOWN-4
-  current_id: BENCH-NEW-GRACEFUL-SHUTDOWN-4
-  stale_id: BENCH-OLD-GRACEFUL-SHUTDOWN-4
+  - BENCH-GRACEFUL-SHUTDOWN-4
+  current_id: BENCH-GRACEFUL-SHUTDOWN-4
+  stale_id: null
 - text: health checks 4
   category: exact
   gold_ids:
@@ -1585,15 +1597,27 @@
 - text: error budgets 4
   category: exact
   gold_ids:
-  - BENCH-ERROR-BUDGETS-4
-  current_id: BENCH-ERROR-BUDGETS-4
-  stale_id: null
+  - BENCH-NEW-ERROR-BUDGETS-4
+  current_id: BENCH-NEW-ERROR-BUDGETS-4
+  stale_id: BENCH-OLD-ERROR-BUDGETS-4
 - text: quantified tolerance for service unreliability
   category: semantic
   gold_ids:
-  - BENCH-ERROR-BUDGETS-4
-  current_id: BENCH-ERROR-BUDGETS-4
-  stale_id: null
+  - BENCH-NEW-ERROR-BUDGETS-4
+  current_id: BENCH-NEW-ERROR-BUDGETS-4
+  stale_id: BENCH-OLD-ERROR-BUDGETS-4
+- text: current rule for error budgets 4
+  category: status
+  gold_ids:
+  - BENCH-NEW-ERROR-BUDGETS-4
+  current_id: BENCH-NEW-ERROR-BUDGETS-4
+  stale_id: BENCH-OLD-ERROR-BUDGETS-4
+- text: what replaced the previous error budgets 4 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-ERROR-BUDGETS-4
+  current_id: BENCH-NEW-ERROR-BUDGETS-4
+  stale_id: BENCH-OLD-ERROR-BUDGETS-4
 - text: canary rollouts 4
   category: exact
   gold_ids:
@@ -1657,27 +1681,15 @@
 - text: caching 5
   category: exact
   gold_ids:
-  - BENCH-NEW-CACHING-5
-  current_id: BENCH-NEW-CACHING-5
-  stale_id: BENCH-OLD-CACHING-5
+  - BENCH-CACHING-5
+  current_id: BENCH-CACHING-5
+  stale_id: null
 - text: storing computed results to avoid recomputation
   category: semantic
   gold_ids:
-  - BENCH-NEW-CACHING-5
-  current_id: BENCH-NEW-CACHING-5
-  stale_id: BENCH-OLD-CACHING-5
-- text: current rule for caching 5
-  category: status
-  gold_ids:
-  - BENCH-NEW-CACHING-5
-  current_id: BENCH-NEW-CACHING-5
-  stale_id: BENCH-OLD-CACHING-5
-- text: what replaced the previous caching 5 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-CACHING-5
-  current_id: BENCH-NEW-CACHING-5
-  stale_id: BENCH-OLD-CACHING-5
+  - BENCH-CACHING-5
+  current_id: BENCH-CACHING-5
+  stale_id: null
 - text: retries 5
   category: exact
   gold_ids:
@@ -1705,27 +1717,15 @@
 - text: rate limiting 5
   category: exact
   gold_ids:
-  - BENCH-NEW-RATE-LIMITING-5
-  current_id: BENCH-NEW-RATE-LIMITING-5
-  stale_id: BENCH-OLD-RATE-LIMITING-5
+  - BENCH-RATE-LIMITING-5
+  current_id: BENCH-RATE-LIMITING-5
+  stale_id: null
 - text: throttling requests to protect downstream capacity
   category: semantic
   gold_ids:
-  - BENCH-NEW-RATE-LIMITING-5
-  current_id: BENCH-NEW-RATE-LIMITING-5
-  stale_id: BENCH-OLD-RATE-LIMITING-5
-- text: current rule for rate limiting 5
-  category: status
-  gold_ids:
-  - BENCH-NEW-RATE-LIMITING-5
-  current_id: BENCH-NEW-RATE-LIMITING-5
-  stale_id: BENCH-OLD-RATE-LIMITING-5
-- text: what replaced the previous rate limiting 5 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-RATE-LIMITING-5
-  current_id: BENCH-NEW-RATE-LIMITING-5
-  stale_id: BENCH-OLD-RATE-LIMITING-5
+  - BENCH-RATE-LIMITING-5
+  current_id: BENCH-RATE-LIMITING-5
+  stale_id: null
 - text: idempotency 5
   category: exact
   gold_ids:
@@ -1741,87 +1741,99 @@
 - text: logging 5
   category: exact
   gold_ids:
-  - BENCH-LOGGING-5
-  current_id: BENCH-LOGGING-5
-  stale_id: null
+  - BENCH-NEW-LOGGING-5
+  current_id: BENCH-NEW-LOGGING-5
+  stale_id: BENCH-OLD-LOGGING-5
 - text: structured recording of runtime events for observability
   category: semantic
   gold_ids:
-  - BENCH-LOGGING-5
-  current_id: BENCH-LOGGING-5
-  stale_id: null
+  - BENCH-NEW-LOGGING-5
+  current_id: BENCH-NEW-LOGGING-5
+  stale_id: BENCH-OLD-LOGGING-5
+- text: current rule for logging 5
+  category: status
+  gold_ids:
+  - BENCH-NEW-LOGGING-5
+  current_id: BENCH-NEW-LOGGING-5
+  stale_id: BENCH-OLD-LOGGING-5
+- text: what replaced the previous logging 5 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-LOGGING-5
+  current_id: BENCH-NEW-LOGGING-5
+  stale_id: BENCH-OLD-LOGGING-5
 - text: tracing 5
   category: exact
   gold_ids:
-  - BENCH-TRACING-5
-  current_id: BENCH-TRACING-5
-  stale_id: null
+  - BENCH-NEW-TRACING-5
+  current_id: BENCH-NEW-TRACING-5
+  stale_id: BENCH-OLD-TRACING-5
 - text: propagating correlation context across service boundaries
   category: semantic
   gold_ids:
-  - BENCH-TRACING-5
-  current_id: BENCH-TRACING-5
-  stale_id: null
+  - BENCH-NEW-TRACING-5
+  current_id: BENCH-NEW-TRACING-5
+  stale_id: BENCH-OLD-TRACING-5
+- text: current rule for tracing 5
+  category: status
+  gold_ids:
+  - BENCH-NEW-TRACING-5
+  current_id: BENCH-NEW-TRACING-5
+  stale_id: BENCH-OLD-TRACING-5
+- text: what replaced the previous tracing 5 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-TRACING-5
+  current_id: BENCH-NEW-TRACING-5
+  stale_id: BENCH-OLD-TRACING-5
 - text: secrets handling 5
   category: exact
   gold_ids:
-  - BENCH-NEW-SECRETS-HANDLING-5
-  current_id: BENCH-NEW-SECRETS-HANDLING-5
-  stale_id: BENCH-OLD-SECRETS-HANDLING-5
+  - BENCH-SECRETS-HANDLING-5
+  current_id: BENCH-SECRETS-HANDLING-5
+  stale_id: null
 - text: secure management of credentials and sensitive keys
   category: semantic
   gold_ids:
-  - BENCH-NEW-SECRETS-HANDLING-5
-  current_id: BENCH-NEW-SECRETS-HANDLING-5
-  stale_id: BENCH-OLD-SECRETS-HANDLING-5
-- text: current rule for secrets handling 5
-  category: status
-  gold_ids:
-  - BENCH-NEW-SECRETS-HANDLING-5
-  current_id: BENCH-NEW-SECRETS-HANDLING-5
-  stale_id: BENCH-OLD-SECRETS-HANDLING-5
-- text: what replaced the previous secrets handling 5 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-SECRETS-HANDLING-5
-  current_id: BENCH-NEW-SECRETS-HANDLING-5
-  stale_id: BENCH-OLD-SECRETS-HANDLING-5
+  - BENCH-SECRETS-HANDLING-5
+  current_id: BENCH-SECRETS-HANDLING-5
+  stale_id: null
 - text: input validation 5
   category: exact
   gold_ids:
-  - BENCH-INPUT-VALIDATION-5
-  current_id: BENCH-INPUT-VALIDATION-5
-  stale_id: null
+  - BENCH-NEW-INPUT-VALIDATION-5
+  current_id: BENCH-NEW-INPUT-VALIDATION-5
+  stale_id: BENCH-OLD-INPUT-VALIDATION-5
 - text: verifying user-supplied data before processing
   category: semantic
   gold_ids:
-  - BENCH-INPUT-VALIDATION-5
-  current_id: BENCH-INPUT-VALIDATION-5
-  stale_id: null
+  - BENCH-NEW-INPUT-VALIDATION-5
+  current_id: BENCH-NEW-INPUT-VALIDATION-5
+  stale_id: BENCH-OLD-INPUT-VALIDATION-5
+- text: current rule for input validation 5
+  category: status
+  gold_ids:
+  - BENCH-NEW-INPUT-VALIDATION-5
+  current_id: BENCH-NEW-INPUT-VALIDATION-5
+  stale_id: BENCH-OLD-INPUT-VALIDATION-5
+- text: what replaced the previous input validation 5 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-INPUT-VALIDATION-5
+  current_id: BENCH-NEW-INPUT-VALIDATION-5
+  stale_id: BENCH-OLD-INPUT-VALIDATION-5
 - text: auth tokens 5
   category: exact
   gold_ids:
-  - BENCH-NEW-AUTH-TOKENS-5
-  current_id: BENCH-NEW-AUTH-TOKENS-5
-  stale_id: BENCH-OLD-AUTH-TOKENS-5
+  - BENCH-AUTH-TOKENS-5
+  current_id: BENCH-AUTH-TOKENS-5
+  stale_id: null
 - text: issuing and verifying bearer credentials for identity
   category: semantic
   gold_ids:
-  - BENCH-NEW-AUTH-TOKENS-5
-  current_id: BENCH-NEW-AUTH-TOKENS-5
-  stale_id: BENCH-OLD-AUTH-TOKENS-5
-- text: current rule for auth tokens 5
-  category: status
-  gold_ids:
-  - BENCH-NEW-AUTH-TOKENS-5
-  current_id: BENCH-NEW-AUTH-TOKENS-5
-  stale_id: BENCH-OLD-AUTH-TOKENS-5
-- text: what replaced the previous auth tokens 5 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-AUTH-TOKENS-5
-  current_id: BENCH-NEW-AUTH-TOKENS-5
-  stale_id: BENCH-OLD-AUTH-TOKENS-5
+  - BENCH-AUTH-TOKENS-5
+  current_id: BENCH-AUTH-TOKENS-5
+  stale_id: null
 - text: database migrations 5
   category: exact
   gold_ids:
@@ -1897,27 +1909,15 @@
 - text: backpressure 5
   category: exact
   gold_ids:
-  - BENCH-NEW-BACKPRESSURE-5
-  current_id: BENCH-NEW-BACKPRESSURE-5
-  stale_id: BENCH-OLD-BACKPRESSURE-5
+  - BENCH-BACKPRESSURE-5
+  current_id: BENCH-BACKPRESSURE-5
+  stale_id: null
 - text: signaling producers to slow when consumers are overwhelmed
   category: semantic
   gold_ids:
-  - BENCH-NEW-BACKPRESSURE-5
-  current_id: BENCH-NEW-BACKPRESSURE-5
-  stale_id: BENCH-OLD-BACKPRESSURE-5
-- text: current rule for backpressure 5
-  category: status
-  gold_ids:
-  - BENCH-NEW-BACKPRESSURE-5
-  current_id: BENCH-NEW-BACKPRESSURE-5
-  stale_id: BENCH-OLD-BACKPRESSURE-5
-- text: what replaced the previous backpressure 5 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-BACKPRESSURE-5
-  current_id: BENCH-NEW-BACKPRESSURE-5
-  stale_id: BENCH-OLD-BACKPRESSURE-5
+  - BENCH-BACKPRESSURE-5
+  current_id: BENCH-BACKPRESSURE-5
+  stale_id: null
 - text: graceful shutdown 5
   category: exact
   gold_ids:
@@ -2053,27 +2053,15 @@
 - text: pagination 6
   category: exact
   gold_ids:
-  - BENCH-NEW-PAGINATION-6
-  current_id: BENCH-NEW-PAGINATION-6
-  stale_id: BENCH-OLD-PAGINATION-6
+  - BENCH-PAGINATION-6
+  current_id: BENCH-PAGINATION-6
+  stale_id: null
 - text: splitting large result sets across multiple responses
   category: semantic
   gold_ids:
-  - BENCH-NEW-PAGINATION-6
-  current_id: BENCH-NEW-PAGINATION-6
-  stale_id: BENCH-OLD-PAGINATION-6
-- text: current rule for pagination 6
-  category: status
-  gold_ids:
-  - BENCH-NEW-PAGINATION-6
-  current_id: BENCH-NEW-PAGINATION-6
-  stale_id: BENCH-OLD-PAGINATION-6
-- text: what replaced the previous pagination 6 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-PAGINATION-6
-  current_id: BENCH-NEW-PAGINATION-6
-  stale_id: BENCH-OLD-PAGINATION-6
+  - BENCH-PAGINATION-6
+  current_id: BENCH-PAGINATION-6
+  stale_id: null
 - text: rate limiting 6
   category: exact
   gold_ids:
@@ -2137,15 +2125,27 @@
 - text: input validation 6
   category: exact
   gold_ids:
-  - BENCH-INPUT-VALIDATION-6
-  current_id: BENCH-INPUT-VALIDATION-6
-  stale_id: null
+  - BENCH-NEW-INPUT-VALIDATION-6
+  current_id: BENCH-NEW-INPUT-VALIDATION-6
+  stale_id: BENCH-OLD-INPUT-VALIDATION-6
 - text: verifying user-supplied data before processing
   category: semantic
   gold_ids:
-  - BENCH-INPUT-VALIDATION-6
-  current_id: BENCH-INPUT-VALIDATION-6
-  stale_id: null
+  - BENCH-NEW-INPUT-VALIDATION-6
+  current_id: BENCH-NEW-INPUT-VALIDATION-6
+  stale_id: BENCH-OLD-INPUT-VALIDATION-6
+- text: current rule for input validation 6
+  category: status
+  gold_ids:
+  - BENCH-NEW-INPUT-VALIDATION-6
+  current_id: BENCH-NEW-INPUT-VALIDATION-6
+  stale_id: BENCH-OLD-INPUT-VALIDATION-6
+- text: what replaced the previous input validation 6 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-INPUT-VALIDATION-6
+  current_id: BENCH-NEW-INPUT-VALIDATION-6
+  stale_id: BENCH-OLD-INPUT-VALIDATION-6
 - text: auth tokens 6
   category: exact
   gold_ids:
@@ -2161,15 +2161,27 @@
 - text: database migrations 6
   category: exact
   gold_ids:
-  - BENCH-DATABASE-MIGRATIONS-6
-  current_id: BENCH-DATABASE-MIGRATIONS-6
-  stale_id: null
+  - BENCH-NEW-DATABASE-MIGRATIONS-6
+  current_id: BENCH-NEW-DATABASE-MIGRATIONS-6
+  stale_id: BENCH-OLD-DATABASE-MIGRATIONS-6
 - text: versioned schema changes applied incrementally
   category: semantic
   gold_ids:
-  - BENCH-DATABASE-MIGRATIONS-6
-  current_id: BENCH-DATABASE-MIGRATIONS-6
-  stale_id: null
+  - BENCH-NEW-DATABASE-MIGRATIONS-6
+  current_id: BENCH-NEW-DATABASE-MIGRATIONS-6
+  stale_id: BENCH-OLD-DATABASE-MIGRATIONS-6
+- text: current rule for database migrations 6
+  category: status
+  gold_ids:
+  - BENCH-NEW-DATABASE-MIGRATIONS-6
+  current_id: BENCH-NEW-DATABASE-MIGRATIONS-6
+  stale_id: BENCH-OLD-DATABASE-MIGRATIONS-6
+- text: what replaced the previous database migrations 6 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-DATABASE-MIGRATIONS-6
+  current_id: BENCH-NEW-DATABASE-MIGRATIONS-6
+  stale_id: BENCH-OLD-DATABASE-MIGRATIONS-6
 - text: connection pooling 6
   category: exact
   gold_ids:
@@ -2185,27 +2197,51 @@
 - text: feature flags 6
   category: exact
   gold_ids:
-  - BENCH-FEATURE-FLAGS-6
-  current_id: BENCH-FEATURE-FLAGS-6
-  stale_id: null
+  - BENCH-NEW-FEATURE-FLAGS-6
+  current_id: BENCH-NEW-FEATURE-FLAGS-6
+  stale_id: BENCH-OLD-FEATURE-FLAGS-6
 - text: toggling behavior at runtime without deployment
   category: semantic
   gold_ids:
-  - BENCH-FEATURE-FLAGS-6
-  current_id: BENCH-FEATURE-FLAGS-6
-  stale_id: null
+  - BENCH-NEW-FEATURE-FLAGS-6
+  current_id: BENCH-NEW-FEATURE-FLAGS-6
+  stale_id: BENCH-OLD-FEATURE-FLAGS-6
+- text: current rule for feature flags 6
+  category: status
+  gold_ids:
+  - BENCH-NEW-FEATURE-FLAGS-6
+  current_id: BENCH-NEW-FEATURE-FLAGS-6
+  stale_id: BENCH-OLD-FEATURE-FLAGS-6
+- text: what replaced the previous feature flags 6 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-FEATURE-FLAGS-6
+  current_id: BENCH-NEW-FEATURE-FLAGS-6
+  stale_id: BENCH-OLD-FEATURE-FLAGS-6
 - text: circuit breakers 6
   category: exact
   gold_ids:
-  - BENCH-CIRCUIT-BREAKERS-6
-  current_id: BENCH-CIRCUIT-BREAKERS-6
-  stale_id: null
+  - BENCH-NEW-CIRCUIT-BREAKERS-6
+  current_id: BENCH-NEW-CIRCUIT-BREAKERS-6
+  stale_id: BENCH-OLD-CIRCUIT-BREAKERS-6
 - text: halting calls to failing dependencies automatically
   category: semantic
   gold_ids:
-  - BENCH-CIRCUIT-BREAKERS-6
-  current_id: BENCH-CIRCUIT-BREAKERS-6
-  stale_id: null
+  - BENCH-NEW-CIRCUIT-BREAKERS-6
+  current_id: BENCH-NEW-CIRCUIT-BREAKERS-6
+  stale_id: BENCH-OLD-CIRCUIT-BREAKERS-6
+- text: current rule for circuit breakers 6
+  category: status
+  gold_ids:
+  - BENCH-NEW-CIRCUIT-BREAKERS-6
+  current_id: BENCH-NEW-CIRCUIT-BREAKERS-6
+  stale_id: BENCH-OLD-CIRCUIT-BREAKERS-6
+- text: what replaced the previous circuit breakers 6 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-CIRCUIT-BREAKERS-6
+  current_id: BENCH-NEW-CIRCUIT-BREAKERS-6
+  stale_id: BENCH-OLD-CIRCUIT-BREAKERS-6
 - text: message ordering 6
   category: exact
   gold_ids:
@@ -2317,51 +2353,63 @@
 - text: blue green deploys 6
   category: exact
   gold_ids:
-  - BENCH-NEW-BLUE-GREEN-DEPLOYS-6
-  current_id: BENCH-NEW-BLUE-GREEN-DEPLOYS-6
-  stale_id: BENCH-OLD-BLUE-GREEN-DEPLOYS-6
+  - BENCH-BLUE-GREEN-DEPLOYS-6
+  current_id: BENCH-BLUE-GREEN-DEPLOYS-6
+  stale_id: null
 - text: switching live traffic between two identical environments
   category: semantic
   gold_ids:
-  - BENCH-NEW-BLUE-GREEN-DEPLOYS-6
-  current_id: BENCH-NEW-BLUE-GREEN-DEPLOYS-6
-  stale_id: BENCH-OLD-BLUE-GREEN-DEPLOYS-6
-- text: current rule for blue green deploys 6
-  category: status
-  gold_ids:
-  - BENCH-NEW-BLUE-GREEN-DEPLOYS-6
-  current_id: BENCH-NEW-BLUE-GREEN-DEPLOYS-6
-  stale_id: BENCH-OLD-BLUE-GREEN-DEPLOYS-6
-- text: what replaced the previous blue green deploys 6 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-BLUE-GREEN-DEPLOYS-6
-  current_id: BENCH-NEW-BLUE-GREEN-DEPLOYS-6
-  stale_id: BENCH-OLD-BLUE-GREEN-DEPLOYS-6
+  - BENCH-BLUE-GREEN-DEPLOYS-6
+  current_id: BENCH-BLUE-GREEN-DEPLOYS-6
+  stale_id: null
 - text: dead letter queues 6
   category: exact
   gold_ids:
-  - BENCH-DEAD-LETTER-QUEUES-6
-  current_id: BENCH-DEAD-LETTER-QUEUES-6
-  stale_id: null
+  - BENCH-NEW-DEAD-LETTER-QUEUES-6
+  current_id: BENCH-NEW-DEAD-LETTER-QUEUES-6
+  stale_id: BENCH-OLD-DEAD-LETTER-QUEUES-6
 - text: capturing unprocessable messages for later inspection
   category: semantic
   gold_ids:
-  - BENCH-DEAD-LETTER-QUEUES-6
-  current_id: BENCH-DEAD-LETTER-QUEUES-6
-  stale_id: null
+  - BENCH-NEW-DEAD-LETTER-QUEUES-6
+  current_id: BENCH-NEW-DEAD-LETTER-QUEUES-6
+  stale_id: BENCH-OLD-DEAD-LETTER-QUEUES-6
+- text: current rule for dead letter queues 6
+  category: status
+  gold_ids:
+  - BENCH-NEW-DEAD-LETTER-QUEUES-6
+  current_id: BENCH-NEW-DEAD-LETTER-QUEUES-6
+  stale_id: BENCH-OLD-DEAD-LETTER-QUEUES-6
+- text: what replaced the previous dead letter queues 6 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-DEAD-LETTER-QUEUES-6
+  current_id: BENCH-NEW-DEAD-LETTER-QUEUES-6
+  stale_id: BENCH-OLD-DEAD-LETTER-QUEUES-6
 - text: saga orchestration 6
   category: exact
   gold_ids:
-  - BENCH-SAGA-ORCHESTRATION-6
-  current_id: BENCH-SAGA-ORCHESTRATION-6
-  stale_id: null
+  - BENCH-NEW-SAGA-ORCHESTRATION-6
+  current_id: BENCH-NEW-SAGA-ORCHESTRATION-6
+  stale_id: BENCH-OLD-SAGA-ORCHESTRATION-6
 - text: coordinating distributed transactions via compensating steps
   category: semantic
   gold_ids:
-  - BENCH-SAGA-ORCHESTRATION-6
-  current_id: BENCH-SAGA-ORCHESTRATION-6
-  stale_id: null
+  - BENCH-NEW-SAGA-ORCHESTRATION-6
+  current_id: BENCH-NEW-SAGA-ORCHESTRATION-6
+  stale_id: BENCH-OLD-SAGA-ORCHESTRATION-6
+- text: current rule for saga orchestration 6
+  category: status
+  gold_ids:
+  - BENCH-NEW-SAGA-ORCHESTRATION-6
+  current_id: BENCH-NEW-SAGA-ORCHESTRATION-6
+  stale_id: BENCH-OLD-SAGA-ORCHESTRATION-6
+- text: what replaced the previous saga orchestration 6 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-SAGA-ORCHESTRATION-6
+  current_id: BENCH-NEW-SAGA-ORCHESTRATION-6
+  stale_id: BENCH-OLD-SAGA-ORCHESTRATION-6
 - text: caching 7
   category: exact
   gold_ids:
@@ -2377,15 +2425,27 @@
 - text: retries 7
   category: exact
   gold_ids:
-  - BENCH-RETRIES-7
-  current_id: BENCH-RETRIES-7
-  stale_id: null
+  - BENCH-NEW-RETRIES-7
+  current_id: BENCH-NEW-RETRIES-7
+  stale_id: BENCH-OLD-RETRIES-7
 - text: automatically reattempting failed requests
   category: semantic
   gold_ids:
-  - BENCH-RETRIES-7
-  current_id: BENCH-RETRIES-7
-  stale_id: null
+  - BENCH-NEW-RETRIES-7
+  current_id: BENCH-NEW-RETRIES-7
+  stale_id: BENCH-OLD-RETRIES-7
+- text: current rule for retries 7
+  category: status
+  gold_ids:
+  - BENCH-NEW-RETRIES-7
+  current_id: BENCH-NEW-RETRIES-7
+  stale_id: BENCH-OLD-RETRIES-7
+- text: what replaced the previous retries 7 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-RETRIES-7
+  current_id: BENCH-NEW-RETRIES-7
+  stale_id: BENCH-OLD-RETRIES-7
 - text: pagination 7
   category: exact
   gold_ids:
@@ -2485,15 +2545,27 @@
 - text: database migrations 7
   category: exact
   gold_ids:
-  - BENCH-DATABASE-MIGRATIONS-7
-  current_id: BENCH-DATABASE-MIGRATIONS-7
-  stale_id: null
+  - BENCH-NEW-DATABASE-MIGRATIONS-7
+  current_id: BENCH-NEW-DATABASE-MIGRATIONS-7
+  stale_id: BENCH-OLD-DATABASE-MIGRATIONS-7
 - text: versioned schema changes applied incrementally
   category: semantic
   gold_ids:
-  - BENCH-DATABASE-MIGRATIONS-7
-  current_id: BENCH-DATABASE-MIGRATIONS-7
-  stale_id: null
+  - BENCH-NEW-DATABASE-MIGRATIONS-7
+  current_id: BENCH-NEW-DATABASE-MIGRATIONS-7
+  stale_id: BENCH-OLD-DATABASE-MIGRATIONS-7
+- text: current rule for database migrations 7
+  category: status
+  gold_ids:
+  - BENCH-NEW-DATABASE-MIGRATIONS-7
+  current_id: BENCH-NEW-DATABASE-MIGRATIONS-7
+  stale_id: BENCH-OLD-DATABASE-MIGRATIONS-7
+- text: what replaced the previous database migrations 7 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-DATABASE-MIGRATIONS-7
+  current_id: BENCH-NEW-DATABASE-MIGRATIONS-7
+  stale_id: BENCH-OLD-DATABASE-MIGRATIONS-7
 - text: connection pooling 7
   category: exact
   gold_ids:
@@ -2593,15 +2665,27 @@
 - text: health checks 7
   category: exact
   gold_ids:
-  - BENCH-HEALTH-CHECKS-7
-  current_id: BENCH-HEALTH-CHECKS-7
-  stale_id: null
+  - BENCH-NEW-HEALTH-CHECKS-7
+  current_id: BENCH-NEW-HEALTH-CHECKS-7
+  stale_id: BENCH-OLD-HEALTH-CHECKS-7
 - text: exposing readiness and liveness probes for orchestrators
   category: semantic
   gold_ids:
-  - BENCH-HEALTH-CHECKS-7
-  current_id: BENCH-HEALTH-CHECKS-7
-  stale_id: null
+  - BENCH-NEW-HEALTH-CHECKS-7
+  current_id: BENCH-NEW-HEALTH-CHECKS-7
+  stale_id: BENCH-OLD-HEALTH-CHECKS-7
+- text: current rule for health checks 7
+  category: status
+  gold_ids:
+  - BENCH-NEW-HEALTH-CHECKS-7
+  current_id: BENCH-NEW-HEALTH-CHECKS-7
+  stale_id: BENCH-OLD-HEALTH-CHECKS-7
+- text: what replaced the previous health checks 7 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-HEALTH-CHECKS-7
+  current_id: BENCH-NEW-HEALTH-CHECKS-7
+  stale_id: BENCH-OLD-HEALTH-CHECKS-7
 - text: config reloading 7
   category: exact
   gold_ids:
@@ -2653,39 +2737,39 @@
 - text: dead letter queues 7
   category: exact
   gold_ids:
-  - BENCH-DEAD-LETTER-QUEUES-7
-  current_id: BENCH-DEAD-LETTER-QUEUES-7
-  stale_id: null
+  - BENCH-NEW-DEAD-LETTER-QUEUES-7
+  current_id: BENCH-NEW-DEAD-LETTER-QUEUES-7
+  stale_id: BENCH-OLD-DEAD-LETTER-QUEUES-7
 - text: capturing unprocessable messages for later inspection
   category: semantic
   gold_ids:
-  - BENCH-DEAD-LETTER-QUEUES-7
-  current_id: BENCH-DEAD-LETTER-QUEUES-7
-  stale_id: null
+  - BENCH-NEW-DEAD-LETTER-QUEUES-7
+  current_id: BENCH-NEW-DEAD-LETTER-QUEUES-7
+  stale_id: BENCH-OLD-DEAD-LETTER-QUEUES-7
+- text: current rule for dead letter queues 7
+  category: status
+  gold_ids:
+  - BENCH-NEW-DEAD-LETTER-QUEUES-7
+  current_id: BENCH-NEW-DEAD-LETTER-QUEUES-7
+  stale_id: BENCH-OLD-DEAD-LETTER-QUEUES-7
+- text: what replaced the previous dead letter queues 7 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-DEAD-LETTER-QUEUES-7
+  current_id: BENCH-NEW-DEAD-LETTER-QUEUES-7
+  stale_id: BENCH-OLD-DEAD-LETTER-QUEUES-7
 - text: saga orchestration 7
   category: exact
   gold_ids:
-  - BENCH-NEW-SAGA-ORCHESTRATION-7
-  current_id: BENCH-NEW-SAGA-ORCHESTRATION-7
-  stale_id: BENCH-OLD-SAGA-ORCHESTRATION-7
+  - BENCH-SAGA-ORCHESTRATION-7
+  current_id: BENCH-SAGA-ORCHESTRATION-7
+  stale_id: null
 - text: coordinating distributed transactions via compensating steps
   category: semantic
   gold_ids:
-  - BENCH-NEW-SAGA-ORCHESTRATION-7
-  current_id: BENCH-NEW-SAGA-ORCHESTRATION-7
-  stale_id: BENCH-OLD-SAGA-ORCHESTRATION-7
-- text: current rule for saga orchestration 7
-  category: status
-  gold_ids:
-  - BENCH-NEW-SAGA-ORCHESTRATION-7
-  current_id: BENCH-NEW-SAGA-ORCHESTRATION-7
-  stale_id: BENCH-OLD-SAGA-ORCHESTRATION-7
-- text: what replaced the previous saga orchestration 7 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-SAGA-ORCHESTRATION-7
-  current_id: BENCH-NEW-SAGA-ORCHESTRATION-7
-  stale_id: BENCH-OLD-SAGA-ORCHESTRATION-7
+  - BENCH-SAGA-ORCHESTRATION-7
+  current_id: BENCH-SAGA-ORCHESTRATION-7
+  stale_id: null
 - text: caching 8
   category: exact
   gold_ids:
@@ -2857,27 +2941,51 @@
 - text: message ordering 8
   category: exact
   gold_ids:
-  - BENCH-MESSAGE-ORDERING-8
-  current_id: BENCH-MESSAGE-ORDERING-8
-  stale_id: null
+  - BENCH-NEW-MESSAGE-ORDERING-8
+  current_id: BENCH-NEW-MESSAGE-ORDERING-8
+  stale_id: BENCH-OLD-MESSAGE-ORDERING-8
 - text: preserving event sequence in async pipelines
   category: semantic
   gold_ids:
-  - BENCH-MESSAGE-ORDERING-8
-  current_id: BENCH-MESSAGE-ORDERING-8
-  stale_id: null
+  - BENCH-NEW-MESSAGE-ORDERING-8
+  current_id: BENCH-NEW-MESSAGE-ORDERING-8
+  stale_id: BENCH-OLD-MESSAGE-ORDERING-8
+- text: current rule for message ordering 8
+  category: status
+  gold_ids:
+  - BENCH-NEW-MESSAGE-ORDERING-8
+  current_id: BENCH-NEW-MESSAGE-ORDERING-8
+  stale_id: BENCH-OLD-MESSAGE-ORDERING-8
+- text: what replaced the previous message ordering 8 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-MESSAGE-ORDERING-8
+  current_id: BENCH-NEW-MESSAGE-ORDERING-8
+  stale_id: BENCH-OLD-MESSAGE-ORDERING-8
 - text: schema evolution 8
   category: exact
   gold_ids:
-  - BENCH-SCHEMA-EVOLUTION-8
-  current_id: BENCH-SCHEMA-EVOLUTION-8
-  stale_id: null
+  - BENCH-NEW-SCHEMA-EVOLUTION-8
+  current_id: BENCH-NEW-SCHEMA-EVOLUTION-8
+  stale_id: BENCH-OLD-SCHEMA-EVOLUTION-8
 - text: backward-compatible changes to data contracts
   category: semantic
   gold_ids:
-  - BENCH-SCHEMA-EVOLUTION-8
-  current_id: BENCH-SCHEMA-EVOLUTION-8
-  stale_id: null
+  - BENCH-NEW-SCHEMA-EVOLUTION-8
+  current_id: BENCH-NEW-SCHEMA-EVOLUTION-8
+  stale_id: BENCH-OLD-SCHEMA-EVOLUTION-8
+- text: current rule for schema evolution 8
+  category: status
+  gold_ids:
+  - BENCH-NEW-SCHEMA-EVOLUTION-8
+  current_id: BENCH-NEW-SCHEMA-EVOLUTION-8
+  stale_id: BENCH-OLD-SCHEMA-EVOLUTION-8
+- text: what replaced the previous schema evolution 8 guidance
+  category: graph
+  gold_ids:
+  - BENCH-NEW-SCHEMA-EVOLUTION-8
+  current_id: BENCH-NEW-SCHEMA-EVOLUTION-8
+  stale_id: BENCH-OLD-SCHEMA-EVOLUTION-8
 - text: backpressure 8
   category: exact
   gold_ids:
@@ -2889,112 +2997,4 @@
   gold_ids:
   - BENCH-BACKPRESSURE-8
   current_id: BENCH-BACKPRESSURE-8
-  stale_id: null
-- text: graceful shutdown 8
-  category: exact
-  gold_ids:
-  - BENCH-NEW-GRACEFUL-SHUTDOWN-8
-  current_id: BENCH-NEW-GRACEFUL-SHUTDOWN-8
-  stale_id: BENCH-OLD-GRACEFUL-SHUTDOWN-8
-- text: draining in-flight work before process termination
-  category: semantic
-  gold_ids:
-  - BENCH-NEW-GRACEFUL-SHUTDOWN-8
-  current_id: BENCH-NEW-GRACEFUL-SHUTDOWN-8
-  stale_id: BENCH-OLD-GRACEFUL-SHUTDOWN-8
-- text: current rule for graceful shutdown 8
-  category: status
-  gold_ids:
-  - BENCH-NEW-GRACEFUL-SHUTDOWN-8
-  current_id: BENCH-NEW-GRACEFUL-SHUTDOWN-8
-  stale_id: BENCH-OLD-GRACEFUL-SHUTDOWN-8
-- text: what replaced the previous graceful shutdown 8 guidance
-  category: graph
-  gold_ids:
-  - BENCH-NEW-GRACEFUL-SHUTDOWN-8
-  current_id: BENCH-NEW-GRACEFUL-SHUTDOWN-8
-  stale_id: BENCH-OLD-GRACEFUL-SHUTDOWN-8
-- text: health checks 8
-  category: exact
-  gold_ids:
-  - BENCH-HEALTH-CHECKS-8
-  current_id: BENCH-HEALTH-CHECKS-8
-  stale_id: null
-- text: exposing readiness and liveness probes for orchestrators
-  category: semantic
-  gold_ids:
-  - BENCH-HEALTH-CHECKS-8
-  current_id: BENCH-HEALTH-CHECKS-8
-  stale_id: null
-- text: config reloading 8
-  category: exact
-  gold_ids:
-  - BENCH-CONFIG-RELOADING-8
-  current_id: BENCH-CONFIG-RELOADING-8
-  stale_id: null
-- text: applying configuration updates without restart
-  category: semantic
-  gold_ids:
-  - BENCH-CONFIG-RELOADING-8
-  current_id: BENCH-CONFIG-RELOADING-8
-  stale_id: null
-- text: error budgets 8
-  category: exact
-  gold_ids:
-  - BENCH-ERROR-BUDGETS-8
-  current_id: BENCH-ERROR-BUDGETS-8
-  stale_id: null
-- text: quantified tolerance for service unreliability
-  category: semantic
-  gold_ids:
-  - BENCH-ERROR-BUDGETS-8
-  current_id: BENCH-ERROR-BUDGETS-8
-  stale_id: null
-- text: canary rollouts 8
-  category: exact
-  gold_ids:
-  - BENCH-CANARY-ROLLOUTS-8
-  current_id: BENCH-CANARY-ROLLOUTS-8
-  stale_id: null
-- text: incrementally shifting traffic to a new version
-  category: semantic
-  gold_ids:
-  - BENCH-CANARY-ROLLOUTS-8
-  current_id: BENCH-CANARY-ROLLOUTS-8
-  stale_id: null
-- text: blue green deploys 8
-  category: exact
-  gold_ids:
-  - BENCH-BLUE-GREEN-DEPLOYS-8
-  current_id: BENCH-BLUE-GREEN-DEPLOYS-8
-  stale_id: null
-- text: switching live traffic between two identical environments
-  category: semantic
-  gold_ids:
-  - BENCH-BLUE-GREEN-DEPLOYS-8
-  current_id: BENCH-BLUE-GREEN-DEPLOYS-8
-  stale_id: null
-- text: dead letter queues 8
-  category: exact
-  gold_ids:
-  - BENCH-DEAD-LETTER-QUEUES-8
-  current_id: BENCH-DEAD-LETTER-QUEUES-8
-  stale_id: null
-- text: capturing unprocessable messages for later inspection
-  category: semantic
-  gold_ids:
-  - BENCH-DEAD-LETTER-QUEUES-8
-  current_id: BENCH-DEAD-LETTER-QUEUES-8
-  stale_id: null
-- text: saga orchestration 8
-  category: exact
-  gold_ids:
-  - BENCH-SAGA-ORCHESTRATION-8
-  current_id: BENCH-SAGA-ORCHESTRATION-8
-  stale_id: null
-- text: coordinating distributed transactions via compensating steps
-  category: semantic
-  gold_ids:
-  - BENCH-SAGA-ORCHESTRATION-8
-  current_id: BENCH-SAGA-ORCHESTRATION-8
   stale_id: null

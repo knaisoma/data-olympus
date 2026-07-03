@@ -1,0 +1,11 @@
+[
+  {"text": "why did the team choose this markdown knowledge system in the first place", "gold_ids": ["ADR-001"]},
+  {"text": "what serving architecture keeps concurrent writers from clobbering each other", "gold_ids": ["ADR-002"]},
+  {"text": "how should backend feature folders and their providers be laid out", "gold_ids": ["STD-BN-001"]},
+  {"text": "rules for tone length and avoiding em dashes in our prose", "gold_ids": ["STD-U-001"]},
+  {"text": "what must a reviewer flag and how blunt should the feedback be", "gold_ids": ["STD-U-002"]},
+  {"text": "where do we keep credentials and api keys so they never land in a file", "gold_ids": ["STD-U-601"]},
+  {"text": "the approval steps a proposed change goes through before it is committed", "gold_ids": ["WF-001"]},
+  {"text": "the customer-facing product this component belongs to", "gold_ids": ["PROJ-acme-app"]},
+  {"text": "the http surface that fronts the acme product", "gold_ids": ["COMP-acme-app-api"]}
+]

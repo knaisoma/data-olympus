@@ -6,9 +6,10 @@ tier: T4
 title: input-validation-8
 ---
 
-# input-validation-8 (current)
+# input-validation-8
 
-This concept defines the current guidance for input-validation-8. When working with input-validation-8, follow the current rules below. The input-validation-8 approach affects reliability and developer ergonomics.
+This concept defines the governance for input-validation-8. When working with input-validation-8, follow the rules below. The input-validation-8 approach affects rollback, monitoring, consistency, boundary.
 
 - Prefer the documented input-validation-8 pattern.
 - Record exceptions to the input-validation-8 rule.
+- Weigh the rollback and boundary implications.

@@ -6,9 +6,10 @@ tier: meta
 title: config-reloading-3
 ---
 
-# config-reloading-3 (current)
+# config-reloading-3
 
-This concept defines the current guidance for config-reloading-3. When working with config-reloading-3, follow the current rules below. The config-reloading-3 approach affects reliability and developer ergonomics.
+This concept defines the governance for config-reloading-3. When working with config-reloading-3, follow the rules below. The config-reloading-3 approach affects constraint, rollback, latency, contract.
 
 - Prefer the documented config-reloading-3 pattern.
 - Record exceptions to the config-reloading-3 rule.
+- Weigh the constraint and contract implications.

@@ -7,6 +7,7 @@ from benchmarks.metrics import (
     ndcg_at_k,
     precision_signal,
     recall_at_k,
+    serves_stale,
     staleness_error,
 )
 
@@ -68,3 +69,18 @@ def test_no_staleness_when_stale_absent() -> None:
 
 def test_staleness_error_when_only_stale_present() -> None:
     assert staleness_error(["STALE", "OTHER"], current_id="CURRENT", stale_id="STALE") == 1
+
+
+def test_serves_stale_true_when_stale_in_top_k() -> None:
+    # Stale present anywhere in the top-k, even at rank 2 below the current one.
+    assert serves_stale(["CURRENT", "STALE", "X"], stale_id="STALE", k=5) == 1
+
+
+def test_serves_stale_false_when_stale_absent() -> None:
+    assert serves_stale(["CURRENT", "X", "Y"], stale_id="STALE", k=5) == 0
+
+
+def test_serves_stale_respects_k_cutoff() -> None:
+    # Stale below the k cutoff does not count as served for the top-k window.
+    assert serves_stale(["A", "B", "C", "STALE"], stale_id="STALE", k=3) == 0
+    assert serves_stale(["A", "B", "C", "STALE"], stale_id="STALE", k=4) == 1

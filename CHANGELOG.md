@@ -149,6 +149,47 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `id`/`type` and the bundle-root `index.md` declares `okf_version`. This is a
   structural floor, not a conformance test; the module docstring states
   exactly what it does and does not prove.
+- Benchmark re-cut with honest baselines and regenerated public numbers (epic
+  #75, WP2c). Methodology fixes so the benchmark measures retrieval, not
+  string-echo, and so every attribution is defensible:
+  - **Status-aware BM25 baseline** (`bm25-status-aware`): the same BM25 ranker
+    that also reads `status` frontmatter and skips superseded/deprecated docs. It
+    isolates "the win is having governance metadata" (serves-stale 0.000, like
+    data-olympus) from "the engine is a better ranker".
+  - **Honest ranking for the strawman baselines.** `whole-dump` no longer scored
+    on recall@k/NDCG/MRR (it does not rank; `ranks = False`, reported only on
+    token cost / precision / order-free Contains-Gold); `grep-read` now ranks by
+    query-term match count instead of alphabetical file order.
+  - **De-leaked synthetic corpus.** Lifecycle answer-vocabulary ("previous",
+    "current", "(old)"/"(current)") removed from doc bodies and titles; the
+    lifecycle signal now lives only in `status` + the supersedes chain, and
+    old/new pairs are lexically identical. Shared distractor vocabulary added.
+    Remaining known leak (the `exact` topic-word echo) is documented on purpose.
+  - **`serves_stale` metric** (headline lifecycle metric): fraction of
+    supersession-topic queries where the retired doc reached the payload at all
+    (tiebreak-independent), replacing the tiebreak-sensitive staleness rate as the
+    honest signal.
+  - **Bootstrap confidence intervals** (`metrics.bootstrap_mean_ci`, seeded and
+    deterministic): every reported mean now carries a 95% percentile-bootstrap CI.
+  - **Normalized token policy**: token cost reported both as-shipped and under a
+    normalized policy (top-1 full doc per method), so the token comparison
+    separates retrieval from response-payload convention.
+  - **Grown governance strata** for non-degenerate CIs: 30 governing topics, 10
+    supersession pairs, 31 distractor topics (trigger_covered n=30, negative n=31,
+    supersession n=10, paraphrase_uncovered n=74 after enforcing FTS-token
+    disjointness from gold triggers).
+  - **Committed real-corpus result**: `benchmarks/real_corpus_eval.py --lexical-only`
+    over the committed `example-bundle` (18 hand-authored docs, 9 paraphrase
+    queries) writes a reproducible non-templated number to
+    `benchmarks/real_corpus/example_bundle_result.json`.
+  - **Docs-drift guard**: `docs/comparison.md` and `WHY.md` benchmark tables are
+    generated from the committed result JSONs by `benchmarks/docs_tables.py`
+    between `<!-- BENCH:* -->` markers; `scripts/check_benchmark_docs.py` (wired
+    into CI) fails the build if any quoted number drifts.
+  - All committed results (`benchmarks/results/`, `governance_results/`, the
+    embeddings ablation, the real-corpus result) regenerated against the hardened
+    engine. With the B1 `in_force` fix, data-olympus exact recall rises from the
+    0.858 artifact to 1.000 and ALL recall to 0.582 (edging BM25's 0.572).
 - Deployable `in_force` and `abstain` modes on `kb_search` (issue #68, epic #75).
   `kb_search` (MCP tool and `GET /api/v1/search`) gains two parameters:
   - `in_force: bool` HARD-filters results to the in-force status class

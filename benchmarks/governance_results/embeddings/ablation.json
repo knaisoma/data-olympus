@@ -5,401 +5,561 @@
       "config": "fts-no-metadata",
       "stratum": "negative",
       "recall": 0.0,
+      "recall_ci": [
+        0.0,
+        0.0
+      ],
       "mrr": 0.0,
       "miss_rate": 1.0,
       "false_positive_rate": 1.0,
-      "mean_tokens": 299,
-      "n": 5
+      "mean_tokens": 296.19354838709677,
+      "n": 31
     },
     {
       "config": "fts-no-metadata",
       "stratum": "paraphrase_uncovered",
-      "recall": 0.42857142857142855,
-      "mrr": 0.30634920634920637,
-      "miss_rate": 0.5714285714285714,
+      "recall": 0.2702702702702703,
+      "recall_ci": [
+        0.17567567567567569,
+        0.3783783783783784
+      ],
+      "mrr": 0.18896396396396398,
+      "miss_rate": 0.7297297297297297,
       "false_positive_rate": 0.0,
-      "mean_tokens": 308.04761904761904,
-      "n": 42
+      "mean_tokens": 306.8783783783784,
+      "n": 74
     },
     {
       "config": "fts-no-metadata",
       "stratum": "supersession",
       "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
       "mrr": 1.0,
       "miss_rate": 0.0,
       "false_positive_rate": 0.0,
-      "mean_tokens": 358,
-      "n": 3
+      "mean_tokens": 360.8,
+      "n": 10
     },
     {
       "config": "fts-no-metadata",
       "stratum": "trigger_covered",
-      "recall": 0.8666666666666667,
-      "mrr": 0.7188888888888889,
-      "miss_rate": 0.13333333333333333,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 295.93333333333334,
-      "n": 15
-    },
-    {
-      "config": "fts-no-metadata",
-      "stratum": "ALL",
-      "recall": 0.5230769230769231,
-      "mrr": 0.41,
-      "miss_rate": 0.47692307692307695,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 306.8615384615385,
-      "n": 65
-    },
-    {
-      "config": "fts+description",
-      "stratum": "negative",
-      "recall": 0.0,
-      "mrr": 0.0,
-      "miss_rate": 1.0,
-      "false_positive_rate": 1.0,
-      "mean_tokens": 296,
-      "n": 5
-    },
-    {
-      "config": "fts+description",
-      "stratum": "paraphrase_uncovered",
-      "recall": 0.4523809523809524,
-      "mrr": 0.3111111111111111,
-      "miss_rate": 0.5476190476190477,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 306.4047619047619,
-      "n": 42
-    },
-    {
-      "config": "fts+description",
-      "stratum": "supersession",
-      "recall": 1.0,
-      "mrr": 1.0,
-      "miss_rate": 0.0,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 350,
-      "n": 3
-    },
-    {
-      "config": "fts+description",
-      "stratum": "trigger_covered",
-      "recall": 0.8666666666666667,
-      "mrr": 0.7188888888888889,
-      "miss_rate": 0.13333333333333333,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 295.93333333333334,
-      "n": 15
-    },
-    {
-      "config": "fts+description",
-      "stratum": "ALL",
-      "recall": 0.5384615384615384,
-      "mrr": 0.41307692307692306,
-      "miss_rate": 0.46153846153846156,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 305.2,
-      "n": 65
-    },
-    {
-      "config": "fts+applies_when",
-      "stratum": "negative",
-      "recall": 0.0,
-      "mrr": 0.0,
-      "miss_rate": 1.0,
-      "false_positive_rate": 1.0,
-      "mean_tokens": 296,
-      "n": 5
-    },
-    {
-      "config": "fts+applies_when",
-      "stratum": "paraphrase_uncovered",
-      "recall": 0.4523809523809524,
-      "mrr": 0.3111111111111111,
-      "miss_rate": 0.5476190476190477,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 306.5952380952381,
-      "n": 42
-    },
-    {
-      "config": "fts+applies_when",
-      "stratum": "supersession",
-      "recall": 1.0,
-      "mrr": 1.0,
-      "miss_rate": 0.0,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 350,
-      "n": 3
-    },
-    {
-      "config": "fts+applies_when",
-      "stratum": "trigger_covered",
-      "recall": 1.0,
-      "mrr": 1.0,
-      "miss_rate": 0.0,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 299.8,
-      "n": 15
-    },
-    {
-      "config": "fts+applies_when",
-      "stratum": "ALL",
-      "recall": 0.5692307692307692,
-      "mrr": 0.47794871794871796,
-      "miss_rate": 0.4307692307692308,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 306.2153846153846,
-      "n": 65
-    },
-    {
-      "config": "fts+applies_when+abstain",
-      "stratum": "negative",
-      "recall": 0.0,
-      "mrr": 0.0,
-      "miss_rate": 1.0,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 0,
-      "n": 5
-    },
-    {
-      "config": "fts+applies_when+abstain",
-      "stratum": "paraphrase_uncovered",
-      "recall": 0.2857142857142857,
-      "mrr": 0.24603174603174602,
-      "miss_rate": 0.7142857142857143,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 177.85714285714286,
-      "n": 42
-    },
-    {
-      "config": "fts+applies_when+abstain",
-      "stratum": "supersession",
-      "recall": 1.0,
-      "mrr": 1.0,
-      "miss_rate": 0.0,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 350,
-      "n": 3
-    },
-    {
-      "config": "fts+applies_when+abstain",
-      "stratum": "trigger_covered",
-      "recall": 1.0,
-      "mrr": 1.0,
-      "miss_rate": 0.0,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 299.8,
-      "n": 15
-    },
-    {
-      "config": "fts+applies_when+abstain",
-      "stratum": "ALL",
-      "recall": 0.46153846153846156,
-      "mrr": 0.4358974358974359,
-      "miss_rate": 0.5384615384615384,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 200.26153846153846,
-      "n": 65
-    },
-    {
-      "config": "bm25-baseline",
-      "stratum": "negative",
-      "recall": 0.0,
-      "mrr": 0.0,
-      "miss_rate": 1.0,
-      "false_positive_rate": 1.0,
-      "mean_tokens": 688,
-      "n": 5
-    },
-    {
-      "config": "bm25-baseline",
-      "stratum": "paraphrase_uncovered",
-      "recall": 0.40476190476190477,
-      "mrr": 0.25952380952380955,
-      "miss_rate": 0.5952380952380952,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 659.5714285714286,
-      "n": 42
-    },
-    {
-      "config": "bm25-baseline",
-      "stratum": "supersession",
-      "recall": 1.0,
-      "mrr": 1.0,
-      "miss_rate": 0.0,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 684,
-      "n": 3
-    },
-    {
-      "config": "bm25-baseline",
-      "stratum": "trigger_covered",
-      "recall": 1.0,
-      "mrr": 1.0,
-      "miss_rate": 0.0,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 663.1333333333333,
-      "n": 15
-    },
-    {
-      "config": "bm25-baseline",
-      "stratum": "ALL",
-      "recall": 0.5384615384615384,
-      "mrr": 0.44461538461538463,
-      "miss_rate": 0.46153846153846156,
-      "false_positive_rate": 0.0,
-      "mean_tokens": 663.7076923076924,
-      "n": 65
-    },
-    {
-      "config": "fts+applies_when+embeddings",
-      "stratum": "negative",
-      "recall": 0.0,
-      "mrr": 0.0,
-      "miss_rate": 1.0,
-      "false_positive_rate": 1.0,
-      "mean_tokens": 296,
-      "n": 5
-    },
-    {
-      "config": "fts+applies_when+embeddings",
-      "stratum": "paraphrase_uncovered",
       "recall": 0.6666666666666666,
-      "mrr": 0.39404761904761904,
+      "recall_ci": [
+        0.5,
+        0.8333333333333334
+      ],
+      "mrr": 0.6066666666666667,
       "miss_rate": 0.3333333333333333,
       "false_positive_rate": 0.0,
-      "mean_tokens": 312.07142857142856,
-      "n": 42
+      "mean_tokens": 297.26666666666665,
+      "n": 30
+    },
+    {
+      "config": "fts-no-metadata",
+      "stratum": "ALL",
+      "recall": 0.3448275862068966,
+      "recall_ci": [
+        0.2689655172413793,
+        0.4206896551724138
+      ],
+      "mrr": 0.29091954022988503,
+      "miss_rate": 0.6551724137931034,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 306.3241379310345,
+      "n": 145
+    },
+    {
+      "config": "fts+description",
+      "stratum": "negative",
+      "recall": 0.0,
+      "recall_ci": [
+        0.0,
+        0.0
+      ],
+      "mrr": 0.0,
+      "miss_rate": 1.0,
+      "false_positive_rate": 1.0,
+      "mean_tokens": 295,
+      "n": 31
+    },
+    {
+      "config": "fts+description",
+      "stratum": "paraphrase_uncovered",
+      "recall": 0.28378378378378377,
+      "recall_ci": [
+        0.17567567567567569,
+        0.3918918918918919
+      ],
+      "mrr": 0.1945945945945946,
+      "miss_rate": 0.7162162162162162,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 306.4054054054054,
+      "n": 74
+    },
+    {
+      "config": "fts+description",
+      "stratum": "supersession",
+      "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "mrr": 1.0,
+      "miss_rate": 0.0,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 347.6,
+      "n": 10
+    },
+    {
+      "config": "fts+description",
+      "stratum": "trigger_covered",
+      "recall": 0.6666666666666666,
+      "recall_ci": [
+        0.5,
+        0.8333333333333334
+      ],
+      "mrr": 0.6066666666666667,
+      "miss_rate": 0.3333333333333333,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 297.26666666666665,
+      "n": 30
+    },
+    {
+      "config": "fts+description",
+      "stratum": "ALL",
+      "recall": 0.35172413793103446,
+      "recall_ci": [
+        0.27586206896551724,
+        0.42758620689655175
+      ],
+      "mrr": 0.29379310344827586,
+      "miss_rate": 0.6482758620689655,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 304.9172413793103,
+      "n": 145
+    },
+    {
+      "config": "fts+applies_when",
+      "stratum": "negative",
+      "recall": 0.0,
+      "recall_ci": [
+        0.0,
+        0.0
+      ],
+      "mrr": 0.0,
+      "miss_rate": 1.0,
+      "false_positive_rate": 1.0,
+      "mean_tokens": 295.2903225806452,
+      "n": 31
+    },
+    {
+      "config": "fts+applies_when",
+      "stratum": "paraphrase_uncovered",
+      "recall": 0.3108108108108108,
+      "recall_ci": [
+        0.20270270270270271,
+        0.4189189189189189
+      ],
+      "mrr": 0.17612612612612613,
+      "miss_rate": 0.6891891891891891,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 308.02702702702703,
+      "n": 74
+    },
+    {
+      "config": "fts+applies_when",
+      "stratum": "supersession",
+      "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "mrr": 1.0,
+      "miss_rate": 0.0,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 347.6,
+      "n": 10
+    },
+    {
+      "config": "fts+applies_when",
+      "stratum": "trigger_covered",
+      "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "mrr": 1.0,
+      "miss_rate": 0.0,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 302.6,
+      "n": 30
+    },
+    {
+      "config": "fts+applies_when",
+      "stratum": "ALL",
+      "recall": 0.43448275862068964,
+      "recall_ci": [
+        0.35172413793103446,
+        0.5172413793103449
+      ],
+      "mrr": 0.3657471264367816,
+      "miss_rate": 0.5655172413793104,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 306.9103448275862,
+      "n": 145
+    },
+    {
+      "config": "fts+applies_when+abstain",
+      "stratum": "negative",
+      "recall": 0.0,
+      "recall_ci": [
+        0.0,
+        0.0
+      ],
+      "mrr": 0.0,
+      "miss_rate": 1.0,
+      "false_positive_rate": 0.0967741935483871,
+      "mean_tokens": 29.93548387096774,
+      "n": 31
+    },
+    {
+      "config": "fts+applies_when+abstain",
+      "stratum": "paraphrase_uncovered",
+      "recall": 0.2702702702702703,
+      "recall_ci": [
+        0.17567567567567569,
+        0.3783783783783784
+      ],
+      "mrr": 0.16554054054054054,
+      "miss_rate": 0.7297297297297297,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 208.16216216216216,
+      "n": 74
+    },
+    {
+      "config": "fts+applies_when+abstain",
+      "stratum": "supersession",
+      "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "mrr": 1.0,
+      "miss_rate": 0.0,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 347.6,
+      "n": 10
+    },
+    {
+      "config": "fts+applies_when+abstain",
+      "stratum": "trigger_covered",
+      "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "mrr": 1.0,
+      "miss_rate": 0.0,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 302.6,
+      "n": 30
+    },
+    {
+      "config": "fts+applies_when+abstain",
+      "stratum": "ALL",
+      "recall": 0.41379310344827586,
+      "recall_ci": [
+        0.3310344827586207,
+        0.496551724137931
+      ],
+      "mrr": 0.3603448275862069,
+      "miss_rate": 0.5862068965517241,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 199.21379310344827,
+      "n": 145
+    },
+    {
+      "config": "bm25-baseline",
+      "stratum": "negative",
+      "recall": 0.0,
+      "recall_ci": [
+        0.0,
+        0.0
+      ],
+      "mrr": 0.0,
+      "miss_rate": 1.0,
+      "false_positive_rate": 1.0,
+      "mean_tokens": 675.1612903225806,
+      "n": 31
+    },
+    {
+      "config": "bm25-baseline",
+      "stratum": "paraphrase_uncovered",
+      "recall": 0.24324324324324326,
+      "recall_ci": [
+        0.14864864864864866,
+        0.3381756756756738
+      ],
+      "mrr": 0.12635135135135134,
+      "miss_rate": 0.7567567567567568,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 645.918918918919,
+      "n": 74
+    },
+    {
+      "config": "bm25-baseline",
+      "stratum": "supersession",
+      "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "mrr": 1.0,
+      "miss_rate": 0.0,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 690.5,
+      "n": 10
+    },
+    {
+      "config": "bm25-baseline",
+      "stratum": "trigger_covered",
+      "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "mrr": 1.0,
+      "miss_rate": 0.0,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 657.1,
+      "n": 30
+    },
+    {
+      "config": "bm25-baseline",
+      "stratum": "ALL",
+      "recall": 0.4,
+      "recall_ci": [
+        0.31724137931034485,
+        0.4827586206896552
+      ],
+      "mrr": 0.3403448275862069,
+      "miss_rate": 0.6,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 657.5586206896552,
+      "n": 145
+    },
+    {
+      "config": "fts+applies_when+embeddings",
+      "stratum": "negative",
+      "recall": 0.0,
+      "recall_ci": [
+        0.0,
+        0.0
+      ],
+      "mrr": 0.0,
+      "miss_rate": 1.0,
+      "false_positive_rate": 1.0,
+      "mean_tokens": 296.5483870967742,
+      "n": 31
+    },
+    {
+      "config": "fts+applies_when+embeddings",
+      "stratum": "paraphrase_uncovered",
+      "recall": 0.527027027027027,
+      "recall_ci": [
+        0.4189189189189189,
+        0.635472972972971
+      ],
+      "mrr": 0.2731981981981982,
+      "miss_rate": 0.47297297297297297,
+      "false_positive_rate": 0.0,
+      "mean_tokens": 314.97297297297297,
+      "n": 74
     },
     {
       "config": "fts+applies_when+embeddings",
       "stratum": "supersession",
       "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
       "mrr": 1.0,
       "miss_rate": 0.0,
       "false_positive_rate": 0.0,
-      "mean_tokens": 353.3333333333333,
-      "n": 3
+      "mean_tokens": 355,
+      "n": 10
     },
     {
       "config": "fts+applies_when+embeddings",
       "stratum": "trigger_covered",
       "recall": 1.0,
-      "mrr": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "mrr": 0.95,
       "miss_rate": 0.0,
       "false_positive_rate": 0.0,
-      "mean_tokens": 307.6,
-      "n": 15
+      "mean_tokens": 310.3666666666667,
+      "n": 30
     },
     {
       "config": "fts+applies_when+embeddings",
       "stratum": "ALL",
-      "recall": 0.7076923076923077,
-      "mrr": 0.5315384615384615,
-      "miss_rate": 0.2923076923076923,
+      "recall": 0.5448275862068965,
+      "recall_ci": [
+        0.45517241379310347,
+        0.6206896551724138
+      ],
+      "mrr": 0.4049425287356322,
+      "miss_rate": 0.45517241379310347,
       "false_positive_rate": 0.0,
-      "mean_tokens": 311.7076923076923,
-      "n": 65
+      "mean_tokens": 312.84137931034485,
+      "n": 145
     },
     {
       "config": "lexical-stack",
       "stratum": "negative",
       "recall": 0.0,
+      "recall_ci": [
+        0.0,
+        0.0
+      ],
       "mrr": 0.0,
       "miss_rate": 1.0,
       "false_positive_rate": 1.0,
-      "mean_tokens": 296,
-      "n": 5
+      "mean_tokens": 295.2903225806452,
+      "n": 31
     },
     {
       "config": "lexical-stack",
       "stratum": "paraphrase_uncovered",
-      "recall": 0.47619047619047616,
-      "mrr": 0.3468253968253968,
-      "miss_rate": 0.5238095238095238,
+      "recall": 0.3108108108108108,
+      "recall_ci": [
+        0.20270270270270271,
+        0.4189189189189189
+      ],
+      "mrr": 0.17612612612612613,
+      "miss_rate": 0.6891891891891891,
       "false_positive_rate": 0.0,
-      "mean_tokens": 317.64285714285717,
-      "n": 42
+      "mean_tokens": 308.02702702702703,
+      "n": 74
     },
     {
       "config": "lexical-stack",
       "stratum": "supersession",
       "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
       "mrr": 1.0,
       "miss_rate": 0.0,
       "false_positive_rate": 0.0,
-      "mean_tokens": 376,
-      "n": 3
+      "mean_tokens": 347.6,
+      "n": 10
     },
     {
       "config": "lexical-stack",
       "stratum": "trigger_covered",
       "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
       "mrr": 1.0,
       "miss_rate": 0.0,
       "false_positive_rate": 0.0,
-      "mean_tokens": 299.8,
-      "n": 15
+      "mean_tokens": 302.6,
+      "n": 30
     },
     {
       "config": "lexical-stack",
       "stratum": "ALL",
-      "recall": 0.5846153846153846,
-      "mrr": 0.5010256410256411,
-      "miss_rate": 0.4153846153846154,
+      "recall": 0.43448275862068964,
+      "recall_ci": [
+        0.35172413793103446,
+        0.5172413793103449
+      ],
+      "mrr": 0.3657471264367816,
+      "miss_rate": 0.5655172413793104,
       "false_positive_rate": 0.0,
-      "mean_tokens": 314.55384615384617,
-      "n": 65
+      "mean_tokens": 306.9103448275862,
+      "n": 145
     },
     {
       "config": "lexical-stack+embeddings",
       "stratum": "negative",
       "recall": 0.0,
+      "recall_ci": [
+        0.0,
+        0.0
+      ],
       "mrr": 0.0,
       "miss_rate": 1.0,
       "false_positive_rate": 1.0,
-      "mean_tokens": 296,
-      "n": 5
+      "mean_tokens": 296.5483870967742,
+      "n": 31
     },
     {
       "config": "lexical-stack+embeddings",
       "stratum": "paraphrase_uncovered",
-      "recall": 0.6904761904761905,
-      "mrr": 0.42976190476190473,
-      "miss_rate": 0.30952380952380953,
+      "recall": 0.527027027027027,
+      "recall_ci": [
+        0.4189189189189189,
+        0.635472972972971
+      ],
+      "mrr": 0.2731981981981982,
+      "miss_rate": 0.47297297297297297,
       "false_positive_rate": 0.0,
-      "mean_tokens": 323.04761904761904,
-      "n": 42
+      "mean_tokens": 314.97297297297297,
+      "n": 74
     },
     {
       "config": "lexical-stack+embeddings",
       "stratum": "supersession",
       "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
       "mrr": 1.0,
       "miss_rate": 0.0,
       "false_positive_rate": 0.0,
-      "mean_tokens": 381,
-      "n": 3
+      "mean_tokens": 355,
+      "n": 10
     },
     {
       "config": "lexical-stack+embeddings",
       "stratum": "trigger_covered",
       "recall": 1.0,
-      "mrr": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "mrr": 0.95,
       "miss_rate": 0.0,
       "false_positive_rate": 0.0,
-      "mean_tokens": 307.6,
-      "n": 15
+      "mean_tokens": 310.3666666666667,
+      "n": 30
     },
     {
       "config": "lexical-stack+embeddings",
       "stratum": "ALL",
-      "recall": 0.7230769230769231,
-      "mrr": 0.5546153846153846,
-      "miss_rate": 0.27692307692307694,
+      "recall": 0.5448275862068965,
+      "recall_ci": [
+        0.45517241379310347,
+        0.6206896551724138
+      ],
+      "mrr": 0.4049425287356322,
+      "miss_rate": 0.45517241379310347,
       "false_positive_rate": 0.0,
-      "mean_tokens": 320.0769230769231,
-      "n": 65
+      "mean_tokens": 312.84137931034485,
+      "n": 145
     }
   ]
 }

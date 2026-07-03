@@ -169,50 +169,68 @@ Before sharing this we built a reproducible retrieval benchmark, mostly to check
 our own assumptions rather than to win an argument. The honest caveats first: the
 corpus is synthetic (250 concepts, deterministically generated), the committed run
 uses a dependency-free tokenizer so token ratios across methods are meaningful but
-absolute counts are specific to that tokenizer, and dense vector retrieval is not
-in the committed run. The full methodology and the numbers are in
+absolute counts are specific to that tokenizer, and dense vector retrieval is
+opt-in rather than the default. The full methodology and the numbers are in
 [`docs/comparison.md`](docs/comparison.md) and
-[`benchmarks/README.md`](benchmarks/README.md), and you can regenerate them.
+[`benchmarks/README.md`](benchmarks/README.md), and you can regenerate them. The
+table below is generated from the committed results and CI-checked for drift, so
+it cannot quietly go stale.
 
-With that said, here is where we are strongest, measured against a strong BM25
-keyword baseline over the same 500 queries:
+With that said, here is where we are strongest, measured against a plain BM25
+keyword baseline and a status-aware BM25 baseline (BM25 that also reads the
+governance `status` field) over the same 500 queries:
 
-| What we measured | data-olympus | BM25 baseline |
-|---|---|---|
-| Tokens sent to the model per query | 281 | 382 |
-| Overall recall | 0.502 | 0.554 |
-| Staleness rate (served a superseded rule) | 0.000 | 0.050 |
-| Lifecycle queries (status and graph): recall | 1.000 | 1.000 / 1.000 |
-| Lifecycle queries (graph): staleness | 0.000 | 1.000 |
+<!-- BENCH:headline START -->
+| What we measured | data-olympus | BM25 | Status-aware BM25 |
+|---|---|---|---|
+| Tokens sent to the model per query (as-shipped) | 309 | 430 | 424 |
+| Tokens under normalized payload policy | 90 | 85 | 85 |
+| Overall recall@k | 0.582 | 0.572 | 0.572 |
+| Serves-stale rate (retired rule reached the agent) | 0.000 | 0.750 | 0.000 |
+<!-- BENCH:headline END -->
 
-Three things stand out. First, data-olympus answers at competitive recall while
-sending roughly a quarter fewer tokens per query, and that gap widens as the
-knowledge base grows: its payload is an outline plus a few snippets plus one full
-document, so token cost rises sub-linearly (about 156 tokens at 25 concepts to
-about 229 at 250), where dumping the relevant files grows with the corpus and a
-whole-corpus dump reaches roughly 25,000 tokens. Second, and this is the result we
+Three things stand out, and we are careful about attributing each one honestly.
+First, data-olympus answers at competitive (here slightly higher) recall while
+sending fewer tokens per query as shipped, and that gap widens as the knowledge
+base grows because its payload is an outline plus a few snippets plus one full
+document, independent of corpus size. But when we normalize every method to the
+same payload policy (charge each the cost of one full document), the token gap
+mostly closes, so we say plainly: the as-shipped token win is largely a lighter
+payload convention, not a retrieval miracle. Second, and this is the result we
 care about most, data-olympus never served a superseded rule across the whole run
-(staleness 0.000), while BM25 did so on the very queries that ask what replaced an
-old decision, ranking the retired document first every time. Third, on the
-lifecycle questions specifically (the current rule for a topic, and what
-superseded the previous guidance) it retrieves the right concept every time and
-filters the stale one out, which is exactly the job.
+(serves-stale 0.000), while plain BM25 served the retired document 75% of the time
+it touched a supersession topic. Third — and this is the honest attribution — the
+status-aware BM25 baseline also scores 0.000 there, which tells us the staleness
+win comes from *having the status metadata*, not from our engine being a cleverer
+ranker. That is the point of adding the baseline: to show which advantage is real
+and where it comes from.
 
 We also measured whether the curated `applies_when` trigger metadata earns its
 keep. It does: on intents whose phrasing is covered by a trigger, it lifts recall
-from 0.867 to 1.000 in this run, and it does so at roughly half the token cost of
-the BM25 baseline. And because plain keyword search will always return something,
-even for a question that has no governing rule at all, we added an optional
-abstention mode that drops the false-positive rate on those out-of-scope queries
-from 1.000 to 0.000. For a governance tool, abstaining beats confidently handing
-back a rule that does not apply.
+from 0.667 to 1.000, at roughly half the token cost of the BM25 baseline. And
+because plain keyword search will always return something, even for a question
+that has no governing rule at all, we added an optional abstention mode that drops
+the false-positive rate on those out-of-scope queries from 1.000 to about 0.10
+(a few distractors still share a real word with a rule; we report that residual
+rather than round it away). For a governance tool, abstaining beats confidently
+handing back a rule that does not apply.
 
 We are equally clear about where it loses. On loosely phrased, semantic queries
 that share almost no words with the authored rule, every keyword method does
-poorly, and ours is no exception (recall 0.036). That is the territory where dense
-or vector retrieval has a real advantage, and we say so plainly rather than hiding
-it. Curated triggers help where intent is anticipated; they cannot bridge a
-phrasing nobody wrote down.
+poorly, and ours is no exception (recall 0.037). That is the territory where dense
+or vector retrieval has a real advantage; our optional local-embedding hybrid (off
+by default) closes much of it — it lifts held-out paraphrase recall from about
+0.31 to about 0.53 in the governance ablation — but the default full-text stack
+cannot follow a phrasing nobody wrote down, and we say so plainly rather than
+hiding it.
+
+A note on honesty: some of these numbers moved since the previous release. Fixing
+a benchmark filter bug raised data-olympus exact recall from 0.858 to 1.000, and
+de-leaking the synthetic corpus (it used to write the answer's lifecycle words
+into the document the query searched for) removed a string-echo advantage that had
+inflated the old staleness comparison. Where a number got better, it was a fixed
+measurement; where the honest methodology made a claim smaller, we changed the
+claim.
 
 ## Where it is going, and an invitation
 

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from benchmarks.metrics import (
+    bootstrap_mean_ci,
     mrr,
     ndcg_at_k,
     precision_signal,
@@ -42,17 +43,39 @@ if TYPE_CHECKING:
 
 @dataclass
 class AggRow:
-    """Aggregated metrics for one (method, category) pair."""
+    """Aggregated metrics for one (method, category) pair.
+
+    ``ranks`` records whether this method produces a query-dependent ranking. For
+    non-ranking methods (e.g. whole-dump) the ranking metrics (recall@k / ndcg /
+    mrr) are reported as ``None`` because scoring an unranked list on them is
+    meaningless; only ``contains_gold`` (order-free set membership), token cost,
+    and precision are meaningful for them.
+
+    ``*_ci`` fields are (lo, hi) 95% bootstrap confidence intervals for the
+    adjacent mean. ``norm_tokens`` is the mean token cost under the NORMALIZED
+    payload policy (top-1 full gold-or-retrieved doc body), which strips out the
+    per-method response-shaping convention so token cost reflects retrieval, not
+    payload style. ``mean_tokens`` remains the as-shipped payload cost.
+    """
 
     method: str
     category: str       # "exact" | "semantic" | "status" | "graph" | "ALL"
+    ranks: bool
     mean_tokens: float
-    recall: float
+    mean_tokens_ci: tuple[float, float]
+    norm_tokens: float
+    norm_tokens_ci: tuple[float, float]
+    recall: float | None
+    recall_ci: tuple[float, float] | None
+    contains_gold: float          # order-free: gold present anywhere in payload
+    contains_gold_ci: tuple[float, float]
     precision: float
-    ndcg: float
-    mrr: float
-    staleness: float    # fraction of queries where staleness_error == 1
-    n: int              # number of queries in this cell
+    ndcg: float | None
+    mrr: float | None
+    staleness: float        # fraction of queries where staleness_error == 1
+    serves_stale: float     # fraction of lifecycle queries that served the stale doc
+    serves_stale_n: int     # denominator for serves_stale (lifecycle queries only)
+    n: int                  # number of queries in this cell
 
 
 @dataclass
@@ -75,16 +98,22 @@ class BenchReport:
 class _QueryRow:
     method: str
     category: str
+    ranks: bool
     tokens: float
+    norm_tokens: float
     recall: float
+    contains_gold: float
     precision: float
     ndcg: float
     mrr_val: float
     staleness: int
+    serves_stale: int       # 1 if stale doc in top-k; only when stale_applicable
+    stale_applicable: bool   # True iff this query targets a supersession topic
 
 
 def _score_query(
     method_name: str,
+    method_ranks: bool,
     query: BenchQuery,
     result: RetrievalResult,
     tokenizer: Tokenizer,
@@ -116,21 +145,52 @@ def _score_query(
     ndcg = ndcg_at_k(result.ranked_ids, gold_set, k=k)
     mrr_val = mrr(result.ranked_ids, gold_set)
 
+    # Order-free "contains gold" signal: did the payload include a gold concept
+    # at all, regardless of rank? This is the only recall-like axis that is fair
+    # to a non-ranking method (whole-dump), and it is reported for every method.
+    contains = 1.0 if gold_retrieved else 0.0
+
+    # Normalized payload policy: every method is charged the token cost of ONE
+    # full document body — its top-1 retrieved doc (or, when it retrieved
+    # nothing, 0). This removes the per-method response-shaping convention (bm25
+    # returns 5 chunks, data-olympus returns outline+snippets+1 doc, whole-dump
+    # dumps everything) so token cost reflects "cost of surfacing the answer
+    # once", not payload style. It is a lower bound / apples-to-apples figure,
+    # reported ALONGSIDE the as-shipped mean_tokens, never instead of it.
+    norm_toks = 0.0
+    if result.ranked_ids:
+        top_doc = idx.get(result.ranked_ids[0])
+        if top_doc is not None:
+            norm_toks = float(tokenizer.count(top_doc.content_markdown))
+
     stale = 0
+    serves = 0
+    stale_applicable = query.stale_id is not None
     if query.stale_id is not None:
         stale = staleness_error(
             result.ranked_ids, current_id=query.current_id, stale_id=query.stale_id
         )
+        # Serves-stale measures the payload actually sent to the agent, which is
+        # the retrieved set (top-k for ranking methods; the whole corpus for
+        # whole-dump). Using retrieved_ids keeps it honest for non-ranking
+        # methods, which would otherwise appear stale-free only because their
+        # unranked top-k window happened to miss the stale doc.
+        serves = 1 if query.stale_id in result.retrieved_ids else 0
 
     return _QueryRow(
         method=method_name,
         category=query.category,
+        ranks=method_ranks,
         tokens=payload_toks,
+        norm_tokens=norm_toks,
         recall=rec,
+        contains_gold=contains,
         precision=prec,
         ndcg=ndcg,
         mrr_val=mrr_val,
         staleness=stale,
+        serves_stale=serves,
+        stale_applicable=stale_applicable,
     )
 
 
@@ -140,7 +200,11 @@ def _score_query(
 
 
 def _aggregate(query_rows: list[_QueryRow]) -> list[AggRow]:
-    """Aggregate per-query rows into (method, category) + (method, ALL) rows."""
+    """Aggregate per-query rows into (method, category) + (method, ALL) rows.
+
+    Ranking metrics (recall/ndcg/mrr) are set to ``None`` for non-ranking
+    methods. Every mean carries a 95% bootstrap CI (deterministic, seeded).
+    """
     from collections import defaultdict
 
     # Group by (method, category).
@@ -151,16 +215,48 @@ def _aggregate(query_rows: list[_QueryRow]) -> list[AggRow]:
 
     agg_rows: list[AggRow] = []
     for (method, category), rows in sorted(groups.items()):
+        ranks = rows[0].ranks
+        tok_ci = bootstrap_mean_ci([r.tokens for r in rows])
+        norm_ci = bootstrap_mean_ci([r.norm_tokens for r in rows])
+        contains_ci = bootstrap_mean_ci([r.contains_gold for r in rows])
+
+        if ranks:
+            recall_ci = bootstrap_mean_ci([r.recall for r in rows])
+            recall_val: float | None = recall_ci.mean
+            recall_bounds: tuple[float, float] | None = (recall_ci.lo, recall_ci.hi)
+            ndcg_val: float | None = statistics.mean(r.ndcg for r in rows)
+            mrr_val: float | None = statistics.mean(r.mrr_val for r in rows)
+        else:
+            recall_val = None
+            recall_bounds = None
+            ndcg_val = None
+            mrr_val = None
+
+        stale_rows = [r for r in rows if r.stale_applicable]
+        serves_n = len(stale_rows)
+        serves_val = (
+            statistics.mean(r.serves_stale for r in stale_rows) if stale_rows else 0.0
+        )
+
         agg_rows.append(
             AggRow(
                 method=method,
                 category=category,
-                mean_tokens=statistics.mean(r.tokens for r in rows),
-                recall=statistics.mean(r.recall for r in rows),
+                ranks=ranks,
+                mean_tokens=tok_ci.mean,
+                mean_tokens_ci=(tok_ci.lo, tok_ci.hi),
+                norm_tokens=norm_ci.mean,
+                norm_tokens_ci=(norm_ci.lo, norm_ci.hi),
+                recall=recall_val,
+                recall_ci=recall_bounds,
+                contains_gold=contains_ci.mean,
+                contains_gold_ci=(contains_ci.lo, contains_ci.hi),
                 precision=statistics.mean(r.precision for r in rows),
-                ndcg=statistics.mean(r.ndcg for r in rows),
-                mrr=statistics.mean(r.mrr_val for r in rows),
+                ndcg=ndcg_val,
+                mrr=mrr_val,
                 staleness=statistics.mean(r.staleness for r in rows),
+                serves_stale=serves_val,
+                serves_stale_n=serves_n,
                 n=len(rows),
             )
         )
@@ -209,6 +305,9 @@ def _compute_curve(
                 elif cls_name == "GrepReadMethod":
                     from benchmarks.methods.grep_read import GrepReadMethod
                     sub_methods.append(GrepReadMethod(sub_root))
+                elif cls_name == "StatusAwareBm25Method":
+                    from benchmarks.methods.bm25 import StatusAwareBm25Method
+                    sub_methods.append(StatusAwareBm25Method(sub_root, k=5))
                 elif cls_name == "Bm25Method":
                     from benchmarks.methods.bm25 import Bm25Method
                     sub_methods.append(Bm25Method(sub_root, k=5))
@@ -257,10 +356,12 @@ def run_benchmark(
     query_rows: list[_QueryRow] = []
 
     for method in methods:
+        method_ranks = bool(getattr(method, "ranks", True))
         for query in queries:
             result = method.retrieve(query.text)  # type: ignore[union-attr]
             row = _score_query(
                 method_name=method.name,  # type: ignore[union-attr]
+                method_ranks=method_ranks,
                 query=query,
                 result=result,
                 tokenizer=tokenizer,
@@ -331,26 +432,81 @@ def write_report(report: BenchReport, out_dir: Path) -> None:
         "",
     ]
 
-    # Per-category table — break long header/separator into variables.
-    hdr_cols = "Method | Category | Mean Tokens | Recall@k | Precision | NDCG@k | MRR"
-    sep_cols = "--------|----------|-------------|----------|-----------|--------|-----"
-    header = f"| {hdr_cols} | Staleness Rate | N |"
-    separator = f"| {sep_cols} |----------------|---|"
+    lines += [
+        "Ranking metrics (Recall@k / NDCG@k / MRR) are reported only for methods "
+        "that produce a query-dependent ranking. **whole-dump** does not rank "
+        "(it returns every doc in fixed file order for every query), so its "
+        "ranking cells read `n/a`; it is honestly comparable only on token cost, "
+        "precision, and Contains-Gold (order-free: is a gold doc anywhere in the "
+        "payload). Means carry a 95% bootstrap CI (deterministic, seeded; see "
+        "`metrics.bootstrap_mean_ci`).",
+        "",
+    ]
+
+    # Per-category table.
+    hdr_cols = (
+        "Method | Category | Mean Tokens | Norm Tokens | Recall@k [95% CI] | "
+        "Contains-Gold | Precision | NDCG@k | MRR | Staleness | N"
+    )
+    header = f"| {hdr_cols} |"
+    separator = "|" + "|".join(["---"] * 11) + "|"
     lines += [header, separator]
 
     def _cat_order(r: AggRow) -> int:
         return _CATS.index(r.category) if r.category in _CATS else 99
 
+    def _fmt_opt(v: float | None) -> str:
+        return f"{v:.3f}" if v is not None else "n/a"
+
+    def _fmt_recall_ci(r: AggRow) -> str:
+        if r.recall is None or r.recall_ci is None:
+            return "n/a"
+        return f"{r.recall:.3f} [{r.recall_ci[0]:.3f}, {r.recall_ci[1]:.3f}]"
+
     for r in sorted(report.rows, key=lambda x: (x.method, _cat_order(x))):
         lines.append(
             f"| {r.method} | {r.category} | {r.mean_tokens:.1f} | "
-            f"{r.recall:.3f} | {r.precision:.3f} | {r.ndcg:.3f} | "
-            f"{r.mrr:.3f} | {r.staleness:.3f} | {r.n} |"
+            f"{r.norm_tokens:.1f} | {_fmt_recall_ci(r)} | "
+            f"{r.contains_gold:.3f} | {r.precision:.3f} | "
+            f"{_fmt_opt(r.ndcg)} | {_fmt_opt(r.mrr)} | "
+            f"{r.staleness:.3f} | {r.n} |"
         )
     lines.append("")
 
-    # Per-method staleness rate lines.
-    lines += ["## Staleness Rates", ""]
+    # Payload-policy note (fix 5): as-shipped vs normalized token cost.
+    lines += [
+        "### Token cost: as-shipped payload vs normalized policy",
+        "",
+        "**Mean Tokens** is each method's as-shipped payload (bm25: top-5 chunks; "
+        "data-olympus: outline + snippets + 1 full doc; whole-dump: the whole "
+        "corpus). **Norm Tokens** charges every method the SAME normalized policy "
+        "— the token cost of its top-1 retrieved document body only — so the "
+        "column isolates retrieval quality from response-shaping convention. "
+        "Compare methods on Norm Tokens to remove the payload-policy confound; "
+        "compare on Mean Tokens to see the real per-call cost a caller pays "
+        "today.",
+        "",
+    ]
+
+    # Per-method staleness / serves-stale lines.
+    lines += [
+        "## Staleness avoidance",
+        "",
+        "Two metrics, over lifecycle queries that target a supersession topic:",
+        "",
+        "- **Serves-Stale rate** (headline): fraction of those queries where the "
+        "superseded doc appeared ANYWHERE in the top-k payload. This is the real "
+        "governance harm (a retired rule reaching the agent) and is "
+        "tiebreak-independent. A retriever with a status/in-force filter is "
+        "0.000 here by construction; a status-blind keyword method serves the "
+        "stale doc whenever it retrieves the topic.",
+        "- **Staleness rate** (secondary): fraction where the superseded doc "
+        "ranked at-or-above its replacement. In the de-leaked corpus the old and "
+        "new doc are lexically identical, so a status-blind ranker ties them and "
+        "this number depends on an arbitrary tiebreak; Serves-Stale is the "
+        "honest signal.",
+        "",
+    ]
     for method in methods:
         all_row = next(
             (r for r in report.rows if r.method == method and r.category == "ALL"),
@@ -358,9 +514,9 @@ def write_report(report: BenchReport, out_dir: Path) -> None:
         )
         if all_row:
             lines.append(
-                f"- **{method}**: staleness rate = {all_row.staleness:.3f} "
-                "(fraction of queries where a superseded concept ranked "
-                "above its replacement)"
+                f"- **{method}**: serves-stale = {all_row.serves_stale:.3f} "
+                f"(n={all_row.serves_stale_n} lifecycle queries), "
+                f"staleness = {all_row.staleness:.3f}"
             )
     lines.append("")
 
@@ -390,19 +546,19 @@ def write_report(report: BenchReport, out_dir: Path) -> None:
     lines += ["### Where data-olympus loses", ""]
     sem_rows = [r for r in report.rows if r.category == "semantic"]
     do_sem = next((r for r in sem_rows if r.method == "data-olympus"), None)
-    if do_sem:
+    if do_sem and do_sem.recall is not None:
         lines.append(
             f"On **semantic** (paraphrase) queries, data-olympus achieves "
-            f"recall={do_sem.recall:.3f}, ndcg={do_sem.ndcg:.3f}. "
+            f"recall={do_sem.recall:.3f}, ndcg={_fmt_opt(do_sem.ndcg)}. "
             "This is the category where dense vector search has the largest "
             "advantage, because paraphrases lack the keyword overlap that "
             "the BM25-based index relies on."
         )
         for other in sem_rows:
-            if other.method != "data-olympus":
+            if other.method != "data-olympus" and other.recall is not None:
                 lines.append(
                     f"- **{other.method}** semantic: "
-                    f"recall={other.recall:.3f}, ndcg={other.ndcg:.3f}"
+                    f"recall={other.recall:.3f}, ndcg={_fmt_opt(other.ndcg)}"
                 )
     else:
         lines.append("No semantic-category rows found in this run.")
@@ -427,7 +583,7 @@ def main() -> None:
     args = parser.parse_args()
 
     from benchmarks.corpus_gen import generate_corpus
-    from benchmarks.methods.bm25 import Bm25Method
+    from benchmarks.methods.bm25 import Bm25Method, StatusAwareBm25Method
     from benchmarks.methods.data_olympus import DataOlympusMethod
     from benchmarks.methods.grep_read import GrepReadMethod
     from benchmarks.methods.whole_dump import WholeDumpMethod
@@ -447,6 +603,7 @@ def main() -> None:
         WholeDumpMethod(corpus_root),
         GrepReadMethod(corpus_root),
         Bm25Method(corpus_root, k=5),
+        StatusAwareBm25Method(corpus_root, k=5),
     ]
     if args.with_rag:
         from benchmarks.methods.vector_rag import VectorRagMethod
