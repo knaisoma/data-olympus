@@ -176,7 +176,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     separates retrieval from response-payload convention.
   - **Grown governance strata** for non-degenerate CIs: 30 governing topics, 10
     supersession pairs, 31 distractor topics (trigger_covered n=30, negative n=31,
-    supersession n=10, paraphrase_uncovered n≈87).
+    supersession n=10, paraphrase_uncovered n=74 after enforcing FTS-token
+    disjointness from gold triggers).
   - **Committed real-corpus result**: `benchmarks/real_corpus_eval.py --lexical-only`
     over the committed `example-bundle` (18 hand-authored docs, 9 paraphrase
     queries) writes a reproducible non-templated number to

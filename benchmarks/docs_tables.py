@@ -18,6 +18,7 @@ so the docs, the check, and the artifacts can never disagree.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
@@ -251,17 +252,34 @@ def check_or_write(*, write: bool) -> list[str]:
             path.write_text(new_text, encoding="utf-8")
 
     if not write:
-        # Prose-number guard: each curated literal must appear in its doc.
-        doc_cache: dict[str, str] = {}
+        # Prose-number guard: each curated literal must appear in its doc's PROSE
+        # — i.e. OUTSIDE the generated marker blocks. Stripping the blocks first
+        # is what makes this catch a prose-only drift; otherwise a mutated prose
+        # number would be masked by the same value still living in the table.
+        prose_cache: dict[str, str] = {}
         for rel, literal, label in _prose_number_claims():
-            if rel not in doc_cache:
-                doc_cache[rel] = (_REPO_ROOT / rel).read_text(encoding="utf-8")
-            if literal not in doc_cache[rel]:
+            if rel not in prose_cache:
+                prose_cache[rel] = _strip_generated_blocks(rel)
+            if literal not in prose_cache[rel]:
                 problems.append(
                     f"{rel}: prose is missing the current value {literal!r} for "
                     f"{label!r} (a quoted number drifted from the results)."
                 )
     return problems
+
+
+def _strip_generated_blocks(rel: str) -> str:
+    """Return a doc's text with every generated marker block's interior removed.
+
+    Only the prose remains, so a prose-number check cannot be masked by the same
+    value appearing inside a generated table.
+    """
+    text = (_REPO_ROOT / rel).read_text(encoding="utf-8")
+    for name in DOC_BLOCKS.get(rel, []):
+        with contextlib.suppress(ValueError):
+            # ValueError => block absent in this doc; nothing to strip.
+            text = replace_block(text, name, "")
+    return text
 
 
 def main() -> int:

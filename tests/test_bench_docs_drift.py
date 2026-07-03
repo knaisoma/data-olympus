@@ -99,15 +99,18 @@ def test_prose_guard_catches_a_mutated_prose_number(tmp_path, monkeypatch) -> No
         shutil.copy(real_root / rel, dst)
 
     # Mutate the applies_when paraphrase recall figure (0.311) in PROSE only,
-    # leaving the generated table intact, so only the prose guard can catch it.
+    # leaving EVERY generated block intact, so only the prose guard can catch it.
     comp = repo / "docs" / "comparison.md"
     text = comp.read_text(encoding="utf-8")
-    body = docs_tables.extract_block(text, "comparison_per_category")
-    # Replace 0.311 everywhere EXCEPT inside the generated tables.
-    protected = body
+    # Snapshot all generated blocks, mutate globally, then restore the blocks —
+    # so 0.311 is changed only in the prose regions.
+    saved = {
+        name: docs_tables.extract_block(text, name)
+        for name in docs_tables.DOC_BLOCKS["docs/comparison.md"]
+    }
     mutated_full = text.replace("0.311", "0.321")
-    # Restore the table body so the drift is prose-only.
-    mutated_full = docs_tables.replace_block(mutated_full, "comparison_per_category", protected)
+    for name, saved_body in saved.items():
+        mutated_full = docs_tables.replace_block(mutated_full, name, saved_body)
     comp.write_text(mutated_full, encoding="utf-8")
 
     bm = repo / "benchmarks"

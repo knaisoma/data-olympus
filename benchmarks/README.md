@@ -131,9 +131,10 @@ Results are written to `benchmarks/results/results.json` (machine-readable) and
 A separate ablation measures whether curated `applies_when` trigger metadata
 earns its keep, over a governance corpus of 30 governing topics (each with a
 distinct held-out trigger vocabulary), 10 supersession pairs, and 31 distractor
-topics with no governing rule, across 158 stratified queries. Strata are grown so
+topics with no governing rule, across 145 stratified queries. Strata are grown so
 each has a non-degenerate bootstrap CI (trigger_covered n=30, negative n=31,
-supersession n=10, paraphrase_uncovered n≈87).
+supersession n=10, paraphrase_uncovered n=74 after dropping queries that are not
+FTS-token-disjoint from their gold doc's triggers).
 
 ```bash
 uv run python -m benchmarks.generate_governance_artifacts       # lexical ablation
