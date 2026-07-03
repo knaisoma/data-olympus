@@ -251,10 +251,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - **`partial` is no longer a dead end.** `kb_bootstrap_project` accepted only
     `absent` and rejected `partial` with `rejected_already_onboarded`, contradicting
     the playbook that told the agent to bootstrap on `absent` OR `partial`. It now
-    proceeds on `partial`, narrowing the request to only the `missing_files` the
-    status reports so an already-committed file is never overwritten; if nothing
-    supplied fills a gap it rejects truthfully rather than committing an empty
-    change. The playbook text now matches this behaviour.
+    proceeds on `partial`, narrowing the request to only the exact
+    `missing_files` paths under this workspace/component so an already-committed
+    file is never overwritten and a basename collision cannot smuggle in a write
+    to a different project or component; if nothing supplied fills a gap it
+    rejects truthfully rather than committing an empty change. The playbook text
+    now matches this behaviour.
   - **Double-bootstrap race closed.** A committed bootstrap is invisible to the
     index until it is pushed and re-pulled, so a second call in that convergence
     window passed the `absent` re-check and double-committed. A short-lived,

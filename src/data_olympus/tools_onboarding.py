@@ -149,23 +149,31 @@ def kb_bootstrap_project_fn(
         )
     # From here on, any outcome that did NOT commit must release the claim so a
     # legitimate retry is not blocked for the full TTL. Only a committed outcome
-    # holds the claim across the convergence window.
-    resp = _bootstrap_admitted(
-        status_obj=s,
-        workspace=workspace, component=component,
-        workspace_remote_url=workspace_remote_url,
-        component_remote_url=component_remote_url,
-        files=files, source_session=source_session,
-        agent_identity=agent_identity, confidence=confidence,
-        confidence_threshold=confidence_threshold,
-        worktrees=worktrees, push_queue=push_queue, pending=pending,
-        rate_limiter=rate_limiter, blocklist=blocklist,
-        remote_addr=remote_addr, can_auto_commit=can_auto_commit,
-        max_postimage_bytes=max_postimage_bytes, max_files=max_files,
-    )
-    if resp.status != "committed":
-        in_flight.release(workspace, component)
-    return resp
+    # holds the claim across the convergence window. A pre-commit exception (git
+    # write / commit / push-queue enqueue failure) must also release, otherwise a
+    # crash mid-bootstrap would wedge the workspace as `already_in_progress` until
+    # the TTL even though nothing committed (codex Concern). The try/finally guards
+    # both the raised and the returned non-committed paths.
+    committed = False
+    try:
+        resp = _bootstrap_admitted(
+            status_obj=s,
+            workspace=workspace, component=component,
+            workspace_remote_url=workspace_remote_url,
+            component_remote_url=component_remote_url,
+            files=files, source_session=source_session,
+            agent_identity=agent_identity, confidence=confidence,
+            confidence_threshold=confidence_threshold,
+            worktrees=worktrees, push_queue=push_queue, pending=pending,
+            rate_limiter=rate_limiter, blocklist=blocklist,
+            remote_addr=remote_addr, can_auto_commit=can_auto_commit,
+            max_postimage_bytes=max_postimage_bytes, max_files=max_files,
+        )
+        committed = resp.status == "committed"
+        return resp
+    finally:
+        if not committed:
+            in_flight.release(workspace, component)
 
 
 def _bootstrap_admitted(
@@ -204,22 +212,30 @@ def _bootstrap_admitted(
     )
     from data_olympus.index import _classify_by_path
 
-    # Partial state: keep only the files that fill a reported gap. A file that
-    # targets an already-present canonical name is dropped rather than overwriting
-    # the committed copy. missing_files holds bare canonical filenames
-    # (e.g. "AGENTS.md"); match on the canonical basename.
+    # Partial state: keep only the files that fill a reported gap for THIS exact
+    # workspace/component. Match on the full canonical path, not the basename: a
+    # basename-only check ("AGENTS.md" in missing) would also admit
+    # `projects/other/AGENTS.md` or `projects/{ws}/components/{c}/AGENTS.md`,
+    # letting the onboarding endpoint overwrite a file in a different project or
+    # component (codex Blocker). missing_files holds bare canonical filenames; the
+    # allowed set is exactly those filenames under this workspace/component root.
     if status_obj.state == "partial":
-        missing = set(status_obj.missing_files)
+        base = (
+            f"projects/{workspace}/components/{component}/"
+            if component
+            else f"projects/{workspace}/"
+        )
+        allowed = {base + name for name in status_obj.missing_files}
         kept: list[dict[str, str]] = []
         for f in files:
             canonical = normalize_target_path(f["target_path"])
-            basename = canonical.rsplit("/", 1)[-1] if canonical else ""
-            if basename in missing:
+            if canonical in allowed:
                 kept.append(f)
         if not kept:
-            # Every supplied file targets an already-present path (or none maps to
-            # a gap): nothing to do. Report the completed state truthfully rather
-            # than committing an empty change.
+            # No supplied file fills a gap for this exact target (every file is
+            # already present, or targets a different project/component): nothing
+            # to do here. Report the completed state truthfully rather than
+            # committing an empty change or writing outside the intended gap.
             return BootstrapResponse(
                 status="rejected_already_onboarded",
                 rejected_paths=[f["target_path"] for f in files],

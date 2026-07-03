@@ -274,6 +274,33 @@ def test_partial_bootstrap_nothing_missing_is_rejected(tmp_path) -> None:
     assert pending.size() == 0
 
 
+def test_partial_bootstrap_rejects_foreign_project_path(tmp_path) -> None:
+    """A partial bootstrap for workspace 'p' must not admit a file whose basename
+    matches a missing file but whose path belongs to a DIFFERENT project. The
+    filter is exact-path, not basename (codex Blocker)."""
+    idx = _partial_idx(["projects/p/README.md"])  # p is missing AGENTS.md
+    files = [
+        # Basename AGENTS.md matches the gap, but the path targets another project.
+        {"target_path": "projects/other/AGENTS.md", "postimage": "evil\n"},
+    ]
+    resp, pending = _bootstrap_low_conf(idx, files, tmp_path)
+    # Nothing fills the gap for THIS workspace -> rejected, nothing enqueued.
+    assert resp.status == "rejected_already_onboarded"
+    assert pending.size() == 0
+
+
+def test_partial_bootstrap_rejects_component_path_for_project_gap(tmp_path) -> None:
+    """A project-level (T3) partial gap must not be filled by a component-level
+    (T4) path that happens to share the basename (codex Blocker)."""
+    idx = _partial_idx(["projects/p/README.md"])  # project p missing AGENTS.md
+    files = [
+        {"target_path": "projects/p/components/c/AGENTS.md", "postimage": "x\n"},
+    ]
+    resp, pending = _bootstrap_low_conf(idx, files, tmp_path)
+    assert resp.status == "rejected_already_onboarded"
+    assert pending.size() == 0
+
+
 def test_absent_bootstrap_unchanged_writes_all_files(tmp_path) -> None:
     """Regression: the absent flow still enqueues every supplied file (item 1 did
     not narrow the absent path)."""
@@ -375,6 +402,50 @@ def test_expired_inflight_marker_allows_reclaim(tmp_path) -> None:
     assert guard.claim("p", None) is True
     # ttl -1 means the marker is already expired; a second claim reclaims it.
     assert guard.claim("p", None) is True
+
+
+def test_exception_before_commit_releases_claim(tmp_path) -> None:
+    """A pre-commit exception (e.g. worktree/git failure) must release the
+    in-flight claim so a legitimate retry is not blocked for the full TTL
+    (codex Concern)."""
+    from data_olympus.auth import PathBlocklist
+    from data_olympus.onboarding_inflight import BootstrapInFlight
+    from data_olympus.pending import PendingQueue
+    from data_olympus.rate_limit import SlidingWindowLimiter
+    idx = MagicMock()
+    idx.list_by_prefix.return_value = []  # absent
+    idx.list_with_remote_url.return_value = []
+    guard = BootstrapInFlight(str(tmp_path / "inflight"))
+    boom = MagicMock()
+    boom.get_or_create.side_effect = RuntimeError("git blew up")
+    with pytest.raises(RuntimeError):
+        kb_bootstrap_project_fn(
+            idx=idx, workspace="p", component=None,
+            workspace_remote_url=None, component_remote_url=None,
+            files=[{"target_path": "projects/p/README.md", "postimage": "r\n"}],
+            source_session="s", agent_identity="claude",
+            confidence=0.95, confidence_threshold=0.85,  # high -> commit path
+            worktrees=boom, push_queue=MagicMock(),
+            pending=PendingQueue(pending_root=str(tmp_path / "p")),
+            rate_limiter=SlidingWindowLimiter(max_per_hour=100),
+            blocklist=PathBlocklist(tier_blocks=[], path_blocks=[]),
+            in_flight=guard,
+        )
+    # The claim was released by the finally block; the slot is free for a retry.
+    assert guard.claim("p", None) is True
+
+
+def test_expired_marker_reclaim_is_single_winner(tmp_path) -> None:
+    """When a marker has expired, only one caller may reclaim it; a concurrent
+    reclaim of the same expired slot must not both succeed (codex Concern)."""
+    from data_olympus.onboarding_inflight import BootstrapInFlight
+    # ttl 0: the marker written by the first claim is immediately expired.
+    guard = BootstrapInFlight(str(tmp_path / "inflight"), ttl_seconds=0.0)
+    assert guard.claim("p", None) is True  # writes an already-expired marker
+    # A long-TTL guard on the SAME dir reclaims once and then locks out.
+    live = BootstrapInFlight(str(tmp_path / "inflight"), ttl_seconds=900.0)
+    assert live.claim("p", None) is True   # reclaims the expired slot
+    assert live.claim("p", None) is False  # now live -> second caller rejected
 
 
 def test_non_committed_bootstrap_releases_claim(tmp_path) -> None:

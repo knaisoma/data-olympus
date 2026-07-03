@@ -71,29 +71,41 @@ class BootstrapInFlight:
         """
         os.makedirs(self._root, exist_ok=True)
         path = self._path(workspace, component)
-        now = time.time()
-        payload = json.dumps({
-            "workspace": workspace,
-            "component": component,
-            "claimed_at": now,
-            "expires_at": now + self._ttl,
-        })
-        try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            # A marker exists. If it has expired, reclaim it; a still-live claim
-            # means a bootstrap for this key is genuinely in flight.
-            if not self._is_expired(path):
-                return False
-            # Reclaim: overwrite the stale marker in place. os.O_TRUNC is safe
-            # here because we only reach this branch for an expired claim.
+
+        def _payload() -> str:
+            now = time.time()
+            return json.dumps({
+                "workspace": workspace,
+                "component": component,
+                "claimed_at": now,
+                "expires_at": now + self._ttl,
+            })
+
+        # Reclaim of an expired marker must stay a single-winner operation: an
+        # in-place O_TRUNC overwrite lets two callers that both observe the stale
+        # marker both "succeed", reopening the double-bootstrap race the guard
+        # exists to close (codex Concern). Instead, unlink the expired marker and
+        # re-race the exclusive create; only one O_CREAT|O_EXCL can win. Bounded
+        # retry so a pathological churn cannot spin forever.
+        for _ in range(3):
             try:
-                fd = os.open(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
-            except OSError:
-                return False
-        with os.fdopen(fd, "w") as f:
-            f.write(payload)
-        return True
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                # A marker exists. A still-live claim means a bootstrap for this
+                # key is genuinely in flight; reject.
+                if not self._is_expired(path):
+                    return False
+                # Expired: drop it and retry the exclusive create. If another
+                # caller unlinked/recreated it first, the next iteration sees a
+                # fresh live marker and returns False.
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(path)
+                continue
+            with os.fdopen(fd, "w") as f:
+                f.write(_payload())
+            return True
+        # Lost every reclaim race within the bound: treat as in-progress.
+        return False
 
     def release(self, workspace: str, component: str | None) -> None:
         """Drop the in-flight marker (best effort). Called on the failure paths
