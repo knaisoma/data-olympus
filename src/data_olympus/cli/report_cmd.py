@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from data_olympus.enforce_policy import IntentClassifier
@@ -18,6 +19,46 @@ from data_olympus.report import (
     format_report,
     parse_governed_commits,
 )
+
+
+def resolve_default_workspace(start: str | None = None) -> str:
+    """Return the workspace key for ``start`` (default: the current directory).
+
+    Resolves to the MAIN worktree's basename, which is identical from the main
+    checkout and from any linked git worktree. This is the same key the enforce
+    pre-tool hook (``resolve_workspace`` in ``bin/kb-enforce-hook``) and
+    ``kb_consult`` use, so a single consultation clears both the pre-tool gate
+    and this pre-commit report. Outside a git repository it falls back to the
+    plain directory basename.
+    """
+    base = Path(start) if start else Path.cwd()
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(base), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True,
+        )
+    except OSError:
+        return base.name
+    if out.returncode == 0:
+        # Return the first NON-bare worktree record. `git worktree list` reports
+        # the main worktree first, but for a bare repo the first record is the
+        # bare git dir (marked `bare`), which is not a real worktree; skipping it
+        # yields the first actual checkout. Correct for separate-git-dir layouts
+        # too, where the git dir is not `<worktree>/.git`.
+        path: str | None = None
+        is_bare = False
+        for line in [*out.stdout.splitlines(), ""]:  # trailing "" flushes last record
+            if line.startswith("worktree "):
+                path = line[len("worktree "):].strip()
+                is_bare = False
+            elif line == "bare":
+                is_bare = True
+            elif line == "":
+                if path and not is_bare:
+                    return Path(path).name
+                path, is_bare = None, False
+    return base.name
+
 
 # Record separator (RS, \x1e) between commits; unit separator (US, \x1f) between
 # header fields. Combined with --name-only -z this yields an unambiguous stream

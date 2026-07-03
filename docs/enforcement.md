@@ -143,8 +143,9 @@ endpoint as-is: there is no server change for this feature.
 
 Flags:
 
-- `--workspace W`: workspace label to correlate against (defaults to the
-  current directory name).
+- `--workspace W`: workspace label to correlate against (defaults to the main
+  git worktree basename, identical from the main checkout and any linked
+  worktree; falls back to the current directory name outside a git repository).
 - `--range A..B`: a git revision range to scan (for example `HEAD~5..HEAD`).
 - `--since S`: a git `--since` window when no `--range` is given.
 - `--window-sec N`: the correlation window, in seconds, around each commit.

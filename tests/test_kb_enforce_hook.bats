@@ -113,3 +113,61 @@ teardown() {
   KB_ENFORCE_FAIL_MODE=closed run bash -c 'echo "{\"session_id\":\"x\",\"cwd\":\"/tmp/proj\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/proj/boom.toml\"}}" | "'"$HOOK"'" pre-tool'
   [ "$status" -eq 2 ]
 }
+
+@test "resolve-workspace yields the SAME label from the main checkout and a linked worktree" {
+  # Regression: the workspace key must be worktree-invariant so one consult
+  # clears both the pre-tool and pre-commit gates. Detector is bypassed here
+  # (repo is not under KB_WORKSPACES_ROOT), exercising the git worktree path.
+  local root="${BATS_TEST_TMPDIR}/wsroot"
+  mkdir -p "$root/mainrepo"
+  git -C "$root/mainrepo" init -q --initial-branch=main
+  git -C "$root/mainrepo" -c user.email=t@e.com -c user.name=t commit -q --allow-empty -m init
+  git -C "$root/mainrepo" worktree add -q -b wt "$root/linked"
+
+  run "$HOOK" resolve-workspace "$root/mainrepo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "mainrepo" ]
+
+  run "$HOOK" resolve-workspace "$root/linked"
+  [ "$status" -eq 0 ]
+  [ "$output" = "mainrepo" ]
+}
+
+@test "resolve-workspace prefers the git main worktree even when KB_WORKSPACES_ROOT resolves the linked worktree" {
+  # Blocker regression: git resolution must run BEFORE the detector. With
+  # KB_WORKSPACES_ROOT pointed at the linked worktree's parent, the detector
+  # would return the worktree basename (linked2), disagreeing with `report`'s
+  # git-based default. Git-first keeps both gates on the main repo key.
+  local root="${BATS_TEST_TMPDIR}/wsroot2"
+  mkdir -p "$root/mainrepo" "$root/wts"
+  git -C "$root/mainrepo" init -q --initial-branch=main
+  git -C "$root/mainrepo" -c user.email=t@e.com -c user.name=t commit -q --allow-empty -m init
+  git -C "$root/mainrepo" worktree add -q -b wt2 "$root/wts/linked2"
+
+  run env KB_WORKSPACES_ROOT="$root/wts" "$HOOK" resolve-workspace "$root/wts/linked2"
+  [ "$status" -eq 0 ]
+  [ "$output" = "mainrepo" ]
+}
+
+@test "resolve-workspace skips the bare record for a worktree attached to a bare repo" {
+  # A bare repo's porcelain lists the bare git dir first (marked `bare`); the key
+  # must be the real checkout basename (work), not the bare repo name (origin.git).
+  local root="${BATS_TEST_TMPDIR}/bareroot"
+  mkdir -p "$root"
+  git -C "$root" init -q --initial-branch=main src
+  git -C "$root/src" -c user.email=t@e.com -c user.name=t commit -q --allow-empty -m init
+  git -C "$root" clone -q --bare src origin.git
+  git -C "$root/origin.git" worktree add -q "$root/work" main
+
+  run "$HOOK" resolve-workspace "$root/work"
+  [ "$status" -eq 0 ]
+  [ "$output" = "work" ]
+}
+
+@test "resolve-workspace does not hang without stdin and falls back outside git" {
+  # No stdin redirect: the mode must not block on cat. A non-git dir falls back
+  # to the raw path (never empty), so the gate always has a concrete key.
+  run "$HOOK" resolve-workspace "${BATS_TEST_TMPDIR}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "${BATS_TEST_TMPDIR}" ]
+}
