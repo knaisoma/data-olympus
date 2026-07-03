@@ -53,6 +53,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   printing the correct way to serve your own bundle (direct
   `data-olympus-mcp` invocation with `KB_MAIN_PATH`, per `docs/quickstart.md`
   section 6) instead. The no-argument default demo flow is unchanged.
+- `data-olympus index` no longer treats `template.md` as a concept document.
+  Its reserved-filename set previously omitted `template.md`, unlike
+  `format/validate.py`'s `RESERVED` (used by lint and validation), so a
+  directory containing only a `template.md` was wrongly treated as holding
+  concept docs: an `index.md` was generated for it and `template.md` was
+  listed as a concept entry. Index generation now imports the same
+  `RESERVED` set as the rest of the format tooling, so `index.md`, `log.md`,
+  and `template.md` are consistently reserved everywhere.
 
 ### Documentation
 
