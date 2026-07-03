@@ -1,0 +1,12 @@
+Always write tests before implementation code. Every feature and bugfix must be
+covered by a test that fails before the change and passes after it. Keep the test
+suite fast and deterministic.
+
+Prefer composition over inheritance when structuring modules. Small focused
+functions are easier to test and reason about than deep class hierarchies. Avoid
+global mutable state in the request path.
+
+Use type hints on every public function. Run the type checker in CI and treat
+type errors as build failures rather than warnings.
+
+x

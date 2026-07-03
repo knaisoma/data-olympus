@@ -62,6 +62,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`data-olympus import` command** to migrate an existing agent-rule corpus into
+  a governed draft bundle (issue #67). Supports six source kinds via `--kind`:
+  - Flat rule files (`claude-md` / `agents-md` / `gemini-md` / `cursorrules`):
+    heuristic splitting into candidate concepts (markdown headings first, then
+    blank-line-separated bullet clusters for heading-less files). Each becomes a
+    draft with stamped frontmatter (generated `<prefix>-NNN` id, `type: standard`,
+    `status: draft`, tier/category from flags, title from heading, description
+    from the first sentence, tags heuristically from content). The original text
+    is preserved verbatim as the body.
+  - `adr` (adr-tools `doc/adr/NNNN-title.md` directories): maps number+title to
+    `ADR-NNNN`/title, parses the `## Status` section into `supersedes` /
+    `superseded_by` references, preserves the parsed adr-tools status in a
+    non-activating `source_status` field, `type: decision`.
+  - `okf` bundles: normalizes alias field names into the profile, fills missing
+    required fields with draft-safe defaults, and reports every inference.
+  - Everything lands as `status: draft`; nothing is committed to git and nothing
+    auto-activates (imported ADRs keep their original status in `source_status`
+    for the reviewer). Duplicate ids are refused. The command
+    writes files into the output dir and prints a human-readable and (with
+    `--json`) machine-readable report: files created, sections skipped as too
+    short, inferences made, and "needs human review" items. It runs the existing
+    lint machinery over the output (lint-clean on the happy path) and points at
+    `kb_cleanup_plan` for dedup when importing into an existing KB. Re-running
+    into the same output dir is refused unless `--force` is given (no silent
+    duplication or clobber). Type/status/tier vocabularies are single-sourced
+    from `format/validate.py`.
 - Specified `applies_when` in SPEC.md (WP4c, 0.3.0). `applies_when` is the
   highest-weight indexed field in `Index.search` (tied with `title`, ahead of
   `description` and body) and one of the three discriminating columns for the
