@@ -96,8 +96,8 @@ tiers below are honest about what each surface can and cannot block.
 
 | Agent | Tier | What it does |
 |---|---|---|
-| Claude Code | hard | PreToolUse hook blocks governed `Edit`/`Write`/`MultiEdit`/`NotebookEdit` (exit 2 deny). |
-| Codex | hard | PreToolUse hook blocks governed `Edit`/`Write`/`MultiEdit` (exit 2 deny). See the trust note below. |
+| Claude Code | hard | PreToolUse hook blocks governed `Edit`/`Write`/`MultiEdit`/`NotebookEdit`/`Bash` (exit 2 deny). |
+| Codex | hard | PreToolUse hook blocks governed `Edit`/`Write`/`MultiEdit`/`Bash` (exit 2 deny). See the trust note below. |
 | Gemini | hard | BeforeTool hook blocks governed `write_file`/`replace`/`run_shell_command` (JSON-stdout deny). |
 | OpenCode | hard (with caveat) | `tool.execute.before` plugin throws to abort governed `edit`/`write`/`patch`/`multiedit`/`bash`. See caveats below. |
 | Copilot CLI | soft | Managed instructions block (advisory) plus MCP; compliance is observed via the audit log, not blocked. |

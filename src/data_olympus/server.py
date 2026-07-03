@@ -656,10 +656,12 @@ def build_app(
         @app.tool()
         def kb_consult(
             workspace: str, intent: str, source_session: str,
-            agent_identity: str,
+            agent_identity: str, trigger: str = "explicit",
         ) -> dict[str, object]:
             """Record a consultation for (source_session, workspace) and return the
-            governing rules for the intent. Call before code/architectural work."""
+            governing rules for the intent. Call before code/architectural work.
+            trigger is 'explicit' (default: a deliberate consult, clears the gate)
+            or 'prompt_hook' (an installer auto-consult: audited, never clears)."""
             import time as _time
 
             from data_olympus.tools_enforce import kb_consult_fn
@@ -668,7 +670,7 @@ def build_app(
                 workspace=workspace, intent=intent, source_session=source_session,
                 agent_identity=agent_identity,
                 ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
-                audit_log=state.audit_log,
+                audit_log=state.audit_log, trigger=trigger,
             )
             return resp.model_dump()
 
