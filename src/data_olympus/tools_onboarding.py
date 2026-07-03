@@ -106,41 +106,55 @@ def kb_bootstrap_project_fn(
         )
 
     # For onboarding v1: simplified atomic-commit path.
-    # Validate every file via is_writable_path + blocklist before any side effects.
-    from data_olympus.auth import is_writable_path
+    # Validate every file via normalize_target_path + blocklist before any side
+    # effects, and REWRITE each file's target_path to the canonical form so that
+    # classification, blocklist, pending enqueue, safe_join, and ``git add`` all
+    # operate on the same value that passed validation (item 4). Without this a
+    # backslash path like ``decisions\\x.md`` validated as ``decisions/x.md`` yet
+    # committed a literal root-level backslash file outside every indexed prefix.
+    from data_olympus.auth import is_writable_path, normalize_target_path
     from data_olympus.index import _classify_by_path
     rejected: list[str] = []
-    oversized: list[str] = []
+    canonical_files: list[dict[str, str]] = []
     for f in files:
-        if not is_writable_path(f["target_path"]):
+        canonical = normalize_target_path(f["target_path"])
+        if canonical is None or not is_writable_path(canonical):
             rejected.append(f["target_path"])
             continue
-        target_tier, _ = _classify_by_path(f["target_path"])
-        if blocklist.blocks(f["target_path"], target_tier):
+        target_tier, _ = _classify_by_path(canonical)
+        if blocklist.blocks(canonical, target_tier):
             rejected.append(f["target_path"])
             continue
-        if (max_postimage_bytes > 0
-                and len(f["postimage"].encode("utf-8")) > max_postimage_bytes):
-            oversized.append(f["target_path"])
+        canonical_files.append({**f, "target_path": canonical})
     if rejected:
         return BootstrapResponse(
             status="rejected_path_not_indexable_or_blocked",
             rejected_paths=rejected,
         )
+    files = canonical_files
+
+    if not rate_limiter.allow(remote_addr=remote_addr, agent_identity=agent_identity):
+        return BootstrapResponse(status="rejected_rate_limited")
+
+    # Inject git_remote_url into README/AGENTS front-matter BEFORE the size cap, so
+    # the cap counts exactly the bytes that land in git (item 3). Checking the cap
+    # before injection let an injected postimage exceed the cap yet still commit.
+    if workspace_remote_url:
+        files = _inject_remote_url(files, workspace_remote_url, target_filename="README.md")
+    if component_remote_url:
+        files = _inject_remote_url(files, component_remote_url, target_filename="AGENTS.md")
+
+    # Payload size cap on the FINAL (post-injection) postimage of every file.
+    oversized = [
+        f["target_path"] for f in files
+        if max_postimage_bytes > 0
+        and len(f["postimage"].encode("utf-8")) > max_postimage_bytes
+    ]
     if oversized:
         return BootstrapResponse(
             status="rejected_payload_too_large",
             rejected_paths=oversized,
         )
-
-    if not rate_limiter.allow(remote_addr=remote_addr, agent_identity=agent_identity):
-        return BootstrapResponse(status="rejected_rate_limited")
-
-    # Inject git_remote_url into README/AGENTS front-matter if provided.
-    if workspace_remote_url:
-        files = _inject_remote_url(files, workspace_remote_url, target_filename="README.md")
-    if component_remote_url:
-        files = _inject_remote_url(files, component_remote_url, target_filename="AGENTS.md")
 
     if confidence < confidence_threshold or not can_auto_commit:
         # Low confidence (or caller not authorized to auto-commit): enqueue ALL
@@ -228,31 +242,56 @@ def kb_bootstrap_project_fn(
 def _inject_remote_url(
     files: list[dict[str, str]], url: str, *, target_filename: str,
 ) -> list[dict[str, str]]:
-    """Ensure the front-matter of the target file contains git_remote_url: <url>."""
+    """Ensure the front-matter of the target file contains git_remote_url: <url>.
+
+    The URL is set as a structured YAML value and the frontmatter is re-emitted
+    with ``yaml.safe_dump`` (item 3). Previously the raw ``git_remote_url: {url}``
+    string was spliced into the document, so a ``url`` containing a newline could
+    forge additional top-level frontmatter keys (e.g. ``id`` / ``status``). Safe
+    dumping quotes/escapes any structure-breaking value so it survives only as the
+    intended scalar.
+    """
+    import yaml
     out = []
     for f in files:
-        if f["target_path"].endswith("/" + target_filename):
-            postimage = f["postimage"]
-            if f"git_remote_url: {url}" not in postimage:
-                # Insert into front matter if present, else prepend.
-                if postimage.startswith("---\n"):
-                    # Insert before closing --- on the first front-matter block.
-                    fm_end = postimage.find("\n---\n", 4)
-                    if fm_end > 0:
-                        new_postimage = (
-                            postimage[:fm_end] +
-                            f"\ngit_remote_url: {url}" +
-                            postimage[fm_end:]
-                        )
-                    else:
-                        new_postimage = postimage
-                else:
-                    new_postimage = (
-                        f"---\ngit_remote_url: {url}\n---\n\n" + postimage
-                    )
-                out.append({**f, "postimage": new_postimage})
-                continue
-        out.append(f)
+        if not f["target_path"].endswith("/" + target_filename):
+            out.append(f)
+            continue
+        postimage = f["postimage"]
+        if postimage.startswith("---\n"):
+            fm_end = postimage.find("\n---\n", 4)
+            if fm_end > 0:
+                fm_text = postimage[4:fm_end]
+                rest = postimage[fm_end + len("\n---\n"):]
+                try:
+                    fm = yaml.safe_load(fm_text) or {}
+                except yaml.YAMLError:
+                    fm = None
+                if not isinstance(fm, dict):
+                    # Unparseable or non-mapping frontmatter: leave the file
+                    # untouched rather than clobber caller data with a rebuilt
+                    # block (codex round-2 Concern: silent metadata loss). The
+                    # injection is skipped, matching the no-closing-fence case.
+                    out.append(f)
+                    continue
+                if fm.get("git_remote_url") == url:
+                    out.append(f)
+                    continue
+                fm["git_remote_url"] = url
+                dumped = yaml.safe_dump(
+                    fm, sort_keys=False, default_flow_style=False,
+                    allow_unicode=True,
+                )
+                new_postimage = "---\n" + dumped + "---\n" + rest
+            else:
+                # Malformed frontmatter (no closing fence): leave untouched.
+                new_postimage = postimage
+        else:
+            new_postimage = "---\n" + yaml.safe_dump(
+                {"git_remote_url": url}, default_flow_style=False,
+                allow_unicode=True,
+            ) + "---\n\n" + postimage
+        out.append({**f, "postimage": new_postimage})
     return out
 
 

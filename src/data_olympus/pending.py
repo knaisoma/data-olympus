@@ -10,12 +10,17 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from data_olympus.durable import atomic_remove, atomic_write_json
+
+# The exact shape of ``uuid.uuid4().hex`` (32 lowercase hex chars). Used to reject
+# path-traversal in a client-supplied pending_id before it hits the disk join.
+_PENDING_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 
 class PathLockBusyError(Exception):
@@ -24,6 +29,14 @@ class PathLockBusyError(Exception):
 
 class PendingQueueFullError(Exception):
     """Raised when the pending queue is at capacity (KB_PENDING_QUEUE_CAP)."""
+
+
+class PendingNotFoundError(Exception):
+    """Raised when a pending_id does not resolve to an entry on disk.
+
+    Previously ``get`` let the bare ``FileNotFoundError`` from ``open`` propagate,
+    which the REST resolve route surfaced as an opaque HTTP 500. This typed error
+    lets the route map an unknown/expired id to a 404 (item 9)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +136,15 @@ class PendingQueue:
         return out
 
     def get(self, pending_id: str) -> dict[str, Any]:
-        with open(os.path.join(self._root, f"{pending_id}.json")) as f:
+        # pending_id reaches here straight from a URL path param; reject anything
+        # that is not the hex-uuid shape we mint so a value like
+        # ``../../etc/passwd`` can never be interpolated into the on-disk join.
+        if not _PENDING_ID_RE.fullmatch(pending_id):
+            raise PendingNotFoundError(pending_id)
+        path = os.path.join(self._root, f"{pending_id}.json")
+        if not os.path.exists(path):
+            raise PendingNotFoundError(pending_id)
+        with open(path) as f:
             data: dict[str, Any] = json.load(f)
             return data
 

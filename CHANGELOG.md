@@ -12,6 +12,54 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- Hardened the write and enforcement surface (issue #74). Ten fixes, each with
+  regression tests:
+  - **Request body caps.** The resolve, consult, gate/check, and audit/event REST
+    routes read the body with an uncapped `request.json()`; they now go through the
+    same `KB_MAX_BODY_BYTES` streaming cap as propose/bootstrap and return 413 on
+    oversize input.
+  - **`resolve.edited_text` cap.** Operator-supplied `edited_text` on approve
+    became the committed postimage with no size check; it is now bounded by
+    `KB_MAX_POSTIMAGE_BYTES` and rejected with a distinct
+    `rejected_edited_text_too_large` status, leaving the pending entry in place.
+  - **YAML frontmatter injection.** Memory frontmatter was string-concatenated, so
+    a `tags` / `agent_identity` value containing a newline or `]` could forge
+    reserved keys (`id` / `status` / `supersedes`); a forged duplicate `id` breaks
+    every index rebuild. Frontmatter is now serialized with `yaml.safe_dump`, and
+    the size cap counts the full rendered postimage (frontmatter + body), not just
+    the body.
+  - **Backslash / control-char path bypass.** `decisions\x.md` validated as
+    `decisions/x.md` but wrote a literal root-level file outside every indexed
+    prefix and invisible to `KB_WRITE_BLOCK_PATHS`. Path normalization now returns
+    the canonical form and every downstream operation (classification, blocklist,
+    join, `git add`, pending record) uses it; control characters (newline, CR, tab,
+    NUL) in a target path are rejected. The same canonical-path handling and safe
+    YAML frontmatter (with the size cap applied after remote-URL injection) now
+    also cover the onboarding bootstrap path.
+  - **Enforcement-plane auth + rate limiting.** `/consult`, `/gate/check`, and
+    `/onboarding/cleanup-plan` were anonymous-allowed even when auth was configured
+    and were unthrottled. They now require an authenticated principal when auth is
+    configured (no-auth deployments are unchanged) and are subject to the shared
+    rate limiter. `kb_cleanup_plan` is added to the MCP auth-required tool set so
+    the MCP enforcement plane matches REST.
+  - **Viewer HTML injection.** A doc body containing `</script>` could break out of
+    the embedded `<script>` block and run arbitrary JS; `</` is now escaped to
+    `<\/`. Fixed a substitution-ordering bug where a body containing the literal
+    `__DISPLAY_NAME__` was mangled (both placeholders are now substituted in a
+    single pass).
+  - **Search limit clamp.** `kb_search` clamped only the upper bound, so
+    `limit=-1` reached SQLite as `LIMIT -1` (unlimited full-corpus dump); it is now
+    clamped to 1..100.
+  - **Actionable status codes.** Malformed `since` / `limit` query params on
+    `/audit` and `/compliance` now return 400 instead of an opaque 500, and resolve
+    of an unknown/expired `pending_id` returns 404 (with path-traversal-shaped ids
+    rejected).
+  - **Rate-limiter hygiene.** The sliding-window limiter now evicts empty bucket
+    keys (bounding memory under varying identities) and guards its read-modify-write
+    with a lock (correct under the threadpool the REST handlers run on).
+
 ### Added
 
 - Deployable `in_force` and `abstain` modes on `kb_search` (issue #68, epic #75).
@@ -54,6 +102,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING (auth):** A `KB_AUTH_PRINCIPALS` entry that omits an explicit
+  `capabilities` list now defaults to least privilege (`read`, `propose`) instead
+  of all capabilities. Previously such an entry silently received `resolve` and
+  `auto_commit`, letting an agent approve its own proposals and skip operator
+  review. **Action required:** any deployment relying on the old implicit
+  full-capability default must now list the capabilities it needs explicitly, e.g.
+  `{"name": "operator-agent", "token": "...", "capabilities": ["read", "propose",
+  "resolve", "auto_commit", "bootstrap", "record_event"]}`. The single
+  `KB_AUTH_TOKEN` operator principal is unaffected and still receives all
+  capabilities.
 - **Enforcement gate policy: the gate now clears only on an explicit
   consultation, not on any recent consult (behavioral change).** Previously the
   gate meant "an HTTP call to `/consult` happened recently in this session", so

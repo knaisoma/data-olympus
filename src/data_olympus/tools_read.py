@@ -120,8 +120,13 @@ def kb_search_fn(
 ) -> SearchResponse:
     from data_olympus.search_gate import abstain_gate
 
+    # Clamp to 1..100. Clamping only the upper bound let a negative
+    # ``limit`` (e.g. -1) reach SQLite as ``LIMIT -1``, which SQLite treats as
+    # "no limit" and dumps the entire corpus in one request. Bound both ends.
     if limit > 100:
         limit = 100
+    elif limit < 1:
+        limit = 1
     search_kwargs: dict[str, object] = {
         "tier": tier,
         "category": category,

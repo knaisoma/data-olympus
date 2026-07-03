@@ -39,11 +39,32 @@ STRUCTURALLY_EXCLUDED: frozenset[str] = frozenset({
 })
 
 
-def _normalize_target_path(raw: str) -> str | None:
-    """Return the canonical relative POSIX path, or None if structurally invalid."""
+def normalize_target_path(raw: str) -> str | None:
+    """Return the canonical relative POSIX path, or None if structurally invalid.
+
+    The returned string is the SINGLE authoritative form of the path: backslashes
+    are folded to ``/`` and the segments are re-joined with POSIX separators.
+    Every downstream operation (classification, blocklist match, filesystem join,
+    ``git add``) MUST use this canonical value, never the raw input. If callers
+    validated with the canonical form but then joined/wrote/git-added the raw
+    string, a value like ``decisions\\x.md`` would pass validation as
+    ``decisions/x.md`` on Linux yet land a literal root-level file named
+    ``decisions\\x.md`` that is outside every indexed prefix and invisible to
+    ``KB_WRITE_BLOCK_PATHS`` globs. Returning the canonical form and using it
+    everywhere keeps the policy decision and the filesystem effect in lockstep.
+
+    Rejections: empty/whitespace-only, NUL or any other control character
+    (``\\n``, ``\\r``, ``\\t``, etc. would let a payload smuggle newlines into a
+    path), absolute paths, Windows drive letters, ``.``/``..`` traversal, and any
+    structurally-excluded segment.
+    """
     if not raw or not raw.strip():
         return None
-    if "\x00" in raw:
+    # Reject control characters (NUL, newline, CR, tab, and the rest of the
+    # C0/C1 range) before any normalization: a newline in a path is never a
+    # legitimate target and would otherwise smuggle through classification and
+    # audit records.
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
         return None
     if raw.startswith("/") or (len(raw) >= 2 and raw[1] == ":"):
         return None
@@ -55,9 +76,18 @@ def _normalize_target_path(raw: str) -> str | None:
     return str(PurePosixPath(*parts))
 
 
+# Back-compat alias for the previous private name; both point at the same guard.
+_normalize_target_path = normalize_target_path
+
+
 def is_writable_path(target_path: str) -> bool:
-    """Structural rule. Independent of policy blocklist."""
-    canonical = _normalize_target_path(target_path)
+    """Structural rule. Independent of policy blocklist.
+
+    Callers that go on to write MUST first resolve the canonical form with
+    :func:`normalize_target_path` and operate on that; this predicate only
+    answers whether the canonical form is a writable indexed ``.md`` path.
+    """
+    canonical = normalize_target_path(target_path)
     if canonical is None:
         return False
     if not canonical.endswith(".md"):

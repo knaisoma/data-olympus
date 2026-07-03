@@ -14,6 +14,7 @@ from data_olympus.principals import (
     CAP_PROPOSE,
     CAP_RECORD_EVENT,
     CAP_RESOLVE,
+    Principal,
     PrincipalRegistry,
 )
 from data_olympus.tools_read import (
@@ -30,7 +31,6 @@ if TYPE_CHECKING:
     from starlette.requests import Request
 
     from data_olympus.models import HealthResponse
-    from data_olympus.principals import Principal
     from data_olympus.server import ServerState
 
 
@@ -166,6 +166,27 @@ def _parse_confidence(body: dict[str, Any]) -> tuple[float, JSONResponse | None]
         )
 
 
+def _parse_numeric_qp(
+    qp: Any, name: str, kind: type, *, default: Any = None,
+) -> tuple[Any, JSONResponse | None]:
+    """Coerce query param ``name`` to ``kind`` (float/int), returning a 400
+    JSONResponse instead of letting a non-numeric value raise ValueError -> HTTP
+    500 (item 9). The file's own 400-vs-500 rationale (see _missing_fields_response)
+    demands that malformed client input surface as an actionable 400, not an
+    opaque crash. A missing/empty param yields ``default``."""
+    raw = qp.get(name)
+    if raw is None or raw == "":
+        return default, None
+    try:
+        return kind(raw), None
+    except (TypeError, ValueError):
+        return default, JSONResponse(
+            {"error": "bad_request",
+             "message": f"query param '{name}' must be a {kind.__name__}"},
+            status_code=400,
+        )
+
+
 def _write_pipeline_ready(state: ServerState) -> JSONResponse | None:
     """Return a structured 503 when the write pipeline is disabled (the server
     runs read-only because ``KB_REMOTE_URL`` is unset), else None.
@@ -230,6 +251,34 @@ async def _read_json_capped(
             {"error": "bad_request", "message": "invalid JSON body"},
             status_code=400,
         )
+
+
+def _rate_limited(
+    state: ServerState, request: Request, principal: Principal,
+) -> JSONResponse | None:
+    """Apply the shared sliding-window limiter to an enforcement-plane route.
+
+    The consult / gate / cleanup-plan routes were previously unthrottled (item 6),
+    so an anonymous or authenticated caller could hammer the classifier and ledger
+    without bound. Reuse the same limiter the write routes use, keyed by
+    (remote_addr, principal name) so a per-principal quota applies. Returns a 429
+    JSONResponse when over quota, else None.
+
+    When the limiter is absent (a read-only deployment with no write pipeline
+    configured) throttling is skipped: there is no shared limiter object to
+    consult and these routes are read-mostly there.
+    """
+    limiter = state.rate_limiter
+    if limiter is None:
+        return None
+    remote_addr = request.client.host if request.client else "unknown"
+    if not limiter.allow(remote_addr=remote_addr, agent_identity=principal.name):
+        return JSONResponse(
+            {"error": "rate_limited",
+             "message": "too many requests; retry later"},
+            status_code=429,
+        )
+    return None
 
 
 def register_routes(
@@ -417,24 +466,39 @@ def register_routes(
             if (off := _write_pipeline_ready(state)) is not None:
                 return off
             pid = request.path_params["pending_id"]
-            body = await request.json()
+            body, big = await _read_json_capped(request, state.config.max_body_bytes)
+            if big is not None:
+                return big
             if (bad := _missing_fields_response(body, ["decision"])) is not None:
                 return bad
             assert state.worktrees is not None
             assert state.push_queue is not None
             assert state.pending is not None
+            from data_olympus.pending import PendingNotFoundError
             from data_olympus.tools_write import kb_resolve_pending_fn
-            resp = await _offload(
-                kb_resolve_pending_fn,
-                pending_id=pid, decision=body["decision"],
-                edited_text=body.get("edited_text"),
-                worktrees=state.worktrees, push_queue=state.push_queue,
-                pending=state.pending,
-                source_session=body.get("source_session", "operator"),
-                agent_identity=body.get("agent_identity", "operator"),
-                audit_log=state.audit_log,
-            )
-            return JSONResponse(resp.model_dump())
+            try:
+                resp = await _offload(
+                    kb_resolve_pending_fn,
+                    pending_id=pid, decision=body["decision"],
+                    edited_text=body.get("edited_text"),
+                    worktrees=state.worktrees, push_queue=state.push_queue,
+                    pending=state.pending,
+                    source_session=body.get("source_session", "operator"),
+                    agent_identity=body.get("agent_identity", "operator"),
+                    audit_log=state.audit_log,
+                    max_postimage_bytes=state.config.max_postimage_bytes,
+                )
+            except PendingNotFoundError:
+                # Unknown or already-resolved/expired pending_id: a client-side
+                # mistake, not a server fault. 404, not the opaque 500 the raw
+                # FileNotFoundError produced (item 9).
+                return JSONResponse(
+                    {"error": "not_found",
+                     "message": f"no pending proposal with id '{pid}'"},
+                    status_code=404,
+                )
+            status = 413 if resp.status == "rejected_edited_text_too_large" else 200
+            return JSONResponse(resp.model_dump(), status_code=status)
 
         @app.custom_route("/api/v1/pending", methods=["GET"])
         async def list_pending(request: Request) -> JSONResponse:
@@ -458,10 +522,14 @@ def register_routes(
                 return JSONResponse({"events": [], "returned": 0, "limit_hit": False})
             from data_olympus.tools_audit import kb_audit_fn
             qp = request.query_params
-            since = float(qp["since"]) if qp.get("since") else None
+            since, bad = _parse_numeric_qp(qp, "since", float)
+            if bad is not None:
+                return bad
             agent = qp.get("agent")
             status_filter = qp.get("status")
-            limit = int(qp.get("limit", "100"))
+            limit, bad = _parse_numeric_qp(qp, "limit", int, default=100)
+            if bad is not None:
+                return bad
             resp = await _offload(kb_audit_fn, audit_log=state.audit_log, since=since,
                                   agent=agent, status=status_filter, limit=limit)
             return JSONResponse(resp.model_dump())
@@ -478,13 +546,17 @@ def register_routes(
 
         @app.custom_route("/api/v1/consult", methods=["POST"])
         async def consult(request: Request) -> JSONResponse:
-            _principal, denied = _authorize(request, registry)
+            principal, denied = _authorize(request, registry)
             if denied is not None:
                 return denied
+            if (throttled := _rate_limited(state, request, principal)) is not None:
+                return throttled
             import time as _time
 
             from data_olympus.tools_enforce import kb_consult_fn
-            body = await request.json()
+            body, big = await _read_json_capped(request, state.config.max_body_bytes)
+            if big is not None:
+                return big
             if (bad := _missing_fields_response(
                 body, ["workspace", "source_session"],
             )) is not None:
@@ -506,13 +578,17 @@ def register_routes(
 
         @app.custom_route("/api/v1/gate/check", methods=["POST"])
         async def gate_check(request: Request) -> JSONResponse:
-            _principal, denied = _authorize(request, registry)
+            principal, denied = _authorize(request, registry)
             if denied is not None:
                 return denied
+            if (throttled := _rate_limited(state, request, principal)) is not None:
+                return throttled
             import time as _time
 
             from data_olympus.tools_enforce import kb_gate_check_fn
-            body = await request.json()
+            body, big = await _read_json_capped(request, state.config.max_body_bytes)
+            if big is not None:
+                return big
             if (bad := _missing_fields_response(
                 body, ["workspace", "session_id"],
             )) is not None:
@@ -540,7 +616,9 @@ def register_routes(
                 return JSONResponse({"counts": {}, "by_agent": {}})
             from data_olympus.tools_enforce import kb_compliance_fn
             qp = request.query_params
-            since = float(qp["since"]) if qp.get("since") else None
+            since, bad = _parse_numeric_qp(qp, "since", float)
+            if bad is not None:
+                return bad
             agent = qp.get("agent")
             resp = await _offload(
                 kb_compliance_fn, audit_log=state.audit_log, since=since, agent=agent)
@@ -555,7 +633,9 @@ def register_routes(
                 return JSONResponse({"recorded": False}, status_code=503)
             import time as _time
 
-            body = await request.json()
+            body, big = await _read_json_capped(request, state.config.max_body_bytes)
+            if big is not None:
+                return big
             if (bad := _missing_fields_response(body, ["event_type", "workspace"])) is not None:
                 return bad
             from data_olympus.tools_enforce import kb_record_event_fn
@@ -654,6 +734,14 @@ def register_routes(
 
     @app.custom_route("/api/v1/onboarding/cleanup-plan", methods=["POST"])
     async def onboarding_cleanup_plan(request: Request) -> JSONResponse:
+        # Was anonymous-allowed even with auth configured, and unthrottled (item 6).
+        # Close it to anonymous callers when auth is on (no-auth deployments still
+        # resolve LOCAL_TRUSTED and pass) and apply the shared limiter.
+        principal, denied = _authorize(request, registry)
+        if denied is not None:
+            return denied
+        if (throttled := _rate_limited(state, request, principal)) is not None:
+            return throttled
         body, big = await _read_json_capped(request, state.config.max_body_bytes)
         if big is not None:
             return big

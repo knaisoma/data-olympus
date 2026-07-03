@@ -54,6 +54,45 @@ def test_kb_search_fn_empty_for_unmatched(tmp_kb: Path, tmp_path: Path) -> None:
     assert resp.hits == []
 
 
+def _capture_limit(idx: Index) -> list[int]:
+    """Wrap idx.search to record the limit it is actually called with."""
+    seen: list[int] = []
+    real = idx.search
+
+    def spy(query, *, limit, **kw):  # type: ignore[no-untyped-def]
+        seen.append(limit)
+        return real(query, limit=limit, **kw)
+
+    idx.search = spy  # type: ignore[method-assign]
+    return seen
+
+
+def test_kb_search_fn_clamps_negative_limit(tmp_kb: Path, tmp_path: Path) -> None:
+    """item 8: limit=-1 must NOT reach SQLite as LIMIT -1 (unlimited full-corpus
+    dump). It is clamped to the lower bound of 1."""
+    idx = Index(tmp_path / "idx.db")
+    idx.build(tmp_kb, source_commit="e")
+    seen = _capture_limit(idx)
+    kb_search_fn(idx=idx, query="STD", limit=-1)
+    assert seen == [1]
+
+
+def test_kb_search_fn_clamps_zero_limit(tmp_kb: Path, tmp_path: Path) -> None:
+    idx = Index(tmp_path / "idx.db")
+    idx.build(tmp_kb, source_commit="f")
+    seen = _capture_limit(idx)
+    kb_search_fn(idx=idx, query="STD", limit=0)
+    assert seen == [1]
+
+
+def test_kb_search_fn_clamps_over_max(tmp_kb: Path, tmp_path: Path) -> None:
+    idx = Index(tmp_path / "idx.db")
+    idx.build(tmp_kb, source_commit="g")
+    seen = _capture_limit(idx)
+    kb_search_fn(idx=idx, query="STD", limit=99999)
+    assert seen == [100]
+
+
 def test_kb_search_fn_tier_filter_includes_matches(tmp_kb: Path, tmp_path: Path) -> None:
     """Filtering by tier=T1 includes the STDs in T1."""
     idx = Index(tmp_path / "idx.db")
