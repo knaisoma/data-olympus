@@ -10,7 +10,12 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from data_olympus.audit_trailers import build_commit_message
-from data_olympus.auth import PathBlocklist, is_writable_path, safe_join_under_root
+from data_olympus.auth import (
+    PathBlocklist,
+    is_writable_path,
+    normalize_target_path,
+    safe_join_under_root,
+)
 from data_olympus.models import (
     PendingEntry,
     PendingListResponse,
@@ -151,14 +156,18 @@ def kb_propose_memory_fn(
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_rate_limited"})
         return ProposeResponse(status="rejected_rate_limited")
 
-    # 3b. Payload size cap (reject before any disk side effect).
-    if max_text_bytes > 0 and len(text.encode("utf-8")) > max_text_bytes:
+    # 4. Render the postimage (front matter + body) BEFORE the size cap so the
+    # cap counts the FULL committed bytes, not just the body: the frontmatter the
+    # server prepends (tags, agent identity, ISO timestamp) is part of what gets
+    # written and pushed, and an unbounded tags list would otherwise slip past a
+    # body-only check (item 3).
+    postimage = _render_memory(text=text, tags=tags, agent_identity=agent_identity)
+
+    # 4b. Payload size cap (reject before any disk side effect).
+    if max_text_bytes > 0 and len(postimage.encode("utf-8")) > max_text_bytes:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_payload_too_large"})
         return ProposeResponse(status="rejected_payload_too_large",
                                target_path=target_path)
-
-    # 4. Render the postimage (front matter + body).
-    postimage = _render_memory(text=text, tags=tags, agent_identity=agent_identity)
 
     if confidence < confidence_threshold or not can_auto_commit:
         try:
@@ -239,13 +248,31 @@ def kb_propose_memory_fn(
 
 
 def _render_memory(*, text: str, tags: list[str], agent_identity: str) -> str:
-    fm = ["---"]
-    fm.append(f"created_by: {agent_identity}")
-    fm.append(f"created_at: {datetime.datetime.now(datetime.UTC).isoformat()}")
+    """Render a memory file: YAML frontmatter block + body.
+
+    The frontmatter is built as a dict and serialized with ``yaml.safe_dump``
+    (item 3). String-concatenating ``agent_identity`` / ``tags`` into the YAML
+    (the previous approach) let a value containing a newline or ``]`` inject
+    arbitrary top-level keys: e.g. an ``agent_identity`` of
+    ``x\\nid: GDEC-001\\nstatus: accepted`` or a tag of ``a], id: forged`` would
+    forge reserved keys (``id`` / ``status`` / ``supersedes``). A forged duplicate
+    ``id`` breaks every index rebuild. ``safe_dump`` quotes and escapes any value
+    that would otherwise change the document structure, so newline/bracket
+    payloads survive only as data inside the intended key.
+    """
+    import yaml
+
+    fm: dict[str, Any] = {
+        "created_by": agent_identity,
+        "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
+    }
     if tags:
-        fm.append("tags: [" + ", ".join(tags) + "]")
-    fm.append("---")
-    return "\n".join(fm) + "\n\n" + text + "\n"
+        # Coerce to plain str so a non-str element can't smuggle a YAML tag.
+        fm["tags"] = [str(t) for t in tags]
+    dumped = yaml.safe_dump(
+        fm, sort_keys=False, default_flow_style=False, allow_unicode=True
+    )
+    return "---\n" + dumped + "---\n\n" + text + "\n"
 
 
 def kb_propose_edit_fn(
@@ -283,11 +310,19 @@ def kb_propose_edit_fn(
         "reason": reason,
         "remote_addr": remote_addr,
     }
-    if not is_writable_path(target_path):
+    canonical = normalize_target_path(target_path)
+    if canonical is None or not is_writable_path(canonical):
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_not_indexable"})
         return ProposeResponse(status="rejected_path_not_indexable",
                                reason="traversal_or_excluded",
                                target_path=target_path)
+    # From here on operate ONLY on the canonical path: classification, blocklist,
+    # the pending record, the filesystem join, and ``git add`` must all agree with
+    # the value that passed validation (item 4). Using the raw string below would
+    # let ``decisions\\x.md`` validate as ``decisions/x.md`` yet write a literal
+    # ``decisions\\x.md`` outside every indexed prefix.
+    target_path = canonical
+    audit_base["target_path"] = target_path
     target_tier, _ = _classify(target_path)
     audit_base["target_tier"] = target_tier
     if blocklist.blocks(target_path, target_tier):
@@ -380,6 +415,7 @@ def kb_resolve_pending_fn(
     source_session: str,
     agent_identity: str,
     audit_log: AuditLog | None = None,
+    max_postimage_bytes: int = 0,
 ) -> ResolvePendingResponse:
     audit_base: dict[str, Any] = {
         "event_type": "resolve",
@@ -394,6 +430,18 @@ def kb_resolve_pending_fn(
     if decision not in ("approve", "edit"):
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_bad_decision"})
         return ResolvePendingResponse(status="rejected_bad_decision")
+
+    # ``edited_text`` becomes the committed postimage, bypassing the cap the
+    # propose path enforced on the original postimage (item 2). Enforce it here
+    # too, with a distinct status so the operator sees WHY the edit was refused.
+    # Peek at the entry (without consuming it) so a too-large edit leaves the
+    # pending entry in place to be re-edited rather than silently dropped.
+    if edited_text is not None and max_postimage_bytes > 0 and (
+        len(edited_text.encode("utf-8")) > max_postimage_bytes
+    ):
+        _emit_audit(audit_log,
+                    **{**audit_base, "status": "rejected_edited_text_too_large"})
+        return ResolvePendingResponse(status="rejected_edited_text_too_large")
 
     resolved = pending.approve(pending_id, edited_text=edited_text)
     target_tier, _ = _classify(resolved.target_path)

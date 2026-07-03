@@ -116,8 +116,13 @@ def kb_search_fn(
     status: str | None = None,
     doc_type: str | None = None,
 ) -> SearchResponse:
+    # Clamp to 1..100 (item 8). Clamping only the upper bound let a negative
+    # ``limit`` (e.g. -1) reach SQLite as ``LIMIT -1``, which SQLite treats as
+    # "no limit" and dumps the entire corpus in one request. Bound both ends.
     if limit > 100:
         limit = 100
+    elif limit < 1:
+        limit = 1
     hits = idx.search(
         query, limit=limit, tier=tier, category=category, status=status, doc_type=doc_type
     )

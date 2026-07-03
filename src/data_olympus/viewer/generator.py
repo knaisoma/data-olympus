@@ -347,9 +347,24 @@ def generate_visualization(
         "bodies": bodies,
     }
 
-    json_str = json.dumps(bundle_data)
+    # Escape any ``</`` (item 7): the JSON payload is embedded inside a
+    # ``<script>`` block, and the HTML parser ends that block at the first literal
+    # ``</script>`` REGARDLESS of JSON/string context. A doc body containing
+    # ``</script><script>alert(1)</script>`` would otherwise break out and run
+    # arbitrary JS. ``<\/`` is an equivalent JSON escape (JSON permits ``\/``), so
+    # the data is unchanged after JSON.parse but the HTML parser never sees a
+    # closing tag.
+    json_str = json.dumps(bundle_data).replace("</", "<\\/")
     safe_name = html.escape(display_name)
-    html_out = _HTML_TEMPLATE.replace("__JSON__", json_str).replace("__DISPLAY_NAME__", safe_name)
+    # Single-pass substitution (item 7): replacing __JSON__ then __DISPLAY_NAME__
+    # (or vice versa) let payload content that happened to contain the OTHER
+    # placeholder get mangled by the second pass — e.g. a doc body with the literal
+    # ``__DISPLAY_NAME__`` was rewritten to the bundle name. Substituting both in
+    # one regex pass means neither replacement's output is rescanned.
+    _subs = {"__JSON__": json_str, "__DISPLAY_NAME__": safe_name}
+    html_out = re.sub(
+        "__JSON__|__DISPLAY_NAME__", lambda m: _subs[m.group(0)], _HTML_TEMPLATE
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html_out, encoding="utf-8")
 

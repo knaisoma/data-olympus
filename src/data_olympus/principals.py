@@ -47,6 +47,14 @@ ALL_CAPABILITIES: frozenset[str] = frozenset({
     CAP_RESOLVE, CAP_BOOTSTRAP, CAP_RECORD_EVENT,
 })
 
+# Least-privilege default for a KB_AUTH_PRINCIPALS entry that omits an explicit
+# ``capabilities`` list (item 5). Previously the default was ALL_CAPABILITIES,
+# which handed every per-agent token ``resolve`` and ``auto_commit`` — letting an
+# agent approve its own proposals (self-approval) and skip operator review. The
+# safe default grants only read + propose; an operator who genuinely wants a
+# higher-privileged agent must opt in by listing capabilities explicitly.
+DEFAULT_PRINCIPAL_CAPABILITIES: frozenset[str] = frozenset({CAP_READ, CAP_PROPOSE})
+
 # Write tools (MCP) / routes (REST) mapped to the capability they require.
 WRITE_TOOL_CAPABILITY: dict[str, str] = {
     "kb_propose_memory": CAP_PROPOSE,
@@ -133,7 +141,9 @@ class PrincipalRegistry:
             name = str(spec.get("name", "")).strip() or "agent"
             caps = spec.get("capabilities")
             if caps is None:
-                capset = ALL_CAPABILITIES
+                # Least-privilege default (item 5): read + propose only. An entry
+                # that needs resolve/auto_commit/bootstrap must list them.
+                capset = DEFAULT_PRINCIPAL_CAPABILITIES
             else:
                 capset = frozenset(str(c).strip() for c in caps if str(c).strip())
             self._by_token.append(
