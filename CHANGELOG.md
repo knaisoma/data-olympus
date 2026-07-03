@@ -12,44 +12,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
-
-- **BREAKING (default response shape): token-compact read-tool responses (#65).**
-  The read tools `kb_search`, `kb_get`, `kb_list`, `kb_outline`, and `kb_health`
-  now return a **token-compact** representation **by default**, because their
-  consumer is almost always an LLM paying for every token. Measured against the
-  example-bundle with a real tokenizer (tiktoken cl100k; reproduce with
-  `python -m benchmarks.token_compact --tokenizer tiktoken`) this saves ~37% of
-  tokens on `kb_search`, ~42% on `kb_list`, ~41% on `kb_health`, and ~6-7% on
-  `kb_get` (which keeps its full body and provenance); 26.1% aggregate. What
-  changed in the default shape:
-  - `kb_search`: each hit is `{id, title, snippet}` plus `status` **only when the
-    hit is not currently in force** (e.g. `superseded`/`deprecated`) and `type`
-    when set. The `query` echo, the per-hit `path`, and the raw bm25 `score` are
-    dropped; snippets are capped at 160 chars. Array order still conveys rank; to
-    read a hit in full, call `kb_get(id)`.
-  - `kb_get`: keeps the full `content_markdown` body (unchanged) plus
-    `source_commit`/`last_modified` provenance, and trims the envelope: `path`,
-    `git_remote_url`, and `last_modified_source` are dropped, and empty
-    `status`/`type`/`applies_when`/`description` are omitted.
-  - `kb_list`: drops per-entry `path`; omits a null `category`.
-  - `kb_health`: keeps the core snapshot and omits diagnostic fields that are
-    null/empty (a no-error steady state no longer emits a run of nulls).
-  - `kb_outline`: already lean; its shape is unchanged.
-
-  **Opt out** with `verbose=true` (a REST query parameter, or the `verbose`
-  argument on each MCP tool), which restores the exact pre-#65 JSON shape
-  byte-for-byte. The bundled `kb` CLI requests `verbose=true` automatically, so
-  its output is unaffected. Any first-party or third-party consumer that parsed
-  the dropped fields (`query`, per-hit `path`/`score`, the full health envelope)
-  must either adopt the compact shape or pass `verbose=true`. A committed
-  measurement harness (`benchmarks/token_compact.py`) reproduces the per-tool
-  token table under either tokenizer (`python -m benchmarks.token_compact`
-  defaults to the dependency-free `simple` splitter; add `--tokenizer tiktoken`
-  for the cl100k numbers quoted above), and a tokenizer-based regression test
-  (`tests/test_token_compact_budget.py`, with both a `simple` budget and a
-  `tiktoken` aggregate-savings guard) fails loudly if a future change re-bloats
-  the compact default.
+## [0.3.0] - 2026-07-03
 
 ### Added
 
@@ -164,64 +127,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `main()` as a fallback) now set a default `GIT_AUTHOR_*`/`GIT_COMMITTER_*`
     identity (overridable via `KB_GIT_AUTHOR_NAME` / `KB_GIT_AUTHOR_EMAIL`) so a
     commit inside a fresh container no longer fails with "who are you".
-
-### Changed
-
-- **MCP/REST write-surface parity (deferred WP0b items).** The MCP
-  `kb_resolve_pending` tool now applies the `KB_MAX_POSTIMAGE_BYTES` `edited_text`
-  cap (REST already did), and the MCP `kb_consult` / `kb_gate_check` /
-  `kb_cleanup_plan` tools now apply the shared rate limiter consistently with their
-  REST counterparts.
-
-### Security
-
-- Hardened the write and enforcement surface (issue #74). Ten fixes, each with
-  regression tests:
-  - **Request body caps.** The resolve, consult, gate/check, and audit/event REST
-    routes read the body with an uncapped `request.json()`; they now go through the
-    same `KB_MAX_BODY_BYTES` streaming cap as propose/bootstrap and return 413 on
-    oversize input.
-  - **`resolve.edited_text` cap.** Operator-supplied `edited_text` on approve
-    became the committed postimage with no size check; it is now bounded by
-    `KB_MAX_POSTIMAGE_BYTES` and rejected with a distinct
-    `rejected_edited_text_too_large` status, leaving the pending entry in place.
-  - **YAML frontmatter injection.** Memory frontmatter was string-concatenated, so
-    a `tags` / `agent_identity` value containing a newline or `]` could forge
-    reserved keys (`id` / `status` / `supersedes`); a forged duplicate `id` breaks
-    every index rebuild. Frontmatter is now serialized with `yaml.safe_dump`, and
-    the size cap counts the full rendered postimage (frontmatter + body), not just
-    the body.
-  - **Backslash / control-char path bypass.** `decisions\x.md` validated as
-    `decisions/x.md` but wrote a literal root-level file outside every indexed
-    prefix and invisible to `KB_WRITE_BLOCK_PATHS`. Path normalization now returns
-    the canonical form and every downstream operation (classification, blocklist,
-    join, `git add`, pending record) uses it; control characters (newline, CR, tab,
-    NUL) in a target path are rejected. The same canonical-path handling and safe
-    YAML frontmatter (with the size cap applied after remote-URL injection) now
-    also cover the onboarding bootstrap path.
-  - **Enforcement-plane auth + rate limiting.** `/consult`, `/gate/check`, and
-    `/onboarding/cleanup-plan` were anonymous-allowed even when auth was configured
-    and were unthrottled. They now require an authenticated principal when auth is
-    configured (no-auth deployments are unchanged) and are subject to the shared
-    rate limiter. `kb_cleanup_plan` is added to the MCP auth-required tool set so
-    the MCP enforcement plane matches REST.
-  - **Viewer HTML injection.** A doc body containing `</script>` could break out of
-    the embedded `<script>` block and run arbitrary JS; `</` is now escaped to
-    `<\/`. Fixed a substitution-ordering bug where a body containing the literal
-    `__DISPLAY_NAME__` was mangled (both placeholders are now substituted in a
-    single pass).
-  - **Search limit clamp.** `kb_search` clamped only the upper bound, so
-    `limit=-1` reached SQLite as `LIMIT -1` (unlimited full-corpus dump); it is now
-    clamped to 1..100.
-  - **Actionable status codes.** Malformed `since` / `limit` query params on
-    `/audit` and `/compliance` now return 400 instead of an opaque 500, and resolve
-    of an unknown/expired `pending_id` returns 404 (with path-traversal-shaped ids
-    rejected).
-  - **Rate-limiter hygiene.** The sliding-window limiter now evicts empty bucket
-    keys (bounding memory under varying identities) and guards its read-modify-write
-    with a lock (correct under the threadpool the REST handlers run on).
-
-### Added
 
 - **PyPI distribution + `data-olympus setup` wizard** (issue #70). The package is
   now installable from PyPI (`uvx data-olympus`, `uv tool install data-olympus`),
@@ -389,24 +294,51 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   session's `kb-session/<safe_id>` branch, so a returning session can create its
   worktree again instead of hitting a fatal "branch already exists" error.
 
-### Documentation
-
-- Reworded OKF-compatibility claims for honesty (WP4c, 0.3.0). `README.md`,
-  `SPEC.md`, `WHY.md`, and `docs/comparison.md` asserted "OKF-compatible" /
-  "any OKF consumer can read a data-olympus bundle unchanged" / "every
-  data-olympus bundle is a valid OKF bundle" with zero executable backing: no
-  test runs a real OKF reference consumer/producer against a data-olympus
-  bundle. The strongest claims are now worded as design intent ("designed to
-  be readable by OKF consumers") backed by the shared structure that does
-  exist by construction (directory layout, frontmatter conventions, reserved
-  filenames, link model), with formal conformance testing tracked in
-  [issue #82](https://github.com/knaisoma/data-olympus/issues/82). A cheap,
-  non-behavioral structural floor (non-empty `id`/`type` on every example-bundle
-  concept doc, `okf_version` on the bundle-root index) was added as
-  `tests/test_okf_minimal_fields.py`; its docstring is explicit that this
-  proves frontmatter shape, not that any OKF tool can read the bundle.
 
 ### Changed
+
+- **BREAKING (default response shape): token-compact read-tool responses (#65).**
+  The read tools `kb_search`, `kb_get`, `kb_list`, `kb_outline`, and `kb_health`
+  now return a **token-compact** representation **by default**, because their
+  consumer is almost always an LLM paying for every token. Measured against the
+  example-bundle with a real tokenizer (tiktoken cl100k; reproduce with
+  `python -m benchmarks.token_compact --tokenizer tiktoken`) this saves ~37% of
+  tokens on `kb_search`, ~42% on `kb_list`, ~41% on `kb_health`, and ~6-7% on
+  `kb_get` (which keeps its full body and provenance); 26.1% aggregate. What
+  changed in the default shape:
+  - `kb_search`: each hit is `{id, title, snippet}` plus `status` **only when the
+    hit is not currently in force** (e.g. `superseded`/`deprecated`) and `type`
+    when set. The `query` echo, the per-hit `path`, and the raw bm25 `score` are
+    dropped; snippets are capped at 160 chars. Array order still conveys rank; to
+    read a hit in full, call `kb_get(id)`.
+  - `kb_get`: keeps the full `content_markdown` body (unchanged) plus
+    `source_commit`/`last_modified` provenance, and trims the envelope: `path`,
+    `git_remote_url`, and `last_modified_source` are dropped, and empty
+    `status`/`type`/`applies_when`/`description` are omitted.
+  - `kb_list`: drops per-entry `path`; omits a null `category`.
+  - `kb_health`: keeps the core snapshot and omits diagnostic fields that are
+    null/empty (a no-error steady state no longer emits a run of nulls).
+  - `kb_outline`: already lean; its shape is unchanged.
+
+  **Opt out** with `verbose=true` (a REST query parameter, or the `verbose`
+  argument on each MCP tool), which restores the exact pre-#65 JSON shape
+  byte-for-byte. The bundled `kb` CLI requests `verbose=true` automatically, so
+  its output is unaffected. Any first-party or third-party consumer that parsed
+  the dropped fields (`query`, per-hit `path`/`score`, the full health envelope)
+  must either adopt the compact shape or pass `verbose=true`. A committed
+  measurement harness (`benchmarks/token_compact.py`) reproduces the per-tool
+  token table under either tokenizer (`python -m benchmarks.token_compact`
+  defaults to the dependency-free `simple` splitter; add `--tokenizer tiktoken`
+  for the cl100k numbers quoted above), and a tokenizer-based regression test
+  (`tests/test_token_compact_budget.py`, with both a `simple` budget and a
+  `tiktoken` aggregate-savings guard) fails loudly if a future change re-bloats
+  the compact default.
+
+- **MCP/REST write-surface parity (deferred WP0b items).** The MCP
+  `kb_resolve_pending` tool now applies the `KB_MAX_POSTIMAGE_BYTES` `edited_text`
+  cap (REST already did), and the MCP `kb_consult` / `kb_gate_check` /
+  `kb_cleanup_plan` tools now apply the shared rate limiter consistently with their
+  REST counterparts.
 
 - **BREAKING (auth):** A `KB_AUTH_PRINCIPALS` entry that omits an explicit
   `capabilities` list now defaults to least privilege (`read`, `propose`) instead
@@ -481,6 +413,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > Scope note: this wave makes write-path failures **visible** and recovers
 > orphaned commits. It does **not** fix the non-fast-forward publication stall
 > itself (rebase-retry redesign); that is tracked separately as Wave 1.
+
+
 ### Fixed
 
 - Search pipeline hardening (WP2b, epic #75), bug + perf fixes:
@@ -576,7 +510,72 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tooling, so `index.md`, `log.md`, and `template.md` are consistently
   reserved everywhere.
 
+
+### Security
+
+- Hardened the write and enforcement surface (issue #74). Ten fixes, each with
+  regression tests:
+  - **Request body caps.** The resolve, consult, gate/check, and audit/event REST
+    routes read the body with an uncapped `request.json()`; they now go through the
+    same `KB_MAX_BODY_BYTES` streaming cap as propose/bootstrap and return 413 on
+    oversize input.
+  - **`resolve.edited_text` cap.** Operator-supplied `edited_text` on approve
+    became the committed postimage with no size check; it is now bounded by
+    `KB_MAX_POSTIMAGE_BYTES` and rejected with a distinct
+    `rejected_edited_text_too_large` status, leaving the pending entry in place.
+  - **YAML frontmatter injection.** Memory frontmatter was string-concatenated, so
+    a `tags` / `agent_identity` value containing a newline or `]` could forge
+    reserved keys (`id` / `status` / `supersedes`); a forged duplicate `id` breaks
+    every index rebuild. Frontmatter is now serialized with `yaml.safe_dump`, and
+    the size cap counts the full rendered postimage (frontmatter + body), not just
+    the body.
+  - **Backslash / control-char path bypass.** `decisions\x.md` validated as
+    `decisions/x.md` but wrote a literal root-level file outside every indexed
+    prefix and invisible to `KB_WRITE_BLOCK_PATHS`. Path normalization now returns
+    the canonical form and every downstream operation (classification, blocklist,
+    join, `git add`, pending record) uses it; control characters (newline, CR, tab,
+    NUL) in a target path are rejected. The same canonical-path handling and safe
+    YAML frontmatter (with the size cap applied after remote-URL injection) now
+    also cover the onboarding bootstrap path.
+  - **Enforcement-plane auth + rate limiting.** `/consult`, `/gate/check`, and
+    `/onboarding/cleanup-plan` were anonymous-allowed even when auth was configured
+    and were unthrottled. They now require an authenticated principal when auth is
+    configured (no-auth deployments are unchanged) and are subject to the shared
+    rate limiter. `kb_cleanup_plan` is added to the MCP auth-required tool set so
+    the MCP enforcement plane matches REST.
+  - **Viewer HTML injection.** A doc body containing `</script>` could break out of
+    the embedded `<script>` block and run arbitrary JS; `</` is now escaped to
+    `<\/`. Fixed a substitution-ordering bug where a body containing the literal
+    `__DISPLAY_NAME__` was mangled (both placeholders are now substituted in a
+    single pass).
+  - **Search limit clamp.** `kb_search` clamped only the upper bound, so
+    `limit=-1` reached SQLite as `LIMIT -1` (unlimited full-corpus dump); it is now
+    clamped to 1..100.
+  - **Actionable status codes.** Malformed `since` / `limit` query params on
+    `/audit` and `/compliance` now return 400 instead of an opaque 500, and resolve
+    of an unknown/expired `pending_id` returns 404 (with path-traversal-shaped ids
+    rejected).
+  - **Rate-limiter hygiene.** The sliding-window limiter now evicts empty bucket
+    keys (bounding memory under varying identities) and guards its read-modify-write
+    with a lock (correct under the threadpool the REST handlers run on).
+
+
 ### Documentation
+
+- Reworded OKF-compatibility claims for honesty (WP4c, 0.3.0). `README.md`,
+  `SPEC.md`, `WHY.md`, and `docs/comparison.md` asserted "OKF-compatible" /
+  "any OKF consumer can read a data-olympus bundle unchanged" / "every
+  data-olympus bundle is a valid OKF bundle" with zero executable backing: no
+  test runs a real OKF reference consumer/producer against a data-olympus
+  bundle. The strongest claims are now worded as design intent ("designed to
+  be readable by OKF consumers") backed by the shared structure that does
+  exist by construction (directory layout, frontmatter conventions, reserved
+  filenames, link model), with formal conformance testing tracked in
+  [issue #82](https://github.com/knaisoma/data-olympus/issues/82). A cheap,
+  non-behavioral structural floor (non-empty `id`/`type` on every example-bundle
+  concept doc, `okf_version` on the bundle-root index) was added as
+  `tests/test_okf_minimal_fields.py`; its docstring is explicit that this
+  proves frontmatter shape, not that any OKF tool can read the bundle.
 
 - Corrected several stale or inaccurate claims ahead of 0.3.0: `docs/adoption.md`
   now describes the actual `KB_MAIN_PATH`-ignoring behaviour of
@@ -979,7 +978,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/knaisoma/data-olympus/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/knaisoma/data-olympus/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/knaisoma/data-olympus/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/knaisoma/data-olympus/releases/tag/v0.1.0
