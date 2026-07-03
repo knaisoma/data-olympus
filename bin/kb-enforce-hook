@@ -47,24 +47,32 @@ fi
 
 json_field() {
   # json_field <dotted.path> ; reads $PAYLOAD, prints value or empty.
+  # JSON null and missing keys BOTH emit an empty string (never the literal
+  # "None"): a null session_id must not become the ledger key "None".
   python3 -c 'import json,sys
 p=sys.argv[1].split(".")
 try:
     d=json.loads(sys.stdin.read() or "{}")
     for k in p:
         d=d.get(k, "") if isinstance(d, dict) else ""
-    print(d if isinstance(d,str) else (d if d is None else json.dumps(d)))
+    if d is None:
+        print("")
+    else:
+        print(d if isinstance(d,str) else json.dumps(d))
 except Exception:
     print("")' "$1" <<<"$PAYLOAD"
 }
 
 json_field_from() {
-  # json_field_from <json-string> <key>
+  # json_field_from <json-string> <key> ; null/missing -> empty string.
   python3 -c 'import json,sys
 try:
     d=json.loads(sys.argv[1] or "{}")
     v=d.get(sys.argv[2], "")
-    print(v if isinstance(v,str) else json.dumps(v))
+    if v is None:
+        print("")
+    else:
+        print(v if isinstance(v,str) else json.dumps(v))
 except Exception:
     print("")' "$1" "$2"
 }
@@ -121,9 +129,19 @@ post_json() {
   if [[ -n "$KB_AUTH_TOKEN" ]]; then
     auth_k_arg=(-K <(printf 'header = "Authorization: Bearer %s"\n' "$KB_AUTH_TOKEN"))
   fi
+  # Timeouts: the pre-tool gate is on the agent's critical path (it blocks every
+  # governed edit), so it sets tight CURL_MAX_TIME/CURL_CONNECT_TIMEOUT to fail
+  # fast to the fail-mode switch rather than stalling the tool call. Other callers
+  # (user-prompt injection) keep the looser default.
+  local max_time="${CURL_MAX_TIME:-5}"
+  local connect_arg=()
+  if [[ -n "${CURL_CONNECT_TIMEOUT:-}" ]]; then
+    connect_arg=(--connect-timeout "$CURL_CONNECT_TIMEOUT")
+  fi
   # Guard the array expansion: under `set -u`, "${arr[@]}" on an empty array is
   # an unbound-variable error on bash 3.2 (macOS default).
-  if RESP_CODE=$(curl --silent --max-time 5 \
+  if RESP_CODE=$(curl --silent --max-time "$max_time" \
+      ${connect_arg[@]+"${connect_arg[@]}"} \
       -H "Content-Type: application/json" \
       ${auth_k_arg[@]+"${auth_k_arg[@]}"} \
       --data "$body" \
@@ -192,9 +210,15 @@ case "$MODE" in
     CWD="$(json_field cwd)"
     PROMPT="$(json_field prompt)"
     WS="$(resolve_workspace "$CWD")"
+    # trigger=prompt_hook: this consult is the installer's per-prompt auto-consult
+    # (UserPromptSubmit / Gemini BeforeAgent), NOT a deliberate agent kb_consult.
+    # It is recorded for audit/compliance and its rules are still injected, but it
+    # does NOT clear the gate: only an explicit kb_consult call does. Without this
+    # marker every user prompt would refresh the ledger and the gate would fire
+    # only during autonomous stretches longer than the TTL.
     BODY="$(python3 -c 'import json,sys
 print(json.dumps({"workspace":sys.argv[1],"intent":sys.argv[2],
-"source_session":sys.argv[3],"agent_identity":sys.argv[4]}))' "$WS" "$PROMPT" "$SESSION" "$AGENT")"
+"source_session":sys.argv[3],"agent_identity":sys.argv[4],"trigger":"prompt_hook"}))' "$WS" "$PROMPT" "$SESSION" "$AGENT")"
     # Prompt-rule injection is best-effort and never blocks: any failure
     # (connection error OR non-2xx) just means no injected rules this turn.
     if ! post_json "$KB_ENDPOINT/api/v1/consult" "$BODY" || ! is_2xx "$RESP_CODE"; then
@@ -215,22 +239,41 @@ print("\n".join(lines))')"
     exit 0
     ;;
   pre-tool)
-    SESSION="$(json_field session_id)"
-    CWD="$(json_field cwd)"
-    TOOL="$(json_field tool_name)"
-    FPATH="$(json_field tool_input.file_path)"
-    WS="$(resolve_workspace "$CWD")"
-    # action_diff: the change content (Write.content, Edit.new_string, Bash.command),
-    # capped so the gate body stays bounded. Lets the classifier use diff signals
-    # and classify shell commands.
-    ADIFF="$(printf '%s' "$PAYLOAD" | python3 -c 'import json,sys
+    # Single parse of the hook payload: emit session_id, cwd, tool_name, file_path
+    # and the capped action_diff, each base64-encoded on its own line (base64 is
+    # newline/tab-safe, so a multi-line diff or command survives the read). This
+    # replaces four separate json_field spawns plus the ADIFF spawn with one
+    # python3 invocation on the pre-tool critical path.
+    #   action_diff: the change content (Write.content, Edit.new_string,
+    #   Bash.command), capped at 4000 chars so the gate body stays bounded, so the
+    #   classifier can use diff signals and classify shell commands.
+    {
+      IFS= read -r SESSION_B64
+      IFS= read -r CWD_B64
+      IFS= read -r TOOL_B64
+      IFS= read -r FPATH_B64
+      IFS= read -r ADIFF_B64
+    } < <(printf '%s' "$PAYLOAD" | python3 -c 'import base64,json,sys
+def enc(v):
+    return base64.b64encode((v or "").encode("utf-8","replace")).decode("ascii")
 try:
     d=json.loads(sys.stdin.read() or "{}")
-    ti=d.get("tool_input",{}) if isinstance(d.get("tool_input"),dict) else {}
-    val=ti.get("content") or ti.get("new_string") or ti.get("command") or ""
-    print(val[:4000])
+    if not isinstance(d,dict): d={}
 except Exception:
-    print("")')"
+    d={}
+ti=d.get("tool_input",{}) if isinstance(d.get("tool_input"),dict) else {}
+diff=ti.get("content") or ti.get("new_string") or ti.get("command") or ""
+if not isinstance(diff,str): diff=""
+for v in (d.get("session_id"), d.get("cwd"), d.get("tool_name"),
+          ti.get("file_path"), diff[:4000]):
+    print(enc(v if isinstance(v,str) else ""))')
+    b64d() { printf '%s' "$1" | base64 --decode 2>/dev/null || true; }
+    SESSION="$(b64d "$SESSION_B64")"
+    CWD="$(b64d "$CWD_B64")"
+    TOOL="$(b64d "$TOOL_B64")"
+    FPATH="$(b64d "$FPATH_B64")"
+    ADIFF="$(b64d "$ADIFF_B64")"
+    WS="$(resolve_workspace "$CWD")"
     BODY="$(python3 -c 'import json,sys
 print(json.dumps({"workspace":sys.argv[1],"session_id":sys.argv[2],
 "tool_name":sys.argv[3],"action_path":sys.argv[4],"action_diff":sys.argv[5]}))' "$WS" "$SESSION" "$TOOL" "$FPATH" "$ADIFF")"
@@ -240,6 +283,10 @@ print(json.dumps({"workspace":sys.argv[1],"session_id":sys.argv[2],
     # full connection failure (cannot record) from a reachable-but-degraded gate.
     GATE_AVAILABLE=1
     REACHED=1
+    # Tight timeouts on the critical-path gate: fail fast to the fail-mode switch
+    # instead of stalling every governed edit for up to 5s on a slow/down server.
+    CURL_MAX_TIME=2 CURL_CONNECT_TIMEOUT=1
+    export CURL_MAX_TIME CURL_CONNECT_TIMEOUT
     if ! post_json "$KB_ENDPOINT/api/v1/gate/check" "$BODY"; then
       GATE_AVAILABLE=0; REACHED=0
     elif ! is_2xx "$RESP_CODE"; then
@@ -264,7 +311,11 @@ print(json.dumps({"workspace":sys.argv[1],"session_id":sys.argv[2],
       exit 0
     fi
     if [[ "$VERDICT" == "consult_required" ]]; then
-      emit_deny "[KB] BLOCKED: this is a governed change. Call kb_consult for '$WS' first, then retry."
+      # Actionable deny: include the exact workspace key AND the session id (the
+      # one value the agent cannot guess) plus a copy-pasteable kb_consult call.
+      # A null/empty session_id echoes as empty (json_field already emits "" for
+      # JSON null), never the literal "None".
+      emit_deny "[KB] BLOCKED: this is a governed change and no explicit consultation is on record. Call kb_consult(workspace='$WS', source_session='$SESSION', intent='<what you are doing>') then retry."
     fi
     # Only reached when 2xx AND verdict == allow.
     exit 0

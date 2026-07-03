@@ -224,11 +224,17 @@ class ConsultResponse(BaseModel):
 
 
 class GateCheckResponse(BaseModel):
-    """kb_gate_check verdict for a pending code action."""
+    """kb_gate_check verdict for a pending code action.
+
+    ``session_id`` and ``workspace`` echo the exact gate key back so an MCP
+    caller that is blocked can construct the clearing kb_consult call without
+    guessing either value (the session id in particular is not agent-guessable)."""
 
     verdict: str  # 'allow' | 'consult_required'
     reason: str = ""
     rules: list[SearchHitModel] = []
+    session_id: str = ""
+    workspace: str = ""
 
 
 class ComplianceResponse(BaseModel):

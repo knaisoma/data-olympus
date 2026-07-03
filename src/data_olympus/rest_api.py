@@ -486,6 +486,10 @@ def register_routes(
                 agent_identity=body.get("agent_identity", "unknown"),
                 ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
                 audit_log=state.audit_log,
+                # Optional: installers mark prompt-hook auto-consults so they are
+                # audited but never clear the gate. Omitted -> explicit (old
+                # clients are real agent calls).
+                trigger=body.get("trigger", "explicit"),
             )
             return JSONResponse(resp.model_dump())
 

@@ -27,9 +27,10 @@ def test_gemini_install_preserves_mcp_and_uses_dialect(tmp_path):
     blob = json.dumps(data)
     assert "--dialect gemini" in blob                       # gemini command form
     assert "--agent gemini" in blob                         # consult audit records gemini
-    # BeforeTool gates the mutating tools
+    # BeforeTool gates the mutating tools; matcher is anchored so it matches
+    # exactly these tool names (no substring match against other tools).
     bt = data["hooks"]["BeforeTool"][0]
-    assert bt["matcher"] == "write_file|replace|run_shell_command"
+    assert bt["matcher"] == "^(write_file|replace|run_shell_command)$"
 
 
 def test_gemini_uninstall_surgical(tmp_path):

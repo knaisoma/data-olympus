@@ -4,6 +4,34 @@ data-olympus can act as an enforced gate for code and architectural decisions,
 not only an advisory knowledge base. Enforcement is per-agent: it runs in each
 agent's hook surface, driven by a shared policy core in the server.
 
+## Gate policy: only an explicit consult clears the gate
+
+The gate means "the agent explicitly consulted the governing rules for this
+work", not merely "an HTTP call to /consult happened recently in this session".
+Two kinds of consult are recorded:
+
+- **Explicit consult** (`trigger: "explicit"`, the default): a deliberate
+  `kb_consult` MCP call (or a `POST /api/v1/consult` with no `trigger`, since an
+  old client sending a bare consult is always a real agent action). Only an
+  explicit consult that is still fresh (within `KB_CONSULT_TTL_SEC`) satisfies
+  the gate for its `(session_id, workspace)` pair.
+- **Prompt-hook consult** (`trigger: "prompt_hook"`): the auto-consult the
+  per-agent installers fire on every user turn (Claude/Codex `UserPromptSubmit`,
+  Gemini `BeforeAgent`) to inject governing rules into the turn's context. It is
+  recorded for audit/compliance and its rules are still injected, but it **never
+  clears the gate**. Otherwise every user prompt would refresh the ledger and the
+  gate would fire only during autonomous stretches longer than the TTL.
+
+A prompt-hook consult never downgrades a still-fresh explicit consult on the same
+`(session, workspace)`: the ledger tracks the last explicit consult separately, so
+interleaved prompt-hook consults cannot un-clear a gate an explicit consult
+cleared.
+
+There is no deadlock for legitimately non-governed intents: `kb_gate_check` only
+requires a consult for actions the classifier deems governed, and any explicit
+consult (governed or not) records a fresh explicit timestamp, so an agent can
+always clear the gate by calling `kb_consult` and then retrying.
+
 ## Server endpoints
 
 - `POST /api/v1/consult`: record a consultation for `(source_session, workspace)`
@@ -12,6 +40,9 @@ agent's hook surface, driven by a shared policy core in the server.
   - `intent`
   - `source_session`
   - `agent_identity`
+  - `trigger` (optional; `"explicit"` default, or `"prompt_hook"` for an
+    installer auto-consult — see the gate policy above). Omitting it is treated as
+    `"explicit"` for backward compatibility.
 - `POST /api/v1/gate/check`: verdict (`allow` | `consult_required`) for a pending
   code action. Body:
   - `workspace`
@@ -19,6 +50,11 @@ agent's hook surface, driven by a shared policy core in the server.
   - `tool_name`
   - `action_path`
   - `action_diff` (optional)
+
+  The response echoes `session_id` and `workspace` (the exact gate key) alongside
+  the verdict and reason, so a blocked MCP caller can build the clearing
+  `kb_consult` call without guessing the session id. When blocked, `reason`
+  contains a copy-pasteable `kb_consult(...)` instruction.
 - `GET /api/v1/compliance`: aggregated enforcement-event counts.
 
 The same three are exposed as the `kb_consult`, `kb_gate_check`, and
@@ -43,6 +79,15 @@ The installer writes a managed hook block (SessionStart, UserPromptSubmit,
 PreToolUse, Stop) into `~/.claude/settings.json`, tagged so re-runs never
 duplicate entries and uninstall never touches operator-authored settings.
 
+`kb enforce doctor` verifies more than endpoint reachability. It also checks that
+the managed marker at the current shim version is present in the live settings
+file, that the hook dispatcher (`bin/kb-enforce-hook`, or the OpenCode plugin
+file) exists and is executable, and it WARNS and fails when the dispatcher path
+resolves inside a `.worktrees/` or `.claude/worktrees/` checkout: an install
+performed from a worktree dangles after the worktree is pruned and then silently
+fails open. If doctor warns about a worktree install, re-run
+`kb enforce install` from the main checkout.
+
 ## Per-agent providers
 
 Enforcement is installed per agent. Each agent has its own hook or
@@ -51,8 +96,8 @@ tiers below are honest about what each surface can and cannot block.
 
 | Agent | Tier | What it does |
 |---|---|---|
-| Claude Code | hard | PreToolUse hook blocks governed `Edit`/`Write`/`MultiEdit`/`NotebookEdit` (exit 2 deny). |
-| Codex | hard | PreToolUse hook blocks governed `Edit`/`Write`/`MultiEdit` (exit 2 deny). See the trust note below. |
+| Claude Code | hard | PreToolUse hook blocks governed `Edit`/`Write`/`MultiEdit`/`NotebookEdit`/`Bash` (exit 2 deny). |
+| Codex | hard | PreToolUse hook blocks governed `Edit`/`Write`/`MultiEdit`/`Bash` (exit 2 deny). See the trust note below. |
 | Gemini | hard | BeforeTool hook blocks governed `write_file`/`replace`/`run_shell_command` (JSON-stdout deny). |
 | OpenCode | hard (with caveat) | `tool.execute.before` plugin throws to abort governed `edit`/`write`/`patch`/`multiedit`/`bash`. See caveats below. |
 | Copilot CLI | soft | Managed instructions block (advisory) plus MCP; compliance is observed via the audit log, not blocked. |
@@ -90,13 +135,23 @@ existing `~/.codex/hooks.json`, preserving any operator-authored hooks.
 
 These caveats are deliberate and documented, not bugs:
 
-- Codex gates `Edit`, `Write`, and `MultiEdit`, but NOT the Bash tool. A
-  shell-driven write run through Bash bypasses the Codex gate.
+- Codex gates `Edit`, `Write`, `MultiEdit`, AND `Bash`. Bash is gated so a
+  shell-driven write or a dependency-install command run through Bash does not
+  bypass the gate. (Bash carries no file path, so only diff/command signals such
+  as install commands classify it; see the path note below.)
+- Claude Code gates `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, and `Bash`.
+  The tool matchers are anchored (`^(...)$`) so they match exactly those tool
+  names and do not substring-match unrelated tools such as `BashOutput`.
 - OpenCode gates `edit`, `write`, `patch`, `multiedit`, and `bash`, but
   batch-tool writes are not gated. The plugin gates `bash` specifically to
   narrow this gap. Note that `bash` and `patch` actions carry no file path, so
-  path-governed rules cannot classify them: for those two tools the gate is
-  advisory (it cannot match a path-scoped governing rule).
+  path-governed rules cannot classify them: for those two tools the gate keys off
+  the command/patch content (passed as `action_diff`), not a file path.
+  The OpenCode plugin resolves the workspace key to the main git worktree
+  basename (the same worktree-invariant key every other surface uses), so a
+  consult recorded from the main checkout clears the OpenCode gate too; it no
+  longer sends the raw absolute directory path (which could never match a
+  consult keyed by basename).
 
 ### Copilot IDE is repo-scoped (CWD side effect)
 

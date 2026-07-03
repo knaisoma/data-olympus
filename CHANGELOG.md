@@ -14,6 +14,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Actionable gate deny message: the BLOCKED text (and the `consult_required`
+  verdict `reason`) now includes the exact workspace key, the session id (the one
+  parameter an agent cannot guess), and a copy-pasteable
+  `kb_consult(workspace=..., source_session=..., intent=...)` call.
+  `GateCheckResponse` gained `session_id` and `workspace` echo fields so MCP
+  callers see the gate key.
 - Write-pipeline visibility (issue #72, Wave 0). `kb_health` and `/health` now
   report the **live** pending-queue and push-queue sizes (previously hardwired to
   zero because the counters were static attributes that were never updated), plus
@@ -30,6 +36,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Enforcement gate policy: the gate now clears only on an explicit
+  consultation, not on any recent consult (behavioral change).** Previously the
+  gate meant "an HTTP call to `/consult` happened recently in this session", so
+  the per-agent installers' per-prompt auto-consults (Claude/Codex
+  `UserPromptSubmit`, Gemini `BeforeAgent`) kept the ledger perpetually fresh and
+  the gate only fired during autonomous stretches longer than the TTL. Consults
+  now carry a `trigger`: an **explicit** consult (a deliberate `kb_consult` call,
+  the default, and any old client that omits the field) clears the gate, while a
+  **prompt_hook** consult (the installer auto-consults, now marked as such) is
+  recorded for audit/compliance and injects rules but never clears the gate. A
+  prompt-hook consult never downgrades a still-fresh explicit consult. Deployments
+  that relied on the per-prompt auto-clear will now see the gate require an
+  explicit `kb_consult` before governed edits. Backward compatible for old
+  clients (a bare consult with no `trigger` counts as explicit). See
+  `docs/enforcement.md`.
 - Frozen push-queue entries (those that hit `max_attempts`) are now **skipped**
   by the retry loop instead of being retried every interval forever; the freeze
   is logged once at WARN and surfaced via `push_queue_frozen` in health. See
@@ -45,6 +66,26 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > itself (rebase-retry redesign); that is tracked separately as Wave 1.
 ### Fixed
 
+- OpenCode gate (`data-olympus-gate.ts`): resolves the workspace to the main git
+  worktree **basename** (matching the key every other surface records consults
+  under) instead of the raw absolute path, which could never match; and passes
+  the tool arguments (command/patch/content) as `action_diff`, so bash and patch
+  actions are actually classified instead of the gate seeing empty everything and
+  allowing.
+- Enforcement hook (`bin/kb-enforce-hook`): a null `session_id` now renders as an
+  empty string instead of the literal `"None"` (which became a bogus ledger key);
+  the critical-path pre-tool gate now uses tight `--max-time 2 --connect-timeout 1`
+  timeouts; and the pre-tool payload is parsed once (base64-framed) instead of
+  spawning `python3` per field.
+- Anchored the installer tool matchers (`^(...)$`) so `Bash` no longer
+  substring-matches `BashOutput` (and likewise for the Codex and Gemini matchers).
+- `kb enforce doctor` now also verifies the managed marker/version in the live
+  settings file and that the hook dispatcher exists and is executable, and warns
+  (and fails) when the dispatcher resolves inside a `.worktrees/` or
+  `.claude/worktrees/` checkout, which dangles after pruning and silently fails
+  open.
+- Docs: `docs/enforcement.md` now states that Codex DOES gate Bash (matching the
+  installer) and documents the explicit-consult gate policy honestly.
 - `scripts/run-local.sh` no longer deletes an arbitrary user-supplied `$1`
   path. It previously ran `rm -rf "$KB_DIR"` unconditionally, so passing your
   own bundle's path as the first argument would silently delete it. The

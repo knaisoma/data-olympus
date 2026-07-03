@@ -82,6 +82,44 @@ teardown() {
   [[ "$output" == *"consult"* ]]
 }
 
+@test "pre-tool deny message is actionable: session id + workspace + copy-pasteable kb_consult" {
+  # The deny must echo the session id (the one param the agent cannot guess) and
+  # the workspace key inside a copy-pasteable kb_consult(...) call.
+  run bash -c 'echo "{\"session_id\":\"blockme\",\"cwd\":\"/tmp/proj\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/proj/pyproject.toml\"}}" | "'"$HOOK"'" pre-tool'
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"kb_consult(workspace="* ]]
+  [[ "$output" == *"source_session='blockme'"* ]]
+}
+
+@test "pre-tool with a null session_id emits empty (never the literal None)" {
+  # json_field must render JSON null as "" so the deny/consult key is empty, not
+  # the literal string "None".
+  run bash -c 'echo "{\"session_id\":null,\"cwd\":\"/tmp/proj\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/proj/pyproject.toml\"}}" | "'"$HOOK"'" pre-tool'
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"None"* ]]
+  [[ "$output" == *"source_session=''"* ]]
+}
+
+@test "user-prompt consult body carries trigger=prompt_hook" {
+  # The installer-driven auto-consult must be marked prompt_hook so it is audited
+  # but never clears the gate.
+  CAP="${BATS_TEST_TMPDIR}/consult-body.json"
+  kill "$MOCK_PID" 2>/dev/null || true
+  wait "$MOCK_PID" 2>/dev/null || true
+  KB_MOCK_CAPTURE_FILE="$CAP" python3 "${FIXTURE_DIR}/enforce-mock-server.py" "$PORT" &
+  MOCK_PID=$!
+  for _ in $(seq 1 30); do
+    if curl --silent --max-time 0.2 "http://127.0.0.1:${PORT}/api/v1/compliance" >/dev/null 2>&1; then break; fi
+    sleep 0.1
+  done
+
+  run bash -c 'echo "{\"session_id\":\"s1\",\"cwd\":\"/tmp/proj\",\"prompt\":\"add a library\"}" | "'"$HOOK"'" user-prompt'
+  [ "$status" -eq 0 ]
+  [ -f "$CAP" ]
+  run python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["trigger"])' "$CAP"
+  [ "$output" = "prompt_hook" ]
+}
+
 @test "pre-tool mode allows (exit 0) when verdict allow" {
   run bash -c 'echo "{\"session_id\":\"allowme\",\"cwd\":\"/tmp/proj\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/proj/README.md\"}}" | "'"$HOOK"'" pre-tool'
   [ "$status" -eq 0 ]
