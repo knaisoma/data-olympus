@@ -64,7 +64,13 @@ class PushQueue:
                 count += 1
         return count
 
-    def drain(self, *, push_fn: Callable[[str], None], max_attempts: int) -> None:
+    def drain(
+        self,
+        *,
+        push_fn: Callable[[str], None],
+        max_attempts: int,
+        on_rebase_conflict: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
         """Iterate every queued entry. push_fn(worktree_path) is called; on
         success the entry is removed; on failure the entry is updated with
         attempt count + last error and left in the queue.
@@ -74,7 +80,18 @@ class PushQueue:
         the remote. A frozen entry stays on disk for operator inspection and is
         surfaced via ``frozen_count()`` in health; an operator clears it by
         deleting or requeuing the entry file (see docs/serving.md).
+
+        ``on_rebase_conflict`` (scope item 2): when ``push_fn`` raises
+        :class:`~data_olympus.git_ops.RebaseConflictError`, the commit cannot be
+        auto-published (the session branch does not rebase cleanly onto the moved
+        origin/main). Instead of retrying forever, the callback demotes the commit
+        to a pending entry for operator resolution and the queue entry is removed.
+        The callback is responsible for the audit event and the pending record; if
+        it raises, the entry is treated as a retryable failure (kept in the queue)
+        so a demotion bug cannot silently drop the write.
         """
+        from data_olympus.git_ops import RebaseConflictError
+
         if not os.path.isdir(self._root):
             return
         for name in sorted(os.listdir(self._root)):
@@ -105,6 +122,36 @@ class PushQueue:
                 continue
             try:
                 push_fn(entry["worktree_path"])
+            except RebaseConflictError as conflict:
+                # Not auto-resolvable: demote to pending for operator resolution
+                # rather than retrying forever (scope item 2). Only remove the
+                # queue entry once the demotion callback succeeds, so a callback
+                # failure keeps the commit queued (never silently lost).
+                if on_rebase_conflict is None:
+                    entry["attempts"] = entry.get("attempts", 0) + 1
+                    entry["last_error"] = f"rebase_conflict: {conflict.detail}"
+                    entry["last_error_at"] = time.time()
+                    atomic_write_json(entry_path, entry)
+                    continue
+                try:
+                    on_rebase_conflict(entry)
+                except Exception:  # noqa: BLE001 - demotion failed; keep queued
+                    log.exception(
+                        "rebase-conflict demotion failed (sha=%s); keeping queued",
+                        entry.get("sha", "?"),
+                    )
+                    entry["attempts"] = entry.get("attempts", 0) + 1
+                    entry["last_error"] = "demotion_failed"
+                    entry["last_error_at"] = time.time()
+                    atomic_write_json(entry_path, entry)
+                    continue
+                log.warning(
+                    "push queue entry demoted to pending after rebase conflict "
+                    "(sha=%s worktree=%s); operator must resolve",
+                    entry.get("sha", "?"), entry.get("worktree_path", "?"),
+                )
+                atomic_remove(entry_path)
+                continue
             except Exception as exc:  # noqa: BLE001 -- intentional: capture any push failure
                 entry["attempts"] = entry.get("attempts", 0) + 1
                 entry["last_error"] = str(exc)

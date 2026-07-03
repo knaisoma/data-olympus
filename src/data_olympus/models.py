@@ -182,6 +182,9 @@ class ResolvePendingResponse(BaseModel):
     conflict_markers: str | None = None
     base_commit: str | None = None
     current_commit: str | None = None
+    # Machine-readable rejection detail for the CAS / validation gates
+    # (rejected_stale_base, rejected_invalid_document) on the resolve path.
+    reason: str | None = None
 
 
 class PendingEntry(BaseModel):

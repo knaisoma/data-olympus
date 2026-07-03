@@ -62,6 +62,39 @@ reports `degraded: true` only when the index has not been rebuilt within
 For a local read-only demo with no remote, set `KB_REMOTE_URL=""`. The server
 stays healthy as long as the index builds successfully on startup.
 
+## Write serialization and integrity gates
+
+Every write (`kb_propose_memory`, `kb_propose_edit`, `kb_resolve_pending`,
+onboarding bootstrap) goes through one serialized critical section so concurrent
+writes cannot corrupt each other:
+
+- A **process-wide write serializer** wraps the write → `git add` → commit →
+  enqueue sequence, so one thread's commit can never sweep another thread's staged
+  file. Write volume is rate-limited, so a single global mutex is cheap.
+- A **per-path advisory lock**, shared between the auto-commit path and the
+  pending queue, prevents two writes to the same file from racing and prevents an
+  auto-commit from landing on a path with a pending proposal in flight (whose
+  later approval would clobber it). A write blocked by the lock returns
+  `rejected_path_lock_busy`. An orphaned lock (a crash between lock acquisition
+  and the pending entry write) is reclaimed by the pending GC loop.
+- A **content-validation gate** runs on the postimage before commit. It rejects
+  `rejected_invalid_document` when the frontmatter is malformed YAML, a
+  `type`/`status`/`tier` enum value is out of vocabulary, or the `id` is a
+  forged/duplicate of one already used by a different path (which would break
+  every subsequent index rebuild — one bad write, persistent degraded state). The
+  response `reason` carries the machine-readable errors.
+- **Compare-and-swap (optimistic concurrency).** When a caller supplies a base
+  marker (`base_commit`, `base_blob_sha`, or `target_file_hash`) on
+  `kb_propose_edit` (or it is carried on the pending entry into
+  `kb_resolve_pending`), the server refreshes the session worktree's base onto
+  `origin/main` and compares the marker against the current target content. A
+  mismatch returns `rejected_stale_base` and nothing is committed. When no marker
+  is supplied, the pre-0.3.0 behavior is preserved.
+- Ordering of side effects: the commit message and all gates are evaluated
+  BEFORE the file is written and `git add`-ed, and on any failure after the add
+  the worktree is hard-reset, so a rejected write never leaves a staged leftover
+  for the session's next commit to sweep in.
+
 ## Push queue and write-path visibility
 
 Committed writes are published to `origin/main` through a durable push queue: a
@@ -76,6 +109,22 @@ path is diagnosable:
 
 Both counts are computed at health-report time from the queues themselves, so
 they cannot drift.
+
+### Non-fast-forward push recovery
+
+When a second overlapping session moves `origin/main` between a session's commit
+and its push, the push is rejected **non-fast-forward**. The push loop classifies
+this distinctly from a network failure: it fetches `origin/main`, rebases the
+session branch onto it, and retries the push once. Most non-FF cases (the two
+sessions touched different files) publish cleanly on the retry.
+
+If the rebase **conflicts** (the two sessions edited the same lines
+incompatibly), the commit cannot be auto-published. Instead of retrying forever,
+the push loop **demotes** the commit to a pending entry for operator resolution:
+the postimage is re-proposed as a pending edit (visible via `kb_list_pending`),
+the queue entry is removed, and a `push_conflict_demoted` audit event is recorded.
+The operator resolves the pending entry (approving re-applies it on the current
+base, subject to the CAS/validation gates) to publish the change.
 
 ### Startup recovery
 
@@ -94,8 +143,10 @@ retry loop stops retrying it (retrying a permanently failing push every interval
 only spams the remote and hides the problem). The freeze is logged once at WARN
 with the sha, worktree, and last error, and the entry is counted in
 `push_queue_frozen`. **A nonzero `push_queue_frozen` means writes are stuck and
-need operator attention** (the common Wave-0 cause is a non-fast-forward push
-against a moved `origin/main`; the automatic rebase-retry fix for that is Wave 1).
+need operator attention.** Non-fast-forward pushes against a moved `origin/main`
+are now recovered automatically (see *Non-fast-forward push recovery* above), so
+a frozen entry now signals a persistent failure the rebase path could not
+handle — typically an authentication, network, or remote-side rejection.
 
 To unfreeze, an operator resolves the underlying push failure, then clears the
 entry file directly on the push-queue volume (`KB_PUSH_QUEUE_ROOT`, default
@@ -361,6 +412,21 @@ MUST still deploy on a trusted private network or behind an authenticating
 reverse proxy (terminate TLS there). See `SECURITY.md` for the full threat model,
 the route/capability table, payload limits, the tamper-evident audit log, and the
 git sync-failure health fields.
+
+## Git commit identity
+
+Every write commits to the KB repo, so git needs an author/committer identity.
+The shipped Docker image sets a default (`data-olympus-mcp <data-olympus-mcp@localhost>`)
+in `deploy/docker/entrypoint.sh` so the artifact can commit out of the box; the
+server's `main()` also fills unset `GIT_*` variables as a belt-and-suspenders for
+non-Docker runs. Override the identity with:
+
+- `KB_GIT_AUTHOR_NAME` — commit author/committer name (default `data-olympus-mcp`).
+- `KB_GIT_AUTHOR_EMAIL` — commit author/committer email (default
+  `data-olympus-mcp@localhost`).
+
+A pre-existing `GIT_AUTHOR_*`/`GIT_COMMITTER_*` value or a real `git config`
+identity is never overwritten.
 
 ## Running locally
 

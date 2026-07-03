@@ -147,3 +147,104 @@ def test_resolve_edit_uses_edited_text(tmp_path) -> None:
     )
     resolved = q.approve(pid, edited_text="edited!")
     assert resolved.postimage == "edited!"
+
+
+# ---- item 5: atomic claim + orphan-lock GC ----
+
+
+def test_sequential_double_approve_second_is_gone(tmp_path) -> None:
+    """A SEQUENTIAL second resolve of a fully-consumed id sees PendingNotFoundError
+    (the entry is gone). The CONCURRENT race is covered separately below; there
+    the loser sees PendingAlreadyResolvedError because the entry vanishes between
+    the exists() check and the rename."""
+    from data_olympus.pending import PendingNotFoundError
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pid = q.enqueue(
+        proposal_type="memory", target_path="memory/inbox/a.md",
+        postimage="body", base_commit="c", base_blob_sha=None,
+        target_file_hash=None, meta={},
+    )
+    first = q.approve(pid)
+    assert first.postimage == "body"
+    with pytest.raises(PendingNotFoundError):
+        q.approve(pid)
+
+
+def test_concurrent_approve_exactly_one_winner(tmp_path) -> None:
+    """Threaded: N threads approve the same id; exactly one succeeds, the rest
+    raise PendingAlreadyResolvedError. Proves the os.rename claim is a real
+    test-and-set."""
+    import threading
+
+    from data_olympus.pending import (
+        PendingAlreadyResolvedError,
+        PendingNotFoundError,
+    )
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pid = q.enqueue(
+        proposal_type="memory", target_path="memory/inbox/race.md",
+        postimage="body", base_commit="c", base_blob_sha=None,
+        target_file_hash=None, meta={},
+    )
+    wins: list[int] = []
+    losses: list[int] = []
+    barrier = threading.Barrier(8)
+
+    def worker() -> None:
+        barrier.wait()
+        try:
+            q.approve(pid)
+            wins.append(1)
+        except (PendingAlreadyResolvedError, PendingNotFoundError):
+            # Both mean "you lost the race, the entry is gone". Either is a
+            # correct loser outcome; what must NOT happen is two winners.
+            losses.append(1)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(wins) == 1
+    assert len(losses) == 7
+
+
+def test_gc_orphan_locks_reclaims_lock_without_entry(tmp_path) -> None:
+    """A crash between _acquire_lock and the entry write leaves a lock with no
+    entry; gc_orphan_locks reclaims it so the path is not locked forever."""
+    import json
+    import uuid
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    # Simulate the crash: acquire a lock for a pending_id whose entry never lands.
+    orphan_id = uuid.uuid4().hex
+    q._acquire_lock("decisions/orphan.md", orphan_id)  # noqa: SLF001
+    assert q.locks_held() == 1
+    reclaimed = q.gc_orphan_locks()
+    assert reclaimed == 1
+    assert q.locks_held() == 0
+    # A live lock (with entry) is NOT reclaimed.
+    pid = q.enqueue(
+        proposal_type="edit", target_path="decisions/live.md",
+        postimage="x", base_commit="c", base_blob_sha=None, target_file_hash=None,
+        meta={},
+    )
+    assert q.gc_orphan_locks() == 0
+    assert q.locks_held() == 1
+    _ = json, pid
+
+
+def test_path_lock_shared_context_manager(tmp_path) -> None:
+    """The auto-commit path acquires the SAME lock the pending queue uses, so a
+    path with a pending proposal cannot be auto-committed concurrently."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    q.enqueue(
+        proposal_type="edit", target_path="universal/foundation/x.md",
+        postimage="a", base_commit="c", base_blob_sha=None, target_file_hash=None,
+        meta={},
+    )
+    # The auto-commit path_lock on the same target must be busy.
+    with pytest.raises(PathLockBusyError), q.path_lock(
+        "universal/foundation/x.md", owner="auto-commit:s",
+    ):
+        pass

@@ -12,6 +12,63 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Write-pipeline integrity core (epic #72).** This wave makes the write-safety
+  claims in `SPEC.md` section 8 and `docs/serving.md` actually true; each item
+  ships with regression tests, including two integration tests that drive a real
+  second clone against a shared bare remote:
+  - **Write serialization.** A process-wide write serializer wraps the write →
+    `git add` → commit → enqueue critical section, and a per-path advisory lock —
+    now SHARED between the auto-commit path and the pending queue — prevents an
+    auto-commit from racing a concurrent write or landing on a path with a pending
+    proposal in flight (whose later approval would clobber it). The auto-commit
+    path previously took no lock, so concurrent `kb_propose_*` calls in one session
+    could interleave and one thread's commit could sweep another's staged file.
+  - **Non-fast-forward push recovery.** A push rejected non-FF (a second
+    overlapping session moved `origin/main`) is now classified distinctly from a
+    network failure: the push loop fetches + rebases the session branch onto
+    `origin/main` and retries. On a rebase conflict the commit is demoted to a
+    pending entry for operator resolution (with a `push_conflict_demoted` audit
+    event and the queue entry removed) instead of retrying identically forever.
+  - **CAS enforcement.** `base_commit` / `base_blob_sha` / `target_file_hash`
+    were accepted and stored but never checked. They are now enforced at commit
+    time on both the auto-commit and resolve paths: a supplied base marker that
+    does not match the current content on the worktree's refreshed base is rejected
+    `rejected_stale_base` without committing. No marker → behavior unchanged.
+  - **Content-validation gate.** No validation ran on the write path, so malformed
+    YAML, a forged/duplicate `id`, or an invalid enum value committed and pushed to
+    `origin/main` — and a duplicate `id` broke every subsequent index rebuild (one
+    bad write, persistent degraded state). Every postimage is now format-validated
+    plus checked for a duplicate `id` against the live index before commit; failures
+    are rejected `rejected_invalid_document` with machine-readable errors. Rendered
+    memories pass the gate as a cheap self-check.
+  - **Atomic pending claim.** `approve`/`reject` were get-then-remove, so two
+    concurrent resolves of the same id both committed. Resolution now claims the
+    entry via `os.rename` before reading (test-and-set); the loser gets
+    `already_resolved` / not-found. Orphaned path locks (a crash between lock
+    create and entry write) are reclaimed by the pending GC loop.
+  - **Unique memory filenames.** `<date>-<slug>.md` collided for same-day,
+    same-slug memories and the second auto-commit silently overwrote the first; a
+    short session/body-derived uniquifier is now appended.
+  - **Pending expiry audit.** Expiring a >24h pending entry now emits a
+    `pending_expired` / `auto_rejected` audit event instead of rejecting silently.
+  - **Ordering of side effects.** The commit message and all gates are now
+    evaluated before the file is written and `git add`-ed; on any post-add failure
+    the worktree is hard-reset so no staged leftover is swept into the next commit.
+  - **Git identity in the shipped image.** The Docker entrypoint (and the server
+    `main()` as a fallback) now set a default `GIT_AUTHOR_*`/`GIT_COMMITTER_*`
+    identity (overridable via `KB_GIT_AUTHOR_NAME` / `KB_GIT_AUTHOR_EMAIL`) so a
+    commit inside a fresh container no longer fails with "who are you".
+
+### Changed
+
+- **MCP/REST write-surface parity (deferred WP0b items).** The MCP
+  `kb_resolve_pending` tool now applies the `KB_MAX_POSTIMAGE_BYTES` `edited_text`
+  cap (REST already did), and the MCP `kb_consult` / `kb_gate_check` /
+  `kb_cleanup_plan` tools now apply the shared rate limiter consistently with their
+  REST counterparts.
+
 ### Security
 
 - Hardened the write and enforcement surface (issue #74). Ten fixes, each with

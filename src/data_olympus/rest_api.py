@@ -214,7 +214,32 @@ def _propose_status(status: str) -> int:
         return 413
     if status in ("rejected_rate_limited", "rejected_pending_queue_full"):
         return 429
+    if status in ("rejected_stale_base", "rejected_path_lock_busy"):
+        # Optimistic-concurrency / lock contention: the caller's base moved or a
+        # concurrent write holds the path. 409 Conflict.
+        return 409
+    if status == "rejected_invalid_document":
+        # The postimage failed the content-validation gate. 422 Unprocessable.
+        return 422
     return 400
+
+
+def _resolve_status(status: str) -> int:
+    """Map a resolve response status to an HTTP status code (item 5, item 3/4)."""
+    if status == "committed":
+        return 200
+    if status == "rejected_edited_text_too_large":
+        return 413
+    if status == "already_resolved":
+        # Lost the double-resolve race: the id was already decided. 409 Conflict.
+        return 409
+    if status == "rejected_stale_base":
+        return 409
+    if status == "rejected_invalid_document":
+        return 422
+    if status in ("rejected", "rejected_symlink_escape"):
+        return 200
+    return 200
 
 
 async def _read_json_capped(
@@ -407,6 +432,7 @@ def register_routes(
                 audit_log=state.audit_log,
                 can_auto_commit=principal.can_auto_commit,
                 max_text_bytes=state.config.max_text_bytes,
+                serializer=state.write_serializer, idx=state.idx,
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)
@@ -454,6 +480,7 @@ def register_routes(
                 audit_log=state.audit_log,
                 can_auto_commit=principal.can_auto_commit,
                 max_postimage_bytes=state.config.max_postimage_bytes,
+                serializer=state.write_serializer, idx=state.idx,
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)
@@ -487,6 +514,7 @@ def register_routes(
                     agent_identity=body.get("agent_identity", "operator"),
                     audit_log=state.audit_log,
                     max_postimage_bytes=state.config.max_postimage_bytes,
+                    serializer=state.write_serializer, idx=state.idx,
                 )
             except PendingNotFoundError:
                 # Unknown or already-resolved/expired pending_id: a client-side
@@ -497,7 +525,7 @@ def register_routes(
                      "message": f"no pending proposal with id '{pid}'"},
                     status_code=404,
                 )
-            status = 413 if resp.status == "rejected_edited_text_too_large" else 200
+            status = _resolve_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)
 
         @app.custom_route("/api/v1/pending", methods=["GET"])

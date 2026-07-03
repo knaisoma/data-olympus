@@ -7,7 +7,7 @@ import os
 import re
 import subprocess
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from data_olympus.audit_trailers import build_commit_message
 from data_olympus.auth import (
@@ -23,17 +23,46 @@ from data_olympus.models import (
     ResolvePendingResponse,
 )
 from data_olympus.pending import PathLockBusyError, PendingQueue, PendingQueueFullError
+from data_olympus.write_gate import (
+    WriteSerializer,
+    check_cas,
+    reset_worktree,
+    validate_postimage,
+)
 
 if TYPE_CHECKING:
     from data_olympus.audit_log import AuditLog
+    from data_olympus.index import Index
     from data_olympus.push_queue import PushQueue
     from data_olympus.rate_limit import SlidingWindowLimiter
     from data_olympus.worktrees import WorktreeRegistry
 
 
+# A shared write serializer used when a caller does not supply one. The
+# production server constructs a single instance and threads it into every write
+# call so they share one lock; tests that call the write functions directly get
+# this module-level default (each call still serializes correctly within a
+# process). Threading one explicit instance from the server is what makes the
+# guarantee hold across REST + MCP surfaces.
+_DEFAULT_SERIALIZER = WriteSerializer()
+
+
 def _slugify(text: str) -> str:
     s = re.sub(r"[^a-z0-9-]+", "-", text.lower()).strip("-")
     return s[:50] or "memory"
+
+
+def _memory_uniquifier(source_session: str, text: str) -> str:
+    """Short deterministic suffix so two same-day, same-slug memories do not
+    collide on ``<date>-<slug>.md`` and silently overwrite (scope item 6).
+
+    Derived from the session id + body so the same logical memory maps to the
+    same filename (idempotent re-proposal) while a different memory gets a
+    different name. 6 hex chars is enough entropy for the per-day, per-slug
+    bucket and keeps the filename readable."""
+    import hashlib
+    h = hashlib.sha256(f"{source_session}\0{text}".encode())
+    return h.hexdigest()[:6]
 
 
 def _memory_inbox_prefix() -> str:
@@ -88,6 +117,134 @@ def _emit_audit(
         })
 
 
+class _WriteRejected(Exception):
+    """Internal control-flow signal: a gate (symlink / CAS / validation) rejected
+    the write inside the locked critical section. Carries the ProposeResponse to
+    return. Never escapes the module."""
+
+    def __init__(self, response: ProposeResponse) -> None:
+        self.response = response
+        super().__init__(response.status)
+
+
+def _commit_in_worktree(
+    *,
+    worktrees: WorktreeRegistry,
+    push_queue: PushQueue,
+    pending: PendingQueue,
+    serializer: WriteSerializer,
+    idx: Index | None,
+    source_session: str,
+    agent_identity: str,
+    target_path: str,
+    postimage: str,
+    proposal_type: Literal["memory", "edit"],
+    subject: str,
+    target_tier: str,
+    confidence: float,
+    operator_confirmed: bool,
+    base_commit: str | None = None,
+    base_blob_sha: str | None = None,
+    target_file_hash: str | None = None,
+    push_meta: dict[str, Any] | None = None,
+    lock_owner: str | None = None,
+) -> str:
+    """Serialized write -> git add -> commit -> enqueue critical section.
+
+    Shared by the auto-commit (propose) path and the operator-resolve path so both
+    honor identical integrity gates (scope items 1, 3, 4, 8). Returns the commit
+    sha. Raises :class:`_WriteRejected` (carrying the ProposeResponse) when a gate
+    rejects, or :class:`PathLockBusyError` when the per-path advisory lock is held.
+
+    Order of operations, all under the process-wide write lock AND the per-path
+    advisory lock (shared with the pending queue):
+
+    1. Refresh the worktree base onto origin/main (so CAS compares against, and the
+       commit sits on, current content).
+    2. Build the commit message FIRST (trailer validation can raise; doing it
+       before any disk side effect means a late rejection leaves nothing staged --
+       scope item 8).
+    3. Symlink-escape containment on the join.
+    4. CAS: if the caller supplied a base marker and the refreshed target content
+       differs, reject rejected_stale_base without committing (item 3).
+    5. Content-validation gate on the postimage (item 4).
+    6. Write + git add + commit + enqueue. On ANY failure after the add, hard-reset
+       the worktree so no staged leftovers are swept into the next commit (item 8).
+    """
+    with serializer:
+        owner = lock_owner or f"auto-commit:{source_session}"
+        with pending.path_lock(target_path, owner=owner):
+            wt = worktrees.get_or_create(
+                source_session=source_session, agent_identity=agent_identity
+            )
+            # 1. Refresh the session branch base onto origin/main. On a rebase
+            # conflict the current base cannot be advanced; fall back to the
+            # unrefreshed base rather than failing the write (the push path's
+            # non-FF recovery handles publication). Network/other errors are
+            # likewise non-fatal here.
+            with contextlib.suppress(Exception):
+                worktrees.git.refresh_base(wt.path)
+
+            # 2. Build the commit message BEFORE any disk write (item 8).
+            msg = build_commit_message(
+                subject=subject,
+                source_session=source_session,
+                agent_identity=agent_identity,
+                confidence_original=confidence,
+                operator_confirmed=operator_confirmed,
+                proposal_type=proposal_type,
+                target_tier=target_tier,
+                target_path=target_path,
+            )
+
+            # 3. Symlink-escape containment.
+            full_path = safe_join_under_root(wt.path, target_path)
+            if full_path is None:
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_symlink_escape", target_path=target_path))
+
+            # 4. CAS against the refreshed base (item 3).
+            cas = check_cas(
+                worktree_path=wt.path, target_path=target_path,
+                base_commit=base_commit, base_blob_sha=base_blob_sha,
+                target_file_hash=target_file_hash,
+            )
+            if not cas.ok:
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_stale_base", target_path=target_path,
+                    reason=cas.reason))
+
+            # 5. Content-validation gate (item 4).
+            vr = validate_postimage(
+                target_path=target_path, postimage=postimage, idx=idx)
+            if not vr.ok:
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_invalid_document", target_path=target_path,
+                    reason="; ".join(e["message"] for e in vr.errors)))
+
+            # 6. Write + add + commit + enqueue; reset on any post-add failure.
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(postimage)
+            try:
+                subprocess.run(
+                    ["git", "-C", wt.path, "add", target_path], check=True)
+                subprocess.run(
+                    ["git", "-C", wt.path, "commit", "-m", msg], check=True)
+                sha = subprocess.check_output(
+                    ["git", "-C", wt.path, "rev-parse", "HEAD"], text=True,
+                ).strip()
+            except Exception:
+                # Something failed after the file was written/staged; discard so
+                # the leftover is not swept into the session's next commit (item 8).
+                with contextlib.suppress(Exception):
+                    reset_worktree(wt.path)
+                raise
+            push_queue.enqueue(
+                sha=sha, worktree_path=wt.path, meta=push_meta or {})
+            return sha
+
+
 def kb_propose_memory_fn(
     *,
     text: str,
@@ -105,8 +262,11 @@ def kb_propose_memory_fn(
     audit_log: AuditLog | None = None,
     can_auto_commit: bool = True,
     max_text_bytes: int = 0,
+    serializer: WriteSerializer | None = None,
+    idx: Index | None = None,
 ) -> ProposeResponse:
-    """Propose a new memory file under the memory inbox prefix as <date>-<slug>.md.
+    """Propose a new memory file under the memory inbox prefix as
+    <date>-<slug>-<uniq>.md.
 
     Structural rule is satisfied by construction; blocklist still applies.
     High confidence -> auto-commit + push enqueue. Low -> pending queue.
@@ -118,7 +278,8 @@ def kb_propose_memory_fn(
     """
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     slug = _slugify(text)
-    target_path = f"{_memory_inbox_prefix()}{today}-{slug}.md"
+    uniq = _memory_uniquifier(source_session, text)
+    target_path = f"{_memory_inbox_prefix()}{today}-{slug}-{uniq}.md"
     audit_base: dict[str, Any] = {
         "event_type": "propose_memory",
         "agent_identity": agent_identity,
@@ -208,41 +369,28 @@ def kb_propose_memory_fn(
             ),
         )
 
-    # High confidence: commit + enqueue push.
-    wt = worktrees.get_or_create(
-        source_session=source_session, agent_identity=agent_identity
-    )
-    # Symlink-escape containment (Codex blocker 1): a malicious KB commit can
-    # plant the inbox dir as a symlink pointing outside the worktree. Reject
-    # before any makedirs/open side effect.
-    full_path = safe_join_under_root(wt.path, target_path)
-    if full_path is None:
-        _emit_audit(audit_log, **{**audit_base, "status": "rejected_symlink_escape"})
-        return ProposeResponse(status="rejected_symlink_escape", target_path=target_path)
-    os.makedirs(os.path.dirname(full_path), exist_ok=True)
-    with open(full_path, "w", encoding="utf-8") as f:
-        f.write(postimage)
-    subprocess.run(["git", "-C", wt.path, "add", target_path], check=True)
-    subject = f"propose: {target_path}"
-    msg = build_commit_message(
-        subject=subject,
-        source_session=source_session,
-        agent_identity=agent_identity,
-        confidence_original=confidence,
-        operator_confirmed=False,
-        proposal_type="memory",
-        target_tier=target_tier,
-        target_path=target_path,
-    )
-    subprocess.run(["git", "-C", wt.path, "commit", "-m", msg], check=True)
-    sha = subprocess.check_output(
-        ["git", "-C", wt.path, "rev-parse", "HEAD"], text=True,
-    ).strip()
-    push_queue.enqueue(
-        sha=sha,
-        worktree_path=wt.path,
-        meta={"source_session": source_session, "agent_identity": agent_identity},
-    )
+    # High confidence: serialized commit + enqueue push (items 1, 4, 8).
+    try:
+        sha = _commit_in_worktree(
+            worktrees=worktrees, push_queue=push_queue, pending=pending,
+            serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
+            source_session=source_session, agent_identity=agent_identity,
+            target_path=target_path, postimage=postimage,
+            proposal_type="memory", subject=f"propose: {target_path}",
+            target_tier=target_tier, confidence=confidence,
+            operator_confirmed=False,
+            push_meta={"source_session": source_session,
+                       "agent_identity": agent_identity},
+        )
+    except _WriteRejected as rej:
+        resp = rej.response
+        _emit_audit(audit_log, **{**audit_base, "status": resp.status,
+                                   "reason": resp.reason})
+        return resp
+    except PathLockBusyError:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
+        return ProposeResponse(status="rejected_path_lock_busy",
+                               target_path=target_path)
     _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
     return ProposeResponse(status="committed", commit_sha=sha, push_state="queued")
 
@@ -296,6 +444,8 @@ def kb_propose_edit_fn(
     audit_log: AuditLog | None = None,
     can_auto_commit: bool = True,
     max_postimage_bytes: int = 0,
+    serializer: WriteSerializer | None = None,
+    idx: Index | None = None,
 ) -> ProposeResponse:
     """Propose an edit to an existing (or new) file under target_path.
 
@@ -371,35 +521,30 @@ def kb_propose_edit_fn(
             operator_prompt=f"Proposed edit to {target_path}. Accept (y), edit, or reject (n)?",
         )
 
-    wt = worktrees.get_or_create(source_session=source_session, agent_identity=agent_identity)
-    # Symlink-escape containment via the shared guard (see safe_join_under_root).
-    full_path = safe_join_under_root(wt.path, target_path)
-    if full_path is None:
-        _emit_audit(audit_log, **{**audit_base, "status": "rejected_symlink_escape"})
-        return ProposeResponse(status="rejected_symlink_escape",
+    # Serialized commit + CAS + validation + enqueue (items 1, 3, 4, 8).
+    try:
+        sha = _commit_in_worktree(
+            worktrees=worktrees, push_queue=push_queue, pending=pending,
+            serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
+            source_session=source_session, agent_identity=agent_identity,
+            target_path=target_path, postimage=postimage,
+            proposal_type="edit", subject=f"edit: {target_path}",
+            target_tier=target_tier, confidence=confidence,
+            operator_confirmed=False,
+            base_commit=base_commit, base_blob_sha=base_blob_sha,
+            target_file_hash=target_file_hash,
+            push_meta={"source_session": source_session,
+                       "agent_identity": agent_identity, "reason": reason},
+        )
+    except _WriteRejected as rej:
+        resp = rej.response
+        _emit_audit(audit_log, **{**audit_base, "status": resp.status,
+                                   "reason": resp.reason or reason})
+        return resp
+    except PathLockBusyError:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
+        return ProposeResponse(status="rejected_path_lock_busy",
                                target_path=target_path)
-    os.makedirs(os.path.dirname(full_path), exist_ok=True)
-    with open(full_path, "w", encoding="utf-8") as f:
-        f.write(postimage)
-    subprocess.run(["git", "-C", wt.path, "add", target_path], check=True)
-    subject = f"edit: {target_path}"
-    msg = build_commit_message(
-        subject=subject,
-        source_session=source_session,
-        agent_identity=agent_identity,
-        confidence_original=confidence,
-        operator_confirmed=False,
-        proposal_type="edit",
-        target_tier=target_tier,
-        target_path=target_path,
-    )
-    subprocess.run(["git", "-C", wt.path, "commit", "-m", msg], check=True)
-    sha = subprocess.check_output(
-        ["git", "-C", wt.path, "rev-parse", "HEAD"], text=True,
-    ).strip()
-    push_queue.enqueue(sha=sha, worktree_path=wt.path,
-                       meta={"source_session": source_session,
-                             "agent_identity": agent_identity, "reason": reason})
     _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
     return ProposeResponse(status="committed", commit_sha=sha, push_state="queued")
 
@@ -416,7 +561,11 @@ def kb_resolve_pending_fn(
     agent_identity: str,
     audit_log: AuditLog | None = None,
     max_postimage_bytes: int = 0,
+    serializer: WriteSerializer | None = None,
+    idx: Index | None = None,
 ) -> ResolvePendingResponse:
+    from data_olympus.pending import PendingAlreadyResolvedError
+
     audit_base: dict[str, Any] = {
         "event_type": "resolve",
         "agent_identity": agent_identity,
@@ -424,7 +573,14 @@ def kb_resolve_pending_fn(
         "pending_id": pending_id,
     }
     if decision == "reject":
-        pending.reject(pending_id)
+        try:
+            pending.reject(pending_id)
+        except PendingAlreadyResolvedError:
+            # Lost the double-resolve race (item 5): another resolver already
+            # decided this id. Surface a distinct status so the loser does not
+            # report a second decision.
+            _emit_audit(audit_log, **{**audit_base, "status": "already_resolved"})
+            return ResolvePendingResponse(status="already_resolved")
         _emit_audit(audit_log, **{**audit_base, "status": "rejected"})
         return ResolvePendingResponse(status="rejected")
     if decision not in ("approve", "edit"):
@@ -434,8 +590,8 @@ def kb_resolve_pending_fn(
     # ``edited_text`` becomes the committed postimage, bypassing the cap the
     # propose path enforced on the original postimage (item 2). Enforce it here
     # too, with a distinct status so the operator sees WHY the edit was refused.
-    # Peek at the entry (without consuming it) so a too-large edit leaves the
-    # pending entry in place to be re-edited rather than silently dropped.
+    # Checked BEFORE the atomic claim so a too-large edit leaves the pending entry
+    # in place to be re-edited rather than silently dropped.
     if edited_text is not None and max_postimage_bytes > 0 and (
         len(edited_text.encode("utf-8")) > max_postimage_bytes
     ):
@@ -443,7 +599,13 @@ def kb_resolve_pending_fn(
                     **{**audit_base, "status": "rejected_edited_text_too_large"})
         return ResolvePendingResponse(status="rejected_edited_text_too_large")
 
-    resolved = pending.approve(pending_id, edited_text=edited_text)
+    # Atomic claim: exactly one concurrent resolve of this id proceeds (item 5).
+    try:
+        resolved = pending.approve(pending_id, edited_text=edited_text)
+    except PendingAlreadyResolvedError:
+        _emit_audit(audit_log, **{**audit_base, "status": "already_resolved"})
+        return ResolvePendingResponse(status="already_resolved")
+
     target_tier, _ = _classify(resolved.target_path)
     audit_base["target_path"] = resolved.target_path
     audit_base["target_tier"] = target_tier
@@ -451,32 +613,32 @@ def kb_resolve_pending_fn(
         audit_base["confidence"] = float(resolved.meta.get("confidence", 0.0))
     except (TypeError, ValueError):
         audit_base["confidence"] = None
-    wt = worktrees.get_or_create(source_session=source_session,
-                                 agent_identity=agent_identity)
-    full_path = safe_join_under_root(wt.path, resolved.target_path)
-    if full_path is None:
-        _emit_audit(audit_log, **{**audit_base, "status": "rejected_symlink_escape"})
-        return ResolvePendingResponse(status="rejected_symlink_escape")
-    os.makedirs(os.path.dirname(full_path), exist_ok=True)
-    with open(full_path, "w", encoding="utf-8") as f:
-        f.write(resolved.postimage)
-    subprocess.run(["git", "-C", wt.path, "add", resolved.target_path], check=True)
-    subject = f"resolve: {resolved.target_path}"
-    msg = build_commit_message(
-        subject=subject,
-        source_session=resolved.meta.get("source_session", source_session),
-        agent_identity=resolved.meta.get("agent_identity", agent_identity),
-        confidence_original=float(resolved.meta.get("confidence", 0.0)),
-        operator_confirmed=True,
-        proposal_type=resolved.proposal_type,
-        target_tier=target_tier,
-        target_path=resolved.target_path,
-    )
-    subprocess.run(["git", "-C", wt.path, "commit", "-m", msg], check=True)
-    sha = subprocess.check_output(
-        ["git", "-C", wt.path, "rev-parse", "HEAD"], text=True,
-    ).strip()
-    push_queue.enqueue(sha=sha, worktree_path=wt.path, meta={})
+
+    # Serialized commit + CAS (from the pending entry's base markers) + validation
+    # + reset-on-late-failure, shared with the auto-commit path (items 1, 3, 4, 8).
+    try:
+        sha = _commit_in_worktree(
+            worktrees=worktrees, push_queue=push_queue, pending=pending,
+            serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
+            source_session=resolved.meta.get("source_session", source_session),
+            agent_identity=resolved.meta.get("agent_identity", agent_identity),
+            target_path=resolved.target_path, postimage=resolved.postimage,
+            proposal_type=resolved.proposal_type,
+            subject=f"resolve: {resolved.target_path}",
+            target_tier=target_tier,
+            confidence=float(resolved.meta.get("confidence", 0.0)),
+            operator_confirmed=True,
+            base_commit=resolved.base_commit,
+            base_blob_sha=resolved.base_blob_sha,
+            target_file_hash=resolved.target_file_hash,
+            push_meta={},
+            lock_owner=f"resolve:{pending_id}",
+        )
+    except _WriteRejected as rej:
+        resp = rej.response
+        _emit_audit(audit_log, **{**audit_base, "status": resp.status,
+                                   "reason": resp.reason})
+        return ResolvePendingResponse(status=resp.status, reason=resp.reason)
     _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
     return ResolvePendingResponse(status="committed", commit_sha=sha)
 

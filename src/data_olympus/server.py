@@ -144,6 +144,12 @@ class ServerState:
         self.rate_limiter: SlidingWindowLimiter | None = rate_limiter
         self.blocklist: PathBlocklist | None = blocklist
         self.audit_log: AuditLog | None = audit_log
+        # Process-wide write serializer (scope item 1): one instance shared by
+        # every write path so the write -> add -> commit -> enqueue critical
+        # section never interleaves across the REST threadpool and the MCP
+        # off-loop tool executor.
+        from data_olympus.write_gate import WriteSerializer
+        self.write_serializer = WriteSerializer()
         self.classifier: IntentClassifier = classifier or IntentClassifier()
         self.ledger: ConsultationLedger = ledger or ConsultationLedger()
         # Set at serve time (main) to observe the live streamable-http session
@@ -505,6 +511,25 @@ def build_app(
         )
         return resp.model_dump()
 
+    def _mcp_rate_limited() -> dict[str, object] | None:
+        """Apply the shared sliding-window limiter to an MCP enforcement-plane tool
+        (WP0b item (b)).
+
+        The REST consult / gate-check / cleanup-plan routes throttle via
+        ``_rate_limited``; the MCP tool paths did not, so an agent could hammer the
+        classifier/ledger unbounded. Key on the resolved principal (there is no
+        per-request remote addr on the MCP transport, so the limiter's per-agent
+        quota is the meaningful dimension). Returns a rejection dict when over
+        quota, else None. Skipped when no limiter is wired (read-only deploy)."""
+        limiter = state.rate_limiter
+        if limiter is None:
+            return None
+        principal_name = _current_principal.get().name
+        if not limiter.allow(remote_addr="mcp", agent_identity=principal_name):
+            return {"status": "rejected_rate_limited",
+                    "error": "too many requests; retry later"}
+        return None
+
     @app.tool()
     def kb_cleanup_plan(
         workspace: str, local_files: list[dict[str, str]],
@@ -513,6 +538,8 @@ def build_app(
         """Read-only. Classify local project-repo docs against KB content for this
         workspace/component and return thin-pointer replacements for duplicates.
         The agent applies confirmed edits locally; the server writes nothing."""
+        if (throttled := _mcp_rate_limited()) is not None:
+            return throttled
         from data_olympus.tools_onboarding import CleanupInputError, kb_cleanup_plan_fn
         try:
             resp = kb_cleanup_plan_fn(
@@ -554,6 +581,7 @@ def build_app(
                 audit_log=state.audit_log,
                 can_auto_commit=_current_principal.get().can_auto_commit,
                 max_text_bytes=state.config.max_text_bytes,
+                serializer=state.write_serializer, idx=state.idx,
             )
             return resp.model_dump()
 
@@ -586,6 +614,7 @@ def build_app(
                 audit_log=state.audit_log,
                 can_auto_commit=_current_principal.get().can_auto_commit,
                 max_postimage_bytes=state.config.max_postimage_bytes,
+                serializer=state.write_serializer, idx=state.idx,
             )
             return resp.model_dump()
 
@@ -608,6 +637,11 @@ def build_app(
                 pending=state.pending,
                 source_session=source_session, agent_identity=agent_identity,
                 audit_log=state.audit_log,
+                # WP0b item (a): the REST resolve path caps edited_text at
+                # KB_MAX_POSTIMAGE_BYTES; the MCP path was uncapped. Wire the same
+                # cap here so the two surfaces match.
+                max_postimage_bytes=state.config.max_postimage_bytes,
+                serializer=state.write_serializer, idx=state.idx,
             )
             return resp.model_dump()
 
@@ -677,6 +711,8 @@ def build_app(
             governing rules for the intent. Call before code/architectural work.
             trigger is 'explicit' (default: a deliberate consult, clears the gate)
             or 'prompt_hook' (an installer auto-consult: audited, never clears)."""
+            if (throttled := _mcp_rate_limited()) is not None:
+                return throttled
             import time as _time
 
             from data_olympus.tools_enforce import kb_consult_fn
@@ -696,6 +732,8 @@ def build_app(
         ) -> dict[str, object]:
             """Return a verdict (allow | consult_required) for a pending code action.
             Governed actions require a fresh consultation on record."""
+            if (throttled := _mcp_rate_limited()) is not None:
+                return throttled
             import time as _time
 
             from data_olympus.tools_enforce import kb_gate_check_fn
@@ -800,6 +838,28 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
     )
 
 
+def _ensure_git_identity() -> None:
+    """Give git a default author/committer identity when none is configured
+    (scope item 10).
+
+    The Docker entrypoint exports these, but a bare ``main()`` (local run, a
+    minimal container, a k8s image that predates the entrypoint change) may not.
+    Without an identity every ``git commit`` on the write path fails with "Please
+    tell me who you are". We set env defaults (overridable by
+    KB_GIT_AUTHOR_NAME / KB_GIT_AUTHOR_EMAIL, or by a pre-existing GIT_* value or
+    a real git config) so the shipped artifact commits out of the box. Only fills
+    unset vars, so a real operator identity is never clobbered."""
+    import os as _os
+
+    name = _os.environ.get("KB_GIT_AUTHOR_NAME", "data-olympus-mcp")
+    email = _os.environ.get("KB_GIT_AUTHOR_EMAIL", "data-olympus-mcp@localhost")
+    for var, value in (
+        ("GIT_AUTHOR_NAME", name), ("GIT_AUTHOR_EMAIL", email),
+        ("GIT_COMMITTER_NAME", name), ("GIT_COMMITTER_EMAIL", email),
+    ):
+        _os.environ.setdefault(var, value)
+
+
 def main() -> None:
     """Production entry. Loads config from env, bootstraps index, starts HTTP server
     with the git_pull_loop refresh task running in the background."""
@@ -821,6 +881,7 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
+    _ensure_git_identity()
     config = load_config()
     app = build_app_from_config(config, bootstrap_now=True)
     # The state lives inside build_app's closure; expose via app attribute for the lifespan task
@@ -900,6 +961,11 @@ def main() -> None:
                     push_queue=state.push_queue,
                     git=state.git,
                     interval_sec=30,
+                    # Non-FF recovery (scope item 2): a rebase conflict demotes the
+                    # commit to a pending entry via these; without them the loop
+                    # falls back to counting the conflict as a retryable failure.
+                    pending=state.pending,
+                    audit_log=state.audit_log,
                 ),
                 name="push_retry_loop",
             ))
@@ -918,6 +984,9 @@ def main() -> None:
                     pending=state.pending,
                     timeout_sec=config.pending_timeout_sec,
                     interval_sec=300,
+                    # Scope item 7: emit an audit event on each expiry instead of
+                    # silently rejecting >24h entries.
+                    audit_log=state.audit_log,
                 ),
                 name="pending_gc_loop",
             ))

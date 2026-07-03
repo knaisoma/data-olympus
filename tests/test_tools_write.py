@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from data_olympus.auth import PathBlocklist
@@ -487,3 +488,159 @@ def test_pending_get_rejects_traversal_id(tmp_path) -> None:
     import pytest
     with pytest.raises(PendingNotFoundError):
         pen.get("../../etc/passwd")
+
+
+# ---- 0.3.0 epic #72: CAS, validation gate, filename collision, double-resolve ----
+
+
+def _build_index(repo):
+    """Build an Index over the current repo HEAD so the validation gate has a
+    live corpus to check duplicate ids against."""
+    import tempfile
+
+    from data_olympus.index import Index
+    idx = Index(Path(tempfile.mkdtemp()) / "index.db")
+    idx.build(Path(str(repo)), source_commit="seed")
+    return idx
+
+
+def test_propose_edit_stale_base_rejected(tmp_path, monkeypatch) -> None:
+    """CAS (item 3): a base_blob_sha that does not match the current target
+    content on the refreshed base is rejected rejected_stale_base without a
+    commit."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    target, _real_blob = _seed_t1_file(repo)
+    # Supply a WRONG base blob sha -> stale.
+    from data_olympus.write_gate import _blob_sha
+    wrong = _blob_sha(b"content the caller wrongly believes is there\n")
+    resp = kb_propose_edit_fn(
+        target_path=target, postimage="new body\n", base_commit="HEAD",
+        base_blob_sha=wrong, target_file_hash=None, reason="fix",
+        source_session="s", agent_identity="claude", confidence=0.95,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    assert resp.status == "rejected_stale_base"
+    assert pq.size() == 0
+
+
+def test_propose_edit_correct_base_commits(tmp_path, monkeypatch) -> None:
+    """CAS pass-through: the correct base_blob_sha commits normally."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    target, blob = _seed_t1_file(repo)
+    # blob from _seed_t1_file is the ls-tree blob of the seeded content, which is
+    # what the session worktree's base holds. It must match.
+    resp = kb_propose_edit_fn(
+        target_path=target, postimage="new body\n", base_commit="HEAD",
+        base_blob_sha=blob, target_file_hash=None, reason="fix",
+        source_session="s", agent_identity="claude", confidence=0.95,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    assert resp.status == "committed"
+    assert pq.size() == 1
+
+
+def test_propose_edit_malformed_yaml_rejected(tmp_path, monkeypatch) -> None:
+    """Validation gate (item 4): a postimage with unterminated frontmatter is
+    rejected rejected_invalid_document, not committed."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    idx = _build_index(git._repo)
+    resp = kb_propose_edit_fn(
+        target_path="universal/foundation/STD-U-099.md",
+        postimage="---\nid: X\n# never closed\nbody\n",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason="", source_session="s", agent_identity="claude", confidence=0.95,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4", idx=idx,
+    )
+    assert resp.status == "rejected_invalid_document"
+    assert pq.size() == 0
+
+
+def test_propose_edit_duplicate_id_rejected(tmp_path, monkeypatch) -> None:
+    """Validation gate (item 4): a forged duplicate id (already used at a
+    different path) is rejected so the next index rebuild cannot break."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    # Seed STD-U-001 in the repo so the index knows that id -> that path.
+    _seed_t1_file(repo)
+    idx = _build_index(repo)
+    forged = "---\nid: STD-U-001\ntype: standard\nstatus: active\ntier: T1\n---\nforged\n"
+    resp = kb_propose_edit_fn(
+        target_path="decisions/DEC-forged.md", postimage=forged,
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason="", source_session="s", agent_identity="claude", confidence=0.95,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4", idx=idx,
+    )
+    assert resp.status == "rejected_invalid_document"
+    assert "already used" in (resp.reason or "").lower()
+    assert pq.size() == 0
+
+
+def test_memory_filename_collision_distinct_sessions(tmp_path, monkeypatch) -> None:
+    """item 6: two same-day, same-slug memories from DIFFERENT sessions get
+    distinct filenames (the uniquifier), so neither overwrites the other."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    common = dict(
+        text="daily standup note", tags=[], confidence=0.95,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=SlidingWindowLimiter(max_per_hour=100), blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    r1 = kb_propose_memory_fn(source_session="session-A", agent_identity="claude",
+                              **common)
+    r2 = kb_propose_memory_fn(source_session="session-B", agent_identity="claude",
+                              **common)
+    assert r1.status == "committed"
+    assert r2.status == "committed"
+    # Both files exist under memory/inbox with DIFFERENT names.
+    import glob
+    wt_a = reg.get_or_create(source_session="session-A", agent_identity="claude")
+    wt_b = reg.get_or_create(source_session="session-B", agent_identity="claude")
+    files_a = {os.path.basename(p)
+               for p in glob.glob(os.path.join(wt_a.path, "memory", "inbox", "*.md"))}
+    files_b = {os.path.basename(p)
+               for p in glob.glob(os.path.join(wt_b.path, "memory", "inbox", "*.md"))}
+    assert files_a and files_b
+    assert files_a != files_b  # distinct filenames, no silent overwrite
+
+
+def test_double_resolve_second_reports_already_resolved_or_not_found(
+    tmp_path, monkeypatch,
+) -> None:
+    """item 5: after one resolve commits, a second resolve of the same id does
+    NOT produce a second commit. The loser surfaces already_resolved (concurrent
+    window) or PendingNotFoundError (sequential, entry gone)."""
+    _set_git_env(monkeypatch)
+    from data_olympus.pending import PendingNotFoundError
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    m = kb_propose_memory_fn(
+        text="a memory", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.3, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    first = kb_resolve_pending_fn(
+        pending_id=m.pending_id, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=pq, pending=pen,
+        source_session="s", agent_identity="operator",
+    )
+    assert first.status == "committed"
+    assert pq.size() == 1
+    import pytest
+    with pytest.raises(PendingNotFoundError):
+        kb_resolve_pending_fn(
+            pending_id=m.pending_id, decision="approve", edited_text=None,
+            worktrees=reg, push_queue=pq, pending=pen,
+            source_session="s", agent_identity="operator",
+        )
+    # Still exactly one commit enqueued.
+    assert pq.size() == 1
