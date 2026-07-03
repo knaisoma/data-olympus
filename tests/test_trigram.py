@@ -275,12 +275,20 @@ def test_good_primary_hits_are_not_diluted_by_trigram(
 def test_trigram_hits_appended_after_primary(
     tmp_path: Path, tmp_index_path: Path,
 ) -> None:
-    """When the fallback fires, any primary hits keep the top positions and
-    trigram-only hits are appended strictly after them (no duplicates)."""
+    """When the fallback fires, every primary hit keeps a top position and
+    trigram-only hits are appended strictly after them (no duplicates).
+
+    DOC-A / DOC-B match the whole word "collector" (primary); DOC-C matches only
+    as a substring inside "precollectored" (trigram-only backfill). The primary
+    hits must all precede the backfill-only hit, verified via rank_class."""
+    from data_olympus.index import RANK_CLASS_BACKFILL, RANK_CLASS_PRIMARY
+
     kb = tmp_path / "kb"
     kb.mkdir()
     _write(kb, "a.md", "collector overview document.", doc_id="DOC-A")
     _write(kb, "b.md", "the metrics collectors and collector pipeline.", doc_id="DOC-B")
+    # No whole-word "collector"; only a substring, so DOC-C is trigram-only.
+    _write(kb, "c.md", "a precollectored widget assembly note.", doc_id="DOC-C")
     # Force the fallback even with primary hits by setting a high threshold.
     idx = Index(tmp_index_path, trigram_fallback=True, trigram_fallback_threshold=50)
     idx.build(kb, source_commit="x")
@@ -288,6 +296,21 @@ def test_trigram_hits_appended_after_primary(
     ids = [h.id for h in hits]
     assert "DOC-A" in ids and "DOC-B" in ids
     assert len(ids) == len(set(ids)), "no duplicate ids from primary+trigram merge"
+    # Ordering: every primary (whole-word) hit precedes any backfill-only hit.
+    classes = [h.rank_class for h in hits]
+    last_primary = max(
+        (i for i, c in enumerate(classes) if c == RANK_CLASS_PRIMARY), default=-1
+    )
+    first_backfill = next(
+        (i for i, c in enumerate(classes) if c == RANK_CLASS_BACKFILL), len(hits)
+    )
+    assert last_primary < first_backfill, (
+        "all primary hits must precede any trigram backfill hit; "
+        f"order={[(h.id, h.rank_class) for h in hits]}"
+    )
+    if "DOC-C" in ids:
+        by_id = {h.id: h for h in hits}
+        assert by_id["DOC-C"].rank_class == RANK_CLASS_BACKFILL
 
 
 def test_short_query_noops_fallback(

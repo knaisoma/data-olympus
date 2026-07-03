@@ -580,8 +580,8 @@ class Index:
         mtime = (kb_root / rel).stat().st_mtime
         return datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC).isoformat(), "mtime"
 
-    # Sentinel prefixing each commit's timestamp line in the batched git log, so
-    # the parser distinguishes a timestamp header from a changed-path line. A
+    # Sentinel prefixing each commit's timestamp record in the batched git log,
+    # so the parser distinguishes a timestamp header from a changed-path record. A
     # control char that cannot appear in a git path keeps the split unambiguous.
     _GIT_LOG_MARK = "\x01"
 
@@ -589,25 +589,29 @@ class Index:
     def _git_last_modified_map(cls, kb_root: Path) -> dict[str, str]:
         """Map every tracked path to its last-commit ISO timestamp in ONE pass (i).
 
-        Runs a single ``git log --name-only`` over the whole history and records,
-        for each path, the FIRST (most recent, since git log is newest-first)
-        commit timestamp that touched it. Replaces the previous one-subprocess-
-        per-file loop (N git invocations -> 1). Returns an empty map when the
-        directory is not a git repo or git is unavailable; the build then falls
-        back to filesystem mtime per file exactly as before, so the ``source``
-        recorded per doc ('git' vs 'mtime') is unchanged from the per-file path.
+        Runs a single ``git log -z --name-only`` over the whole history and
+        records, for each path, the FIRST (most recent, since git log is
+        newest-first) commit timestamp that touched it. Replaces the previous
+        one-subprocess-per-file loop (N git invocations -> 1). Returns an empty
+        map when the directory is not a git repo or git is unavailable; the build
+        then falls back to filesystem mtime per file exactly as before, so the
+        ``source`` recorded per doc ('git' vs 'mtime') is unchanged.
 
-        The format is ``<MARK><iso>`` on the commit line (MARK is a control char
-        that cannot appear in a path) followed by ``--name-only`` path lines, so
-        the parser tells a timestamp line from a path line unambiguously. Paths
-        are relative to ``kb_root`` with forward slashes (git's native form),
-        matching ``str(rel)`` used as the lookup key in build(). Rename entries
-        (``old -> new``) are not requested (no ``-M``), so paths are literal.
+        Exactness (reviewer concern): the output is NUL-delimited (``-z``) and
+        ``core.quotePath=false`` disables git's octal-quoting of non-ASCII paths,
+        so a path with spaces, unicode, or other special characters round-trips
+        byte-for-byte and is NOT lost to the mtime fallback. Each record is either
+        ``<MARK><iso>`` (a commit header) or a changed path; the first path of a
+        commit carries a leading ``\\n`` (git's format-block-to-name-list
+        separator) which is stripped, but the path body is otherwise untouched (no
+        ``.strip()``, so trailing/leading whitespace in a filename survives). Paths
+        are relative to ``kb_root`` with forward slashes, matching ``str(rel)``.
+        Renames are not requested (no ``-M``), so paths are literal.
         """
         try:
             result = subprocess.run(
-                ["git", "-C", str(kb_root), "log",
-                 f"--format={cls._GIT_LOG_MARK}%cI", "--name-only", "HEAD"],
+                ["git", "-C", str(kb_root), "-c", "core.quotePath=false", "log",
+                 "-z", f"--format={cls._GIT_LOG_MARK}%cI", "--name-only", "HEAD"],
                 capture_output=True, text=True, check=False, timeout=30,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -616,11 +620,19 @@ class Index:
             return {}
         out: dict[str, str] = {}
         current_iso = ""
-        for line in result.stdout.splitlines():
-            if line.startswith(cls._GIT_LOG_MARK):
-                current_iso = line[len(cls._GIT_LOG_MARK):].strip()
+        for record in result.stdout.split("\x00"):
+            if not record:
                 continue
-            path = line.strip()
+            if record.startswith(cls._GIT_LOG_MARK):
+                # Commit header: MARK + iso. ISO-8601 timestamps carry no
+                # surrounding whitespace, so stripping the iso is safe/exact.
+                current_iso = record[len(cls._GIT_LOG_MARK):].strip()
+                continue
+            # A changed-path record. The first path of a commit is prefixed with a
+            # single '\n' (git's separator between the format block and the name
+            # list); remove exactly that, but do NOT strip the path body so a
+            # filename with leading/trailing whitespace round-trips exactly.
+            path = record[1:] if record.startswith("\n") else record
             # git log is newest-first, so the first time we see a path is its most
             # recent commit; keep that and ignore older ones.
             if path and current_iso and path not in out:

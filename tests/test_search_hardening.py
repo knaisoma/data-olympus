@@ -129,6 +129,36 @@ def test_status_reranker_orders_by_rank_class_first() -> None:
     assert ordered == ["prim", "back"]
 
 
+def test_hybrid_reranker_orders_by_rank_class_first() -> None:
+    """Finding (d) unit for the HYBRID path: a backfill hit with a PERFECT cosine
+    match must still rank below a primary hit with a WEAK cosine, even at
+    weight=1.0 (pure semantic). Without the rank_class outer sort key the cosine
+    blend would lift the backfill hit to the top."""
+    from data_olympus.embeddings import make_hybrid_reranker
+
+    qvec = [1.0, 0.0]
+    vectors = {
+        "prim": [0.0, 1.0],  # orthogonal to the query -> weak cosine
+        "back": [1.0, 0.0],  # identical to the query -> perfect cosine
+    }
+    hits = [
+        SearchHit(id="prim", path="p", title="", snippet="", score=-1.0,
+                  rank_class=RANK_CLASS_PRIMARY),
+        SearchHit(id="back", path="b", title="", snippet="", score=1.0,
+                  rank_class=RANK_CLASS_BACKFILL),
+    ]
+    reranker = make_hybrid_reranker(
+        embed_query=lambda _q: qvec,
+        get_vector=vectors.get,
+        weight=1.0,  # pure cosine: back would win without the rank_class key
+    )
+    ordered = [h.id for h in reranker("q", hits)]
+    assert ordered == ["prim", "back"], (
+        "a perfect-cosine backfill hit must not outrank a weak-cosine primary "
+        "(hybrid rank-class invariant, finding d)"
+    )
+
+
 # --- (f) dense text includes applies_when + tags -----------------------------
 
 
@@ -354,6 +384,49 @@ def test_build_falls_back_to_mtime_without_git(
 def test_git_last_modified_map_empty_for_non_repo(tmp_kb: Path) -> None:
     """The batched git map is empty when the directory is not a git repo."""
     assert Index._git_last_modified_map(tmp_kb) == {}
+
+
+def test_single_git_pass_handles_special_char_paths(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    """Finding (i) exactness: a filename with a space (and a unicode char) must
+    round-trip through the NUL-delimited / quotePath=false batched git pass and
+    still resolve to 'git', not fall back to mtime."""
+    import subprocess
+
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    _write(kb, "plain.md", "plain body.", front="---\nid: DOC-PLAIN\n---\n")
+    # A space and a non-ASCII char in the filename: the exact cases git would
+    # octal-quote (and a naive splitlines/strip parser would mangle or drop).
+    _write(kb, "with spacé.md", "spaced body.",
+           front="---\nid: DOC-SPACED\n---\n")
+    env = {
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+    }
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"],
+                   cwd=kb, check=True, env=env)
+    subprocess.run(["git", "add", "-A"], cwd=kb, check=True, env=env)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=kb, check=True, env=env)
+
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="x")
+    conn = sqlite3.connect(tmp_index_path)
+    conn.row_factory = sqlite3.Row
+    rows = {
+        r["path"]: r["last_modified_source"]
+        for r in conn.execute(
+            "SELECT path, last_modified_source FROM docs"
+        ).fetchall()
+    }
+    conn.close()
+    assert rows.get("with spacé.md") == "git", (
+        "a space/unicode filename must resolve via git, not fall back to mtime "
+        f"(finding i exactness); got {rows.get('with spacé.md')!r}"
+    )
+    assert rows.get("plain.md") == "git"
 
 
 # --- (j) malformed front matter counter --------------------------------------

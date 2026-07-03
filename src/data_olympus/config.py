@@ -67,9 +67,11 @@ class Config:
     # behaviour is unchanged. When on, a primary FTS query returning at or below
     # ``trigram_fallback_threshold`` hits is backfilled from the trigram index so
     # a typo or partial identifier still reaches its document; the backfill only
-    # ever appends after primary hits. Surfaced here for discoverability; the
-    # build always creates the trigram table (cost is one extra insert/doc), and
-    # Index.search reads these to gate the query-time fallback.
+    # ever appends after primary hits (as a RANK_CLASS_BACKFILL class). Surfaced
+    # here for discoverability. The trigram table is now created and populated
+    # ONLY when the fallback is enabled (KB_TRIGRAM_MODE=on) (finding (c), WP2b),
+    # so a default deployment pays no trigram build/size cost; Index.search reads
+    # these to gate the query-time fallback.
     trigram_fallback_enabled: bool = False
     trigram_fallback_threshold: int = 3
     # Optional local-embedding hybrid ranking (issue #42). Default OFF so the
