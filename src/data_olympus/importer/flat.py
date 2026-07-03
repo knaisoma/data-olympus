@@ -65,11 +65,14 @@ def _top_heading_depth(lines: list[str]) -> int:
     Splitting at a single shallow depth keeps nested subsections attached to
     their parent concept instead of over-splitting. The boundary is the
     SHALLOWEST depth that occurs MORE THAN ONCE, so a document with one H1 title
-    over several H2 concepts splits at H2 (the lone H1 becomes preamble/part of
-    the first concept) rather than collapsing into a single giant concept.
-    Falls back to the shallowest depth when no depth repeats (e.g. a flat list
-    of same-level headings, or a single heading). Assumes at least one heading
-    exists (the caller only invokes this when ``has_headings`` is true)."""
+    over several H2 concepts splits at H2 rather than collapsing into a single
+    giant concept. A lone leading H1 is itself a boundary heading (``depth <=
+    boundary`` in ``_split_by_headings``): with enough prose it becomes its own
+    section (usually the document-title concept), otherwise it is dropped as too
+    short. Falls back to the shallowest depth when no depth repeats (e.g. a flat
+    list of same-level headings, or a single heading). Assumes at least one
+    heading exists (the caller only invokes this when ``has_headings`` is
+    true)."""
     depths = [d for d in (_heading_depth(ln) for ln in lines) if d is not None]
     counts: dict[int, int] = {}
     for d in depths:

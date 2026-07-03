@@ -388,6 +388,17 @@ def test_rerun_with_force_is_deterministic(tmp_path):
     assert second_ids[0].endswith("-001")
 
 
+def test_force_fails_closed_on_unusable_marker(tmp_path):
+    # If the marker cannot tell us which files were imported, --force must refuse
+    # rather than silently proceed (which would churn ids or hit a confusing
+    # collision error later).
+    out = tmp_path / "out"
+    run_import(source=FIXTURES / "CLAUDE.md", kind="claude-md", tier="T3", out=out)
+    (out / ".data-olympus-import").write_text("not json at all", encoding="utf-8")
+    with pytest.raises(ImportError_, match="unreadable"):
+        run_import(source=FIXTURES / "CLAUDE.md", kind="claude-md", tier="T3", out=out, force=True)
+
+
 def test_force_preserves_hand_added_file(tmp_path):
     out = tmp_path / "out"
     run_import(source=FIXTURES / "CLAUDE.md", kind="claude-md", tier="T3", out=out)

@@ -75,18 +75,6 @@ def _existing_ids(out_dir: Path) -> set[str]:
     return ids
 
 
-def _read_marker(out_dir: Path) -> dict[str, object] | None:
-    """Return the parsed import marker, or None if absent/unreadable."""
-    marker = out_dir / _MARKER
-    if not marker.exists():
-        return None
-    try:
-        data = json.loads(marker.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def _clear_prior_import(out_dir: Path) -> None:
     """Delete files a previous importer run wrote into ``out_dir``.
 
@@ -94,14 +82,28 @@ def _clear_prior_import(out_dir: Path) -> None:
     files listed in the marker (not the whole directory) makes forced re-runs
     deterministic — generated ids restart from 1 in source order instead of
     drifting past the prior run's ids — without touching any file the importer
-    did not create (so a hand-added file next to the drafts is preserved)."""
-    marker = _read_marker(out_dir)
-    if not marker:
+    did not create (so a hand-added file next to the drafts is preserved).
+
+    Fails CLOSED: if the marker is absent, nothing to clear. If it exists but is
+    unreadable / not JSON / not a mapping / missing a ``created`` list, we cannot
+    know which files were ours, so we refuse rather than silently proceeding
+    (which would let ``--force`` churn ids or hit a confusing collision error)."""
+    marker = out_dir / _MARKER
+    if not marker.exists():
         return
-    created = marker.get("created")
-    if not isinstance(created, list):
-        return
-    for name in created:
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as exc:
+        raise ImportError_(
+            f"cannot force-overwrite {out_dir}: the import marker {_MARKER!r} is "
+            f"unreadable ({exc}). Clear the directory or choose a fresh --out."
+        ) from exc
+    if not isinstance(data, dict) or not isinstance(data.get("created"), list):
+        raise ImportError_(
+            f"cannot force-overwrite {out_dir}: the import marker {_MARKER!r} does not "
+            f"record which files were imported. Clear the directory or choose a fresh --out."
+        )
+    for name in data["created"]:
         if not isinstance(name, str):
             continue
         # Confine deletion to a direct child of out_dir (no traversal).
