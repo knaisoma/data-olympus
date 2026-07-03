@@ -24,6 +24,10 @@ class PushQueue:
     def __init__(self, *, queue_root: str) -> None:
         self._root = queue_root
         os.makedirs(self._root, exist_ok=True)
+        # Shas already logged as "skipped because frozen" this process, so a
+        # frozen entry is announced once per process (including once after a
+        # restart re-encounters it) rather than every drain interval.
+        self._frozen_skip_logged: set[str] = set()
 
     def enqueue(self, *, sha: str, worktree_path: str, meta: dict[str, Any]) -> None:
         entry = {
@@ -83,8 +87,21 @@ class PushQueue:
             except FileNotFoundError:
                 continue
             if entry.get("frozen"):
-                # Already capped; do not retry. Skip silently (the freeze was
-                # already logged once, when it first crossed max_attempts).
+                # Already capped; do not retry. Announce the skip once per
+                # process per sha so an operator sees WHY a write is stuck even
+                # across a restart (the first-freeze WARN below only fires in the
+                # process that froze it). Bounded, so no per-interval spam.
+                sha = entry.get("sha", name)
+                if sha not in self._frozen_skip_logged:
+                    self._frozen_skip_logged.add(sha)
+                    log.warning(
+                        "push queue entry frozen; skipping retry "
+                        "(sha=%s worktree=%s last_error=%s); an operator must "
+                        "clear it (see docs/serving.md unfreeze path)",
+                        sha,
+                        entry.get("worktree_path", "?"),
+                        entry.get("last_error", "?"),
+                    )
                 continue
             try:
                 push_fn(entry["worktree_path"])

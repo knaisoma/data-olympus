@@ -136,3 +136,37 @@ def test_gc_defers_worktree_with_unpushed_commits(tmp_path) -> None:
     removed = reg.gc(idle_sec=3600)
     assert wt.path not in removed, "GC removed a worktree with unpushed commits"
     assert os.path.isdir(wt.path)
+
+
+def test_gc_defers_when_reachability_cannot_be_proven(tmp_path) -> None:
+    """Fail-closed: if `git rev-list HEAD --not origin/main` fails (origin
+    exists but origin/main is unresolvable) GC must NOT remove the worktree.
+    Otherwise a rev-list error would masquerade as 'nothing unpushed' and a
+    worktree with unpushed commits could be deleted."""
+    # Repo with an origin remote configured, but origin/main is NOT fetched, so
+    # `origin/main` does not resolve and rev-list exits nonzero.
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote)],
+                   check=True, env=_env())
+    repo = tmp_path / "main"
+    subprocess.run(["git", "init", "--initial-branch=main", str(repo)], check=True, env=_env())
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(remote)],
+                   check=True, env=_env())
+    (repo / "seed.md").write_text("seed")
+    subprocess.run(["git", "-C", str(repo), "add", "seed.md"], check=True, env=_env())
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, env=_env())
+    # Note: no push/fetch, so `origin/main` is an unknown ref in this repo.
+
+    git = GitOps(repo)
+    reg = WorktreeRegistry(git=git, worktree_root=str(tmp_path / "wts"))
+    wt = reg.get_or_create(source_session="session-unresolved", agent_identity="claude")
+    # Sanity: origin/main does not resolve here, so reachability is unprovable.
+    rev = subprocess.run(
+        ["git", "-C", wt.path, "rev-list", "HEAD", "--not", "origin/main"],
+        check=False, capture_output=True, text=True, env=_env())
+    assert rev.returncode != 0
+
+    wt.touch(timestamp=time.time() - 7200)  # idle
+    removed = reg.gc(idle_sec=3600)
+    assert wt.path not in removed, "GC removed a worktree whose push state is unknown"
+    assert os.path.isdir(wt.path)

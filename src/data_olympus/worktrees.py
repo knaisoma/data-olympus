@@ -102,13 +102,39 @@ class WorktreeRegistry:
         return removed
 
     def _has_unpushed_commits(self, wt_path: str) -> bool:
+        """True if the worktree has commits not reachable from origin/main, i.e.
+        it is unsafe to GC. Fail closed: if we cannot *prove* every commit is
+        pushed, return True and defer.
+
+        The one exception is a repo with no ``origin`` remote at all (a local-only
+        / read-only demo): there is nothing to push to, so ``git rev-list ...
+        origin/main`` would legitimately fail with an unknown-ref error. In that
+        case there is no unpushed state to protect and GC may proceed."""
         import subprocess
         try:
             result = subprocess.run(
                 ["git", "-C", wt_path, "rev-list", "HEAD", "--not", "origin/main"],
                 check=False, capture_output=True, text=True, timeout=10,
             )
-            return bool(result.stdout.strip())
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            # If we can't tell, defer the GC.
+            # Can't tell -> defer the GC (fail closed).
             return True
+        if result.returncode != 0:
+            # rev-list failed. This is either a missing/corrupt origin/main ref
+            # or a repo with no origin. If there is genuinely no origin remote,
+            # there is nothing to push and GC is safe; otherwise (origin exists
+            # but the ref could not be resolved) we cannot prove commits are
+            # pushed, so we fail closed and defer.
+            try:
+                remotes = subprocess.run(
+                    ["git", "-C", wt_path, "remote"],
+                    check=False, capture_output=True, text=True, timeout=10,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                return True
+            # origin exists but rev-list still failed => cannot prove pushed =>
+            # defer (True). No origin => nothing to push => safe (False).
+            return "origin" in {
+                line.strip() for line in remotes.stdout.splitlines() if line.strip()
+            }
+        return bool(result.stdout.strip())

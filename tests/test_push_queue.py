@@ -94,6 +94,28 @@ def test_drain_skips_frozen_entries(tmp_path) -> None:
     assert entry["frozen"] is True
 
 
+def test_frozen_skip_is_logged_once_per_process(tmp_path, caplog) -> None:
+    """A frozen entry encountered on a later drain (e.g. after restart) is
+    announced once, not every interval. Simulates 'restart' with a fresh
+    PushQueue over the same on-disk frozen entry."""
+    import logging
+
+    q = PushQueue(queue_root=str(tmp_path / "q"))
+    q.enqueue(sha="abc", worktree_path="/tmp/wt", meta={})
+    q.drain(push_fn=lambda _wt: (_ for _ in ()).throw(RuntimeError("boom")),
+            max_attempts=1)  # freezes it
+
+    # Fresh PushQueue over the same dir = new process re-encountering the frozen
+    # entry. It should log the skip exactly once across multiple drains.
+    q2 = PushQueue(queue_root=str(tmp_path / "q"))
+    with caplog.at_level(logging.WARNING, logger="data_olympus.push_queue"):
+        q2.drain(push_fn=lambda _wt: None, max_attempts=1)
+        q2.drain(push_fn=lambda _wt: None, max_attempts=1)
+    skip_logs = [r for r in caplog.records if "skipping retry" in r.getMessage()]
+    assert len(skip_logs) == 1
+    assert "abc" in skip_logs[0].getMessage()
+
+
 def test_frozen_count_reports_frozen_entries(tmp_path) -> None:
     q = PushQueue(queue_root=str(tmp_path / "q"))
     assert q.frozen_count() == 0
