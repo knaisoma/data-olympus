@@ -246,6 +246,37 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `Index.malformed_frontmatter_count` and the `malformed_frontmatter` field in
     `health()`. (Wiring this count into the `/health` degraded signal is a
     tracked follow-up.)
+- Onboarding pipeline (`tools_onboarding.py`, issue WP3b). Four coherence and
+  atomicity fixes, each with regression tests:
+  - **`partial` is no longer a dead end.** `kb_bootstrap_project` accepted only
+    `absent` and rejected `partial` with `rejected_already_onboarded`, contradicting
+    the playbook that told the agent to bootstrap on `absent` OR `partial`. It now
+    proceeds on `partial`, narrowing the request to only the exact
+    `missing_files` paths under this workspace/component so an already-committed
+    file is never overwritten and a basename collision cannot smuggle in a write
+    to a different project or component; if nothing supplied fills a gap it
+    rejects truthfully rather than committing an empty change. The playbook text
+    now matches this behaviour.
+  - **Double-bootstrap race closed.** A committed bootstrap is invisible to the
+    index until it is pushed and re-pulled, so a second call in that convergence
+    window passed the `absent` re-check and double-committed. A short-lived,
+    self-expiring in-flight marker (`onboarding_inflight.py`) is now claimed on the
+    committed path and rejects a concurrent bootstrap for the same
+    workspace/component as `rejected_already_in_progress`. The playbook now
+    instructs waiting for `kb_onboarding_status` to report `onboarded` before
+    running `kb_cleanup_plan`.
+  - **Pending bundle is now atomic.** In the low-confidence path a `PathLockBusyError`
+    was silently swallowed per file, so a partially-enqueued bundle returned
+    `pending_confirmation` with only the subset that fit. Lock-busy is now treated
+    like queue-full: the whole bundle rolls back (zero orphan pending entries or
+    held locks) and rejects as `rejected_path_locked`. Every entry of a bundle is
+    stamped with a shared `bundle_id` in its metadata (the seam for a future
+    bundle-aware resolve UX).
+  - **Safe remote-URL injection confirmed.** The `git_remote_url` front-matter
+    injection parses and re-serializes YAML with `yaml.safe_dump` (a newline-laden
+    URL cannot forge keys) and its presence check is key-aware, so a URL mentioned
+    only in the body no longer false-positives and suppresses injection. Regression
+    tests lock both behaviours in.
 - OpenCode gate (`data-olympus-gate.ts`): resolves the workspace to the main git
   worktree **basename** (matching the key every other surface records consults
   under) instead of the raw absolute path, which could never match; and passes
