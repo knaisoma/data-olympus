@@ -15,7 +15,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **`data-olympus import` command** to migrate an existing agent-rule corpus into
-  a governed draft bundle (issue #67). Supports five source kinds via `--kind`:
+  a governed draft bundle (issue #67). Supports six source kinds via `--kind`:
   - Flat rule files (`claude-md` / `agents-md` / `gemini-md` / `cursorrules`):
     heuristic splitting into candidate concepts (markdown headings first, then
     blank-line-separated bullet clusters for heading-less files). Each becomes a
@@ -24,12 +24,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     from the first sentence, tags heuristically from content). The original text
     is preserved verbatim as the body.
   - `adr` (adr-tools `doc/adr/NNNN-title.md` directories): maps number+title to
-    `ADR-NNNN`/title, parses the `## Status` section into `status` plus
-    `supersedes` / `superseded_by` references, `type: decision`.
+    `ADR-NNNN`/title, parses the `## Status` section into `supersedes` /
+    `superseded_by` references, preserves the parsed adr-tools status in a
+    non-activating `source_status` field, `type: decision`.
   - `okf` bundles: normalizes alias field names into the profile, fills missing
     required fields with draft-safe defaults, and reports every inference.
-  - Everything lands as `status: draft` (or the ADR-derived status, flagged for
-    review); nothing is committed to git and nothing auto-activates. The command
+  - Everything lands as `status: draft`; nothing is committed to git and nothing
+    auto-activates (imported ADRs keep their original status in `source_status`
+    for the reviewer). Duplicate ids are refused. The command
     writes files into the output dir and prints a human-readable and (with
     `--json`) machine-readable report: files created, sections skipped as too
     short, inferences made, and "needs human review" items. It runs the existing

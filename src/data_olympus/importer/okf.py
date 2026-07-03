@@ -103,9 +103,14 @@ def normalize_okf_doc(path: Path, *, default_tier: str, category: str | None) ->
         fm["type"] = DEFAULT_TYPE
 
     # status: force to draft on import (never auto-activate). If the source
-    # carried an in-force status, report that we downgraded it.
+    # carried an in-force status, report that we downgraded it. Every case is
+    # recorded (downgrade, out-of-schema, or synthesized default) so the
+    # normalization stays fully auditable and no required field is invented
+    # silently.
     src_status = fm.get("status")
-    if src_status and src_status != DRAFT_STATUS:
+    if not src_status:
+        inferences.append(f"missing status; defaulted to {DRAFT_STATUS!r}")
+    elif src_status != DRAFT_STATUS:
         if src_status in STATUSES:
             inferences.append(f"status {src_status!r} downgraded to {DRAFT_STATUS!r} on import")
         else:

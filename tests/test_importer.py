@@ -145,6 +145,44 @@ def test_split_flat_headingless_min_body():
 
 
 # --------------------------------------------------------------------------- #
+# Depth-aware heading split (nested headings stay with their parent concept)    #
+# --------------------------------------------------------------------------- #
+
+
+def test_nested_headings_split_at_h2_not_h3(tmp_path):
+    # One H1 title over several H2 concepts, each with H3 detail. The importer
+    # splits at H2 (not the lone H1, which would collapse into one concept, and
+    # not H3, which would over-split) and keeps each H2's H3 subsections in body.
+    report = run_import(
+        source=FIXTURES / "AGENTS-nested.md", kind="agents-md", tier="T3", out=tmp_path / "out"
+    )
+    titles = {d.frontmatter["title"] for d in _load_drafts(tmp_path / "out").values()}
+    assert "Testing policy" in titles
+    assert "Release policy" in titles
+    # The H3 subsections are NOT their own concepts.
+    assert "Unit tests" not in titles
+    assert "Versioning" not in titles
+    testing = next(
+        d for d in _load_drafts(tmp_path / "out").values()
+        if d.frontmatter["title"] == "Testing policy"
+    )
+    # Nested H3 content is preserved inside the parent concept body verbatim.
+    assert "### Unit tests" in testing.body
+    assert "must not touch the network" in testing.body
+    assert report.lint_clean
+
+
+def test_boundary_heading_line_kept_in_body(tmp_path):
+    run_import(source=FIXTURES / "CLAUDE.md", kind="claude-md", tier="T3", out=tmp_path / "out")
+    doc = next(
+        d for d in _load_drafts(tmp_path / "out").values()
+        if d.frontmatter["title"] == "Writing style"
+    )
+    # The concept keeps its own heading line so no source text is dropped.
+    assert "## Writing style" in doc.body
+
+
+# --------------------------------------------------------------------------- #
 # ADR directory: supersedes chain                                              #
 # --------------------------------------------------------------------------- #
 
@@ -162,21 +200,45 @@ def test_adr_maps_number_and_title(tmp_path):
 def test_adr_supersedes_chain(tmp_path):
     run_import(source=FIXTURES / "adr-tools", kind="adr", tier="meta", out=tmp_path / "out")
     by_id = {d.frontmatter["id"]: d for d in _load_drafts(tmp_path / "out").values()}
-    # 0002 was superseded by 0004; 0004 supersedes 0002.
-    assert by_id["ADR-0002"].frontmatter["status"] == "superseded"
+    # Draft-status invariant: imported ADRs land as draft, with the parsed
+    # adr-tools status preserved in source_status. supersedes chain is mapped.
+    assert by_id["ADR-0002"].frontmatter["status"] == "draft"
+    assert by_id["ADR-0002"].frontmatter["source_status"] == "superseded"
     assert by_id["ADR-0002"].frontmatter["superseded_by"] == "ADR-0004"
-    assert by_id["ADR-0004"].frontmatter["status"] == "accepted"
+    assert by_id["ADR-0004"].frontmatter["status"] == "draft"
+    assert by_id["ADR-0004"].frontmatter["source_status"] == "accepted"
     assert by_id["ADR-0004"].frontmatter["supersedes"] == "ADR-0002"
 
 
-def test_adr_non_draft_status_flagged_for_review(tmp_path):
+def test_adr_always_draft_status():
+    # No ADR may ever be written with an in-force status: the invariant is that
+    # imports never auto-activate.
+    from data_olympus.importer.run import _adr_drafts
+
+    drafts, _ = _adr_drafts(FIXTURES / "adr-tools", tier="meta", category=None, existing=set())
+    assert all(d.frontmatter["status"] == "draft" for d in drafts)
+
+
+def test_adr_source_status_flagged_for_review(tmp_path):
     report = run_import(
         source=FIXTURES / "adr-tools", kind="adr", tier="meta", out=tmp_path / "out"
     )
     joined = "\n".join(report.needs_review)
-    assert "not draft" in joined
-    # Every non-draft ADR is surfaced.
-    assert "ADR-0002".lower() in joined.lower() or "adr-0002" in joined.lower()
+    assert "source ADR status" in joined
+    # Every non-draft source status is surfaced for the reviewer.
+    assert "adr-0002" in joined.lower()
+
+
+def test_adr_id_collision_refused(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    # Pre-seed the output dir with a doc carrying an id an import would produce.
+    (out / "ADR-0001.md").write_text(
+        "---\nid: ADR-0001\ntype: decision\nstatus: active\ntier: meta\n---\nx\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ImportError_, match="ADR id collision"):
+        run_import(source=FIXTURES / "adr-tools", kind="adr", tier="meta", out=out, force=True)
 
 
 def test_adr_output_lint_clean(tmp_path):
@@ -223,6 +285,36 @@ def test_okf_missing_id_synthesized_and_flagged(tmp_path):
     assert any("synthesized from the filename" in n for n in report.needs_review)
 
 
+def test_okf_missing_status_reports_inference(tmp_path):
+    # A required field synthesized with a default must be reported, not invented
+    # silently.
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "c.md").write_text(
+        "---\nid: OKF-C\ntype: standard\ntier: T2\n---\nA concept with no status field set.\n",
+        encoding="utf-8",
+    )
+    report = run_import(source=src, kind="okf", tier="T2", out=tmp_path / "out")
+    assert any("missing status" in n for n in report.inferences)
+    doc = next(iter(_load_drafts(tmp_path / "out").values()))
+    assert doc.frontmatter["status"] == "draft"
+
+
+def test_okf_id_collision_refused(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.md").write_text(
+        "---\nid: DUP\ntype: standard\ntier: T2\n---\nFirst concept sharing the duplicate id.\n",
+        encoding="utf-8",
+    )
+    (src / "b.md").write_text(
+        "---\nid: DUP\ntype: standard\ntier: T2\n---\nSecond concept sharing the duplicate id.\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ImportError_, match="OKF id collision"):
+        run_import(source=src, kind="okf", tier="T2", out=tmp_path / "out")
+
+
 def test_okf_output_lint_clean(tmp_path):
     run_import(source=FIXTURES / "okf", kind="okf", tier="T2", out=tmp_path / "out")
     _assert_lint_clean(tmp_path / "out")
@@ -233,14 +325,14 @@ def test_okf_output_lint_clean(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_everything_lands_as_draft_except_derived_adr(tmp_path):
-    # Flat + OKF are always draft.
+def test_everything_lands_as_draft(tmp_path):
+    # Flat, OKF, AND ADR all land as draft: nothing auto-activates.
     run_import(source=FIXTURES / "CLAUDE.md", kind="claude-md", tier="T3", out=tmp_path / "flat")
-    for doc in _load_drafts(tmp_path / "flat").values():
-        assert doc.frontmatter["status"] == "draft"
     run_import(source=FIXTURES / "okf", kind="okf", tier="T2", out=tmp_path / "okf")
-    for doc in _load_drafts(tmp_path / "okf").values():
-        assert doc.frontmatter["status"] == "draft"
+    run_import(source=FIXTURES / "adr-tools", kind="adr", tier="meta", out=tmp_path / "adr")
+    for bundle in ("flat", "okf", "adr"):
+        for doc in _load_drafts(tmp_path / bundle).values():
+            assert doc.frontmatter["status"] == "draft", f"{bundle}/{doc.path.name} not draft"
 
 
 def test_stamped_vocab_is_single_sourced():
@@ -280,16 +372,34 @@ def test_rerun_refused_without_force(tmp_path):
         run_import(source=FIXTURES / "CLAUDE.md", kind="claude-md", tier="T3", out=out)
 
 
-def test_rerun_with_force_overwrites_without_duplicating(tmp_path):
+def test_rerun_with_force_is_deterministic(tmp_path):
     out = tmp_path / "out"
     first = run_import(source=FIXTURES / "CLAUDE.md", kind="claude-md", tier="T3", out=out)
+    first_ids = sorted(d.frontmatter["id"] for d in _load_drafts(out).values())
     second = run_import(
         source=FIXTURES / "CLAUDE.md", kind="claude-md", tier="T3", out=out, force=True
     )
-    # Same set of files, no duplicates, ids do not drift into collisions.
+    second_ids = sorted(d.frontmatter["id"] for d in _load_drafts(out).values())
+    # Same files, no duplicates, and ids do NOT drift on a forced re-run: the
+    # prior import's files are cleared before allocation, so ids restart at 1.
     assert sorted(first.created) == sorted(second.created)
-    ids = [d.frontmatter["id"] for d in _load_drafts(out).values()]
-    assert len(ids) == len(set(ids))
+    assert first_ids == second_ids
+    assert len(second_ids) == len(set(second_ids))
+    assert second_ids[0].endswith("-001")
+
+
+def test_force_preserves_hand_added_file(tmp_path):
+    out = tmp_path / "out"
+    run_import(source=FIXTURES / "CLAUDE.md", kind="claude-md", tier="T3", out=out)
+    # A file the operator adds next to the drafts must survive a forced re-run.
+    (out / "manual.md").write_text(
+        "---\nid: MANUAL-1\ntype: standard\nstatus: draft\ntier: T3\n"
+        "title: t\ndescription: d\ntags: [x]\ntimestamp: 2026-01-01\n---\nkeep\n",
+        encoding="utf-8",
+    )
+    run_import(source=FIXTURES / "CLAUDE.md", kind="claude-md", tier="T3", out=out, force=True)
+    assert (out / "manual.md").exists()
+    assert (out / "manual.md").read_text(encoding="utf-8").endswith("keep\n")
 
 
 def test_refuses_to_write_into_existing_bundle(tmp_path):

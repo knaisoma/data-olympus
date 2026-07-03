@@ -36,7 +36,17 @@ class Section:
 
     @property
     def body_len(self) -> int:
-        return len(self.body.strip())
+        """Length of the section's PROSE, excluding a leading heading line.
+
+        The boundary heading is kept inside ``body`` so the concept text is
+        complete, but the too-short skip test must measure content, not the
+        heading — otherwise a long heading over an empty body would spuriously
+        clear the threshold."""
+        text = self.body
+        lines = text.splitlines()
+        if lines and _heading_depth(lines[0]) is not None:
+            text = "\n".join(lines[1:])
+        return len(text.strip())
 
 
 def _heading_depth(line: str) -> int | None:
@@ -49,10 +59,34 @@ def _heading_depth(line: str) -> int | None:
     return depth if 1 <= depth <= 6 else None
 
 
+def _top_heading_depth(lines: list[str]) -> int:
+    """Return the heading depth to split at (the section boundary level).
+
+    Splitting at a single shallow depth keeps nested subsections attached to
+    their parent concept instead of over-splitting. The boundary is the
+    SHALLOWEST depth that occurs MORE THAN ONCE, so a document with one H1 title
+    over several H2 concepts splits at H2 (the lone H1 becomes preamble/part of
+    the first concept) rather than collapsing into a single giant concept.
+    Falls back to the shallowest depth when no depth repeats (e.g. a flat list
+    of same-level headings, or a single heading). Assumes at least one heading
+    exists (the caller only invokes this when ``has_headings`` is true)."""
+    depths = [d for d in (_heading_depth(ln) for ln in lines) if d is not None]
+    counts: dict[int, int] = {}
+    for d in depths:
+        counts[d] = counts.get(d, 0) + 1
+    repeated = [d for d, n in counts.items() if n > 1]
+    if repeated:
+        return min(repeated)
+    return min(depths)
+
+
 def _split_by_headings(text: str) -> list[Section]:
-    """Split on ATX headings. Preamble before the first heading is its own
-    section with a synthetic 'Preamble' heading."""
+    """Split at the shallowest heading depth. Deeper (nested) headings stay in
+    their parent section's body, and the boundary heading line itself is kept in
+    the body so no source text is dropped. Preamble before the first boundary
+    heading becomes its own 'Preamble' section when it carries content."""
     lines = text.splitlines()
+    boundary = _top_heading_depth(lines)
     sections: list[Section] = []
     current_heading = "Preamble"
     current_body: list[str] = []
@@ -67,14 +101,16 @@ def _split_by_headings(text: str) -> list[Section]:
     started = False
     for line in lines:
         depth = _heading_depth(line)
-        if depth is not None:
-            # Flush the accumulated preamble/section before starting a new one.
-            # Only flush a preamble that has real content; a leading heading
-            # with no preamble must not emit an empty 'Preamble' candidate.
+        if depth is not None and depth <= boundary:
+            # New top-level section. Flush the accumulated preamble/section
+            # first, but only emit a preamble that has real content so a leading
+            # boundary heading does not produce an empty 'Preamble' candidate.
             if started or "".join(current_body).strip():
                 flush()
             current_heading = heading_text(line) or "Untitled"
-            current_body = []
+            # Keep the heading line in the body so the concept text is complete
+            # and nothing the author wrote is silently dropped.
+            current_body = [line]
             started = True
         else:
             current_body.append(line)

@@ -136,24 +136,31 @@ uv run data-olympus import <source> --kind <kind> --tier <tier> [options]
   never rewrites your words. Sections too short to be a real concept are skipped
   and listed in the report.
 - **ADR directories** (`doc/adr/NNNN-title.md`) map the number and title to an
-  `ADR-NNNN` id and title, parse the `## Status` section into `status` plus
-  `supersedes` / `superseded_by` references (`type: decision`), and preserve the
-  ADR body.
+  `ADR-NNNN` id and title, parse the `## Status` section into `supersedes` /
+  `superseded_by` references (`type: decision`), and preserve the ADR body. The
+  parsed adr-tools status (e.g. `Accepted`, `Superseded by ...`) is preserved in
+  a non-activating `source_status` field for the reviewer; the concept itself is
+  imported as `status: draft` so it does not become in-force before review.
 - **OKF bundles** are normalized into the governance profile: alias field names
   are renamed to the canonical schema keys, missing required fields are filled
   with draft-safe defaults, and every inference is reported.
 
 ### Safety and next steps
 
-- **Everything lands as `status: draft`** (or the ADR-derived status, which is
-  flagged for human review). Nothing auto-activates, and the importer never
-  commits to git: it only writes files into the output directory.
+- **Everything lands as `status: draft`.** Nothing auto-activates, and the
+  importer never commits to git: it only writes files into the output directory.
+  Imported ADRs keep their original status in `source_status` for the reviewer.
+- **Duplicate ids are refused.** If two imported concepts (or an imported concept
+  and one already in the output dir) would share an id, the import aborts rather
+  than write a structurally unsafe bundle.
 - The command runs the existing lint machinery over the output; the happy path
   produces lint-clean drafts. Any finding is included in the report.
 - **Re-run behavior:** the importer refuses to write into an output directory it
   already used as an import target (or any directory that already holds governed
   files), so a second run cannot silently duplicate or clobber. Pass `--force` to
-  overwrite, or choose a fresh `--out` directory.
+  re-run: it deletes exactly the files the previous import wrote (ids restart
+  deterministically) and leaves any file you added by hand untouched. Or choose a
+  fresh `--out` directory.
 - **Converging with an existing KB:** the report's next-steps point at the dedup
   pass (the `kb_cleanup_plan` MCP tool / `POST /api/v1/onboarding/cleanup-plan`),
   which classifies each draft against your committed KB as

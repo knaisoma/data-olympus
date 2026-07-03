@@ -9,6 +9,7 @@ never silently duplicates or clobbers.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from data_olympus.format import discover_bundle_files, lint_files
@@ -72,6 +73,41 @@ def _existing_ids(out_dir: Path) -> set[str]:
         if isinstance(doc_id, str) and doc_id:
             ids.add(doc_id)
     return ids
+
+
+def _read_marker(out_dir: Path) -> dict[str, object] | None:
+    """Return the parsed import marker, or None if absent/unreadable."""
+    marker = out_dir / _MARKER
+    if not marker.exists():
+        return None
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _clear_prior_import(out_dir: Path) -> None:
+    """Delete files a previous importer run wrote into ``out_dir``.
+
+    Called only on a forced re-run of an importer-owned dir. Deleting exactly the
+    files listed in the marker (not the whole directory) makes forced re-runs
+    deterministic — generated ids restart from 1 in source order instead of
+    drifting past the prior run's ids — without touching any file the importer
+    did not create (so a hand-added file next to the drafts is preserved)."""
+    marker = _read_marker(out_dir)
+    if not marker:
+        return
+    created = marker.get("created")
+    if not isinstance(created, list):
+        return
+    for name in created:
+        if not isinstance(name, str):
+            continue
+        # Confine deletion to a direct child of out_dir (no traversal).
+        target = out_dir / name
+        if target.parent == out_dir and target.is_file():
+            target.unlink()
 
 
 def _check_rerun(out_dir: Path, *, force: bool) -> None:
@@ -162,15 +198,28 @@ def _adr_drafts(
             f"no adr-tools files (NNNN-title.md) found under {source}. "
             f"Point --kind adr at a doc/adr directory."
         )
-    alloc = IdAllocator("ADR", existing)
     drafts: list[DraftDoc] = []
     used_names: set[str] = set()
+    seen_ids: set[str] = set(existing)
     for f in files:
         parsed = adr_mod.parse_adr_file(f)
         if parsed is None:  # pragma: no cover - discover already filtered
             continue
-        alloc.reserve(parsed.doc_id)
-        extra: dict[str, object] = {}
+        # ID collision: the same ADR-NNNN id already exists in the output bundle
+        # (or two ADR files map to the same number). Refuse rather than write a
+        # bundle with a duplicate id that the linter cannot catch.
+        if parsed.doc_id in seen_ids:
+            raise ImportError_(
+                f"ADR id collision: {parsed.doc_id!r} (from {f.name}) already exists in "
+                f"the output bundle. Resolve the duplicate ADR number or choose a fresh "
+                f"--out directory."
+            )
+        seen_ids.add(parsed.doc_id)
+
+        # Draft-status invariant: imported ADRs ALWAYS land as draft so nothing
+        # auto-activates; the parsed adr-tools status is preserved verbatim in a
+        # non-activating ``source_status`` field for the human reviewer.
+        extra: dict[str, object] = {"source_status": parsed.status}
         if parsed.supersedes:
             extra["supersedes"] = (
                 parsed.supersedes if len(parsed.supersedes) > 1 else parsed.supersedes[0]
@@ -180,22 +229,33 @@ def _adr_drafts(
         fm = build_frontmatter(
             doc_id=parsed.doc_id,
             doc_type="decision",
-            status=parsed.status,
+            status="draft",
             tier=tier,
             title=parsed.title,
             description=adr_mod.description_for(parsed),
             tags=tags_from_text(parsed.title + "\n" + parsed.body, fallback="decision"),
             category=category,
-            extra=extra or None,
+            extra=extra,
         )
+        inferences = list(parsed.inferences)
+        needs_review = list(parsed.needs_review)
+        if parsed.status != "draft":
+            inferences.append(
+                f"adr-tools status {parsed.status!r} preserved in source_status; "
+                f"imported as draft"
+            )
+            needs_review.append(
+                f"{parsed.doc_id}: source ADR status was {parsed.status!r}; imported as "
+                f"draft (see source_status). Verify before activation."
+            )
         stem = _unique_stem(f"{parsed.doc_id.lower()}-{parsed.slug}", used_names)
         drafts.append(
             DraftDoc(
                 filename=f"{stem}.md",
                 frontmatter=fm,
                 body=parsed.body,
-                inferences=parsed.inferences,
-                needs_review=parsed.needs_review,
+                inferences=inferences,
+                needs_review=needs_review,
             )
         )
     return drafts, []
@@ -214,10 +274,14 @@ def _okf_drafts(
         norm = okf_mod.normalize_okf_doc(f, default_tier=tier, category=category)
         doc_id = str(norm.frontmatter["id"])
         needs_review = list(norm.needs_review)
+        # ID uniqueness is a bundle invariant the linter does not enforce across
+        # files, so a duplicate id would produce a structurally unsafe bundle
+        # while report.lint_clean stayed true. Refuse instead of writing it.
         if doc_id in seen_ids:
-            needs_review.append(
-                f"{f.name}: id {doc_id!r} collides with another imported/existing doc; "
-                f"resolve before activation"
+            raise ImportError_(
+                f"OKF id collision: {doc_id!r} (from {f.name}) already exists in the "
+                f"output bundle or was produced by another imported doc. Give the source "
+                f"docs distinct ids or choose a fresh --out directory."
             )
         seen_ids.add(doc_id)
         stem = _unique_stem(slugify(doc_id, fallback=f.stem), used_names)
@@ -274,6 +338,12 @@ def run_import(
     out_dir = Path(out) if out else _default_out(source_path, kind)
     _check_rerun(out_dir, force=force)
 
+    # On a forced re-run of an importer-owned dir, delete the prior run's files
+    # BEFORE computing existing ids so generated ids restart deterministically
+    # (Blocker: --force must not churn ids past the previous run).
+    if force:
+        _clear_prior_import(out_dir)
+
     existing = _existing_ids(out_dir)
 
     if kind in ("claude-md", "agents-md", "gemini-md", "cursorrules"):
@@ -319,9 +389,15 @@ def run_import(
                 f"verify before activation"
             )
 
-    # Record the marker so a future re-run without --force is refused.
+    # Record the marker (JSON) so a future re-run without --force is refused and
+    # a forced re-run can delete exactly the files this run created.
     (out_dir / _MARKER).write_text(
-        f"imported kind={kind} source={source_path}\n", encoding="utf-8"
+        json.dumps(
+            {"kind": kind, "source": str(source_path), "created": list(report.created)},
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
     )
 
     # Lint the output over exactly the files we wrote (plus any pre-existing).
