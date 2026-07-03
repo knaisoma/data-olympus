@@ -39,8 +39,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   requirement to the quickstart, plus links to `SECURITY.md` and
   `benchmarks/README.md`. `CONTRIBUTING.md`'s documented `data-olympus lint`
   output now includes the `(N linted)` suffix the CLI actually prints.
-  `CHANGELOG.md`'s dangling `[0.2.0]` compare link (which referenced a
-  never-documented `v0.1.1`) now compares against `v0.1.0`.
+  `CHANGELOG.md` gains the previously missing `[0.1.1]` section (the tag
+  was released 2026-06-24 without a changelog entry) and its compare link.
   `docs/comparison.md`'s RAG section and "Honest weaknesses" no longer claim
   there is no embedding/semantic retrieval at all; they now describe the
   optional local-embedding hybrid (off by default) shipped in 0.2.0.
@@ -358,6 +358,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The enforcement hook now reports the correct per-agent identity to the consult audit. Previously every agent (Claude, Codex, Gemini) was recorded as `claude-code`, so the `kb_compliance` per-agent view was wrong for Codex and Gemini. The `kb-enforce-hook` dispatcher gained an `--agent` flag and each provider threads its own identity.
 - `data-olympus lint` no longer false-greens when its file discovery matches nothing. The summary now reports how many concept files were actually linted (e.g. `0 errors across 0 files (9 linted)`), and the command exits non-zero when a bundle has no concept files to lint, so a broken or over-broad skip walk surfaces as a red CI gate instead of a silent pass. Reserved files (`index.md`, `log.md`, `template.md`) are exempt from the concept schema and so are excluded from the linted count, preventing a bundle that kept only its generated indexes from passing the guard. File discovery is now exposed as `discover_bundle_files` for direct testing.
 
+## [0.1.1] - 2026-06-24
+
+### Added
+
+- `data-olympus lint` skips repo-meta directories and root-level meta files.
+- CI builds and publishes a multi-arch (amd64 + arm64) container image to
+  GHCR on release.
+
+### Fixed
+
+- Bumped `fastmcp` to 3.x to close Dependabot-reported CVEs.
+- Fixed the broken OKF link (now points to the knowledge-catalog repository).
+
 ## [0.1.0] - 2026-06-24
 
 ### Added
@@ -414,5 +427,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
 [Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/knaisoma/data-olympus/compare/v0.1.0...v0.2.0
+[0.2.0]: https://github.com/knaisoma/data-olympus/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/knaisoma/data-olympus/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/knaisoma/data-olympus/releases/tag/v0.1.0

@@ -2,8 +2,10 @@
 set -euo pipefail
 # This script is for the demo flow ONLY: it copies example-bundle/ into a
 # throwaway directory, git-inits it, and serves it. It is destructive by
-# design (it wipes and recreates KB_DIR on every run), so it must never
-# delete a directory it did not create itself. To serve your own bundle,
+# design (it wipes and recreates KB_DIR on every run): the default demo
+# path is always treated as throwaway, and any other pre-existing path is
+# refused unless it carries the marker file this script itself created.
+# To serve your own bundle,
 # do not pass it as $1 here: invoke data-olympus-mcp directly with
 # KB_MAIN_PATH pointed at your bundle (see docs/quickstart.md section 6 /
 # docs/adoption.md section 5).
