@@ -36,3 +36,12 @@ jobs:
         run: |
           mapfile -t changed < <(git diff --name-only "origin/$BASE_REF"...HEAD)
           python3 scripts/check_changelog.py "${changed[@]}"
+  doc-consistency-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv venv --python 3.13
+      - run: uv pip install -e '.[dev]'
+      - name: Check SPEC.md / docs/adoption.md enums match format/validate.py
+        run: uv run python3 scripts/check_doc_consistency.py

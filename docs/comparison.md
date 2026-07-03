@@ -2,7 +2,7 @@
 
 ## What data-olympus is
 
-data-olympus is a governance-grade knowledge-base **format** (an OKF-compatible profile with governance extensions) plus a single-writer MCP server and a CLI. The format adds a controlled vocabulary on top of the Open Knowledge Format's minimal `type` field: a stable `id`, required `status` and `tier` fields, a `supersedes`/`superseded_by` chain for decisions, and a normative cross-linking convention. The result is a git-native, human and agent readable document graph that can be served directly to an agent workforce.
+data-olympus is a governance-grade knowledge-base **format** (a profile designed to be readable by Open Knowledge Format consumers, with governance extensions layered on top) plus a single-writer MCP server and a CLI. The format adds a controlled vocabulary on top of the Open Knowledge Format's minimal `type` field: a stable `id`, required `status` and `tier` fields, a `supersedes`/`superseded_by` chain for decisions, and a normative cross-linking convention. The result is a git-native, human and agent readable document graph that can be served directly to an agent workforce.
 
 The system is optimized for one specific job: a small team of agents (and humans) curating engineering standards, architectural decisions, and project knowledge as version-controlled markdown. It is not a general data catalog, not a vector store, and not a wiki platform. It is also deliberately not a code-search, reference-finding, or "where is X used" tool (LSP, grep, and Sourcegraph own that, and it does not compete with them). The retrieval task it targets is **coding-intent to governing-rule**: surfacing the established standard or decision that should govern a choice the model is about to make. Understanding that scope is the clearest lens for reading the comparisons below.
 
@@ -12,7 +12,7 @@ The system is optimized for one specific job: a small team of agents (and humans
 
 | Tool / category | Portability / lock-in | Human + agent readable (no SDK) | Governance and multi-agent write-safety | Structured queryability | Concurrency model | Taxonomy | Hosting model | Interop |
 |---|---|---|---|---|---|---|---|---|
-| **data-olympus** | git-native / none | yes, plain markdown | single-writer MCP pipeline | FTS + filter by status/tier/type | single-writer, advisory locks | controlled vocabulary (type, status, tier) | self-hosted, streamable HTTP | OKF-compatible |
+| **data-olympus** | git-native / none | yes, plain markdown | single-writer MCP pipeline | FTS + filter by status/tier/type | single-writer, advisory locks | controlled vocabulary (type, status, tier) | self-hosted, streamable HTTP | designed to be OKF-readable (conformance test not yet built, [issue #82](https://github.com/knaisoma/data-olympus/issues/82)) |
 | Google OKF | git-native / none | yes | FTS only, no write governance | FTS only | none specified | minimal (type only) | any | OKF native |
 | Enterprise data catalogs (Dataplex, Unity Catalog, Collibra, DataHub, Amundsen) | vendor / high | partial (UI-centric) | strong (RBAC, lineage) | deep (column-level, lineage graphs) | multi-writer | rich, auto-generated | SaaS / self-hosted | APIs, connectors |
 | Markdown KB tools (Obsidian, Notion, MkDocs, Backstage TechDocs) | varies / medium | yes | none | FTS or plugin-based | multi-writer | user-defined | SaaS / local | plugin ecosystem |
@@ -109,7 +109,7 @@ The honest summary: curated `applies_when` triggers are the right primary mechan
 
 ### Google Open Knowledge Format (OKF)
 
-The Open Knowledge Format is the parent specification. data-olympus is an OKF-compatible profile: every data-olympus bundle is a valid OKF bundle, and any OKF consumer can read it.
+The Open Knowledge Format is the parent specification. data-olympus is designed to be readable by OKF consumers: it inherits OKF's directory structure, frontmatter conventions, reserved filenames, and link model. That claim is not yet backed by an executable conformance test against OKF reference tooling ([issue #82](https://github.com/knaisoma/data-olympus/issues/82) tracks adding one); today it rests on shared structure by construction.
 
 **Where data-olympus is better (and why):** OKF defines a minimal required set (`id`, `type`, `spec_version`) with no governance fields. data-olympus adds `status`, `tier`, a `supersedes` chain, and controlled vocabularies for each field, making it possible to query "show me all accepted T1 standards" or "what superseded this decision" without post-processing. data-olympus also ships a validated write pipeline (proposed edits, pending queue, advisory locks, commit-and-push) and an MCP server; OKF specifies no serving or write model.
 
@@ -117,7 +117,7 @@ The Open Knowledge Format is the parent specification. data-olympus is an OKF-co
 
 **Where that is a deliberate decision:** data-olympus targets curated, reviewed knowledge where accuracy and governance matter more than coverage. Auto-ingestion without review is a deliberate non-goal for the v0.1 scope.
 
-**Where they are complementary:** Because data-olympus is an OKF-compatible profile, bundles produced by the OKF producer can be imported and governed by data-olympus tools. Conversely, data-olympus bundles can be consumed by any OKF-aware tool without conversion.
+**Where they are complementary:** Because data-olympus is designed to share OKF's baseline structure, bundles produced by the OKF producer should be importable and governable by data-olympus tools, and data-olympus bundles should be consumable by an OKF-aware tool without conversion. Neither direction has an automated test yet ([issue #82](https://github.com/knaisoma/data-olympus/issues/82)).
 
 ---
 

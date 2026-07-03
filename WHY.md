@@ -92,8 +92,10 @@ prompt file.
 `status`, and decisions that replace older ones are linked through a `supersedes`
 chain. That sounds like bookkeeping until you watch a plain keyword search hand an
 agent a rule you retired six months ago because the old document happens to match
-the words in the query. Because data-olympus understands which rule is current, it
-can keep the superseded one out of the answer.
+the words in the query. Because data-olympus understands which rule is current, a
+default search downranks the superseded document below the one that replaced it
+(it is still returned, useful when tracing history), and a caller that asks for
+only in-force guidance can exclude it from the result set entirely.
 
 **It is queryable in the ways governance actually needs.** You can filter by
 `status`, by `tier`, or by `type` without any post-processing, and ask things like
@@ -124,14 +126,20 @@ experience, because it was close to what we had independently landed on: the sam
 instinct to keep engineering decisions as plain markdown in git and serve them to
 agents. That convergence is what made the decision to open up easy. Rather than
 keep maintaining a private format that happened to resemble OKF, or build
-something positioned against it, we made data-olympus a conformant, OKF-compatible
-profile and put our governance work on top of the standard instead of beside it.
-If OKF becomes a common way to structure knowledge bases, and we think it is a
-sensible one, we would rather build on it than around it.
+something positioned against it, we made data-olympus a profile designed to be
+readable by OKF consumers and put our governance work on top of the standard
+instead of beside it. If OKF becomes a common way to structure knowledge bases,
+and we think it is a sensible one, we would rather build on it than around it.
 
-In practice that compatibility means every data-olympus bundle is a valid OKF
-bundle that any OKF consumer can read, while a bundle produced by the OKF tooling
-can be imported and, once it carries our governance fields, governed by our tools.
+In practice that design intent means a data-olympus bundle inherits OKF's
+directory structure, frontmatter conventions, reserved filenames, and link
+model, so an OKF consumer that tolerates unknown keys (as the OKF spec
+requires) should be able to read it. We have not yet run a real OKF reference
+consumer against a data-olympus bundle to confirm that end to end, or the
+reverse (importing an OKF-tooling-produced bundle and confirming it governs
+cleanly); that executable check is tracked in
+[issue #82](https://github.com/knaisoma/data-olympus/issues/82), not shipped
+today.
 
 The natural question is then why use data-olympus rather than OKF directly. OKF
 defines a deliberately minimal required set (an `id`, a `type`, a `spec_version`)

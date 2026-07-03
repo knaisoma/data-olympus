@@ -62,6 +62,41 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Specified `applies_when` in SPEC.md (WP4c, 0.3.0). `applies_when` is the
+  highest-weight indexed field in `Index.search` (tied with `title`, ahead of
+  `description` and body) and one of the three discriminating columns for the
+  `abstain` signal gate, but was previously implemented and used in the
+  benchmark story without ever being documented. SPEC.md section 4.2 now lists
+  it as a recommended field with authoring guidance (short verb phrases in an
+  agent's own vocabulary) and a worked example; `docs/adoption.md` gained a
+  matching authoring section. Documented honestly: unlike `tags`, a malformed
+  `applies_when` produces no `kb lint` warning today.
+- Upgraded `example-bundle/` to demonstrate the format's remaining
+  differentiators (WP4c, 0.3.0): a real supersession pair
+  (`STD-U-003`/`STD-U-004`, `status: superseded`/`supersedes`/`superseded_by`),
+  a `memory` document and a `reference` document (the two concept types the
+  bundle previously lacked), and `applies_when` on the standards most likely to
+  be hit mid-task. `example-bundle/index.md` and the new directory `index.md`
+  files were updated to match; `uv run data-olympus lint example-bundle`
+  remains zero-error.
+- Quickstart lifecycle-aware retrieval demo (WP4c, 0.3.0). `docs/quickstart.md`
+  gained a verified section showing default search (soft status rerank: the
+  active `STD-U-004` outranks the superseded `STD-U-003` it replaced, both
+  still returned) versus `in_force=true` (hard filter: `STD-U-003` excluded
+  from the result set entirely), against the upgraded example bundle.
+- CI doc-consistency guard (WP4c, 0.3.0): `scripts/check_doc_consistency.py`,
+  wired as a new `doc-consistency-guard` CI job. Fails when the
+  `type`/`status`/`tier` enum lists restated in SPEC.md or `docs/adoption.md`
+  drift from `data_olympus.format.validate`'s canonical
+  `TYPES`/`STATUSES`/`TIERS`, or when SPEC.md's reserved-filename list drifts
+  from `validate.RESERVED`. Checks every restatement of an enum in a file
+  (SPEC.md states `type`/`status` twice; both are now checked, not just the
+  first), tolerant of reordering, rewrapped lines, and an Oxford "or".
+- Cheap OKF minimal-field structural check (`tests/test_okf_minimal_fields.py`,
+  WP4c, 0.3.0): asserts every example-bundle concept doc has non-empty
+  `id`/`type` and the bundle-root `index.md` declares `okf_version`. This is a
+  structural floor, not a conformance test; the module docstring states
+  exactly what it does and does not prove.
 - Deployable `in_force` and `abstain` modes on `kb_search` (issue #68, epic #75).
   `kb_search` (MCP tool and `GET /api/v1/search`) gains two parameters:
   - `in_force: bool` HARD-filters results to the in-force status class
@@ -99,6 +134,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checkouts no longer accumulate one-per-session forever. GC also deletes the
   session's `kb-session/<safe_id>` branch, so a returning session can create its
   worktree again instead of hitting a fatal "branch already exists" error.
+
+### Documentation
+
+- Reworded OKF-compatibility claims for honesty (WP4c, 0.3.0). `README.md`,
+  `SPEC.md`, `WHY.md`, and `docs/comparison.md` asserted "OKF-compatible" /
+  "any OKF consumer can read a data-olympus bundle unchanged" / "every
+  data-olympus bundle is a valid OKF bundle" with zero executable backing: no
+  test runs a real OKF reference consumer/producer against a data-olympus
+  bundle. The strongest claims are now worded as design intent ("designed to
+  be readable by OKF consumers") backed by the shared structure that does
+  exist by construction (directory layout, frontmatter conventions, reserved
+  filenames, link model), with formal conformance testing tracked in
+  [issue #82](https://github.com/knaisoma/data-olympus/issues/82). A cheap,
+  non-behavioral structural floor (non-empty `id`/`type` on every example-bundle
+  concept doc, `okf_version` on the bundle-root index) was added as
+  `tests/test_okf_minimal_fields.py`; its docstring is explicit that this
+  proves frontmatter shape, not that any OKF tool can read the bundle.
 
 ### Changed
 

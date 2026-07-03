@@ -10,7 +10,7 @@
 
 Knowledge that lives in plain markdown with YAML frontmatter is version-controllable, portable, and readable by both humans and automated agents without any special runtime. A git repository becomes the primary audit trail: every change is a commit, rollback is `git revert`, and the full history ships with the bundle.
 
-This specification is an **OKF-compatible profile**: any consumer built for Google's Open Knowledge Format can read a data-olympus bundle unchanged, because we inherit OKF's directory structure, frontmatter conventions, reserved filenames, and link model. On top of that baseline we layer **governance extensions**: a stable `id` field decoupled from path, a controlled type vocabulary, explicit `status` and `tier` fields, ADR chain links, and a single-writer MCP server that enforces propose/review/commit safety across multiple concurrent agents.
+This specification is **designed to be readable by consumers of Google's Open Knowledge Format (OKF)**: it inherits OKF's directory structure, frontmatter conventions, reserved filenames, and link model. Formal conformance testing against the OKF reference tooling is not yet in place ([issue #82](https://github.com/knaisoma/data-olympus/issues/82) tracks it); the claim today rests on shared structure by construction, not on an executable check. On top of that baseline we layer **governance extensions**: a stable `id` field decoupled from path, a controlled type vocabulary, explicit `status` and `tier` fields, ADR chain links, and a single-writer MCP server that enforces propose/review/commit safety across multiple concurrent agents.
 
 The result is a format that is portable and human-readable at rest (plain files, no database required) while supporting structured queries, multi-agent write safety, and progressive disclosure when served through the data-olympus MCP.
 
@@ -60,7 +60,7 @@ The bundle may be organized into subdirectories of any depth. Subdirectory names
 
 ### 4.1 Base layer (inherited from OKF)
 
-The following conventions are inherited from OKF for interoperability. Any OKF consumer can read a data-olympus bundle because these are shared.
+The following conventions are inherited from OKF for interoperability. They are designed so an OKF consumer can read a data-olympus bundle; this is not yet backed by an executable conformance test against OKF reference tooling (see section 11 and [issue #82](https://github.com/knaisoma/data-olympus/issues/82)).
 
 - Documents are UTF-8 encoded markdown files.
 - Structured metadata is expressed as a YAML frontmatter block at the top of the file, opened and closed by a bare `---` line.
@@ -87,8 +87,44 @@ The following fields are added by this profile. OKF consumers silently ignore un
 - `description`: one or two sentences summarizing the concept; used in generated index files and search results.
 - `tags`: a YAML list of lowercase strings for faceted search.
 - `timestamp`: ISO 8601 date or datetime of last meaningful content change.
+- `applies_when`: a YAML list of short trigger phrases describing the coding intents this document governs (see below). Recommended for `standard` and `decision` documents in particular, since these are the concepts an agent needs to retrieve mid-task.
 
-`tags` should always be a list; a scalar value is a warning.
+`tags` should always be a list; a scalar value is a warning. `applies_when` is parsed the same way (a non-list value is silently treated as empty, matching `tags`' parsing), but unlike `tags`, `kb lint` does not currently emit a warning when `applies_when` is missing or malformed — it is recommended by this spec but not yet schema-checked. See section 9 for the exact set of fields `kb lint` checks.
+
+#### `applies_when`: authoring guidance
+
+`applies_when` is the single highest-weight indexed field in the reference implementation's full-text search: it is matched (and boosted) alongside `title`, ahead of `description` and body text. It exists to close the gap between how an agent phrases a task mid-flow and how a document's title or prose describes itself. A standard titled "Secrets Handling" is not what an agent types when it is about to write a `.env` file; `applies_when` lets the document declare the vocabulary an agent would actually use.
+
+`applies_when` also feeds the reference implementation's abstention gate (`kb_search`'s `abstain` mode): a query is required to match at least one of `title`, `tags`, or `applies_when` before retrieval proceeds over the full document; `description` and body prose are deliberately excluded from that gate because their common words would let an out-of-scope query pass. A document with no `applies_when` (and generic tags) is harder for the gate to recognize as relevant to a real coding intent.
+
+Guidance for authoring good `applies_when` values:
+
+- Use short verb phrases, not keywords or full sentences: `"writing a database migration"`, not `"database"` or `"Guidance for writing a safe database migration script."`.
+- Phrase each entry as the coding intent an agent is mid-task on, in the agent's own vocabulary, not the document's internal terminology.
+- Prefer several narrow phrases over one broad one. A standard governing secrets handling benefits more from `"reading a .env file"`, `"committing a credential"`, and `"logging a request body"` than from a single `"security"` entry.
+- Keep the list short (a handful of phrases); this is a retrieval aid, not an exhaustive index of every section in the document.
+
+Worked example:
+
+```yaml
+---
+id: STD-U-601
+type: standard
+status: active
+tier: T1
+title: Secrets Handling
+description: Universal rules for handling credentials, API keys, and other secrets.
+applies_when:
+  - "reading a .env file"
+  - "committing a credential or API key"
+  - "logging a request or response body"
+  - "writing a script that calls a secrets manager"
+tags: [security, secrets, credentials]
+timestamp: "2026-06-24"
+---
+```
+
+An agent mid-task on "I need to log this API response for debugging" shares no vocabulary with the document's title ("Secrets Handling") but matches `"logging a request or response body"` directly.
 
 **Optional decision-chain fields** (not checked by `kb lint`; documented convention only):
 
@@ -117,6 +153,9 @@ tags:
   - standards
 timestamp: "2026-05-15"
 owner: platform-team
+applies_when:
+  - "writing a new document or README"
+  - "drafting a commit message or PR description"
 ---
 
 ## Purpose
@@ -211,9 +250,9 @@ These three are mirrored as the `kb_consult`, `kb_gate_check`, and `kb_complianc
 
 1. Every `.md` file in the bundle that is not a reserved filename (`index.md`, `log.md`, `template.md`) contains a parseable YAML frontmatter block (a valid YAML mapping between opening and closing `---` delimiters at the top of the file).
 2. Every such non-reserved concept document contains all four required fields (`id`, `type`, `status`, `tier`) with values from their respective controlled vocabularies:
-   - `type`: one of `decision`, `memory`, `project`, `reference`, `standard`, `workflow`
-   - `status`: one of `draft`, `active`, `deprecated`, `superseded`, `proposed`, `accepted`, `rejected`
-   - `tier`: one of `T1`, `T2`, `T3`, `T4`, `meta`
+   - `type`: one of `decision`, `memory`, `project`, `reference`, `standard`, `workflow`.
+   - `status`: one of `draft`, `active`, `deprecated`, `superseded`, `proposed`, `accepted`, `rejected`.
+   - `tier`: one of `T1`, `T2`, `T3`, `T4`, `meta`.
 
 **Validation rules for consumers:**
 
@@ -231,7 +270,7 @@ These three are mirrored as the `kb_consult`, `kb_gate_check`, and `kb_complianc
 **`kb lint` severity levels:**
 
 - `error`: missing required field, invalid enum value, or YAML parse failure. Blocks CI.
-- `warning`: missing recommended field (`title`, `description`, `tags`, `timestamp`), or `tags` is not a list. Does not block CI by default. Broken links and missing `supersedes`/`superseded_by`/`owner` are not checked and produce no finding either way (see sections 4.2 and 5).
+- `warning`: missing recommended field (`title`, `description`, `tags`, `timestamp`), or `tags` is not a list. Does not block CI by default. Broken links and missing `supersedes`/`superseded_by`/`owner` are not checked and produce no finding either way (see sections 4.2 and 5). `applies_when` is recommended by this spec but is not yet in `kb lint`'s checked field set: a missing or malformed `applies_when` produces no finding today, even though a non-list value is silently parsed as empty (matching `tags`' parsing, minus the warning).
 
 ---
 
@@ -253,7 +292,7 @@ The `spec_version` field is optional in bundles targeting this `0.1` draft. It b
 
 ## 11. Relationship to other formats
 
-**OKF (Open Knowledge Format).** data-olympus is an OKF-compatible profile. An OKF consumer can read any conformant data-olympus bundle unchanged; our governance extensions (`id`, `status`, `tier`, `supersedes`, `superseded_by`, `owner`, and the write pipeline) are invisible to OKF consumers because they ignore unknown keys. The two formats are complementary: OKF defines the interoperable baseline; data-olympus adds the governance layer needed for multi-agent write safety and ADR chain tracking. The relationship is analogous to how OpenAPI is a profile of JSON Schema.
+**OKF (Open Knowledge Format).** data-olympus is designed to be readable by OKF consumers: our governance extensions (`id`, `status`, `tier`, `supersedes`, `superseded_by`, `owner`, and the write pipeline) are meant to be invisible to OKF consumers because OKF requires tolerating unknown keys. This is a design intent backed by shared structure (directory layout, frontmatter conventions, reserved filenames, link model), not by an executable conformance test against the OKF reference tooling; [issue #82](https://github.com/knaisoma/data-olympus/issues/82) tracks adding one. The two formats are complementary: OKF defines the interoperable baseline; data-olympus adds the governance layer needed for multi-agent write safety and ADR chain tracking. The relationship is analogous to how OpenAPI is a profile of JSON Schema.
 
 **Obsidian and Notion.** Both support markdown files with YAML frontmatter and backlink graphs. data-olympus bundles can be opened in Obsidian as a vault; the frontmatter is visible in properties panels and the body renders normally. The difference is governance: Obsidian and Notion have no concept of propose/pending/resolve write pipelines, controlled-vocabulary enforcement, or tier-based access control. data-olympus complements these tools rather than replacing them: a team may author in Obsidian and commit conformant bundles to git for the MCP server to serve.
 
