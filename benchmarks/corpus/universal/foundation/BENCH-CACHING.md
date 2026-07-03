@@ -6,9 +6,10 @@ tier: T1
 title: caching
 ---
 
-# caching (current)
+# caching
 
-This concept defines the current guidance for caching. When working with caching, follow the current rules below. The caching approach affects reliability and developer ergonomics.
+This concept defines the governance for caching. When working with caching, follow the rules below. The caching approach affects convention, monitoring, latency, operability.
 
 - Prefer the documented caching pattern.
 - Record exceptions to the caching rule.
+- Weigh the convention and operability implications.

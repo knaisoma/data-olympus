@@ -6,9 +6,10 @@ tier: T1
 title: error-budgets-2
 ---
 
-# error-budgets-2 (current)
+# error-budgets-2
 
-This concept defines the current guidance for error-budgets-2. When working with error-budgets-2, follow the current rules below. The error-budgets-2 approach affects reliability and developer ergonomics.
+This concept defines the governance for error-budgets-2. When working with error-budgets-2, follow the rules below. The error-budgets-2 approach affects observability, operability, rollback, deployment.
 
 - Prefer the documented error-budgets-2 pattern.
 - Record exceptions to the error-budgets-2 rule.
+- Weigh the observability and deployment implications.

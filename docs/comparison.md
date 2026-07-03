@@ -24,84 +24,110 @@ The system is optimized for one specific job: a small team of agents (and humans
 
 ## Quantified comparison
 
-Methodology: a synthetic corpus of 250 concepts (deterministic, `seed=0`) was generated across all tiers and types, including supersession pairs. Four retrieval methods were run over 500 queries spanning four categories (`exact`, `semantic`, `status`, `graph`). Token counts use the dep-free `SimpleTokenizer` (word runs and punctuation marks); token *ratios* across methods are tokenizer-robust, absolute counts are specific to this tokenizer. Vector-RAG was not included because the `[bench]` optional dependencies are absent from the CI install; it is expected to win on the `semantic` category. See [`benchmarks/README.md`](../benchmarks/README.md) for the full methodology.
+Methodology: a synthetic corpus of 250 concepts (deterministic, `seed=0`) generated across all tiers and types, including supersession pairs. Five retrieval methods run over 500 queries in four categories (`exact`, `semantic`, `status`, `graph`). Token counts use the dep-free `SimpleTokenizer`; token *ratios* across methods are tokenizer-robust, absolute counts are tokenizer-specific. See [`benchmarks/README.md`](../benchmarks/README.md) for the full methodology, the de-leaking done to the corpus, and remaining known leaks.
 
-**Corpus: SYNTHETIC (generated). Tokenizer: SimpleTokenizer (dep-free). Vector-RAG: not included in this run.**
+The numbers below are generated directly from [`benchmarks/results/results.json`](../benchmarks/results/results.json) by `benchmarks/docs_tables.py`; a CI guard (`scripts/check_benchmark_docs.py`) fails the build if any quoted number drifts from the committed results, so this section cannot go stale by hand. Regenerate everything with `python -m benchmarks.generate_artifacts && python -m benchmarks.docs_tables --write`.
+
+**Corpus: SYNTHETIC (generated). Tokenizer: SimpleTokenizer (dep-free).**
+
+### What changed in this re-cut (0.3.0), and why
+
+This section was re-derived under a stricter methodology than the 0.2.0 numbers. Three changes materially moved the numbers, and honesty is this project's credibility strategy, so we call each out:
+
+1. **The `in_force` filter fix (benchmark bug B1).** The harness previously filtered data-olympus results to `status="active"`, which silently excluded `accepted` gold decision docs and produced a deflated exact recall of **0.858**. The deployable `in_force` filter (active/accepted/approved) is now used, and exact recall rises to **1.000**. This is a genuine improvement from fixing a measurement bug, not a change to the engine.
+2. **Two honest baselines added.** A **status-aware BM25** (reads `status` frontmatter, skips superseded/deprecated docs) isolates "the win is having governance metadata" from "the engine is better". And **whole-dump / grep-read are no longer scored on ranking metrics they cannot support** — whole-dump does not rank at all (it returns every doc in fixed order for every query), so it is reported only on token cost and the order-free Contains-Gold axis; grep-read now ranks by real match-count order instead of the alphabetical file order it used before (which made its old recall/NDCG/MRR meaningless).
+3. **The corpus was de-leaked.** The old corpus wrote the lifecycle words the query searched for straight into the gold doc ("previous"/"current" in bodies, "(old)"/"(current)" in titles). That let keyword methods win lifecycle categories by echoing a string. The lifecycle signal now lives only in `status` + the supersedes chain; the old and new doc of a pair are lexically identical. A direct consequence: **the old "BM25 staleness 0.050" was partly a leakage artifact** — with identical bodies, plain BM25 no longer ranks the stale doc *above* the current one by lexical luck. The real, un-lucky governance harm is measured instead by **Serves-Stale** (below).
 
 ### Per-category metrics
 
-| Method | Category | Mean Tokens | Recall@k | Precision | NDCG@k | MRR | Staleness Rate | N |
-| --------|----------|-------------|----------|-----------|--------|----- |----------------|---|
-| bm25 | exact | 513.8 | 1.000 | 0.196 | 1.000 | 1.000 | 0.000 | 225 |
-| bm25 | semantic | 214.6 | 0.009 | 0.002 | 0.007 | 0.006 | 0.000 | 225 |
-| bm25 | status | 529.4 | 1.000 | 0.219 | 1.000 | 1.000 | 0.000 | 25 |
-| bm25 | graph | 553.8 | 1.000 | 0.209 | 0.631 | 0.500 | 1.000 | 25 |
-| bm25 | ALL | 382.0 | 0.554 | 0.110 | 0.535 | 0.528 | 0.050 | 500 |
-| data-olympus | exact | 344.0 | 0.858 | 0.250 | 0.858 | 0.858 | 0.000 | 225 |
-| data-olympus | semantic | 193.0 | 0.036 | 0.011 | 0.021 | 0.017 | 0.000 | 225 |
-| data-olympus | status | 407.1 | 1.000 | 0.284 | 1.000 | 1.000 | 0.000 | 25 |
-| data-olympus | graph | 383.3 | 1.000 | 0.301 | 1.000 | 1.000 | 0.000 | 25 |
-| data-olympus | ALL | 281.2 | 0.502 | 0.146 | 0.496 | 0.494 | 0.000 | 500 |
-| grep-read | exact | 1022.4 | 0.520 | 0.100 | 0.308 | 0.304 | 0.000 | 225 |
-| grep-read | semantic | 9570.6 | 0.022 | 0.001 | 0.013 | 0.016 | 0.000 | 225 |
-| grep-read | status | 25560.0 | 0.000 | 0.005 | 0.000 | 0.013 | 0.000 | 25 |
-| grep-read | graph | 25560.0 | 0.000 | 0.005 | 0.000 | 0.013 | 0.000 | 25 |
-| grep-read | ALL | 7322.8 | 0.244 | 0.046 | 0.145 | 0.145 | 0.000 | 500 |
-| whole-dump | exact | 25560.0 | 0.022 | 0.004 | 0.013 | 0.026 | 0.000 | 225 |
-| whole-dump | semantic | 25560.0 | 0.022 | 0.004 | 0.013 | 0.026 | 0.000 | 225 |
-| whole-dump | status | 25560.0 | 0.000 | 0.005 | 0.000 | 0.013 | 0.000 | 25 |
-| whole-dump | graph | 25560.0 | 0.000 | 0.005 | 0.000 | 0.013 | 0.000 | 25 |
-| whole-dump | ALL | 25560.0 | 0.020 | 0.004 | 0.012 | 0.025 | 0.000 | 500 |
+Recall/NDCG/MRR appear only for methods that produce a query-dependent ranking (whole-dump reads `n/a`). **Mean Tokens** is the as-shipped payload; **Norm Tokens** charges every method the same normalized policy (its top-1 full document body) so token cost reflects retrieval, not response-shaping convention. **Contains-Gold** is order-free (gold present anywhere in the payload). **Serves-Stale** is the fraction of supersession-topic queries where the retired doc reached the payload.
 
-### Token cost vs corpus size
+<!-- BENCH:comparison_per_category START -->
+| Method | Category | Mean Tokens | Norm Tokens | Recall@k | Contains-Gold | Serves-Stale | NDCG@k | MRR | N |
+|---|---|---|---|---|---|---|---|---|---|
+| data-olympus | exact | 352 | 107 | 1.000 | 1.000 | 0.000 | 1.000 | 1.000 | 217 |
+| data-olympus | semantic | 239 | 64 | 0.037 | 0.037 | 0.000 | 0.021 | 0.015 | 217 |
+| data-olympus | status | 412 | 122 | 1.000 | 1.000 | 0.000 | 1.000 | 1.000 | 33 |
+| data-olympus | graph | 384 | 122 | 1.000 | 1.000 | 0.000 | 1.000 | 1.000 | 33 |
+| data-olympus | ALL | 309 | 90 | 0.582 | 0.582 | 0.000 | 0.575 | 0.573 | 500 |
+| bm25 | exact | 542 | 107 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 217 |
+| bm25 | semantic | 272 | 52 | 0.014 | 0.014 | 0.000 | 0.009 | 0.007 | 217 |
+| bm25 | status | 577 | 122 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 33 |
+| bm25 | graph | 577 | 122 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 33 |
+| bm25 | ALL | 430 | 85 | 0.572 | 0.572 | 0.750 | 0.570 | 0.569 | 500 |
+| bm25-status-aware | exact | 534 | 107 | 1.000 | 1.000 | 0.000 | 1.000 | 1.000 | 217 |
+| bm25-status-aware | semantic | 272 | 52 | 0.014 | 0.014 | 0.000 | 0.009 | 0.007 | 217 |
+| bm25-status-aware | status | 561 | 122 | 1.000 | 1.000 | 0.000 | 1.000 | 1.000 | 33 |
+| bm25-status-aware | graph | 561 | 122 | 1.000 | 1.000 | 0.000 | 1.000 | 1.000 | 33 |
+| bm25-status-aware | ALL | 424 | 85 | 0.572 | 0.572 | 0.000 | 0.570 | 0.569 | 500 |
+| grep-read | exact | 1234 | 116 | 0.442 | 1.000 | 1.000 | 0.273 | 0.289 | 217 |
+| grep-read | semantic | 10454 | 67 | 0.032 | 0.369 | 0.333 | 0.018 | 0.022 | 217 |
+| grep-read | status | 27166 | 122 | 1.000 | 1.000 | 1.000 | 0.828 | 0.768 | 33 |
+| grep-read | graph | 27166 | 122 | 1.000 | 1.000 | 1.000 | 0.828 | 0.768 | 33 |
+| grep-read | ALL | 8658 | 95 | 0.338 | 0.726 | 0.833 | 0.236 | 0.236 | 500 |
+| whole-dump | exact | 27166 | 110 | n/a | 1.000 | 1.000 | n/a | n/a | 217 |
+| whole-dump | semantic | 27166 | 110 | n/a | 1.000 | 1.000 | n/a | n/a | 217 |
+| whole-dump | status | 27166 | 110 | n/a | 1.000 | 1.000 | n/a | n/a | 33 |
+| whole-dump | graph | 27166 | 110 | n/a | 1.000 | 1.000 | n/a | n/a | 33 |
+| whole-dump | ALL | 27166 | 110 | n/a | 1.000 | 1.000 | n/a | n/a | 500 |
+<!-- BENCH:comparison_per_category END -->
 
-Mean payload tokens per method as corpus grows (curve computed on a query sample of 8; same `seed=42` sub-corpus per size point):
+### Token cost: as-shipped vs normalized payload policy
 
-| Corpus Size | bm25 | data-olympus | grep-read | whole-dump |
-|-------------|------|--------------|-----------|------------|
-| 25 | 140.0 | 156.2 | 50.0 | 2208.0 |
-| 50 | 215.0 | 170.9 | 125.0 | 4684.0 |
-| 100 | 296.0 | 207.4 | 217.0 | 9836.0 |
-| 250 | 325.2 | 229.2 | 490.5 | 25560.0 |
+The as-shipped **Mean Tokens** mixes retrieval with payload convention: bm25 returns 5 chunks, data-olympus returns outline + snippets + 1 full doc, whole-dump dumps everything. The **Norm Tokens** column removes that confound by charging every method the cost of surfacing exactly one full document — and there the methods are close (data-olympus ~90, bm25 ~85), which is the honest reading: **the ~28% as-shipped token advantage (309 vs 430) is mostly the lighter payload policy, not a retrieval-side miracle.** data-olympus's payload also scales sub-linearly (outline + a few snippets + one doc, independent of corpus size), whereas whole-dump grows linearly with every file added.
 
-data-olympus scales sub-linearly because its payload is outline + top-hit snippets + one full document body, independent of corpus size. whole-dump grows linearly with every file added.
+### Staleness avoidance (the real result)
 
-### Staleness avoidance
+With the de-leaked corpus, the honest governance-harm metric is **Serves-Stale**: does a superseded rule reach the agent at all? It is tiebreak-independent and unambiguous.
 
-This is data-olympus's clearest accuracy differentiator, and it is genuinely demonstrated (not an artifact of retrieving nothing):
-
-- **BM25 staleness rate = 0.050**, driven entirely by the `graph` category (staleness=1.000 there, see the per-category table). The query "what replaced the previous \<topic\> guidance" lexically matches the *superseded* concept's body, so BM25 ranks the stale document first. Plain keyword search has no notion of lifecycle.
-- **data-olympus staleness rate = 0.000**, and on `status`/`graph` this is a real result, not a vacuous one: data-olympus retrieves the relevant concepts (recall=1.000 on both categories) and the `status: active` filter excludes the superseded one, so the stale document never reaches the agent. Same queries, same corpus, opposite outcome from BM25.
-- grep-read and whole-dump also score 0.000, but for the hollow reason that their ranked lists never surface a concept high enough to trigger the metric on these queries.
+- **data-olympus serves-stale = 0.000** and **status-aware BM25 serves-stale = 0.000.** Both carry a status filter (in-force / status frontmatter) that excludes the superseded doc *before* ranking, so a retired rule never reaches the agent. That status-aware BM25 also scores 0.000 is the point of the baseline: **the staleness win is attributable to having the status metadata, not to the data-olympus engine.**
+- **Plain BM25 serves-stale = 0.750** and **grep-read = 0.833.** A status-blind keyword method retrieves the superseded doc alongside the current one (they are lexically identical) 75-83% of the time it touches a supersession topic. **whole-dump serves-stale = 1.000** by definition.
+- The older **staleness rate** metric (stale ranked at-or-above current) is now ~0.000 for every method, because with identical bodies a status-blind ranker ties the two and the result depends on an arbitrary tiebreak. That is exactly why Serves-Stale is the headline: it does not depend on tiebreak luck.
 
 ### Where data-olympus loses
 
-On **semantic** (paraphrase) queries, data-olympus achieves recall=0.036, ndcg=0.021. Paraphrases lack the keyword overlap the FTS index relies on, so every keyword method does poorly here (BM25 0.009, grep-read 0.022, whole-dump 0.022); none is practically useful. This is the category where dense retrieval has the largest advantage, and **vector-RAG (not included in this run, `[bench]` deps absent) is expected to win decisively**. It remains data-olympus's genuine weakness: a curated synonym/acronym expansion layer bridges known lexical variants (`k8s` -> `kubernetes`, `rls` -> `row level security`), but full-text search still cannot follow arbitrary paraphrases the way dense retrieval does.
+On **semantic** (paraphrase) queries, data-olympus achieves recall=0.037, ndcg=0.021. Paraphrases lack the keyword overlap the FTS index relies on, so every keyword method does poorly here (BM25 0.014, grep-read 0.032); none is practically useful. This is the category where dense retrieval has the largest advantage. It remains data-olympus's genuine weakness: a curated synonym/acronym expansion layer bridges known lexical variants (`k8s` -> `kubernetes`, `rls` -> `row level security`), and the optional local-embedding hybrid (off by default) narrows it further, but the default full-text stack cannot follow arbitrary paraphrases the way dense retrieval does. The governance ablation below quantifies exactly how much embeddings buy on held-out paraphrases.
 
-On **exact** queries, data-olympus (recall=0.858) trails BM25 (recall=1.000). BM25 ranks chunks by TF-IDF over full bodies, while data-olympus ranks by SQLite FTS5 bm25 over its indexed surface; the gap is the cost of the lighter index.
-
-Overall, data-olympus recall (0.502) is competitive with BM25 (0.554) while spending ~26% fewer tokens (281 vs 382 per query), and it is the only keyword method that avoids serving superseded knowledge (staleness 0.000 vs BM25 0.050). It does not beat dense retrieval on paraphrase queries, and does not claim to.
+Overall, data-olympus recall (0.582) is competitive with, and here edges out, BM25 (0.572) — a small, real gap now that the de-leaked corpus removed the string-echo advantage — while never serving a superseded rule (serves-stale 0.000 vs BM25 0.750). It does not beat dense retrieval on paraphrase queries, and does not claim to.
 
 ### Governance ablation: does `applies_when` trigger metadata help?
 
-This is the question that matters for the governance use case (coding-intent → governing-rule). A separate ablation runs a synthetic governance corpus (18 docs, distinct curated `applies_when` triggers, supersession pairs, plus distractor topics with no governing rule) through 65 stratified scenario queries, toggling one lever at a time. The corpus is built so the trigger terms do **not** appear in the doc body, and a held-out `paraphrase_uncovered` stratum uses intent phrasings that share **no** term with any trigger, so the test cannot flatter the metadata. Numbers are copied from [`benchmarks/governance_results/ablation.md`](../benchmarks/governance_results/ablation.md); regenerate with `python -m benchmarks.generate_governance_artifacts`.
+This is the question that matters for the governance use case (coding-intent → governing-rule). A separate ablation runs a synthetic governance corpus (30 governing topics with distinct curated `applies_when` triggers, 10 supersession pairs, plus 31 distractor topics with no governing rule) through 158 stratified scenario queries, toggling one lever at a time. The corpus is built so the trigger terms do **not** appear in the doc body, and a held-out `paraphrase_uncovered` stratum uses intent phrasings that share **no** term with any trigger, so the test cannot flatter the metadata. Every recall figure in [`benchmarks/governance_results/ablation.md`](../benchmarks/governance_results/ablation.md) now carries a 95% bootstrap CI; regenerate with `python -m benchmarks.generate_governance_artifacts`.
 
+<!-- BENCH:governance START -->
 | Config | trigger_covered recall | paraphrase_uncovered (held-out) | negative FP rate | ALL recall | tokens/query |
 |---|---|---|---|---|---|
-| fts-no-metadata | 0.867 | 0.429 | 1.000 | 0.523 | 307 |
-| fts+description | 0.867 | 0.452 | 1.000 | 0.538 | 305 |
-| **fts+applies_when** | **1.000** | 0.452 | 1.000 | **0.569** | 306 |
-| fts+applies_when+abstain | 1.000 | 0.286 | **0.000** | 0.462 | 200 |
-| bm25-baseline | 1.000 | 0.405 | 1.000 | 0.538 | 664 |
+| fts-no-metadata | 0.667 | 0.333 | 1.000 | 0.373 | 307 |
+| fts+description | 0.667 | 0.345 | 1.000 | 0.380 | 306 |
+| fts+applies_when | 1.000 | 0.414 | 1.000 | 0.481 | 308 |
+| fts+applies_when+abstain | 1.000 | 0.379 | 0.097 | 0.462 | 209 |
+| bm25-baseline | 1.000 | 0.356 | 1.000 | 0.449 | 658 |
+<!-- BENCH:governance END -->
 
 What the ablation honestly shows:
 
-- **`applies_when` helps, modestly here, more at scale.** On trigger-covered intents it lifts recall from 0.867 to **1.000** (+0.133), fixing the cases where the model's tool/intent term is *not* already in the doc's prose; overall recall rises +0.046 over body-only FTS, at roughly half BM25's tokens. The gain is modest in *this* corpus because it is small (top-5 of 18 docs is easy, so body-only FTS already does well via the topic name in the title); on a larger KB, body-only recall degrades and the `applies_when` advantage is expected to widen. That scale sensitivity is a known limitation of this 18-doc benchmark.
-- **It cannot bridge true paraphrases.** On the held-out `paraphrase_uncovered` stratum, `applies_when` adds **+0.000** (0.452, same as no-metadata). When the query shares no term with any trigger, curated metadata cannot help; that is dense/semantic-retrieval territory, and the benchmark shows it plainly rather than hiding it.
-- **`description` alone barely moves recall** (+0.015 overall); the trigger list is the lever that matters.
-- **Abstention is solvable, with a recall trade-off.** Plain FTS (and BM25) have a **100% false-positive rate on negative queries** (queries with no governing rule): they always return something, because OR-matching hits generic words. The `fts+applies_when+abstain` config adds a **signal gate** — it returns nothing unless the query matches a discriminating column (title / tags / `applies_when`, deliberately not the prose `description`, whose common words leak). That drops the negative false-positive rate from **1.000 to 0.000** and keeps full recall on trigger-covered and supersession intents, at the cost of recall on hard paraphrases (0.452 → 0.286, since weak body-only matches now abstain). For a governance tool this is usually the right trade: abstaining beats surfacing a rule that does not govern. The gate is built on the existing `columns` search parameter, so it is a deployable mode, not new machinery.
+- **`applies_when` helps, and more than in the old 18-doc run.** On trigger-covered intents it lifts recall from 0.667 to **1.000** (+0.333), fixing cases where the model's tool/intent term is *not* already in the doc's prose; overall recall rises to **0.481** over 0.373 for body-only FTS, at roughly half BM25's tokens. The gain is larger than the old benchmark reported because the corpus grew (30 topics, so top-5 is no longer trivial) and the trigger terms are strictly held out of the body.
+- **It cannot bridge true paraphrases.** On the held-out `paraphrase_uncovered` stratum, `applies_when` reaches only 0.414. When the query shares no term with any trigger, curated metadata alone cannot help; that is dense/semantic-retrieval territory. The optional local-embedding hybrid (measured in [`benchmarks/governance_results/embeddings/ablation.md`](../benchmarks/governance_results/embeddings/ablation.md)) lifts this stratum from 0.414 to ~0.598, which is exactly the gap it is meant to close.
+- **`description` alone barely moves recall** (+0.007 overall); the trigger list is the lever that matters.
+- **Abstention is solvable, with a recall trade-off.** Plain FTS (and BM25) have a **100% false-positive rate on negative queries** (queries with no governing rule): they always return something, because OR-matching hits generic words. The `fts+applies_when+abstain` config adds a **signal gate** — it returns nothing unless the query matches a discriminating column (title / tags / `applies_when`, deliberately not the prose `description`). That drops the negative false-positive rate from **1.000 to 0.097**: on the larger, more varied distractor set, 3 of 31 negatives still leak because their wording ("travel **budget**", "swag **order**", "celebration **policy**") shares a real word with a governing rule's triggers — an honest residual, not a perfect zero. The gate keeps full recall on trigger-covered and supersession intents, at a modest cost on hard paraphrases. For a governance tool this is usually the right trade: abstaining beats surfacing a rule that does not govern. The gate is built on the existing `columns` search parameter, so it is a deployable mode, not new machinery.
 
-The honest summary: curated `applies_when` triggers are the right primary mechanism for governance retrieval (deterministic, auditable, no drift), they help and never hurt, and they pair with the token and staleness advantages above; abstention on out-of-scope queries is available as a signal-gated mode (zero false positives, at the cost of some paraphrase recall); the one thing curated metadata cannot do is bridge truly unanticipated phrasings, which remains dense/semantic-retrieval territory.
+The honest summary: curated `applies_when` triggers are the right primary mechanism for governance retrieval (deterministic, auditable, no drift), they help and never hurt, and they pair with the token and staleness advantages above; abstention on out-of-scope queries is available as a signal-gated mode (near-zero false positives, at the cost of some paraphrase recall); the one thing curated metadata cannot do is bridge truly unanticipated phrasings, which remains dense/semantic-retrieval territory (and is where the optional embedding hybrid earns its keep).
+
+### One committed result on a real (non-templated) corpus
+
+Every number above is from the deterministic synthetic corpus, which exists to exercise scale and lifecycle under control, not to stand in for real content. For at least one number that is **not** templated, the lexical stack is run against the committed [`example-bundle`](../example-bundle) (18 hand-authored governance docs) with 9 labeled queries that are deliberate paraphrases avoiding each doc's distinctive title terms. Both corpus and queries are in the repo, so this is fully reproducible: `python -m benchmarks.real_corpus_eval --corpus example-bundle --queries benchmarks/real_corpus/example_bundle_queries.json --lexical-only --out benchmarks/real_corpus/example_bundle_result.json`.
+
+<!-- BENCH:real_corpus START -->
+| Metric | Lexical stack (embeddings off) |
+|---|---|
+| Corpus | 18 committed example-bundle docs |
+| Labeled queries | 9 paraphrased intents |
+| recall@5 | 0.778 |
+| recall@10 | 0.889 |
+| MRR@5 | 0.778 |
+<!-- BENCH:real_corpus END -->
+
+The two misses at k=5 are the token-disjoint paraphrases (e.g. "why did the team choose this markdown knowledge system" vs the doc titled "Adopt data-olympus for the knowledge base") — the exact semantic gap the optional embedding hybrid targets and the default lexical stack does not close. Provenance: hand-authored paraphrase queries over a committed corpus, embeddings off; it is an illustrative reproducible example, not user traffic.
 
 ---
 

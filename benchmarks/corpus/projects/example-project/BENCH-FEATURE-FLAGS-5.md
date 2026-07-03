@@ -6,9 +6,10 @@ tier: T3
 title: feature-flags-5
 ---
 
-# feature-flags-5 (current)
+# feature-flags-5
 
-This concept defines the current guidance for feature-flags-5. When working with feature-flags-5, follow the current rules below. The feature-flags-5 approach affects reliability and developer ergonomics.
+This concept defines the governance for feature-flags-5. When working with feature-flags-5, follow the rules below. The feature-flags-5 approach affects dependency, durability, boundary, review.
 
 - Prefer the documented feature-flags-5 pattern.
 - Record exceptions to the feature-flags-5 rule.
+- Weigh the dependency and review implications.

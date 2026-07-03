@@ -6,9 +6,10 @@ tier: T1
 title: logging
 ---
 
-# logging (current)
+# logging
 
-This concept defines the current guidance for logging. When working with logging, follow the current rules below. The logging approach affects reliability and developer ergonomics.
+This concept defines the governance for logging. When working with logging, follow the rules below. The logging approach affects rationale, rollback, dependency, boundary.
 
 - Prefer the documented logging pattern.
 - Record exceptions to the logging rule.
+- Weigh the rationale and boundary implications.

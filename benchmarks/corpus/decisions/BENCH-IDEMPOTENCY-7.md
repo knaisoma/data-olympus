@@ -6,9 +6,10 @@ tier: meta
 title: idempotency-7
 ---
 
-# idempotency-7 (current)
+# idempotency-7
 
-This concept defines the current guidance for idempotency-7. When working with idempotency-7, follow the current rules below. The idempotency-7 approach affects reliability and developer ergonomics.
+This concept defines the governance for idempotency-7. When working with idempotency-7, follow the rules below. The idempotency-7 approach affects monitoring, alerting, tradeoff, rollback.
 
 - Prefer the documented idempotency-7 pattern.
 - Record exceptions to the idempotency-7 rule.
+- Weigh the monitoring and rollback implications.

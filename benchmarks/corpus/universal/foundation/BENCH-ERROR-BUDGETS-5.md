@@ -6,9 +6,10 @@ tier: T1
 title: error-budgets-5
 ---
 
-# error-budgets-5 (current)
+# error-budgets-5
 
-This concept defines the current guidance for error-budgets-5. When working with error-budgets-5, follow the current rules below. The error-budgets-5 approach affects reliability and developer ergonomics.
+This concept defines the governance for error-budgets-5. When working with error-budgets-5, follow the rules below. The error-budgets-5 approach affects deployment, review, contract, latency.
 
 - Prefer the documented error-budgets-5 pattern.
 - Record exceptions to the error-budgets-5 rule.
+- Weigh the deployment and latency implications.

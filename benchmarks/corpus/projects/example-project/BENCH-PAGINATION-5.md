@@ -6,9 +6,10 @@ tier: T3
 title: pagination-5
 ---
 
-# pagination-5 (current)
+# pagination-5
 
-This concept defines the current guidance for pagination-5. When working with pagination-5, follow the current rules below. The pagination-5 approach affects reliability and developer ergonomics.
+This concept defines the governance for pagination-5. When working with pagination-5, follow the rules below. The pagination-5 approach affects consistency, monitoring, convention, observability.
 
 - Prefer the documented pagination-5 pattern.
 - Record exceptions to the pagination-5 rule.
+- Weigh the consistency and observability implications.

@@ -6,9 +6,10 @@ tier: T4
 title: rate-limiting-8
 ---
 
-# rate-limiting-8 (current)
+# rate-limiting-8
 
-This concept defines the current guidance for rate-limiting-8. When working with rate-limiting-8, follow the current rules below. The rate-limiting-8 approach affects reliability and developer ergonomics.
+This concept defines the governance for rate-limiting-8. When working with rate-limiting-8, follow the rules below. The rate-limiting-8 approach affects alerting, latency, monitoring, dependency.
 
 - Prefer the documented rate-limiting-8 pattern.
 - Record exceptions to the rate-limiting-8 rule.
+- Weigh the alerting and dependency implications.

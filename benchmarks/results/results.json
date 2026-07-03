@@ -5,295 +5,878 @@
     {
       "method": "bm25",
       "category": "ALL",
-      "mean_tokens": 381.976,
-      "recall": 0.554,
-      "precision": 0.11049854563794234,
-      "ndcg": 0.5345464876785728,
-      "mrr": 0.5276666666666666,
-      "staleness": 0.05,
+      "ranks": true,
+      "mean_tokens": 429.514,
+      "mean_tokens_ci": [
+        412.4832,
+        446.59425
+      ],
+      "norm_tokens": 85.038,
+      "norm_tokens_ci": [
+        81.59295,
+        88.55014999999999
+      ],
+      "recall": 0.572,
+      "recall_ci": [
+        0.5299500000000001,
+        0.614
+      ],
+      "contains_gold": 0.572,
+      "contains_gold_ci": [
+        0.5299500000000001,
+        0.614
+      ],
+      "precision": 0.11459893328037403,
+      "ndcg": 0.569773705614469,
+      "mrr": 0.5690666666666667,
+      "staleness": 0,
+      "serves_stale": 0.75,
+      "serves_stale_n": 132,
       "n": 500
     },
     {
       "method": "bm25",
       "category": "exact",
-      "mean_tokens": 513.84,
+      "ranks": true,
+      "mean_tokens": 542.0138248847926,
+      "mean_tokens_ci": [
+        534.2988479262673,
+        549.8296082949308
+      ],
+      "norm_tokens": 106.64976958525345,
+      "norm_tokens_ci": [
+        105.01370967741936,
+        108.33652073732719
+      ],
       "recall": 1.0,
-      "precision": 0.196256262855464,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.19704727495965554,
       "ndcg": 1.0,
       "mrr": 1.0,
       "staleness": 0,
-      "n": 225
+      "serves_stale": 1,
+      "serves_stale_n": 33,
+      "n": 217
     },
     {
       "method": "bm25",
       "category": "graph",
-      "mean_tokens": 553.76,
+      "ranks": true,
+      "mean_tokens": 577.2121212121212,
+      "mean_tokens_ci": [
+        561.7575757575758,
+        593.819696969697
+      ],
+      "norm_tokens": 121.9090909090909,
+      "norm_tokens_ci": [
+        118.0909090909091,
+        125.18181818181819
+      ],
       "recall": 1.0,
-      "precision": 0.20901272719001163,
-      "ndcg": 0.6309297535714575,
-      "mrr": 0.5,
-      "staleness": 1,
-      "n": 25
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.211215272332451,
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "staleness": 0,
+      "serves_stale": 1,
+      "serves_stale_n": 33,
+      "n": 33
     },
     {
       "method": "bm25",
       "category": "semantic",
-      "mean_tokens": 214.64,
-      "recall": 0.008888888888888889,
-      "precision": 0.0017777777777777779,
-      "ndcg": 0.006666666666666667,
-      "mrr": 0.005925925925925926,
+      "ranks": true,
+      "mean_tokens": 272.0921658986175,
+      "mean_tokens_ci": [
+        244.75518433179724,
+        298.5641705069124
+      ],
+      "norm_tokens": 52.21198156682028,
+      "norm_tokens_ci": [
+        47.096774193548384,
+        57.221428571428575
+      ],
+      "recall": 0.013824884792626729,
+      "recall_ci": [
+        0.0,
+        0.03225806451612903
+      ],
+      "contains_gold": 0.013824884792626729,
+      "contains_gold_ci": [
+        0.0,
+        0.03225806451612903
+      ],
+      "precision": 0.0027649769585253456,
+      "ndcg": 0.008695174226887288,
+      "mrr": 0.00706605222734255,
       "staleness": 0,
-      "n": 225
+      "serves_stale": 0,
+      "serves_stale_n": 33,
+      "n": 217
     },
     {
       "method": "bm25",
       "category": "status",
-      "mean_tokens": 529.44,
+      "ranks": true,
+      "mean_tokens": 577.2121212121212,
+      "mean_tokens_ci": [
+        561.7575757575758,
+        593.819696969697
+      ],
+      "norm_tokens": 121.9090909090909,
+      "norm_tokens_ci": [
+        118.0909090909091,
+        125.18181818181819
+      ],
       "recall": 1.0,
-      "precision": 0.21865181986965943,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.211215272332451,
       "ndcg": 1.0,
       "mrr": 1.0,
       "staleness": 0,
-      "n": 25
+      "serves_stale": 1,
+      "serves_stale_n": 33,
+      "n": 33
+    },
+    {
+      "method": "bm25-status-aware",
+      "category": "ALL",
+      "ranks": true,
+      "mean_tokens": 423.64,
+      "mean_tokens_ci": [
+        406.93694999999997,
+        440.20120000000003
+      ],
+      "norm_tokens": 85.038,
+      "norm_tokens_ci": [
+        81.59295,
+        88.55014999999999
+      ],
+      "recall": 0.572,
+      "recall_ci": [
+        0.5299500000000001,
+        0.614
+      ],
+      "contains_gold": 0.572,
+      "contains_gold_ci": [
+        0.5299500000000001,
+        0.614
+      ],
+      "precision": 0.11669135307454932,
+      "ndcg": 0.569773705614469,
+      "mrr": 0.5690666666666667,
+      "staleness": 0,
+      "serves_stale": 0,
+      "serves_stale_n": 132,
+      "n": 500
+    },
+    {
+      "method": "bm25-status-aware",
+      "category": "exact",
+      "ranks": true,
+      "mean_tokens": 533.5437788018434,
+      "mean_tokens_ci": [
+        526.3264976958526,
+        540.7390552995391
+      ],
+      "norm_tokens": 106.64976958525345,
+      "norm_tokens_ci": [
+        105.01370967741936,
+        108.33652073732719
+      ],
+      "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.20004400328606292,
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "staleness": 0,
+      "serves_stale": 0,
+      "serves_stale_n": 33,
+      "n": 217
+    },
+    {
+      "method": "bm25-status-aware",
+      "category": "graph",
+      "ranks": true,
+      "mean_tokens": 561.2424242424242,
+      "mean_tokens_ci": [
+        546.1204545454545,
+        577.1242424242424
+      ],
+      "norm_tokens": 121.9090909090909,
+      "norm_tokens_ci": [
+        118.0909090909091,
+        125.18181818181819
+      ],
+      "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.21721405794240922,
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "staleness": 0,
+      "serves_stale": 0,
+      "serves_stale_n": 33,
+      "n": 33
+    },
+    {
+      "method": "bm25-status-aware",
+      "category": "semantic",
+      "ranks": true,
+      "mean_tokens": 271.8847926267281,
+      "mean_tokens_ci": [
+        244.63398617511524,
+        297.87119815668206
+      ],
+      "norm_tokens": 52.21198156682028,
+      "norm_tokens_ci": [
+        47.096774193548384,
+        57.221428571428575
+      ],
+      "recall": 0.013824884792626729,
+      "recall_ci": [
+        0.0,
+        0.03225806451612903
+      ],
+      "contains_gold": 0.013824884792626729,
+      "contains_gold_ci": [
+        0.0,
+        0.03225806451612903
+      ],
+      "precision": 0.0027649769585253456,
+      "ndcg": 0.008695174226887288,
+      "mrr": 0.00706605222734255,
+      "staleness": 0,
+      "serves_stale": 0,
+      "serves_stale_n": 33,
+      "n": 217
+    },
+    {
+      "method": "bm25-status-aware",
+      "category": "status",
+      "ranks": true,
+      "mean_tokens": 561.2424242424242,
+      "mean_tokens_ci": [
+        546.1204545454545,
+        577.1242424242424
+      ],
+      "norm_tokens": 121.9090909090909,
+      "norm_tokens_ci": [
+        118.0909090909091,
+        125.18181818181819
+      ],
+      "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.21721405794240922,
+      "ndcg": 1.0,
+      "mrr": 1.0,
+      "staleness": 0,
+      "serves_stale": 0,
+      "serves_stale_n": 33,
+      "n": 33
     },
     {
       "method": "data-olympus",
       "category": "ALL",
-      "mean_tokens": 281.206,
-      "recall": 0.502,
-      "precision": 0.14647490319089398,
-      "ndcg": 0.4956706238522279,
-      "mrr": 0.4936333333333333,
+      "ranks": true,
+      "mean_tokens": 308.87,
+      "mean_tokens_ci": [
+        300.0854,
+        317.2856
+      ],
+      "norm_tokens": 90.038,
+      "norm_tokens_ci": [
+        86.89769999999999,
+        93.01474999999999
+      ],
+      "recall": 0.582,
+      "recall_ci": [
+        0.538,
+        0.626
+      ],
+      "contains_gold": 0.582,
+      "contains_gold_ci": [
+        0.538,
+        0.626
+      ],
+      "precision": 0.176860561982226,
+      "ndcg": 0.5749324833593707,
+      "mrr": 0.5726333333333333,
       "staleness": 0,
+      "serves_stale": 0,
+      "serves_stale_n": 132,
       "n": 500
     },
     {
       "method": "data-olympus",
       "category": "exact",
-      "mean_tokens": 344.0444444444444,
-      "recall": 0.8577777777777778,
-      "precision": 0.2497488973049695,
-      "ndcg": 0.8577777777777778,
-      "mrr": 0.8577777777777778,
+      "ranks": true,
+      "mean_tokens": 351.60829493087556,
+      "mean_tokens_ci": [
+        347.7695852534562,
+        355.6453917050691
+      ],
+      "norm_tokens": 106.64976958525345,
+      "norm_tokens_ci": [
+        105.01370967741936,
+        108.33652073732719
+      ],
+      "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.3026888082285718,
+      "ndcg": 1.0,
+      "mrr": 1.0,
       "staleness": 0,
-      "n": 225
+      "serves_stale": 0,
+      "serves_stale_n": 33,
+      "n": 217
     },
     {
       "method": "data-olympus",
       "category": "graph",
-      "mean_tokens": 383.28,
+      "ranks": true,
+      "mean_tokens": 384.24242424242425,
+      "mean_tokens_ci": [
+        375.7878787878788,
+        392.7583333333333
+      ],
+      "norm_tokens": 121.9090909090909,
+      "norm_tokens_ci": [
+        118.0909090909091,
+        125.18181818181819
+      ],
       "recall": 1.0,
-      "precision": 0.30143482256525916,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.3167987533410661,
       "ndcg": 1.0,
       "mrr": 1.0,
       "staleness": 0,
-      "n": 25
+      "serves_stale": 0,
+      "serves_stale_n": 33,
+      "n": 33
     },
     {
       "method": "data-olympus",
       "category": "semantic",
-      "mean_tokens": 193.04,
-      "recall": 0.035555555555555556,
-      "precision": 0.010720133667502088,
-      "ndcg": 0.02149027522717304,
-      "mrr": 0.016962962962962964,
+      "ranks": true,
+      "mean_tokens": 239.0184331797235,
+      "mean_tokens_ci": [
+        224.15552995391707,
+        253.37811059907833
+      ],
+      "norm_tokens": 63.73271889400922,
+      "norm_tokens_ci": [
+        58.83847926267281,
+        68.49907834101383
+      ],
+      "recall": 0.03686635944700461,
+      "recall_ci": [
+        0.013824884792626729,
+        0.06451612903225806
+      ],
+      "contains_gold": 0.03686635944700461,
+      "contains_gold_ci": [
+        0.013824884792626729,
+        0.06451612903225806
+      ],
+      "precision": 0.011691091752155717,
+      "ndcg": 0.020581758892559407,
+      "mrr": 0.015284178187403994,
       "staleness": 0,
-      "n": 225
+      "serves_stale": 0,
+      "serves_stale_n": 33,
+      "n": 217
     },
     {
       "method": "data-olympus",
       "category": "status",
-      "mean_tokens": 407.08,
+      "ranks": true,
+      "mean_tokens": 411.7878787878788,
+      "mean_tokens_ci": [
+        402.90909090909093,
+        420.3939393939394
+      ],
+      "norm_tokens": 121.9090909090909,
+      "norm_tokens_ci": [
+        118.0909090909091,
+        125.18181818181819
+      ],
       "recall": 1.0,
-      "precision": 0.28384196250037624,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.29562072227393765,
       "ndcg": 1.0,
       "mrr": 1.0,
       "staleness": 0,
-      "n": 25
+      "serves_stale": 0,
+      "serves_stale_n": 33,
+      "n": 33
     },
     {
       "method": "grep-read",
       "category": "ALL",
-      "mean_tokens": 7322.832,
-      "recall": 0.244,
-      "precision": 0.0459372708671638,
-      "ndcg": 0.14454972992086315,
-      "mrr": 0.14521755356196914,
+      "ranks": true,
+      "mean_tokens": 8658.408,
+      "mean_tokens_ci": [
+        7656.654,
+        9672.9879
+      ],
+      "norm_tokens": 95.298,
+      "norm_tokens_ci": [
+        91.30375,
+        99.0264
+      ],
+      "recall": 0.338,
+      "recall_ci": [
+        0.296,
+        0.378
+      ],
+      "contains_gold": 0.726,
+      "contains_gold_ci": [
+        0.686,
+        0.764
+      ],
+      "precision": 0.04327138619305534,
+      "ndcg": 0.23561518776424598,
+      "mrr": 0.23630230171241118,
       "staleness": 0,
+      "serves_stale": 0.8333333333333334,
+      "serves_stale_n": 132,
       "n": 500
     },
     {
       "method": "grep-read",
       "category": "exact",
-      "mean_tokens": 1022.4,
-      "recall": 0.52,
-      "precision": 0.099665853187681,
-      "ndcg": 0.3081173592957875,
-      "mrr": 0.30373047939714604,
+      "ranks": true,
+      "mean_tokens": 1233.5391705069123,
+      "mean_tokens_ci": [
+        1143.4739631336406,
+        1335.9875576036866
+      ],
+      "norm_tokens": 115.51152073732719,
+      "norm_tokens_ci": [
+        113.73248847926267,
+        117.26278801843318
+      ],
+      "recall": 0.4423963133640553,
+      "recall_ci": [
+        0.3778801843317972,
+        0.5069124423963134
+      ],
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.09659904049611481,
+      "ndcg": 0.27271397871045894,
+      "mrr": 0.2886233965727053,
       "staleness": 0,
-      "n": 225
+      "serves_stale": 1,
+      "serves_stale_n": 33,
+      "n": 217
     },
     {
       "method": "grep-read",
       "category": "graph",
-      "mean_tokens": 25560,
-      "recall": 0.0,
-      "precision": 0.0045258215962441315,
-      "ndcg": 0.0,
-      "mrr": 0.013440618767911063,
+      "ranks": true,
+      "mean_tokens": 27166,
+      "mean_tokens_ci": [
+        27166.0,
+        27166.0
+      ],
+      "norm_tokens": 122.45454545454545,
+      "norm_tokens_ci": [
+        119.18181818181819,
+        125.72727272727273
+      ],
+      "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.004487561323311894,
+      "ndcg": 0.8275544707792295,
+      "mrr": 0.7676767676767676,
       "staleness": 0,
-      "n": 25
+      "serves_stale": 1,
+      "serves_stale_n": 33,
+      "n": 33
     },
     {
       "method": "grep-read",
       "category": "semantic",
-      "mean_tokens": 9570.56,
-      "recall": 0.022222222222222223,
-      "precision": 0.0014112328290732047,
-      "ndcg": 0.013104262750575076,
-      "mrr": 0.01598839101436065,
+      "ranks": true,
+      "mean_tokens": 10454.239631336406,
+      "mean_tokens_ci": [
+        8859.989170506913,
+        12167.033179723503
+      ],
+      "norm_tokens": 66.82488479262673,
+      "norm_tokens_ci": [
+        59.54838709677419,
+        73.69596774193548
+      ],
+      "recall": 0.03225806451612903,
+      "recall_ci": [
+        0.009216589861751152,
+        0.055299539170506916
+      ],
+      "contains_gold": 0.3686635944700461,
+      "contains_gold_ci": [
+        0.3087557603686636,
+        0.43317972350230416
+      ],
+      "precision": 0.0017397339241113786,
+      "ndcg": 0.018479564195964252,
+      "mrr": 0.02236500983069986,
       "staleness": 0,
-      "n": 225
+      "serves_stale": 0.3333333333333333,
+      "serves_stale_n": 33,
+      "n": 217
     },
     {
       "method": "grep-read",
       "category": "status",
-      "mean_tokens": 25560,
-      "recall": 0.0,
-      "precision": 0.0045258215962441315,
-      "ndcg": 0.0,
-      "mrr": 0.013440618767911063,
+      "ranks": true,
+      "mean_tokens": 27166,
+      "mean_tokens_ci": [
+        27166.0,
+        27166.0
+      ],
+      "norm_tokens": 122.45454545454545,
+      "norm_tokens_ci": [
+        119.18181818181819,
+        125.72727272727273
+      ],
+      "recall": 1.0,
+      "recall_ci": [
+        1.0,
+        1.0
+      ],
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.004487561323311894,
+      "ndcg": 0.8275544707792295,
+      "mrr": 0.7676767676767676,
       "staleness": 0,
-      "n": 25
+      "serves_stale": 1,
+      "serves_stale_n": 33,
+      "n": 33
     },
     {
       "method": "whole-dump",
       "category": "ALL",
-      "mean_tokens": 25560,
-      "recall": 0.02,
+      "ranks": false,
+      "mean_tokens": 27166,
+      "mean_tokens_ci": [
+        27166.0,
+        27166.0
+      ],
+      "norm_tokens": 110.0,
+      "norm_tokens_ci": [
+        110.0,
+        110.0
+      ],
+      "recall": null,
+      "recall_ci": null,
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
       "precision": 0.004,
-      "ndcg": 0.011793836475517568,
-      "mrr": 0.024553999190984263,
+      "ndcg": null,
+      "mrr": null,
       "staleness": 0,
+      "serves_stale": 1,
+      "serves_stale_n": 132,
       "n": 500
     },
     {
       "method": "whole-dump",
       "category": "exact",
-      "mean_tokens": 25560,
-      "recall": 0.022222222222222223,
-      "precision": 0.003941575378195097,
-      "ndcg": 0.013104262750575076,
-      "mrr": 0.025788819237992398,
+      "ranks": false,
+      "mean_tokens": 27166,
+      "mean_tokens_ci": [
+        27166.0,
+        27166.0
+      ],
+      "norm_tokens": 110.0,
+      "norm_tokens_ci": [
+        110.0,
+        110.0
+      ],
+      "recall": null,
+      "recall_ci": null,
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.003925854729634597,
+      "ndcg": null,
+      "mrr": null,
       "staleness": 0,
-      "n": 225
+      "serves_stale": 1,
+      "serves_stale_n": 33,
+      "n": 217
     },
     {
       "method": "whole-dump",
       "category": "graph",
-      "mean_tokens": 25560,
-      "recall": 0.0,
-      "precision": 0.0045258215962441315,
-      "ndcg": 0.0,
-      "mrr": 0.013440618767911063,
+      "ranks": false,
+      "mean_tokens": 27166,
+      "mean_tokens_ci": [
+        27166.0,
+        27166.0
+      ],
+      "norm_tokens": 110.0,
+      "norm_tokens_ci": [
+        110.0,
+        110.0
+      ],
+      "recall": null,
+      "recall_ci": null,
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.004487561323311894,
+      "ndcg": null,
+      "mrr": null,
       "staleness": 0,
-      "n": 25
+      "serves_stale": 1,
+      "serves_stale_n": 33,
+      "n": 33
     },
     {
       "method": "whole-dump",
       "category": "semantic",
-      "mean_tokens": 25560,
-      "recall": 0.022222222222222223,
-      "precision": 0.003941575378195097,
-      "ndcg": 0.013104262750575076,
-      "mrr": 0.025788819237992398,
+      "ranks": false,
+      "mean_tokens": 27166,
+      "mean_tokens_ci": [
+        27166.0,
+        27166.0
+      ],
+      "norm_tokens": 110.0,
+      "norm_tokens_ci": [
+        110.0,
+        110.0
+      ],
+      "recall": null,
+      "recall_ci": null,
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.003925854729634597,
+      "ndcg": null,
+      "mrr": null,
       "staleness": 0,
-      "n": 225
+      "serves_stale": 1,
+      "serves_stale_n": 33,
+      "n": 217
     },
     {
       "method": "whole-dump",
       "category": "status",
-      "mean_tokens": 25560,
-      "recall": 0.0,
-      "precision": 0.0045258215962441315,
-      "ndcg": 0.0,
-      "mrr": 0.013440618767911063,
+      "ranks": false,
+      "mean_tokens": 27166,
+      "mean_tokens_ci": [
+        27166.0,
+        27166.0
+      ],
+      "norm_tokens": 110.0,
+      "norm_tokens_ci": [
+        110.0,
+        110.0
+      ],
+      "recall": null,
+      "recall_ci": null,
+      "contains_gold": 1.0,
+      "contains_gold_ci": [
+        1.0,
+        1.0
+      ],
+      "precision": 0.004487561323311894,
+      "ndcg": null,
+      "mrr": null,
       "staleness": 0,
-      "n": 25
+      "serves_stale": 1,
+      "serves_stale_n": 33,
+      "n": 33
     }
   ],
   "curve": {
     "data-olympus": [
       [
         25,
-        156.25
+        163.25
       ],
       [
         50,
-        170.875
+        181.5
       ],
       [
         100,
-        207.375
+        218
       ],
       [
         250,
-        229.25
+        236.25
       ]
     ],
     "whole-dump": [
       [
         25,
-        2208
+        2278
       ],
       [
         50,
-        4684
+        4958
       ],
       [
         100,
-        9836
+        10436
       ],
       [
         250,
-        25560
+        26848
       ]
     ],
     "grep-read": [
       [
         25,
-        50
+        53
       ],
       [
         50,
-        125
+        102
       ],
       [
         100,
-        217
+        229
       ],
       [
         250,
-        490.5
+        502.75
       ]
     ],
     "bm25": [
       [
         25,
-        140
+        150.5
       ],
       [
         50,
-        215
+        199.5
       ],
       [
         100,
-        296
+        301.625
       ],
       [
         250,
-        325.25
+        342.125
+      ]
+    ],
+    "bm25-status-aware": [
+      [
+        25,
+        139.625
+      ],
+      [
+        50,
+        188.625
+      ],
+      [
+        100,
+        289.375
+      ],
+      [
+        250,
+        340
       ]
     ]
   }

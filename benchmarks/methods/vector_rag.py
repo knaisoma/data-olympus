@@ -47,6 +47,7 @@ class VectorRagMethod:
     """
 
     name = "vector-rag"
+    ranks = True  # cosine-similarity order is a real ranking signal
 
     def __init__(self, corpus_root: Path, k: int = 5) -> None:
         try:

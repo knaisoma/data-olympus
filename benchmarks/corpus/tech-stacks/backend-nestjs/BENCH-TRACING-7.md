@@ -6,9 +6,10 @@ tier: T2
 title: tracing-7
 ---
 
-# tracing-7 (current)
+# tracing-7
 
-This concept defines the current guidance for tracing-7. When working with tracing-7, follow the current rules below. The tracing-7 approach affects reliability and developer ergonomics.
+This concept defines the governance for tracing-7. When working with tracing-7, follow the rules below. The tracing-7 approach affects alerting, tradeoff, observability, contract.
 
 - Prefer the documented tracing-7 pattern.
 - Record exceptions to the tracing-7 rule.
+- Weigh the alerting and contract implications.

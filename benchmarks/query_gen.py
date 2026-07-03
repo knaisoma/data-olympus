@@ -8,6 +8,17 @@ Emits four query categories from a CorpusManifest:
 
 Each BenchQuery records text, category, gold_ids (the correct concept ids),
 current_id, and stale_id (None when no supersession).
+
+De-leaking note (0.3.0): the corpus bodies no longer contain the lifecycle words
+these templates use ("current", "previous", "replaced"). Those words are now
+pure natural-language framing that matches NOTHING in the corpus, so a keyword
+method cannot answer a lifecycle query by echoing a qualifier written into the
+gold doc. What actually resolves a ``status``/``graph`` query is the topic term
+(shared by the old and new doc of the pair) plus the retriever's ability to keep
+the superseded doc out of the answer — which is exactly what the staleness
+metric measures. The old and new doc are now string-identical except for
+``status`` and the supersedes chain, so a status-blind ranker has NO lexical way
+to prefer the current doc; only a status-aware retriever can.
 """
 from __future__ import annotations
 

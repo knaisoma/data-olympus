@@ -6,9 +6,10 @@ tier: T4
 title: circuit-breakers-1
 ---
 
-# circuit-breakers-1 (current)
+# circuit-breakers-1
 
-This concept defines the current guidance for circuit-breakers-1. When working with circuit-breakers-1, follow the current rules below. The circuit-breakers-1 approach affects reliability and developer ergonomics.
+This concept defines the governance for circuit-breakers-1. When working with circuit-breakers-1, follow the rules below. The circuit-breakers-1 approach affects dependency, invariant, resilience, tradeoff.
 
 - Prefer the documented circuit-breakers-1 pattern.
 - Record exceptions to the circuit-breakers-1 rule.
+- Weigh the dependency and tradeoff implications.
