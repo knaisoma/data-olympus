@@ -255,9 +255,23 @@ async def test_rest_abstain_threads(tmp_path: Path) -> None:
             "/api/v1/search", params={"q": "widget", "abstain": "true"}
         )
     fired_body = fired.json()
+    # Compact default: the abstain signal is emitted only when it FIRED.
     assert fired_body["abstained"] is True
     assert fired_body["abstain_reason"] == "no_signal_match"
     assert fired_body["hits"] == []
     ok_body = ok.json()
-    assert ok_body["abstained"] is False
+    # A non-abstaining response OMITS the abstain fields in compact mode
+    # (absent == not abstained); a consumer reads them with .get(..., False).
+    assert ok_body.get("abstained", False) is False
     assert ok_body["hits"]
+
+    # verbose=true restores the full shape with abstained present even when False.
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        ok_verbose = await client.get(
+            "/api/v1/search",
+            params={"q": "widget", "abstain": "true", "verbose": "true"},
+        )
+    ok_verbose_body = ok_verbose.json()
+    assert ok_verbose_body["abstained"] is False
+    assert ok_verbose_body["query"] == "widget"
+    assert "path" in ok_verbose_body["hits"][0]

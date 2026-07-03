@@ -818,7 +818,11 @@ except Exception:
 # Subcommand dispatch
 case "$SUBCMD" in
   health)
-    if do_curl "$KB_ENDPOINT/api/v1/health"; then
+    # The CLI is an operator-facing tool: it requests verbose=true so the
+    # human-readable plain renderers below (which read fields the compact default
+    # trims, e.g. per-hit path and the full health envelope) keep working. The
+    # compact default serves LLM/MCP callers; see issue #65.
+    if do_curl "$KB_ENDPOINT/api/v1/health?verbose=true"; then
       # 503 with degraded:true body is the canonical degraded-health response
       # A degraded 503 is a valid response. The CLI must NOT treat it as endpoint-unreachable.
       if is_degraded && [[ "$NO_STALE" -eq 1 ]]; then
@@ -841,7 +845,7 @@ case "$SUBCMD" in
     fi
     ;;
   outline)
-    if do_curl "$KB_ENDPOINT/api/v1/outline"; then
+    if do_curl "$KB_ENDPOINT/api/v1/outline?verbose=true"; then
       if is_degraded && [[ "$NO_STALE" -eq 1 ]]; then
         echo "kb: REST response degraded:true and --no-stale set" >&2
         exit 2
@@ -865,7 +869,7 @@ case "$SUBCMD" in
     [[ ${#POSITIONAL[@]} -ge 1 ]] || { echo "kb: search requires QUERY" >&2; exit 64; }
     Q="${POSITIONAL[0]}"
     # Robust URL encoding for arbitrary characters in query and filters.
-    URL="$KB_ENDPOINT/api/v1/search?q=$(url_encode "$Q")&limit=$LIMIT"
+    URL="$KB_ENDPOINT/api/v1/search?q=$(url_encode "$Q")&limit=$LIMIT&verbose=true"
     [[ -n "$TIER" ]] && URL="$URL&tier=$(url_encode "$TIER")"
     [[ -n "$CATEGORY" ]] && URL="$URL&category=$(url_encode "$CATEGORY")"
     if do_curl "$URL"; then
@@ -894,7 +898,7 @@ case "$SUBCMD" in
   get)
     [[ ${#POSITIONAL[@]} -ge 1 ]] || { echo "kb: get requires ID" >&2; exit 64; }
     ID="${POSITIONAL[0]}"
-    URL="$KB_ENDPOINT/api/v1/get/$(url_encode "$ID")"
+    URL="$KB_ENDPOINT/api/v1/get/$(url_encode "$ID")?verbose=true"
     if do_curl "$URL"; then
       if [[ "$REST_STATUS" == "404" ]]; then
         echo "$REST_BODY" >&2; exit 1
@@ -924,7 +928,7 @@ case "$SUBCMD" in
     [[ ${#POSITIONAL[@]} -ge 1 ]] || { echo "kb: list requires TIER" >&2; exit 64; }
     LTIER="${POSITIONAL[0]}"
     LCAT="${POSITIONAL[1]:-}"
-    URL="$KB_ENDPOINT/api/v1/list?tier=$(url_encode "$LTIER")"
+    URL="$KB_ENDPOINT/api/v1/list?tier=$(url_encode "$LTIER")&verbose=true"
     [[ -n "$LCAT" ]] && URL="$URL&category=$(url_encode "$LCAT")"
     if do_curl "$URL"; then
       if is_degraded && [[ "$NO_STALE" -eq 1 ]]; then

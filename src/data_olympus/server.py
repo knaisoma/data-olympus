@@ -44,7 +44,12 @@ from data_olympus.push_queue import PushQueue
 from data_olympus.query_expansion import default_query_expander
 from data_olympus.rate_limit import SlidingWindowLimiter
 from data_olympus.search_shortcut import make_id_tag_reranker
-from data_olympus.tools_read import kb_health_fn, kb_outline_fn, kb_search_fn
+from data_olympus.tools_read import (
+    kb_health_fn,
+    kb_outline_fn,
+    kb_search_fn,
+    shape_response,
+)
 from data_olympus.worktrees import WorktreeRegistry
 
 log = logging.getLogger("data_olympus")
@@ -411,9 +416,14 @@ def build_app(
     app: FastMCP = FastMCP(name="data-olympus-mcp")
 
     @app.tool()
-    def kb_health() -> dict[str, object]:
+    def kb_health(verbose: bool = False) -> dict[str, object]:
         """Return service health: kb_commit, index_built_at, staleness, degraded flag,
-        and write-side state (pending_count, push_queue_size, last_index_*)."""
+        and write-side state (pending_count, push_queue_size, last_index_*).
+
+        verbose: False (default) returns a token-compact shape that keeps the core
+        snapshot and OMITS diagnostic fields that are null/empty (e.g.
+        last_index_error, remote_head_sha when unset). verbose=True returns every
+        field including the nulls."""
         resp = kb_health_fn(
             idx=state.idx,
             last_git_pull_at=state.last_git_pull_at,
@@ -434,13 +444,16 @@ def build_app(
             remote_head_sha=state.remote_head_sha,
             live_sessions=state.live_session_count(),
         )
-        return resp.model_dump()
+        return shape_response(resp, verbose=verbose)
 
     @app.tool()
-    def kb_outline() -> dict[str, object]:
-        """Return the tree of tiers and categories with doc counts."""
+    def kb_outline(verbose: bool = False) -> dict[str, object]:
+        """Return the tree of tiers and categories with doc counts.
+
+        verbose: kb_outline is already lean, so compact and full modes return the
+        same shape; the parameter exists for interface consistency."""
         resp = kb_outline_fn(idx=state.idx)
-        return resp.model_dump()
+        return shape_response(resp, verbose=verbose)
 
     @app.tool()
     def kb_search(
@@ -452,6 +465,7 @@ def build_app(
         in_force: bool = False,
         doc_type: str | None = None,
         abstain: bool = False,
+        verbose: bool = False,
     ) -> dict[str, object]:
         """Full-text search across the KB.
 
@@ -470,30 +484,46 @@ def build_app(
         `abstain_reason`, instead of surfacing a weak keyword match. A query with
         a real signal retrieves normally. Distinguish `abstained: true` (no
         governing rule) from an ordinary empty result (`abstained: false`).
+
+        verbose: False (default) returns a token-compact shape. Each hit is
+        {id, title, snippet} plus `status` only when a hit is NOT in-force
+        (superseded/deprecated) and `type` when set; the `query` echo, per-hit
+        `path`, and `score` are dropped (fetch a hit's full metadata with
+        kb_get(id); array order conveys rank). verbose=True restores the full
+        legacy shape with query, path, score, status, and type on every hit.
         """
         resp = kb_search_fn(
             idx=state.idx, query=query, limit=limit, tier=tier, category=category,
             status=status, in_force=in_force, doc_type=doc_type, abstain=abstain,
         )
-        return resp.model_dump()
+        return shape_response(resp, verbose=verbose)
 
     @app.tool()
-    def kb_get(id: str) -> dict[str, object]:
+    def kb_get(id: str, verbose: bool = False) -> dict[str, object]:
         """Retrieve a document by id (STD-U-001, ADR-002, T-NNN, etc.).
-        Returns full content markdown plus metadata."""
+        Returns the full content markdown plus metadata.
+
+        verbose: False (default) returns the full `content_markdown` body (kb_get
+        exists to read the doc) with a trimmed envelope: `path`, `git_remote_url`,
+        `last_modified_source`, and `source_commit` are dropped and empty
+        status/type/applies_when/description are omitted. verbose=True returns the
+        full legacy envelope with every field."""
         from data_olympus.tools_read import KbNotFoundError, kb_get_fn
         try:
             resp = kb_get_fn(idx=state.idx, id=id)
         except KbNotFoundError as e:
             return {"error": "not_found", "message": str(e)}
-        return resp.model_dump()
+        return shape_response(resp, verbose=verbose)
 
     @app.tool()
-    def kb_list(tier: str, category: str | None = None) -> dict[str, object]:
-        """List doc ids in the given tier (and optional category), ordered by id."""
+    def kb_list(tier: str, category: str | None = None, verbose: bool = False) -> dict[str, object]:
+        """List doc ids in the given tier (and optional category), ordered by id.
+
+        verbose: False (default) drops per-entry `path` (fetch via kb_get(id)) and
+        omits a null category. verbose=True restores the full shape with paths."""
         from data_olympus.tools_read import kb_list_fn
         resp = kb_list_fn(idx=state.idx, tier=tier, category=category)
-        return resp.model_dump()
+        return shape_response(resp, verbose=verbose)
 
     @app.tool()
     def kb_onboarding_status(
