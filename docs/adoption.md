@@ -28,9 +28,10 @@ include:
 
 - `id`: a stable, globally unique identifier for the concept (e.g.
   `STD-U-001`, `ADR-007`, `WF-onboarding`).
-- `type`: one of `standard`, `decision`, `workflow`, `project`, `component`.
-- `status`: one of `draft`, `proposed`, `accepted`, `deprecated`,
-  `superseded`.
+- `type`: one of `standard`, `decision`, `workflow`, `project`, `memory`,
+  `reference`.
+- `status`: one of `draft`, `active`, `deprecated`, `superseded`,
+  `proposed`, `accepted`, `rejected`.
 - `tier`: one of `T1`, `T2`, `T3`, `T4`, `meta`.
 
 ### Recommended frontmatter fields
@@ -57,9 +58,15 @@ Two filenames have special meaning and must not carry concept frontmatter:
 ### Cross-links
 
 Reference other concepts with bundle-relative paths (absolute from the bundle
-root, e.g. `/universal/foundation/STD-U-001.md`). The `supersedes` and
-`superseded_by` frontmatter fields also accept these paths for `decision` type
-documents.
+root, e.g. `/universal/foundation/STD-U-001.md`). This applies to markdown
+links in the document body.
+
+The `supersedes` and `superseded_by` frontmatter fields are different: they
+hold a concept **ID** (or list of IDs), not a path (e.g. `supersedes: ADR-002`,
+not `supersedes: /decisions/ADR-002.md`). These fields are not resolved or
+validated by the current tooling; they are a documented convention for human
+and agent readers tracing decision history, not a machine-checked chain. See
+`SPEC.md` section 4.2.
 
 ### Directory structure
 
@@ -113,11 +120,17 @@ cross-links. Open the file in a browser to explore the knowledge graph.
 ```
 
 The script copies `example-bundle/` to `/tmp/data-olympus-demo-kb`, git-inits
-the copy, and starts the MCP server at `http://localhost:8080`. To serve your
-own bundle instead, set `KB_MAIN_PATH` before running:
+the copy, and starts the MCP server at `http://localhost:8080`. It is a demo
+helper only: it always wipes and recreates its target directory, so it does
+not read `KB_MAIN_PATH` and must not be pointed at your own bundle.
+
+To serve your own bundle instead, invoke the MCP server directly:
 
 ```bash
-KB_MAIN_PATH=/path/to/your-bundle ./scripts/run-local.sh
+KB_MAIN_PATH=/path/to/your-bundle \
+  KB_INDEX_PATH=/tmp/your-kb.db \
+  KB_REMOTE_URL="" \
+  uv run data-olympus-mcp
 ```
 
 Your bundle must be a git repository (run `git init` inside it first).

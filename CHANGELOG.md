@@ -12,6 +12,42 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `scripts/run-local.sh` no longer deletes an arbitrary user-supplied `$1`
+  path. It previously ran `rm -rf "$KB_DIR"` unconditionally, so passing your
+  own bundle's path as the first argument would silently delete it. The
+  script now refuses to touch a pre-existing directory that is not its own
+  default demo path and does not carry a marker file it created itself,
+  printing the correct way to serve your own bundle (direct
+  `data-olympus-mcp` invocation with `KB_MAIN_PATH`, per `docs/quickstart.md`
+  section 6) instead. The no-argument default demo flow is unchanged.
+
+### Documentation
+
+- Corrected several stale or inaccurate claims ahead of 0.3.0: `docs/adoption.md`
+  now describes the actual `KB_MAIN_PATH`-ignoring behaviour of
+  `scripts/run-local.sh` (pointing to the direct server invocation instead),
+  and its frontmatter schema section and `supersedes`/`superseded_by`
+  semantics now match `src/data_olympus/format/validate.py` and `SPEC.md`
+  (concept IDs, not bundle-relative paths). `SPEC.md` no longer promises
+  `kb lint` warnings for missing `supersedes`/`superseded_by`/`owner` or
+  broken links, neither of which is implemented; its reserved-filename list
+  in section 9 now includes `template.md`, and its `okf_version` example
+  matches what `example-bundle/index.md` actually ships (`"0.1"`). `README.md`
+  drops the stale "pre-release (v0.1)" status line and adds the Python 3.13+
+  requirement to the quickstart, plus links to `SECURITY.md` and
+  `benchmarks/README.md`. `CONTRIBUTING.md`'s documented `data-olympus lint`
+  output now includes the `(N linted)` suffix the CLI actually prints.
+  `CHANGELOG.md`'s dangling `[0.2.0]` compare link (which referenced a
+  never-documented `v0.1.1`) now compares against `v0.1.0`.
+  `docs/comparison.md`'s RAG section and "Honest weaknesses" no longer claim
+  there is no embedding/semantic retrieval at all; they now describe the
+  optional local-embedding hybrid (off by default) shipped in 0.2.0.
+  `example-bundle/index.md` no longer claims to demonstrate "all supported
+  concept types" (it has no `memory`, `reference`, or `superseded` example
+  documents).
+
 ## [0.2.0] - 2026-07-03
 
 ### Added
@@ -378,5 +414,5 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
 [Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/knaisoma/data-olympus/compare/v0.1.1...v0.2.0
+[0.2.0]: https://github.com/knaisoma/data-olympus/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/knaisoma/data-olympus/releases/tag/v0.1.0
