@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from data_olympus.format import Document
+from data_olympus.format.validate import RESERVED as _RESERVED
 
-_RESERVED = {"index.md", "log.md"}
 _SKIP = frozenset({".git", "__pycache__", ".venv", ".pytest_cache", ".ruff_cache", "node_modules"})
 _LINK_RE = re.compile(r"\]\((/?[^)\s#]+\.md)(?:#[^)]*)?\)")
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
