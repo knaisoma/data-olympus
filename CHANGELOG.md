@@ -12,6 +12,45 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (default response shape): token-compact read-tool responses (#65).**
+  The read tools `kb_search`, `kb_get`, `kb_list`, `kb_outline`, and `kb_health`
+  now return a **token-compact** representation **by default**, because their
+  consumer is almost always an LLM paying for every token. Measured against the
+  example-bundle with a real tokenizer (tiktoken cl100k; reproduce with
+  `python -m benchmarks.token_compact --tokenizer tiktoken`) this saves ~37% of
+  tokens on `kb_search`, ~42% on `kb_list`, ~41% on `kb_health`, and ~6-7% on
+  `kb_get` (which keeps its full body and provenance); 26.1% aggregate. What
+  changed in the default shape:
+  - `kb_search`: each hit is `{id, title, snippet}` plus `status` **only when the
+    hit is not currently in force** (e.g. `superseded`/`deprecated`) and `type`
+    when set. The `query` echo, the per-hit `path`, and the raw bm25 `score` are
+    dropped; snippets are capped at 160 chars. Array order still conveys rank; to
+    read a hit in full, call `kb_get(id)`.
+  - `kb_get`: keeps the full `content_markdown` body (unchanged) plus
+    `source_commit`/`last_modified` provenance, and trims the envelope: `path`,
+    `git_remote_url`, and `last_modified_source` are dropped, and empty
+    `status`/`type`/`applies_when`/`description` are omitted.
+  - `kb_list`: drops per-entry `path`; omits a null `category`.
+  - `kb_health`: keeps the core snapshot and omits diagnostic fields that are
+    null/empty (a no-error steady state no longer emits a run of nulls).
+  - `kb_outline`: already lean; its shape is unchanged.
+
+  **Opt out** with `verbose=true` (a REST query parameter, or the `verbose`
+  argument on each MCP tool), which restores the exact pre-#65 JSON shape
+  byte-for-byte. The bundled `kb` CLI requests `verbose=true` automatically, so
+  its output is unaffected. Any first-party or third-party consumer that parsed
+  the dropped fields (`query`, per-hit `path`/`score`, the full health envelope)
+  must either adopt the compact shape or pass `verbose=true`. A committed
+  measurement harness (`benchmarks/token_compact.py`) reproduces the per-tool
+  token table under either tokenizer (`python -m benchmarks.token_compact`
+  defaults to the dependency-free `simple` splitter; add `--tokenizer tiktoken`
+  for the cl100k numbers quoted above), and a tokenizer-based regression test
+  (`tests/test_token_compact_budget.py`, with both a `simple` budget and a
+  `tiktoken` aggregate-savings guard) fails loudly if a future change re-bloats
+  the compact default.
+
 ### Added
 
 - **Write-pipeline integrity core (epic #72).** This wave makes the write-safety

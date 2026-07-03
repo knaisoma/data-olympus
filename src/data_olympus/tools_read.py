@@ -5,7 +5,7 @@ without instantiating a FastMCP server. The server module wires them in.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from data_olympus.health import snapshot
 from data_olympus.models import (
@@ -22,6 +22,24 @@ from data_olympus.models import (
 
 if TYPE_CHECKING:
     from data_olympus.index import Index
+
+
+class _CompactDumpable(Protocol):
+    def compact_dump(self) -> dict[str, object]: ...
+    def model_dump(self) -> dict[str, object]: ...
+
+
+def shape_response(resp: _CompactDumpable, *, verbose: bool) -> dict[str, object]:
+    """Serialize a read-tool response to the wire dict.
+
+    ``verbose=False`` (the default for every read tool) returns the token-compact
+    shape; ``verbose=True`` returns the full, byte-for-byte legacy JSON shape. The
+    ``verbose`` parameter threads from the MCP tool wrappers in ``server.py`` and
+    the REST handlers in ``rest_api.py`` through here into the per-model
+    ``compact_dump`` / ``model_dump`` methods, so MCP and REST stay consistent.
+    See issue #65.
+    """
+    return resp.model_dump() if verbose else resp.compact_dump()
 
 
 def kb_health_fn(

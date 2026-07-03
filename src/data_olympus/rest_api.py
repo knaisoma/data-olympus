@@ -24,6 +24,7 @@ from data_olympus.tools_read import (
     kb_list_fn,
     kb_outline_fn,
     kb_search_fn,
+    shape_response,
 )
 
 if TYPE_CHECKING:
@@ -332,7 +333,7 @@ def register_routes(
     """
 
     @app.custom_route("/api/v1/health", methods=["GET"])
-    async def health(_request: Request) -> JSONResponse:
+    async def health(request: Request) -> JSONResponse:
         # Served INLINE, not via _offload(): the readiness probe must never queue
         # behind the shared anyio worker pool it exists to outlive. _build_health
         # reads the cached Index.health() snapshot (memory in steady state; the
@@ -342,15 +343,17 @@ def register_routes(
         # Degraded health responses MUST return 503 so the
         # CLI's --no-stale contract (exit 2 on HTTP 200 or 503 degraded) is meaningful.
         status = 503 if resp.degraded else 200
-        return JSONResponse(resp.model_dump(), status_code=status)
+        verbose = _query_bool(request.query_params.get("verbose"))
+        return JSONResponse(shape_response(resp, verbose=verbose), status_code=status)
 
     @app.custom_route("/api/v1/outline", methods=["GET"])
-    async def outline(_request: Request) -> JSONResponse:
+    async def outline(request: Request) -> JSONResponse:
         h = await _offload(_build_health, state)
         if h.degraded:
             return _degraded_response(h)
+        verbose = _query_bool(request.query_params.get("verbose"))
         resp = await _offload(kb_outline_fn, idx=state.idx)
-        return JSONResponse(resp.model_dump())
+        return JSONResponse(shape_response(resp, verbose=verbose))
 
     @app.custom_route("/api/v1/search", methods=["GET"])
     async def search(request: Request) -> JSONResponse:
@@ -368,11 +371,12 @@ def register_routes(
         category = request.query_params.get("category") or None
         in_force = _query_bool(request.query_params.get("in_force"))
         abstain = _query_bool(request.query_params.get("abstain"))
+        verbose = _query_bool(request.query_params.get("verbose"))
         resp = await _offload(
             kb_search_fn, idx=state.idx, query=q, limit=limit, tier=tier,
             category=category, in_force=in_force, abstain=abstain,
         )
-        return JSONResponse(resp.model_dump())
+        return JSONResponse(shape_response(resp, verbose=verbose))
 
     @app.custom_route("/api/v1/get/{id}", methods=["GET"])
     async def get(request: Request) -> JSONResponse:
@@ -380,11 +384,12 @@ def register_routes(
         if h.degraded:
             return _degraded_response(h)
         id_ = request.path_params["id"]
+        verbose = _query_bool(request.query_params.get("verbose"))
         try:
             resp = await _offload(kb_get_fn, idx=state.idx, id=id_)
         except KbNotFoundError as e:
             return JSONResponse({"error": "not_found", "message": str(e)}, status_code=404)
-        return JSONResponse(resp.model_dump())
+        return JSONResponse(shape_response(resp, verbose=verbose))
 
     @app.custom_route("/api/v1/list", methods=["GET"])
     async def list_(request: Request) -> JSONResponse:
@@ -395,8 +400,9 @@ def register_routes(
         if not tier:
             return JSONResponse({"error": "missing_tier"}, status_code=400)
         category = request.query_params.get("category") or None
+        verbose = _query_bool(request.query_params.get("verbose"))
         resp = await _offload(kb_list_fn, idx=state.idx, tier=tier, category=category)
-        return JSONResponse(resp.model_dump())
+        return JSONResponse(shape_response(resp, verbose=verbose))
 
     if not read_only:
         # Write + enforcement-write REST surface. A read-only replica

@@ -79,6 +79,36 @@ curl -fsS "http://localhost:8080/api/v1/search?q=writing"
 curl -fsS http://localhost:8080/api/v1/outline
 ```
 
+### Compact responses by default
+
+The read tools (`kb_search`, `kb_get`, `kb_list`, `kb_outline`, `kb_health`)
+return a **token-compact** shape by default, because their consumer is almost
+always an LLM paying for every token in its context. Compared with the full
+representation, the compact default:
+
+- `kb_search`: each hit is `{id, title, snippet}` plus `status` **only when a hit
+  is not currently in force** (e.g. `superseded`) and `type` when set. The `query`
+  echo, the per-hit `path`, and the raw relevance `score` are dropped. To read a
+  hit in full, call `kb_get` with its `id`; array order conveys rank.
+- `kb_get`: keeps the full `content_markdown` body (that is why you call it) plus
+  `source_commit`/`last_modified` provenance, and trims low-value envelope fields
+  (`path`, `git_remote_url`, `last_modified_source`). `path` is recoverable with
+  `kb_get(id, verbose=true)`.
+- `kb_list`: drops the per-entry `path` (fetch via `kb_get(id)`).
+- `kb_health`: keeps the core snapshot and omits diagnostic fields that are unset.
+- `kb_outline`: already lean; unchanged.
+
+Pass `verbose=true` (REST query param, or the `verbose` MCP tool argument) to get
+the full legacy shape with every field:
+
+```bash
+# Full/legacy shape (query, path, score, and full health envelope restored)
+curl -fsS "http://localhost:8080/api/v1/search?q=writing&verbose=true"
+```
+
+The `kb` CLI always requests `verbose=true` so its plain-text output keeps
+showing paths.
+
 ## 4. Lifecycle-aware retrieval: in-force vs superseded
 
 The example bundle ships a real supersession pair in
@@ -96,8 +126,11 @@ history).
 curl -fsS "http://localhost:8080/api/v1/search?q=commit%20format&limit=5"
 ```
 
-The top two hits are `STD-U-004` (`status: active`) ranked ahead of
-`STD-U-003` (`status: superseded`) — both present, active first.
+The top two hits are `STD-U-004` (currently in force) ranked ahead of
+`STD-U-003` (`status: superseded`) — both present, active first. In the compact
+default the in-force hit carries no `status` field while the superseded hit shows
+`"status": "superseded"` (the deviation an agent must act on); add `verbose=true`
+to see `"status": "active"` spelled out on every hit.
 
 **`in_force=true`** is a hard filter, not a rerank: it excludes every
 not-currently-governing status (`superseded`, `deprecated`, `draft`,
