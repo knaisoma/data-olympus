@@ -674,8 +674,9 @@ def build_app(
             workspace_remote_url: str | None = None,
             component_remote_url: str | None = None,
         ) -> dict[str, object]:
-            """Bootstrap a new workspace/component. Only valid when status=absent.
-            High confidence commits atomically; low confidence enqueues pending."""
+            """Bootstrap a new workspace/component. Only valid when status=absent
+            or partial. High confidence commits atomically; low confidence
+            enqueues pending."""
             if state.worktrees is None or state.push_queue is None or state.pending is None:
                 return {"status": "write_pipeline_disabled"}
             assert state.worktrees is not None
@@ -699,6 +700,7 @@ def build_app(
                 can_auto_commit=_current_principal.get().can_auto_commit,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 max_files=state.config.max_bootstrap_files,
+                serializer=state.write_serializer,
             )
             return resp.model_dump()
 

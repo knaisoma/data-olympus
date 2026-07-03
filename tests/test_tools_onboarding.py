@@ -19,6 +19,10 @@ def _partial_idx(present_paths: list[str]) -> MagicMock:
     idx = MagicMock()
     idx.list_by_prefix.return_value = [{"path": p} for p in present_paths]
     idx.list_with_remote_url.return_value = []
+    # The write-path validation gate consults id_to_path_map() for duplicate-id
+    # detection; a bare MagicMock would return a truthy Mock and spuriously flag a
+    # collision. An empty map means "no existing ids", the correct state here.
+    idx.id_to_path_map.return_value = {}
     return idx
 
 
@@ -574,3 +578,102 @@ def test_inject_remote_url_already_present_key_is_noop() -> None:
     files = [{"target_path": "projects/p/README.md", "postimage": postimage}]
     out = _inject_remote_url(files, url, target_filename="README.md")
     assert out[0]["postimage"] == postimage
+
+
+# ---- Codex Blocker 2: bootstrap goes through the serialized/validated write path ----
+
+
+def _real_bootstrap_pieces(tmp_path):
+    import subprocess
+
+    from data_olympus.auth import PathBlocklist
+    from data_olympus.git_ops import GitOps
+    from data_olympus.pending import PendingQueue
+    from data_olympus.push_queue import PushQueue
+    from data_olympus.rate_limit import SlidingWindowLimiter
+    from data_olympus.worktrees import WorktreeRegistry
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com",
+           "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"}
+    repo = tmp_path / "main"
+    repo.mkdir()
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=repo, check=True, env=env)
+    (repo / "seed.md").write_text("seed\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=env)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, env=env)
+    git = GitOps(repo)
+    reg = WorktreeRegistry(git=git, worktree_root=str(tmp_path / "wts"))
+    pq = PushQueue(queue_root=str(tmp_path / "pushq"))
+    pen = PendingQueue(pending_root=str(tmp_path / "pending"))
+    rl = SlidingWindowLimiter(max_per_hour=100)
+    bl = PathBlocklist(tier_blocks=[], path_blocks=[])
+    return reg, pq, pen, rl, bl
+
+
+def test_high_conf_bootstrap_commits_via_serialized_path(tmp_path, monkeypatch) -> None:
+    """A high-confidence bootstrap commits one atomic commit through the shared
+    serialized/validated write path (Codex Blocker 2), and a path lock is held +
+    released around it (not leaked)."""
+    for k, v in {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}.items():
+        monkeypatch.setenv(k, v)
+    idx = MagicMock()
+    idx.list_by_prefix.return_value = []
+    idx.list_with_remote_url.return_value = []
+    idx.id_to_path_map.return_value = {}
+    reg, pq, pen, rl, bl = _real_bootstrap_pieces(tmp_path)
+    files = [
+        {"target_path": "projects/p/README.md",
+         "postimage": "---\nid: projects-p-README\ntype: project\nstatus: active\n"
+                      "tier: T3\n---\n# P\n"},
+        {"target_path": "projects/p/AGENTS.md",
+         "postimage": "---\nid: projects-p-AGENTS\ntype: project\nstatus: active\n"
+                      "tier: T3\n---\n# rules\n"},
+    ]
+    resp = kb_bootstrap_project_fn(
+        idx=idx, workspace="p", component=None,
+        workspace_remote_url=None, component_remote_url=None,
+        files=files, source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+    )
+    assert resp.status == "committed"
+    assert resp.commit_sha
+    assert pq.size() == 1  # one atomic commit enqueued
+    assert pen.locks_held() == 0  # all per-path locks released
+
+
+def test_high_conf_bootstrap_rejects_invalid_document(tmp_path, monkeypatch) -> None:
+    """A bootstrap file with malformed frontmatter is rejected by the validation
+    gate, and nothing is committed or left staged (Codex Blocker 2)."""
+    for k, v in {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}.items():
+        monkeypatch.setenv(k, v)
+    idx = MagicMock()
+    idx.list_by_prefix.return_value = []
+    idx.list_with_remote_url.return_value = []
+    idx.id_to_path_map.return_value = {}
+    reg, pq, pen, rl, bl = _real_bootstrap_pieces(tmp_path)
+    files = [
+        {"target_path": "projects/p/README.md",
+         "postimage": "---\nid: projects-p-README\ntype: project\nstatus: active\n"
+                      "tier: T3\n---\nok\n"},
+        {"target_path": "projects/p/AGENTS.md",
+         "postimage": "---\nid: broken\n# no closing fence\nbody\n"},  # malformed
+    ]
+    resp = kb_bootstrap_project_fn(
+        idx=idx, workspace="p", component=None,
+        workspace_remote_url=None, component_remote_url=None,
+        files=files, source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+    )
+    assert resp.status == "rejected_invalid_document"
+    assert pq.size() == 0
+    assert pen.locks_held() == 0  # locks released even on rejection
+    # No staged leftovers in the worktree.
+    import subprocess
+    wt = reg.get_or_create(source_session="s", agent_identity="claude")
+    st = subprocess.check_output(
+        ["git", "-C", wt.path, "status", "--porcelain"], text=True)
+    assert st.strip() == ""

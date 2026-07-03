@@ -31,6 +31,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `origin/main` and retries. On a rebase conflict the commit is demoted to a
     pending entry for operator resolution (with a `push_conflict_demoted` audit
     event and the queue entry removed) instead of retrying identically forever.
+    Pure contention (a repeated non-FF race) is retried in-line for a bounded
+    number of passes and then demoted the same way, so it never silently freezes.
+  - **CAS also enforces `base_commit`.** When the base marker is a specific commit
+    (not the `HEAD` sentinel), the blob the target had at that commit must equal
+    the current blob, closing the bypass where a caller supplied only `base_commit`.
   - **CAS enforcement.** `base_commit` / `base_blob_sha` / `target_file_hash`
     were accepted and stored but never checked. They are now enforced at commit
     time on both the auto-commit and resolve paths: a supplied base marker that
@@ -40,9 +45,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     YAML, a forged/duplicate `id`, or an invalid enum value committed and pushed to
     `origin/main` — and a duplicate `id` broke every subsequent index rebuild (one
     bad write, persistent degraded state). Every postimage is now format-validated
-    plus checked for a duplicate `id` against the live index before commit; failures
-    are rejected `rejected_invalid_document` with machine-readable errors. Rendered
-    memories pass the gate as a cheap self-check.
+    plus checked for a duplicate `id` — using the EFFECTIVE id the rebuild assigns
+    (explicit frontmatter `id` OR the path-derived id) against BOTH the live index
+    and the session worktree's committed tree, and including reserved files —
+    before commit; failures are rejected `rejected_invalid_document` with
+    machine-readable errors. Rendered memories pass the gate as a cheap self-check.
+    The **bootstrap** path now commits its whole file bundle through the same
+    serialized, per-path-locked, validated, reset-on-failure write path as the
+    single-file writes (it previously wrote and committed directly, unserialized
+    and ungated).
   - **Atomic pending claim.** `approve`/`reject` were get-then-remove, so two
     concurrent resolves of the same id both committed. Resolution now claims the
     entry via `os.rename` before reading (test-and-set); the loser gets

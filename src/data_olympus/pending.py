@@ -76,6 +76,13 @@ class PendingQueue:
         os.makedirs(self._root, exist_ok=True)
         os.makedirs(self._locks_dir, exist_ok=True)
 
+    @property
+    def root(self) -> str:
+        """The on-disk directory backing this pending queue. Public so callers
+        (e.g. onboarding's pending-root resolution) do not reach into the private
+        ``_root`` attribute."""
+        return self._root
+
     def _acquire_lock(self, target_path: str, pending_id: str) -> None:
         lock_path = os.path.join(self._locks_dir, _path_lock_filename(target_path))
         try:

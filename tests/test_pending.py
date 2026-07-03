@@ -12,6 +12,14 @@ from data_olympus.pending import (
 )
 
 
+def test_root_property_exposes_pending_dir(tmp_path) -> None:
+    """The public `root` property returns the on-disk pending dir (so callers do
+    not read the private `_root`)."""
+    root = str(tmp_path / "p")
+    q = PendingQueue(pending_root=root)
+    assert q.root == root
+
+
 def test_enqueue_respects_capacity(tmp_path) -> None:
     q = PendingQueue(pending_root=str(tmp_path / "p"), cap=2)
     for i in range(2):

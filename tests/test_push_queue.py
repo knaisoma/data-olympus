@@ -225,3 +225,57 @@ def test_init_recovery_does_not_double_enqueue_already_queued_sha(tmp_path) -> N
     assert entry["meta"] == {"agent": "claude"}
     assert "recovered" not in entry
     assert q.size() == 1
+
+
+# ---- Wave 1: rebase-conflict demotion + non-FF contention demotion ----
+
+
+def test_drain_demotes_rebase_conflict_via_callback(tmp_path) -> None:
+    """A RebaseConflictError routes to on_rebase_conflict and the entry is removed
+    (demoted), not retried forever."""
+    from data_olympus.git_ops import RebaseConflictError
+    q = PushQueue(queue_root=str(tmp_path / "q"))
+    q.enqueue(sha="abc", worktree_path="/wt", meta={})
+
+    def failing(_wt):
+        raise RebaseConflictError(worktree_path="/wt", detail="CONFLICT")
+
+    demoted = []
+    q.drain(push_fn=failing, max_attempts=10,
+            on_rebase_conflict=lambda entry: demoted.append(entry["sha"]))
+    assert demoted == ["abc"]
+    assert q.size() == 0  # entry removed after demotion
+
+
+def test_drain_keeps_conflict_when_no_callback(tmp_path) -> None:
+    """Without a demotion callback, a rebase conflict stays queued (never lost)."""
+    from data_olympus.git_ops import RebaseConflictError
+    q = PushQueue(queue_root=str(tmp_path / "q"))
+    q.enqueue(sha="abc", worktree_path="/wt", meta={})
+
+    def failing(_wt):
+        raise RebaseConflictError(worktree_path="/wt", detail="C")
+
+    q.drain(push_fn=failing, max_attempts=10)
+    assert q.size() == 1  # kept
+
+
+def test_drain_demotes_persistent_non_ff_after_bound(tmp_path) -> None:
+    """A repeated non-FF race (contention) is demoted after the bounded number of
+    in-line attempts instead of freezing silently (Codex Concern 1)."""
+    from data_olympus.git_ops import NonFastForwardError
+    q = PushQueue(queue_root=str(tmp_path / "q"))
+    q.enqueue(sha="abc", worktree_path="/wt", meta={})
+
+    def always_non_ff(_wt):
+        raise NonFastForwardError(worktree_path="/wt", detail="lost race")
+
+    demoted = []
+    # Drain repeatedly; each pass raises non-FF. After 5 the entry demotes.
+    for _ in range(6):
+        if q.size() == 0:
+            break
+        q.drain(push_fn=always_non_ff, max_attempts=100,
+                on_rebase_conflict=lambda entry: demoted.append(entry["sha"]))
+    assert demoted == ["abc"]
+    assert q.size() == 0

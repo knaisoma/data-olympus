@@ -64,9 +64,10 @@ stays healthy as long as the index builds successfully on startup.
 
 ## Write serialization and integrity gates
 
-Every write (`kb_propose_memory`, `kb_propose_edit`, `kb_resolve_pending`,
-onboarding bootstrap) goes through one serialized critical section so concurrent
-writes cannot corrupt each other:
+Every write (`kb_propose_memory`, `kb_propose_edit`, `kb_resolve_pending`, and
+onboarding bootstrap — which commits its whole file bundle through the same
+serialized/validated multi-file path) goes through one serialized critical
+section so concurrent writes cannot corrupt each other:
 
 - A **process-wide write serializer** wraps the write → `git add` → commit →
   enqueue sequence, so one thread's commit can never sweep another thread's staged
@@ -125,6 +126,11 @@ the postimage is re-proposed as a pending edit (visible via `kb_list_pending`),
 the queue entry is removed, and a `push_conflict_demoted` audit event is recorded.
 The operator resolves the pending entry (approving re-applies it on the current
 base, subject to the CAS/validation gates) to publish the change.
+
+Pure **contention** (the retry push is itself non-FF because `origin/main` moved
+again mid-rebase) is retried in-line for a bounded number of passes; if it never
+wins the race it is demoted the same way rather than counted toward the freeze
+cap, so persistent contention never becomes a silently-frozen queue item.
 
 ### Startup recovery
 

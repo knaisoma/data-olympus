@@ -214,10 +214,16 @@ def _propose_status(status: str) -> int:
         return 413
     if status in ("rejected_rate_limited", "rejected_pending_queue_full"):
         return 429
-    if status in ("rejected_stale_base", "rejected_path_lock_busy"):
-        # Optimistic-concurrency / lock contention: the caller's base moved or a
-        # concurrent write holds the path. 409 Conflict.
+    if status in ("rejected_stale_base", "rejected_path_lock_busy",
+                  "rejected_already_in_progress"):
+        # Optimistic-concurrency / lock contention: the caller's base moved, a
+        # concurrent write holds the path, or a bootstrap for this workspace is
+        # already in progress. 409 Conflict.
         return 409
+    if status == "rejected_path_locked":
+        # The target path is held by an advisory lock; retry after it clears.
+        # 423 Locked.
+        return 423
     if status == "rejected_invalid_document":
         # The postimage failed the content-validation gate. 422 Unprocessable.
         return 422
@@ -739,6 +745,7 @@ def register_routes(
                 can_auto_commit=principal.can_auto_commit,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 max_files=state.config.max_bootstrap_files,
+                serializer=state.write_serializer,
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)

@@ -171,3 +171,115 @@ def test_rendered_memory_passes_validation() -> None:
     r = validate_postimage(target_path="memory/inbox/2026-07-03-a-memory-abc.md",
                            postimage=out, idx=None)
     assert r.ok
+
+
+# ---- Codex Blocker 1 hardening: derived-id, reserved-file, concurrent same-id ----
+
+
+def test_validate_rejects_reserved_file_with_colliding_id(tmp_path) -> None:
+    """A reserved index.md carrying an explicit id that collides with an existing
+    doc must be rejected: the indexer still assigns reserved files an id, so this
+    would break the rebuild (Codex Blocker 1)."""
+    idx = _index_with(tmp_path, {
+        "universal/foundation/STD-U-001.md":
+            "---\nid: STD-U-001\ntype: standard\nstatus: active\ntier: T1\n---\nA\n",
+    })
+    forged_index = "---\nid: STD-U-001\n---\n# Index\n\n- listing\n"
+    r = validate_postimage(target_path="decisions/index.md",
+                           postimage=forged_index, idx=idx)
+    assert not r.ok
+    assert any(e["code"] == "duplicate_id" for e in r.errors)
+
+
+def test_validate_rejects_derived_id_collision_with_explicit_id(tmp_path) -> None:
+    """A NEW file with no explicit id whose PATH-DERIVED id equals an existing
+    explicit id must be rejected (the rebuild derives the same id and collides)."""
+    # Seed a doc whose explicit id is exactly the path-derived id of the new file.
+    idx = _index_with(tmp_path, {
+        "decisions/DEC-1.md":
+            "---\nid: memory-inbox-collide\ntype: decision\nstatus: accepted\n"
+            "tier: meta\n---\nA\n",
+    })
+    # New memory at memory/inbox/collide.md derives id 'memory-inbox-collide'.
+    r = validate_postimage(target_path="memory/inbox/collide.md",
+                           postimage="no frontmatter body\n", idx=idx)
+    assert not r.ok
+    assert any(e["code"] == "duplicate_id" for e in r.errors)
+
+
+def test_validate_worktree_scan_catches_same_new_id_before_reindex(tmp_path) -> None:
+    """Two writes introducing the same NEW id: the second must be rejected even
+    though the live index has neither yet, because the first is already committed
+    in the worktree tree (Codex Blocker 1, concurrent case)."""
+    import subprocess as sp
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    sp.run(["git", "init", "--initial-branch=main", str(wt)], check=True, env=_env())
+    first = wt / "decisions" / "DEC-first.md"
+    first.parent.mkdir(parents=True)
+    first.write_text("---\nid: DEC-DUP\ntype: decision\nstatus: accepted\n"
+                     "tier: meta\n---\nfirst\n")
+    sp.run(["git", "add", "-A"], cwd=str(wt), check=True, env=_env())
+    sp.run(["git", "commit", "-m", "first"], cwd=str(wt), check=True, env=_env())
+    # A second write reusing DEC-DUP at a different path, with NO live index.
+    r = validate_postimage(
+        target_path="decisions/DEC-second.md",
+        postimage="---\nid: DEC-DUP\ntype: decision\nstatus: accepted\n"
+                  "tier: meta\n---\nsecond\n",
+        idx=None, worktree_path=str(wt),
+    )
+    assert not r.ok
+    assert any(e["code"] == "duplicate_id" for e in r.errors)
+
+
+# ---- Codex Blocker 3: base_commit-only CAS enforcement ----
+
+
+def test_cas_stale_base_commit_rejected(tmp_path) -> None:
+    """A base_commit naming a SPECIFIC commit whose target content differs from the
+    current worktree content is stale and rejected, even with no blob/file-hash
+    marker (Codex Blocker 3)."""
+    import subprocess as sp
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    sp.run(["git", "init", "--initial-branch=main", str(wt)], check=True, env=_env())
+    f = wt / "f.md"
+    f.write_text("version 1\n")
+    sp.run(["git", "add", "-A"], cwd=str(wt), check=True, env=_env())
+    sp.run(["git", "commit", "-m", "v1"], cwd=str(wt), check=True, env=_env())
+    old = sp.check_output(["git", "-C", str(wt), "rev-parse", "HEAD"],
+                          text=True).strip()
+    # Advance the file so the current content differs from `old`.
+    f.write_text("version 2\n")
+    sp.run(["git", "add", "-A"], cwd=str(wt), check=True, env=_env())
+    sp.run(["git", "commit", "-m", "v2"], cwd=str(wt), check=True, env=_env())
+    # Caller claims base_commit=old (stale) with no blob marker.
+    r = check_cas(worktree_path=str(wt), target_path="f.md",
+                  base_commit=old, base_blob_sha=None, target_file_hash=None)
+    assert not r.ok
+    assert "base_commit mismatch" in r.reason
+
+
+def test_cas_current_base_commit_accepted(tmp_path) -> None:
+    """A base_commit whose target content matches the current content passes."""
+    import subprocess as sp
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    sp.run(["git", "init", "--initial-branch=main", str(wt)], check=True, env=_env())
+    f = wt / "f.md"
+    f.write_text("stable\n")
+    sp.run(["git", "add", "-A"], cwd=str(wt), check=True, env=_env())
+    sp.run(["git", "commit", "-m", "v1"], cwd=str(wt), check=True, env=_env())
+    head = sp.check_output(["git", "-C", str(wt), "rev-parse", "HEAD"],
+                           text=True).strip()
+    r = check_cas(worktree_path=str(wt), target_path="f.md",
+                  base_commit=head, base_blob_sha=None, target_file_hash=None)
+    assert r.ok
+
+
+def test_cas_head_sentinel_stays_advisory(tmp_path) -> None:
+    """base_commit='HEAD' carries no per-file expectation and stays a no-op."""
+    (tmp_path / "f.md").write_bytes(b"anything\n")
+    r = check_cas(worktree_path=str(tmp_path), target_path="f.md",
+                  base_commit="HEAD", base_blob_sha=None, target_file_hash=None)
+    assert r.ok

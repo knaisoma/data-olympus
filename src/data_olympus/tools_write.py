@@ -214,9 +214,13 @@ def _commit_in_worktree(
                     status="rejected_stale_base", target_path=target_path,
                     reason=cas.reason))
 
-            # 5. Content-validation gate (item 4).
+            # 5. Content-validation gate (item 4). Pass the worktree so the
+            # duplicate-id check also scans the committed tree (catches a
+            # same-new-id race between two serialized commits before the index
+            # rebuilds).
             vr = validate_postimage(
-                target_path=target_path, postimage=postimage, idx=idx)
+                target_path=target_path, postimage=postimage, idx=idx,
+                worktree_path=wt.path)
             if not vr.ok:
                 raise _WriteRejected(ProposeResponse(
                     status="rejected_invalid_document", target_path=target_path,
@@ -243,6 +247,90 @@ def _commit_in_worktree(
             push_queue.enqueue(
                 sha=sha, worktree_path=wt.path, meta=push_meta or {})
             return sha
+
+
+def commit_multifile_in_worktree(
+    *,
+    worktrees: WorktreeRegistry,
+    push_queue: PushQueue,
+    pending: PendingQueue,
+    serializer: WriteSerializer,
+    idx: Index | None,
+    source_session: str,
+    agent_identity: str,
+    files: list[dict[str, str]],
+    subject: str,
+    target_tier: str,
+    target_path_for_msg: str,
+    confidence: float,
+    push_meta: dict[str, Any] | None = None,
+) -> str:
+    """Serialized multi-file write -> add -> ONE commit -> enqueue (Codex Blocker 2).
+
+    The bootstrap path writes several files in a single atomic commit. It now goes
+    through the SAME integrity discipline as the single-file path: the process-wide
+    write serializer, per-path advisory locks on every target (shared with the
+    pending queue), the content-validation gate on every postimage, and a hard
+    reset on any post-add failure so a partial bundle never leaks into the next
+    commit. CAS is not applied here (bootstrap creates NEW files under a
+    not-yet-onboarded workspace; there is no base to compare). Returns the commit
+    sha. Raises :class:`_WriteRejected` on a gate failure or
+    :class:`PathLockBusyError` when any target path is already locked.
+    """
+    with serializer, contextlib.ExitStack() as stack:
+        owner = f"bootstrap:{source_session}"
+        # Lock every target path up front (all-or-nothing): if any is busy the
+        # whole bundle is rejected, matching the atomic-commit contract.
+        for f in files:
+            stack.enter_context(pending.path_lock(f["target_path"], owner=owner))
+        wt = worktrees.get_or_create(
+            source_session=source_session, agent_identity=agent_identity)
+        with contextlib.suppress(Exception):
+            worktrees.git.refresh_base(wt.path)
+
+        # Build the commit message first (trailer validation can raise).
+        msg = build_commit_message(
+            subject=subject, source_session=source_session,
+            agent_identity=agent_identity, confidence_original=confidence,
+            operator_confirmed=False, proposal_type="edit",
+            target_tier=target_tier, target_path=target_path_for_msg,
+        )
+
+        # Containment + validation for every file BEFORE any write.
+        for f in files:
+            tp, pi = f["target_path"], f["postimage"]
+            full = safe_join_under_root(wt.path, tp)
+            if full is None:
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_symlink_escape", target_path=tp))
+            vr = validate_postimage(
+                target_path=tp, postimage=pi, idx=idx, worktree_path=wt.path)
+            if not vr.ok:
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_invalid_document", target_path=tp,
+                    reason="; ".join(e["message"] for e in vr.errors)))
+
+        # Write + add every file, then one commit; reset on any failure.
+        try:
+            for f in files:
+                tp, pi = f["target_path"], f["postimage"]
+                full = safe_join_under_root(wt.path, tp)
+                assert full is not None  # re-checked; validated above
+                os.makedirs(os.path.dirname(full), exist_ok=True)
+                with open(full, "w", encoding="utf-8") as out:
+                    out.write(pi)
+                subprocess.run(["git", "-C", wt.path, "add", tp], check=True)
+            subprocess.run(["git", "-C", wt.path, "commit", "-m", msg],
+                           check=True)
+            sha = subprocess.check_output(
+                ["git", "-C", wt.path, "rev-parse", "HEAD"], text=True).strip()
+        except Exception:
+            with contextlib.suppress(Exception):
+                reset_worktree(wt.path)
+            raise
+        push_queue.enqueue(
+            sha=sha, worktree_path=wt.path, meta=push_meta or {})
+        return sha
 
 
 def kb_propose_memory_fn(

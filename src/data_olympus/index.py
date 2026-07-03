@@ -1575,6 +1575,23 @@ class Index:
             description=row["description"] or "",
         )
 
+    def id_to_path_map(self) -> dict[str, str]:
+        """Return ``{doc_id: path}`` for every indexed document.
+
+        Used by the write-path validation gate to detect a forged/duplicate id
+        (an id already used by a DIFFERENT path corrupts the next rebuild). This
+        includes reserved files (index.md/log.md), which the indexer still assigns
+        an id (explicit or path-derived), so a reserved file carrying a colliding
+        id is caught too."""
+        conn = self._connect()
+        try:
+            rows = conn.execute("SELECT id, path FROM docs").fetchall()
+        except sqlite3.Error:
+            return {}
+        finally:
+            conn.close()
+        return {row["id"]: row["path"] for row in rows}
+
     def ids_with_exact_tag(self, tag: str) -> set[str]:
         """Return the ids of docs carrying ``tag`` as an EXACT (whole) tag.
 

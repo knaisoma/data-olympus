@@ -90,7 +90,14 @@ class PushQueue:
         it raises, the entry is treated as a retryable failure (kept in the queue)
         so a demotion bug cannot silently drop the write.
         """
-        from data_olympus.git_ops import RebaseConflictError
+        from data_olympus.git_ops import NonFastForwardError, RebaseConflictError
+
+        # A repeated non-FF race (origin/main moves faster than we can rebase) is
+        # contention, not a content conflict, but it can neither publish nor demote
+        # on its own. Bound the in-line retries: after this many consecutive
+        # attempts that all end non-FF, demote to pending (like a rebase conflict)
+        # so pure contention never becomes a silently-frozen queue item.
+        non_ff_demote_after = 5
 
         if not os.path.isdir(self._root):
             return
@@ -124,55 +131,89 @@ class PushQueue:
                 push_fn(entry["worktree_path"])
             except RebaseConflictError as conflict:
                 # Not auto-resolvable: demote to pending for operator resolution
-                # rather than retrying forever (scope item 2). Only remove the
-                # queue entry once the demotion callback succeeds, so a callback
-                # failure keeps the commit queued (never silently lost).
-                if on_rebase_conflict is None:
-                    entry["attempts"] = entry.get("attempts", 0) + 1
-                    entry["last_error"] = f"rebase_conflict: {conflict.detail}"
-                    entry["last_error_at"] = time.time()
-                    atomic_write_json(entry_path, entry)
+                # rather than retrying forever (scope item 2).
+                if self._demote(entry, entry_path, on_rebase_conflict,
+                                reason=f"rebase_conflict: {conflict.detail}"):
                     continue
-                try:
-                    on_rebase_conflict(entry)
-                except Exception:  # noqa: BLE001 - demotion failed; keep queued
-                    log.exception(
-                        "rebase-conflict demotion failed (sha=%s); keeping queued",
-                        entry.get("sha", "?"),
-                    )
-                    entry["attempts"] = entry.get("attempts", 0) + 1
-                    entry["last_error"] = "demotion_failed"
-                    entry["last_error_at"] = time.time()
-                    atomic_write_json(entry_path, entry)
+                # No callback / demotion failed -> keep queued (retryable).
+                self._record_retry(entry, entry_path,
+                                   f"rebase_conflict: {conflict.detail}")
+                continue
+            except NonFastForwardError as nff:
+                # Pure contention that the rebase-and-retry still lost. Bounded
+                # in-line retries, then demote (Codex Concern 1): a persistent
+                # non-FF race must never freeze silently.
+                nff_attempts = entry.get("non_ff_attempts", 0) + 1
+                entry["non_ff_attempts"] = nff_attempts
+                if nff_attempts >= non_ff_demote_after and self._demote(
+                    entry, entry_path, on_rebase_conflict,
+                    reason=f"non_fast_forward_contention: {nff.detail}",
+                ):
                     continue
-                log.warning(
-                    "push queue entry demoted to pending after rebase conflict "
-                    "(sha=%s worktree=%s); operator must resolve",
-                    entry.get("sha", "?"), entry.get("worktree_path", "?"),
-                )
-                atomic_remove(entry_path)
+                self._record_retry(entry, entry_path,
+                                   f"non_fast_forward: {nff.detail}",
+                                   max_attempts=max_attempts)
                 continue
             except Exception as exc:  # noqa: BLE001 -- intentional: capture any push failure
-                entry["attempts"] = entry.get("attempts", 0) + 1
-                entry["last_error"] = str(exc)
-                entry["last_error_at"] = time.time()
-                if entry["attempts"] >= max_attempts:
-                    # Cap reached; freeze for operator inspection and stop
-                    # retrying. Log once, at the moment it first freezes.
-                    entry["frozen"] = True
-                    log.warning(
-                        "push queue entry frozen after %d attempts "
-                        "(sha=%s worktree=%s last_error=%s); it will no longer "
-                        "be retried until an operator clears it "
-                        "(see docs/serving.md unfreeze path)",
-                        entry["attempts"],
-                        entry.get("sha", "?"),
-                        entry.get("worktree_path", "?"),
-                        entry["last_error"],
-                    )
-                atomic_write_json(entry_path, entry)
+                self._record_retry(entry, entry_path, str(exc),
+                                   max_attempts=max_attempts)
                 continue
             atomic_remove(entry_path)
+
+    def _demote(
+        self,
+        entry: dict[str, Any],
+        entry_path: str,
+        on_rebase_conflict: Callable[[dict[str, Any]], None] | None,
+        *,
+        reason: str,
+    ) -> bool:
+        """Demote a queue entry to pending via the callback and remove it.
+
+        Returns True when the demotion succeeded (entry removed), False when there
+        is no callback or the callback failed (caller keeps the entry queued so the
+        commit is never silently lost)."""
+        if on_rebase_conflict is None:
+            return False
+        try:
+            on_rebase_conflict(entry)
+        except Exception:  # noqa: BLE001 - demotion failed; keep queued
+            log.exception(
+                "push-queue demotion failed (sha=%s reason=%s); keeping queued",
+                entry.get("sha", "?"), reason,
+            )
+            return False
+        log.warning(
+            "push queue entry demoted to pending (%s; sha=%s worktree=%s); "
+            "operator must resolve",
+            reason, entry.get("sha", "?"), entry.get("worktree_path", "?"),
+        )
+        atomic_remove(entry_path)
+        return True
+
+    def _record_retry(
+        self,
+        entry: dict[str, Any],
+        entry_path: str,
+        error: str,
+        *,
+        max_attempts: int | None = None,
+    ) -> None:
+        """Record a retryable push failure: increment attempts, store the error,
+        and (when ``max_attempts`` is given and reached) freeze the entry."""
+        entry["attempts"] = entry.get("attempts", 0) + 1
+        entry["last_error"] = error
+        entry["last_error_at"] = time.time()
+        if max_attempts is not None and entry["attempts"] >= max_attempts:
+            entry["frozen"] = True
+            log.warning(
+                "push queue entry frozen after %d attempts "
+                "(sha=%s worktree=%s last_error=%s); it will no longer be retried "
+                "until an operator clears it (see docs/serving.md unfreeze path)",
+                entry["attempts"], entry.get("sha", "?"),
+                entry.get("worktree_path", "?"), entry["last_error"],
+            )
+        atomic_write_json(entry_path, entry)
 
     def init_recovery(
         self,

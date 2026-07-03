@@ -27,7 +27,7 @@ import os
 import subprocess
 import threading
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from data_olympus.format.frontmatter import parse_frontmatter
@@ -81,6 +81,16 @@ def _blob_sha(content: bytes) -> str:
     return hashlib.sha1(header + content).hexdigest()  # noqa: S324 - git uses sha1
 
 
+def _is_enforceable_base_commit(base_commit: str | None) -> bool:
+    """A base_commit is enforceable when it names a SPECIFIC commit the caller
+    read the target from. The sentinel ``HEAD`` (and empty/None) means "whatever
+    the current base is" and carries no per-file expectation, so it is advisory
+    only. A pinned sha / ref is enforceable."""
+    if not base_commit:
+        return False
+    return base_commit.strip().upper() != "HEAD"
+
+
 def check_cas(
     *,
     worktree_path: str,
@@ -90,34 +100,32 @@ def check_cas(
     target_file_hash: str | None,
 ) -> CasResult:
     """Compare the caller's base markers against the CURRENT target content on the
-    worktree (scope item 3).
+    worktree's refreshed base (scope item 3).
 
     Semantics:
 
-    - If NO base marker is supplied (all of ``base_commit`` in {None, "", "HEAD"}
-      and ``base_blob_sha`` and ``target_file_hash`` are falsy), CAS is a no-op and
-      returns ok: this preserves the pre-0.3.0 behavior for callers that did not
-      opt in.
+    - If NO enforceable marker is supplied (``base_commit`` is None/""/``HEAD`` AND
+      ``base_blob_sha``/``target_file_hash`` are falsy), CAS is a no-op and returns
+      ok: this preserves the pre-0.3.0 behavior for callers that did not opt in.
     - ``base_blob_sha``: the git blob id the caller believed the target held. We
       compute the blob id of the target's current bytes on the worktree and
       require equality. A target that does not yet exist matches only an empty
       base_blob_sha (i.e. the caller must not claim a base for a new file).
     - ``target_file_hash``: a sha256 of the current file bytes (an alternative
       marker some clients send). Same equality rule.
+    - ``base_commit`` naming a SPECIFIC commit (not the ``HEAD`` sentinel) is
+      ENFORCED: the blob the target had at ``base_commit`` must equal the target's
+      current blob on the refreshed base. This closes the bypass where a caller
+      supplied only ``base_commit`` (the required field) and CAS silently no-oped
+      (Codex Blocker 3). ``HEAD`` remains advisory because it means "the current
+      base", which carries no stale-detection expectation.
 
-    ``base_commit`` alone is advisory (the worktree is rebased onto the refreshed
-    base before this check, so a bare commit marker cannot be meaningfully
-    compared per-file); the blob/file-hash markers are the enforced ones. A
-    mismatch returns ok=False with ``rejected_stale_base`` so the caller does not
-    commit."""
-    # base_commit is accepted for API symmetry and audit context but is advisory
-    # only: the worktree is rebased onto the refreshed base before this check, so
-    # a bare commit marker cannot be meaningfully compared per file. The enforced
-    # markers are the blob / file-hash ones below.
-    _ = base_commit
+    A mismatch returns ok=False with a machine-readable ``reason`` so the caller
+    rejects ``rejected_stale_base`` rather than committing."""
     has_blob = bool(base_blob_sha)
     has_file_hash = bool(target_file_hash)
-    if not has_blob and not has_file_hash:
+    has_commit = _is_enforceable_base_commit(base_commit)
+    if not has_blob and not has_file_hash and not has_commit:
         return CasResult(ok=True)
 
     real = os.path.join(worktree_path, target_path)
@@ -125,17 +133,16 @@ def check_cas(
     if os.path.isfile(real):
         with open(real, "rb") as f:
             current = f.read()
+    current_blob = _blob_sha(current) if current is not None else ""
 
-    if has_blob:
-        actual = _blob_sha(current) if current is not None else ""
-        if actual != base_blob_sha:
-            return CasResult(
-                ok=False,
-                reason=(
-                    f"base_blob_sha mismatch: caller={base_blob_sha} "
-                    f"current={actual or '<absent>'}"
-                ),
-            )
+    if has_blob and current_blob != base_blob_sha:
+        return CasResult(
+            ok=False,
+            reason=(
+                f"base_blob_sha mismatch: caller={base_blob_sha} "
+                f"current={current_blob or '<absent>'}"
+            ),
+        )
     if has_file_hash:
         actual_h = (
             hashlib.sha256(current).hexdigest() if current is not None else ""
@@ -148,7 +155,34 @@ def check_cas(
                     f"current={actual_h or '<absent>'}"
                 ),
             )
+    if has_commit:
+        # The blob the caller read at base_commit must still be the current blob.
+        # base_commit is None-checked by _is_enforceable_base_commit.
+        assert base_commit is not None
+        base_blob = _git_blob_at(worktree_path, base_commit, target_path)
+        if base_blob != current_blob:
+            return CasResult(
+                ok=False,
+                reason=(
+                    f"base_commit mismatch: content at {base_commit} "
+                    f"(blob={base_blob or '<absent>'}) differs from current "
+                    f"(blob={current_blob or '<absent>'})"
+                ),
+            )
     return CasResult(ok=True)
+
+
+def _git_blob_at(worktree_path: str, commit: str, target_path: str) -> str:
+    """The git blob id of ``target_path`` as of ``commit`` in the worktree, or ""
+    if the path did not exist there (or the commit is unknown). Uses
+    ``git rev-parse <commit>:<path>`` which prints the blob object id directly."""
+    result = subprocess.run(
+        ["git", "-C", worktree_path, "rev-parse", f"{commit}:{target_path}"],
+        check=False, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,11 +197,71 @@ def _is_reserved(target_path: str) -> bool:
     return PurePosixPath(target_path).name in RESERVED
 
 
+def _effective_doc_id(fm: dict[str, object], target_path: str) -> str:
+    """The id the indexer will assign to ``target_path``: the explicit
+    frontmatter ``id`` when present and a plain string, else the path-derived id.
+
+    This mirrors ``index.build`` (``doc_id = doc.id or _derive_id_from_path(rel)``)
+    and ``markdown_parse.parse_file`` (which drops an id containing ``:``), so the
+    duplicate-id gate reasons about the SAME id the rebuild will compute. A
+    path-derived id lets the gate catch a NEW file whose derived id collides with
+    an existing explicit id (Codex Blocker 1)."""
+    from data_olympus.index import _derive_id_from_path
+
+    raw = fm.get("id")
+    if isinstance(raw, str) and raw and ":" not in raw:
+        return raw
+    return _derive_id_from_path(Path(target_path))
+
+
+def _worktree_id_map(worktree_path: str) -> dict[str, str]:
+    """``{doc_id: path}`` for every non-excluded ``.md`` file COMMITTED in the
+    worktree's current HEAD tree (Codex Blocker 1, concurrent case).
+
+    The live index rebuilds only on the git_pull_loop, so two auto-commits that
+    introduce the same NEW id in quick succession both pass an ``idx``-only check
+    (neither is indexed yet) and then break the next rebuild. Scanning the
+    worktree tree (which already contains the first commit by the time the second
+    validates, because the write lock serializes them) closes that window. Returns
+    {} on any git error (fail open on the tree scan; the idx check still applies)."""
+    from data_olympus.index import _derive_id_from_path, _is_excluded
+
+    result = subprocess.run(
+        ["git", "-C", worktree_path, "ls-tree", "-r", "--name-only", "HEAD"],
+        check=False, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return {}
+    id_map: dict[str, str] = {}
+    for rel in result.stdout.splitlines():
+        rel = rel.strip()
+        if not rel.endswith(".md"):
+            continue
+        if _is_excluded(Path(rel)):
+            continue
+        blob = subprocess.run(
+            ["git", "-C", worktree_path, "show", f"HEAD:{rel}"],
+            check=False, capture_output=True, text=True,
+        )
+        if blob.returncode != 0:
+            continue
+        try:
+            fm, _body = parse_frontmatter(blob.stdout)
+        except ValueError:
+            fm = {}
+        raw = fm.get("id") if isinstance(fm, dict) else None
+        doc_id = (raw if isinstance(raw, str) and raw and ":" not in raw
+                  else _derive_id_from_path(Path(rel)))
+        id_map[doc_id] = rel
+    return id_map
+
+
 def validate_postimage(
     *,
     target_path: str,
     postimage: str,
     idx: Index | None,
+    worktree_path: str | None = None,
 ) -> ValidationResult:
     """Format-level validation of ``postimage`` before it is committed (item 4).
 
@@ -182,14 +276,18 @@ def validate_postimage(
       fields are NOT rejected here: memory-inbox documents legitimately carry no
       ``id``/``type``/``status``/``tier`` and derive their id from the path. The
       gate blocks documents that are actively malformed, not merely sparse.)
-    - **Duplicate / forged id.** A frontmatter ``id`` that already belongs to a
-      DIFFERENT path in the live index. A duplicate id makes every subsequent
-      index rebuild raise ``DuplicateIdError``, i.e. one bad write puts the server
-      in a persistent degraded state. Rejected as ``duplicate_id``. An id that
-      resolves to the SAME path (a legitimate edit-in-place) is allowed.
+    - **Duplicate / forged id.** The EFFECTIVE id the rebuild will assign (explicit
+      frontmatter ``id`` or the path-derived id) already belongs to a DIFFERENT
+      path, in the live index OR in the worktree's committed tree. A duplicate id
+      makes every subsequent index rebuild raise ``DuplicateIdError``: one bad
+      write puts the server in a persistent degraded state. Rejected as
+      ``duplicate_id``. An id that resolves to the SAME path (a legitimate
+      edit-in-place) is allowed. This applies to reserved files too, since the
+      indexer still assigns them an id.
 
-    Reserved filenames (``index.md`` / ``log.md`` / ``template.md``) are exempt
-    from the concept schema (SPEC section 4.2), matching ``kb lint``.
+    The concept-schema exemption for reserved filenames (``index.md`` / ``log.md``
+    / ``template.md``, SPEC section 4.2) suppresses only the enum checks, NOT the
+    duplicate-id check.
     """
     errors: list[dict[str, str]] = []
 
@@ -204,34 +302,46 @@ def validate_postimage(
                      "message": str(exc)},),
         )
 
-    if _is_reserved(target_path):
-        # Reserved files are schema-exempt; the parse check above is the only gate.
-        return ValidationResult(ok=True)
+    # 2. Enum values, when present, must be in vocabulary. Reserved files are
+    # schema-exempt from this check (but NOT from the duplicate-id check below).
+    if not _is_reserved(target_path):
+        for field, allowed in (("type", TYPES), ("status", _WRITE_STATUSES),
+                               ("tier", TIERS)):
+            value = fm.get(field)
+            if value is not None and value not in allowed:
+                errors.append({
+                    "field": field, "code": "invalid_enum",
+                    "message": f"invalid {field} '{value}' "
+                               f"(allowed: {sorted(allowed)})",
+                })
 
-    # 2. Enum values, when present, must be in vocabulary.
-    for field, allowed in (("type", TYPES), ("status", _WRITE_STATUSES),
-                           ("tier", TIERS)):
-        value = fm.get(field)
-        if value is not None and value not in allowed:
-            errors.append({
-                "field": field, "code": "invalid_enum",
-                "message": f"invalid {field} '{value}' "
-                           f"(allowed: {sorted(allowed)})",
-            })
-
-    # 3. Duplicate / forged id against the live index. A duplicate id at a
-    # DIFFERENT path corrupts the next rebuild.
-    doc_id = fm.get("id")
-    if isinstance(doc_id, str) and doc_id and idx is not None:
-        try:
-            existing = idx.get(doc_id)
-        except Exception:  # noqa: BLE001 - index read must never fail the gate open
-            existing = None
-        if existing is not None and existing.path != target_path:
-            errors.append({
-                "field": "id", "code": "duplicate_id",
-                "message": f"id '{doc_id}' already used by '{existing.path}'",
-            })
+    # 3. Duplicate / forged id against BOTH the live index and the worktree tree,
+    # using the EFFECTIVE id (explicit or path-derived) so a new file whose derived
+    # id collides with an existing explicit id is caught, and so a same-new-id race
+    # between two serialized commits is caught (the first is already committed in
+    # the tree when the second validates).
+    effective_id = _effective_doc_id(fm, target_path)
+    collision_path: str | None = None
+    if effective_id:
+        if idx is not None:
+            try:
+                index_map = idx.id_to_path_map()
+            except Exception:  # noqa: BLE001 - index read must never fail-closed here
+                index_map = {}
+            if isinstance(index_map, dict):
+                other = index_map.get(effective_id)
+                if other is not None and other != target_path:
+                    collision_path = other
+        if collision_path is None and worktree_path is not None:
+            tree_map = _worktree_id_map(worktree_path)
+            other = tree_map.get(effective_id)
+            if other is not None and other != target_path:
+                collision_path = other
+    if collision_path is not None:
+        errors.append({
+            "field": "id", "code": "duplicate_id",
+            "message": f"id '{effective_id}' already used by '{collision_path}'",
+        })
 
     if errors:
         return ValidationResult(ok=False, errors=tuple(errors))
