@@ -92,8 +92,10 @@ prompt file.
 `status`, and decisions that replace older ones are linked through a `supersedes`
 chain. That sounds like bookkeeping until you watch a plain keyword search hand an
 agent a rule you retired six months ago because the old document happens to match
-the words in the query. Because data-olympus understands which rule is current, it
-can keep the superseded one out of the answer.
+the words in the query. Because data-olympus understands which rule is current, a
+default search downranks the superseded document below the one that replaced it
+(it is still returned, useful when tracing history), and a caller that asks for
+only in-force guidance can exclude it from the result set entirely.
 
 **It is queryable in the ways governance actually needs.** You can filter by
 `status`, by `tier`, or by `type` without any post-processing, and ask things like

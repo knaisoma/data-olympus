@@ -3,24 +3,24 @@
 
 SPEC.md and docs/adoption.md restate, in prose, the controlled-vocabulary
 enums and reserved-filename list that ``data_olympus.format.validate`` defines
-in code (``TYPES``, ``STATUSES``, ``RESERVED``). Those two sources of truth
-have no structural link — nothing stops the code from adding a new ``status``
-value while the docs still list the old set. This script parses each prose
-restatement out of the docs, and fails when its value set no longer matches
-the canonical one imported directly from the package.
+in code (``TYPES``, ``STATUSES``, ``TIERS``, ``RESERVED``). Those two sources
+of truth have no structural link — nothing stops the code from adding a new
+``status`` value while the docs still list the old set. This script parses
+each prose restatement out of the docs, and fails when its value set no
+longer matches the canonical one imported directly from the package.
 
 What this checks:
 
-1. Every `` `type`: ... `` / `` `status`: ... `` enum restatement in SPEC.md
-   and docs/adoption.md against ``data_olympus.format.validate.TYPES`` /
-   ``STATUSES``.
+1. Every `` `type`: ... ``, `` `status`: ... ``, or `` `tier`: ... `` enum
+   restatement in SPEC.md and docs/adoption.md against
+   ``data_olympus.format.validate.TYPES`` / ``STATUSES`` / ``TIERS``.
 2. The reserved-filename list stated in SPEC.md against
    ``data_olympus.format.validate.RESERVED``.
 
-What this deliberately does NOT check: `tier`, `applies_when`, or any other
-field's documentation; whether the prose reads well; whether a doc's example
-frontmatter blocks are internally consistent. Extend ``_CHECKS`` below if a
-future field's enum should also be guarded.
+What this deliberately does NOT check: `applies_when` (not an enum) or any
+other field's documentation; whether the prose reads well; whether a doc's
+example frontmatter blocks are internally consistent. Extend the tuple in
+``check_doc_consistency`` if a future field's enum should also be guarded.
 
 Expected doc format (what the parser looks for)
 ------------------------------------------------
@@ -169,7 +169,7 @@ def check_doc_consistency(root: Path) -> list[str]:
     """Return a list of drift/parse-error messages; empty means everything is in sync."""
     # Imported here (not at module scope) so a bad --root or missing package
     # produces a clear error from main(), not an import-time traceback.
-    from data_olympus.format.validate import RESERVED, STATUSES, TYPES
+    from data_olympus.format.validate import RESERVED, STATUSES, TIERS, TYPES
 
     errors: list[str] = []
 
@@ -179,8 +179,10 @@ def check_doc_consistency(root: Path) -> list[str]:
     for label, path, field, canonical in (
         ("SPEC.md", spec_path, "type", TYPES),
         ("SPEC.md", spec_path, "status", STATUSES),
+        ("SPEC.md", spec_path, "tier", TIERS),
         ("docs/adoption.md", adoption_path, "type", TYPES),
         ("docs/adoption.md", adoption_path, "status", STATUSES),
+        ("docs/adoption.md", adoption_path, "tier", TIERS),
     ):
         try:
             text = path.read_text(encoding="utf-8")

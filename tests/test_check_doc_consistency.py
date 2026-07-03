@@ -129,13 +129,24 @@ def test_diff_message_reports_missing_and_extra() -> None:
 # --- check_doc_consistency (end-to-end against a scratch root) --------------
 
 
-def _write_bundle(tmp_path: Path, *, spec_type_line: str, adoption_type_line: str) -> Path:
+_IN_SYNC_TIER_LINE = "`tier`: one of `T1`, `T2`, `T3`, `T4`, `meta`."
+
+
+def _write_bundle(
+    tmp_path: Path,
+    *,
+    spec_type_line: str,
+    adoption_type_line: str,
+    spec_tier_line: str = _IN_SYNC_TIER_LINE,
+    adoption_tier_line: str = _IN_SYNC_TIER_LINE,
+) -> Path:
     (tmp_path / "docs").mkdir()
     (tmp_path / "SPEC.md").write_text(
         "## 4.2 Governance extensions\n\n"
         f"- {spec_type_line}\n"
         "- `status`: lifecycle state: `draft`, `active`, `deprecated`, `superseded`, "
-        "`proposed`, `accepted`, `rejected`. More prose.\n\n"
+        "`proposed`, `accepted`, `rejected`. More prose.\n"
+        f"- {spec_tier_line}\n\n"
         "**Reserved filenames.** The filenames `index.md`, `log.md`, and "
         "`template.md` are reserved in every directory. More prose.\n",
         encoding="utf-8",
@@ -143,7 +154,8 @@ def _write_bundle(tmp_path: Path, *, spec_type_line: str, adoption_type_line: st
     (tmp_path / "docs" / "adoption.md").write_text(
         f"- {adoption_type_line}\n"
         "- `status`: one of `draft`, `active`, `deprecated`, `superseded`,\n"
-        "  `proposed`, `accepted`, `rejected`.\n",
+        "  `proposed`, `accepted`, `rejected`.\n"
+        f"- {adoption_tier_line}\n",
         encoding="utf-8",
     )
     return tmp_path
@@ -201,6 +213,24 @@ def test_check_doc_consistency_detects_drift_in_adoption_doc(tmp_path: Path) -> 
     assert len(errors) == 1
     assert "docs/adoption.md" in errors[0]
     assert "'memory'" in errors[0]
+
+
+def test_check_doc_consistency_detects_tier_drift_in_spec(tmp_path: Path) -> None:
+    _write_bundle(
+        tmp_path,
+        spec_type_line=_IN_SYNC_TYPE_LINE,
+        adoption_type_line=(
+            "`type`: one of `standard`, `decision`, `workflow`, `project`, "
+            "`memory`, `reference`."
+        ),
+        # Drops 'meta' from the tier enum restatement.
+        spec_tier_line="`tier`: one of `T1`, `T2`, `T3`, `T4`.",
+    )
+    errors = check_doc_consistency(tmp_path)
+    assert len(errors) == 1
+    assert "SPEC.md" in errors[0]
+    assert "'tier'" in errors[0]
+    assert "'meta'" in errors[0]
 
 
 def test_check_doc_consistency_detects_reserved_drift(tmp_path: Path) -> None:

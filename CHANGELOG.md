@@ -85,13 +85,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   still returned) versus `in_force=true` (hard filter: `STD-U-003` excluded
   from the result set entirely), against the upgraded example bundle.
 - CI doc-consistency guard (WP4c, 0.3.0): `scripts/check_doc_consistency.py`,
-  wired as a new `doc-consistency-guard` CI job. Fails when the `type`/`status`
-  enum lists restated in SPEC.md or `docs/adoption.md` drift from
-  `data_olympus.format.validate`'s canonical `TYPES`/`STATUSES`, or when
-  SPEC.md's reserved-filename list drifts from `validate.RESERVED`. Checks
-  every restatement of an enum in a file (SPEC.md states `type`/`status` twice;
-  both are now checked, not just the first), tolerant of reordering, rewrapped
-  lines, and an Oxford "or".
+  wired as a new `doc-consistency-guard` CI job. Fails when the
+  `type`/`status`/`tier` enum lists restated in SPEC.md or `docs/adoption.md`
+  drift from `data_olympus.format.validate`'s canonical
+  `TYPES`/`STATUSES`/`TIERS`, or when SPEC.md's reserved-filename list drifts
+  from `validate.RESERVED`. Checks every restatement of an enum in a file
+  (SPEC.md states `type`/`status` twice; both are now checked, not just the
+  first), tolerant of reordering, rewrapped lines, and an Oxford "or".
 - Cheap OKF minimal-field structural check (`tests/test_okf_minimal_fields.py`,
   WP4c, 0.3.0): asserts every example-bundle concept doc has non-empty
   `id`/`type` and the bundle-root `index.md` declares `okf_version`. This is a
