@@ -679,3 +679,58 @@ def test_resolve_stale_base_restores_pending_entry(tmp_path, monkeypatch) -> Non
     # The entry is restored (not consumed) so it can be re-resolved.
     assert pen.size() == 1
     assert pen.locks_held() == 1  # path lock still held by the restored entry
+
+
+# ---- Codex round-3: truthful push_state on post-commit enqueue failure ----
+
+
+def test_enqueue_failure_reports_recovery_pending_not_queued(tmp_path, monkeypatch) -> None:
+    """If BOTH the enqueue and the in-process recovery re-enqueue fail after a
+    successful commit, the response push_state is the truthful
+    enqueue_failed_recovery_pending (not 'queued'), and the commit still exists
+    (recoverable by init_recovery)."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+
+    class FailingPushQueue:
+        def enqueue(self, **_kwargs):
+            raise OSError("state volume full")
+
+    resp = kb_propose_memory_fn(
+        text="a note", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85, worktrees=reg,
+        push_queue=FailingPushQueue(), pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    assert resp.status == "committed"
+    assert resp.commit_sha  # the commit was made and is durable
+    assert resp.push_state == "enqueue_failed_recovery_pending"
+
+
+def test_enqueue_recovery_retry_succeeds_reports_queued(tmp_path, monkeypatch) -> None:
+    """If the first enqueue fails but the in-process recovery retry succeeds, the
+    push_state is 'queued' (the entry landed)."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+
+    class FlakyPushQueue:
+        def __init__(self):
+            self.calls = 0
+            self.enqueued = []
+
+        def enqueue(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError("transient")
+            self.enqueued.append(kwargs["sha"])
+
+    fq = FlakyPushQueue()
+    resp = kb_propose_memory_fn(
+        text="a note", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85, worktrees=reg,
+        push_queue=fq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    assert resp.status == "committed"
+    assert resp.push_state == "queued"
+    assert fq.enqueued == [resp.commit_sha]

@@ -1,8 +1,14 @@
 """Durable push queue: enqueue commits awaiting `git push`, drain with retry.
 
 Every queue entry write goes through atomic_write_json
-(temp -> fsync -> rename -> parent-dir fsync) so a commit returning "committed"
-guarantees the queue entry survives a crash.
+(temp -> fsync -> rename -> parent-dir fsync), so a queue entry that was written
+survives a crash. The DURABLE object for a completed write is the git commit on
+the session branch, not necessarily the queue entry: a rare post-commit enqueue
+failure is reported to the caller as ``push_state="enqueue_failed_recovery_pending"``
+(see tools_write._enqueue_after_commit) and the orphaned committed sha is recovered
+by ``init_recovery`` at startup (and an in-process re-enqueue attempt), so it
+publishes eventually. A ``push_state="queued"`` response means the queue entry did
+land durably.
 """
 from __future__ import annotations
 

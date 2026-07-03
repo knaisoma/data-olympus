@@ -394,7 +394,7 @@ def _bootstrap_admitted(
     path_for_msg = (f"projects/{workspace}/"
                     + (f"components/{component}/" if component else ""))
     try:
-        sha = commit_multifile_in_worktree(
+        sha, push_state = commit_multifile_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
             source_session=source_session, agent_identity=agent_identity,
@@ -410,7 +410,8 @@ def _bootstrap_admitted(
     except PathLockBusyError as busy:
         return BootstrapResponse(status="rejected_path_lock_busy",
                                  rejected_paths=[str(busy)])
-    return BootstrapResponse(status="committed", commit_sha=sha, push_state="queued")
+    return BootstrapResponse(status="committed", commit_sha=sha,
+                             push_state=push_state)
 
 
 def _inject_remote_url(

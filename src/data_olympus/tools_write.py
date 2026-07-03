@@ -153,13 +153,15 @@ def _commit_in_worktree(
     push_meta: dict[str, Any] | None = None,
     lock_owner: str | None = None,
     hold_path_lock: bool = False,
-) -> str:
+) -> tuple[str, str]:
     """Serialized write -> git add -> commit -> enqueue critical section.
 
     Shared by the auto-commit (propose) path and the operator-resolve path so both
-    honor identical integrity gates (scope items 1, 3, 4, 8). Returns the commit
-    sha. Raises :class:`_WriteRejected` (carrying the ProposeResponse) when a gate
-    rejects, or :class:`PathLockBusyError` when the per-path advisory lock is held.
+    honor identical integrity gates (scope items 1, 3, 4, 8). Returns
+    ``(commit_sha, push_state)`` where push_state is ``"queued"`` or
+    ``"enqueue_failed_recovery_pending"`` (see _enqueue_after_commit). Raises
+    :class:`_WriteRejected` (carrying the ProposeResponse) when a gate rejects, or
+    :class:`PathLockBusyError` when the per-path advisory lock is held.
 
     ``hold_path_lock`` (resolve path): when True the caller ALREADY holds the
     per-path advisory lock (the one acquired at ``enqueue`` time and kept through
@@ -259,33 +261,56 @@ def _commit_in_worktree(
                 with contextlib.suppress(Exception):
                     reset_worktree(wt.path)
                 raise
-            # Enqueue is best-effort ONCE the commit is durable: the commit lives on
-            # the session branch, and startup init_recovery re-enqueues any commit
-            # not reachable from origin/main, so a failed enqueue publishes late
-            # rather than being lost (and the caller still sees a committed sha, so
-            # a bootstrap's in-flight guard is not dropped -- Codex round-2
-            # Blocker C).
-            _enqueue_best_effort(push_queue, sha, wt.path, push_meta)
-            return sha
+            # Enqueue AFTER the commit is durable. It must not turn a made commit
+            # into an exception path (that would drop the bootstrap in-flight guard
+            # and lose the resolve claim -- Codex round-2 Blocker C), so a failure
+            # is not raised; but the push_state returned to the caller is TRUTHFUL
+            # (Codex round-3): "queued" only when the queue entry actually landed,
+            # else "enqueue_failed_recovery_pending", and an in-process recovery
+            # pass on THIS worktree re-enqueues the orphan so the running push loop
+            # picks it up without waiting for a restart.
+            push_state = _enqueue_after_commit(push_queue, sha, wt.path, push_meta)
+            return sha, push_state
 
 
-def _enqueue_best_effort(
+def _enqueue_after_commit(
     push_queue: PushQueue, sha: str, worktree_path: str,
     push_meta: dict[str, Any] | None,
-) -> None:
-    """Enqueue a committed sha for push; on failure log and continue.
+) -> str:
+    """Enqueue a committed sha for push and return a truthful push_state.
 
-    The commit is already durable on the session branch, so a queue-write failure
-    is recoverable by startup init_recovery. Swallowing it here means a caller that
-    treats a returned sha as 'committed' (e.g. the bootstrap in-flight guard) is not
-    misled into a non-committed path by a post-commit enqueue error."""
+    Returns:
+    - ``"queued"`` when the queue entry landed durably.
+    - ``"enqueue_failed_recovery_pending"`` when the initial enqueue AND an
+      in-process recovery retry both failed. The commit is durable on the session
+      branch, so it is still recoverable (an operator / a restart's init_recovery
+      re-enqueues it), but the caller must not claim it is queued.
+
+    The recovery retry re-runs the same durable enqueue once. This lands the
+    orphan in the live queue so the running push loop drains it without a restart
+    (closing the "silently unpublished until restart" gap Codex round-3 raised)."""
     try:
         push_queue.enqueue(sha=sha, worktree_path=worktree_path,
                            meta=push_meta or {})
+        return "queued"
     except Exception:
         _log.exception(
-            "push-queue enqueue failed after commit %s; commit is durable and "
-            "will be recovered by startup init_recovery", sha)
+            "push-queue enqueue failed after commit %s; attempting in-process "
+            "recovery re-enqueue", sha)
+    # In-process recovery: retry the durable enqueue once more. If it lands, the
+    # live push loop will drain it; if not, the commit is still on the branch and
+    # startup init_recovery is the backstop.
+    try:
+        push_queue.enqueue(sha=sha, worktree_path=worktree_path,
+                           meta={**(push_meta or {}), "recovered_in_process": True})
+        _log.warning("in-process recovery re-enqueued orphaned commit %s", sha)
+        return "queued"
+    except Exception:
+        _log.exception(
+            "in-process recovery re-enqueue ALSO failed for commit %s; the commit "
+            "is durable on the session branch and will be recovered by startup "
+            "init_recovery, but is NOT queued in this process", sha)
+        return "enqueue_failed_recovery_pending"
 
 
 def commit_multifile_in_worktree(
@@ -303,7 +328,7 @@ def commit_multifile_in_worktree(
     target_path_for_msg: str,
     confidence: float,
     push_meta: dict[str, Any] | None = None,
-) -> str:
+) -> tuple[str, str]:
     """Serialized multi-file write -> add -> ONE commit -> enqueue (Codex Blocker 2).
 
     The bootstrap path writes several files in a single atomic commit. It now goes
@@ -312,9 +337,9 @@ def commit_multifile_in_worktree(
     pending queue), the content-validation gate on every postimage, and a hard
     reset on any post-add failure so a partial bundle never leaks into the next
     commit. CAS is not applied here (bootstrap creates NEW files under a
-    not-yet-onboarded workspace; there is no base to compare). Returns the commit
-    sha. Raises :class:`_WriteRejected` on a gate failure or
-    :class:`PathLockBusyError` when any target path is already locked.
+    not-yet-onboarded workspace; there is no base to compare). Returns
+    ``(commit_sha, push_state)``. Raises :class:`_WriteRejected` on a gate failure
+    or :class:`PathLockBusyError` when any target path is already locked.
     """
     with serializer, contextlib.ExitStack() as stack:
         owner = f"bootstrap:{source_session}"
@@ -391,8 +416,8 @@ def commit_multifile_in_worktree(
             with contextlib.suppress(Exception):
                 reset_worktree(wt.path)
             raise
-        _enqueue_best_effort(push_queue, sha, wt.path, push_meta)
-        return sha
+        push_state = _enqueue_after_commit(push_queue, sha, wt.path, push_meta)
+        return sha, push_state
 
 
 def kb_propose_memory_fn(
@@ -521,7 +546,7 @@ def kb_propose_memory_fn(
 
     # High confidence: serialized commit + enqueue push (items 1, 4, 8).
     try:
-        sha = _commit_in_worktree(
+        sha, push_state = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
             source_session=source_session, agent_identity=agent_identity,
@@ -542,7 +567,7 @@ def kb_propose_memory_fn(
         return ProposeResponse(status="rejected_path_lock_busy",
                                target_path=target_path)
     _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
-    return ProposeResponse(status="committed", commit_sha=sha, push_state="queued")
+    return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state)
 
 
 def _render_memory(*, text: str, tags: list[str], agent_identity: str) -> str:
@@ -673,7 +698,7 @@ def kb_propose_edit_fn(
 
     # Serialized commit + CAS + validation + enqueue (items 1, 3, 4, 8).
     try:
-        sha = _commit_in_worktree(
+        sha, push_state = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
             source_session=source_session, agent_identity=agent_identity,
@@ -696,7 +721,7 @@ def kb_propose_edit_fn(
         return ProposeResponse(status="rejected_path_lock_busy",
                                target_path=target_path)
     _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
-    return ProposeResponse(status="committed", commit_sha=sha, push_state="queued")
+    return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state)
 
 
 def kb_resolve_pending_fn(
@@ -773,7 +798,7 @@ def kb_resolve_pending_fn(
     # hold_path_lock=True: the lock is already held from enqueue via the claim, so
     # _commit_in_worktree must not re-acquire it (would deadlock / raise busy).
     try:
-        sha = _commit_in_worktree(
+        sha, _push_state = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
             source_session=resolved.meta.get("source_session", source_session),
