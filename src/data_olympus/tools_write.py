@@ -194,13 +194,33 @@ def _commit_in_worktree(
             wt = worktrees.get_or_create(
                 source_session=source_session, agent_identity=agent_identity
             )
-            # 1. Refresh the session branch base onto origin/main. On a rebase
-            # conflict the current base cannot be advanced; fall back to the
-            # unrefreshed base rather than failing the write (the push path's
-            # non-FF recovery handles publication). Network/other errors are
-            # likewise non-fatal here.
-            with contextlib.suppress(Exception):
+            # 1. Refresh the session branch base onto origin/main so CAS compares
+            # against, and the commit sits on, current content.
+            #
+            # A refresh failure (network down, or a rebase conflict) is handled by
+            # whether the caller opted into CAS: when an ENFORCEABLE base marker was
+            # supplied, we CANNOT verify it against a stale base, so a failed
+            # refresh must reject rejected_stale_base rather than commit a possibly
+            # stale write against an unrefreshed tree (Codex round-5: the push
+            # path's rebase recovery is NOT equivalent, since a compatible rebase
+            # would still publish the stale write). When no marker was supplied CAS
+            # is a no-op, so a refresh failure stays non-fatal and the commit sits
+            # on the unrefreshed base (the push path's non-FF recovery publishes).
+            from data_olympus.write_gate import _is_enforceable_base_commit
+            cas_enforceable = bool(base_blob_sha) or bool(target_file_hash) or \
+                _is_enforceable_base_commit(base_commit)
+            refresh_ok = True
+            try:
                 worktrees.git.refresh_base(wt.path)
+            except Exception as exc:  # noqa: BLE001 - classified by cas_enforceable
+                refresh_ok = False
+                refresh_err = str(exc)
+            if cas_enforceable and not refresh_ok:
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_stale_base", target_path=target_path,
+                    reason=(f"base could not be refreshed onto origin/main, so the "
+                            f"supplied base marker cannot be verified: "
+                            f"{refresh_err}")))
 
             # 2. Build the commit message BEFORE any disk write (item 8).
             msg = build_commit_message(

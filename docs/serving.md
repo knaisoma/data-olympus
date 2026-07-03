@@ -85,12 +85,19 @@ section so concurrent writes cannot corrupt each other:
   every subsequent index rebuild — one bad write, persistent degraded state). The
   response `reason` carries the machine-readable errors.
 - **Compare-and-swap (optimistic concurrency).** When a caller supplies a base
-  marker (`base_commit`, `base_blob_sha`, or `target_file_hash`) on
-  `kb_propose_edit` (or it is carried on the pending entry into
-  `kb_resolve_pending`), the server refreshes the session worktree's base onto
-  `origin/main` and compares the marker against the current target content. A
-  mismatch returns `rejected_stale_base` and nothing is committed. When no marker
-  is supplied, the pre-0.3.0 behavior is preserved.
+  marker (`base_commit` naming a specific commit, `base_blob_sha`, or
+  `target_file_hash`) on `kb_propose_edit` (or it is carried on the pending entry
+  into `kb_resolve_pending`), the server refreshes the session worktree's base
+  onto `origin/main` and compares the marker against the current target content. A
+  mismatch returns `rejected_stale_base` and nothing is committed. If the base
+  cannot be refreshed at all (the remote is unreachable, or the rebase conflicts)
+  while an enforceable marker was supplied, the write is also rejected
+  `rejected_stale_base` rather than committed against a possibly-stale base — the
+  marker cannot be verified, and the push-path rebase recovery is not an
+  equivalent safety net (a compatible rebase would still publish the stale write).
+  A bare `base_commit` of `HEAD` is advisory (no per-file expectation), and when
+  no marker is supplied the pre-0.3.0 behavior is preserved (a refresh failure is
+  non-fatal; the push path's non-FF recovery publishes the commit).
 - Ordering of side effects: the commit message and all gates are evaluated
   BEFORE the file is written and `git add`-ed, and on any failure after the add
   the worktree is hard-reset, so a rejected write never leaves a staged leftover

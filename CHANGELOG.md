@@ -36,6 +36,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - **CAS also enforces `base_commit`.** When the base marker is a specific commit
     (not the `HEAD` sentinel), the blob the target had at that commit must equal
     the current blob, closing the bypass where a caller supplied only `base_commit`.
+    If the base cannot be refreshed onto `origin/main` (remote unreachable / rebase
+    conflict) while an enforceable marker was supplied, the write is rejected
+    `rejected_stale_base` rather than committed against a stale base.
   - **CAS enforcement.** `base_commit` / `base_blob_sha` / `target_file_hash`
     were accepted and stored but never checked. They are now enforced at commit
     time on both the auto-commit and resolve paths: a supplied base marker that

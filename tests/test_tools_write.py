@@ -762,3 +762,51 @@ def test_resolve_enqueue_failure_reports_recovery_pending(tmp_path, monkeypatch)
     assert resp.commit_sha
     assert resp.push_state == "enqueue_failed_recovery_pending"
     assert pen.size() == 0  # entry consumed (commit exists; recovery republishes)
+
+
+def test_cas_marker_with_refresh_failure_rejects_stale_base(tmp_path, monkeypatch) -> None:
+    """Codex round-5: when the caller supplied an enforceable base marker but the
+    worktree base cannot be refreshed onto origin/main, CAS cannot be verified, so
+    the write is rejected rejected_stale_base instead of committing against a
+    possibly-stale base."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    target, blob = _seed_t1_file(repo)
+
+    # Force refresh_base to fail (e.g. network/fetch error) for this registry.
+    def boom(_wt, **_kw):
+        raise RuntimeError("fetch_failed: origin unreachable")
+    monkeypatch.setattr(reg.git, "refresh_base", boom)
+
+    resp = kb_propose_edit_fn(
+        target_path=target, postimage="new body\n", base_commit="HEAD",
+        base_blob_sha=blob,  # enforceable marker -> refresh failure is fatal
+        target_file_hash=None, reason="fix", source_session="s",
+        agent_identity="claude", confidence=0.95, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    assert resp.status == "rejected_stale_base"
+    assert "refreshed" in (resp.reason or "")
+    assert pq.size() == 0
+
+
+def test_no_marker_with_refresh_failure_still_commits(tmp_path, monkeypatch) -> None:
+    """A refresh failure with NO base marker (CAS is a no-op) stays non-fatal: the
+    commit sits on the unrefreshed base and the push path's non-FF recovery
+    publishes it."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+
+    def boom(_wt, **_kw):
+        raise RuntimeError("fetch_failed")
+    monkeypatch.setattr(reg.git, "refresh_base", boom)
+
+    resp = kb_propose_memory_fn(
+        text="note", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    assert resp.status == "committed"
+    assert pq.size() == 1
