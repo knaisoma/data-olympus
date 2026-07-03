@@ -37,6 +37,12 @@ class HealthState:
     last_successful_refresh_at: float | None = None
     remote_head_sha: str | None = None
     live_sessions: int | None = None
+    # Count of docs whose front-matter was present but malformed at the last index
+    # build (WP2b finding (j)). A non-zero value means a doc silently lost its
+    # governance metadata (type/status/tier), so it will not be governed or
+    # filtered correctly. Surfaced as a WARNING signal; it does NOT flip
+    # ``degraded`` (see snapshot()).
+    malformed_frontmatter: int = 0
 
 
 def snapshot(
@@ -68,12 +74,20 @@ def snapshot(
     h = idx.health()
     now = time.time()
     staleness = (now - last_git_pull_at) if last_git_pull_at is not None else None
+    # malformed_frontmatter deliberately does NOT contribute to ``degraded``: a
+    # doc losing its governance metadata is a data-quality WARNING, not a
+    # service-health failure. Flipping degraded would (a) 503 every read via the
+    # CLI --no-stale contract and (b) tie the readiness/health signal to author
+    # error rather than serviceability. Alert on a non-zero count instead (see
+    # docs/operations.md).
     degraded = (
         last_git_pull_at is None
         or (staleness is not None and staleness > staleness_degraded_sec)
         or h["total_docs"] == 0
         or last_index_build_status != "ok"
     )
+    _mf = h.get("malformed_frontmatter")
+    malformed_frontmatter = _mf if isinstance(_mf, int) else 0
     return HealthState(
         kb_commit=str(h["source_commit"]),
         index_built_at=h["index_built_at"] if isinstance(h["index_built_at"], float) else None,
@@ -96,4 +110,5 @@ def snapshot(
         last_successful_refresh_at=last_successful_refresh_at,
         remote_head_sha=remote_head_sha,
         live_sessions=live_sessions,
+        malformed_frontmatter=malformed_frontmatter,
     )

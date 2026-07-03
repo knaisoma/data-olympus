@@ -5,9 +5,17 @@ resources:
   - namespace.yaml
   - configmap.yaml
   - service.yaml
-  - ingress.yaml
   - networkpolicy.yaml
   - statefulset.yaml
+  # ingress.yaml is DELIBERATELY NOT in resources. The Ingress publishes ALL
+  # routes, including the write + enforcement routes, to whatever the ingress
+  # controller is reachable from (the LAN, by default). With KB_AUTH_TOKEN unset
+  # that is an unauthenticated write surface. So the default `kubectl apply -k`
+  # exposes only the in-cluster Service; you opt into external exposure explicitly
+  # AFTER setting auth. Uncomment the line above (and edit ingress.yaml's host/TLS)
+  # to enable it, exactly as you separately apply the secret below. See README.md.
+  # - ingress.yaml
+  #
   # secret.sops.yaml NOT in resources because kustomize can't decrypt SOPS in
   # its base flow. The deploy script applies it separately via:
   #   sops exec-file secret.sops.yaml 'kubectl apply -f {}'

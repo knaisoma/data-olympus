@@ -53,6 +53,47 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Serving/ops hardening (WP3a).** Production-readiness work on the serving path,
+  container, and operator docs:
+  - **Readiness split from data staleness.** New `GET /readyz` (200 when the
+    process is up and the index is loaded, **independent of staleness**) and
+    `GET /livez` (always 200). The Kubernetes readiness probe now targets
+    `/readyz` instead of `/api/v1/health`, so a git-remote outage that makes the
+    KB stale no longer ejects a single-replica pod from the Service and turns
+    "reads are slightly old" into a hard 503. `/api/v1/health` keeps its
+    503-on-degraded contract for the `bin/kb --no-stale` flag; alert on it rather
+    than probing it.
+  - **Audit-log rotation with chain continuity (`KB_AUDIT_MAX_BYTES`).** Size-based
+    rotation that carries the tamper-evident hash chain across files (the first
+    event of a new segment links to the last hash of the previous one), so
+    `verify` validates across the rotation boundary. The read path can include
+    rotated segments for `--since` queries and bounds the reverse scan. Off by
+    default (single-file, backward compatible; old single-file logs still verify).
+  - **Proxy-header configuration (`KB_TRUSTED_PROXIES`).** Enables uvicorn
+    `proxy_headers` + `forwarded_allow_ips` so the rate limiter sees the real
+    client IP behind an ingress instead of collapsing every client into the proxy
+    address. Off by default (X-Forwarded-For ignored) so a direct client cannot
+    spoof its address.
+  - **Rootless container.** The root+`gosu` entrypoint phase is removed. Deploy-key
+    staging and the first-boot `/kb-main` clone move to a non-root `prepare-git`
+    initContainer; the main container and initContainer both run as uid 65534 with
+    `runAsNonRoot: true`, all capabilities dropped, and a read-only root FS, so the
+    manifest passes the **restricted** Pod Security Standard. The base image is
+    digest-pinned, the git SSH host is build-arg + runtime-env configurable
+    (`KB_SSH_KEYSCAN_HOST`), Docker Compose binds `127.0.0.1:8080`, and the Ingress
+    is commented out of the default kustomization (opt-in after auth is set) with a
+    `deploy/k8s/README.md` note.
+  - **`malformed_frontmatter` in health.** The count of docs whose front-matter was
+    present but malformed at the last index build (from WP2b) is surfaced on the
+    health payload. It is a warning signal and deliberately does **not** flip
+    `degraded`.
+  - **Operations runbook.** New `docs/operations.md` (linked from README and
+    `docs/serving.md`) covering backup (git remote plus the audit chain / pending
+    proposals / unpushed commits it does not cover), upgrade (image bump, taxonomy
+    compatibility, index rebuilds), recovery playbooks (degraded/fetch-failed,
+    history rewrite, frozen and rebase-conflict-demoted push entries, orphaned
+    locks), and the health/readiness/alerting model.
+
 - **Write-pipeline integrity core (epic #72).** This wave makes the write-safety
   claims in `SPEC.md` section 8 and `docs/serving.md` actually true; each item
   ships with regression tests, including two integration tests that drive a real

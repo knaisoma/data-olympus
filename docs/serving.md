@@ -62,6 +62,41 @@ reports `degraded: true` only when the index has not been rebuilt within
 For a local read-only demo with no remote, set `KB_REMOTE_URL=""`. The server
 stays healthy as long as the index builds successfully on startup.
 
+## Health, readiness, and liveness (three distinct signals)
+
+The server exposes three endpoints that answer three different questions. They
+are deliberately split so a data-freshness problem does not eject a pod that can
+still serve reads:
+
+| Endpoint | Question | 200 when | 503 when |
+|---|---|---|---|
+| `GET /api/v1/health` | Is the data fresh? | index built, fresh, last build ok | **degraded**: staleness > `KB_STALENESS_DEGRADED_SEC`, no successful pull, empty index, or last build failed |
+| `GET /readyz` | Can this pod serve reads now? | process up **and** index loaded **and** last build ok | no index built yet, or the last index build failed |
+| `GET /livez` | Is the process responsive? | always (if the handler runs, the loop is alive) | never |
+
+Key point: **`/readyz` is independent of data staleness.** A git-remote outage
+makes the KB stale (so `/api/v1/health` returns 503 with `degraded: true`), but
+the last-good index still answers reads perfectly, so `/readyz` stays 200 and the
+pod stays in the Service. The Kubernetes **readiness probe targets `/readyz`**
+(see `deploy/k8s/statefulset.yaml`); if it targeted `/api/v1/health` a stale
+single-replica pod would be ejected from the Service and a "reads are a bit old"
+condition would become a hard 503 with zero endpoints.
+
+`/api/v1/health` keeps its 503-on-degraded contract because the `bin/kb` CLI
+`--no-stale` flag relies on it (exit 2 when the endpoint reports `degraded: true`,
+whether over HTTP 200 or 503). **Alert on `/api/v1/health` degraded** (and on the
+`last_git_fetch_status` / `staleness_seconds` fields it carries) rather than
+wiring it to a probe. The liveness probe is a `tcpSocket` check by default; the
+HTTP `/livez` route is offered for operators who prefer an explicit route. See
+`docs/operations.md` for the full alerting and recovery model.
+
+The health payload also carries `malformed_frontmatter`: the count of docs whose
+front-matter was present but malformed at the last index build. A non-zero value
+means a doc silently lost its governance metadata (`type`/`status`/`tier`), so it
+will not be governed or filtered correctly. It is a **warning** signal and does
+**not** flip `degraded` (that would 503 every read for an authoring mistake);
+alert on `malformed_frontmatter > 0` separately.
+
 ## Write serialization and integrity gates
 
 Every write (`kb_propose_memory`, `kb_propose_edit`, `kb_resolve_pending`, and
@@ -426,6 +461,52 @@ reverse proxy (terminate TLS there). See `SECURITY.md` for the full threat model
 the route/capability table, payload limits, the tamper-evident audit log, and the
 git sync-failure health fields.
 
+### Proxy headers and the rate limiter (`KB_TRUSTED_PROXIES`)
+
+The rate limiter keys on the client remote address (plus principal). Behind an
+ingress or reverse proxy, uvicorn by default sees the **proxy's** address as the
+peer, so every client collapses into one `remote_addr` and the per-IP cap
+(`KB_RATE_LIMIT_PER_IP_PER_HOUR`) throttles all clients as if they were one.
+
+Set `KB_TRUSTED_PROXIES` to the proxy address(es) (comma-separated) to fix this:
+
+- **Unset (default)** — uvicorn runs with `proxy_headers` **off**. `X-Forwarded-For`
+  is ignored and `remote_addr` is the immediate peer. This is the safe default: a
+  direct client cannot spoof its address to dodge the limiter.
+- **Set to the proxy IP(s)** — uvicorn enables `proxy_headers` and restricts
+  `forwarded_allow_ips` to those addresses, so it rewrites `remote_addr` from
+  `X-Forwarded-For` **only** when the immediate peer is a trusted proxy. The
+  limiter then sees the true client IP.
+- **`*`** — trust `X-Forwarded-For` from any peer. Only safe when nothing
+  untrusted can reach the port directly (e.g. the port is bound to the pod network
+  and only the ingress can connect). Otherwise a direct client could forge the
+  header.
+
+## Audit-log rotation (`KB_AUDIT_MAX_BYTES`)
+
+The JSONL audit log (`KB_AUDIT_LOG_PATH`, default `/state/audit/events.log`) grows
+without bound by default. Set `KB_AUDIT_MAX_BYTES` to a byte threshold to enable
+size-based rotation: when the live file passes the threshold, the next append
+first renames it to `events-<UTC-timestamp>.log` and starts a fresh live file.
+
+- **Chain continuity.** The tamper-evident hash chain carries **across** the
+  rotation boundary: the first event of the new file links to the last hash of the
+  rotated file, so `GET /api/v1/audit/verify` (and the `kb audit`/`verify` logic)
+  validates the whole history, rotated segments included, in chronological order.
+  A break at the boundary is caught like any other.
+- **Backward compatible.** With `KB_AUDIT_MAX_BYTES` unset (0), nothing rotates:
+  the log stays a single file exactly as before, and an existing single-file log
+  still verifies unchanged when opened by a rotation-aware build.
+- **Reads.** `kb audit` reads the live file by default (cheap, most-recent-first).
+  A `--since` query also walks rotated segments so history that has rotated out of
+  the live file is still visible; the reverse scan is bounded so a large archive
+  cannot turn one query into an unbounded read.
+
+Manual `mv`-based rotation (documented in the operator runbook) no longer breaks
+the chain when the process keeps running, because the in-memory last-hash carries
+forward; but prefer `KB_AUDIT_MAX_BYTES` so rotation is automatic and the boundary
+link is always written. See `docs/operations.md` for backup/verify procedures.
+
 ## Git commit identity
 
 Every write commits to the KB repo, so git needs an author/committer identity.
@@ -461,6 +542,20 @@ sops exec-file deploy/k8s/secret.sops.yaml 'kubectl apply -f {}'
 The `deploy/k8s/secret.template.yaml` file shows the expected secret shape.
 Fill in your git remote URL and deploy key, then encrypt with SOPS before
 committing. Never commit the unencrypted secret.
+
+The default `kubectl apply -k deploy/k8s/` deliberately does **not** create the
+Ingress: it publishes all routes (including the unauthenticated-by-default write
+routes) to the LAN. The Ingress is opt-in and enabled only after you set
+`KB_AUTH_TOKEN`; see `deploy/k8s/README.md` for the enablement steps.
+
+The pod is fully rootless: both the `prepare-git` initContainer (which stages the
+deploy key and does the first-boot `/kb-main` clone) and the main container run as
+uid 65534 with `runAsNonRoot: true`, all capabilities dropped, and a read-only
+root filesystem, so the manifest passes the **restricted** Pod Security Standard.
+The base image is digest-pinned in `deploy/docker/Dockerfile`; the git SSH host is
+build-arg + runtime-env configurable (`KB_SSH_KEYSCAN_HOST`) for non-GitHub
+remotes. Operational procedures (backup, upgrade, recovery playbooks) live in
+`docs/operations.md`.
 
 ## Running with Docker Compose
 

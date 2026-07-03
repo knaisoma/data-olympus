@@ -46,6 +46,10 @@ class HealthResponse(BaseModel):
     # observed (e.g. before the HTTP app's lifespan starts, or in-memory tests).
     # Surfaced so session accumulation is diagnosable in production (issue #43).
     live_sessions: int | None = None
+    # Docs with present-but-malformed front-matter at the last index build (WP2b).
+    # A non-zero value means a doc silently lost its governance metadata. WARNING
+    # signal only: it does NOT flip ``degraded`` (alert on it separately).
+    malformed_frontmatter: int = 0
 
     # Health fields always present in compact mode even when falsy, because a
     # consumer branches on them (bin/kb and the REST 503 path read ``degraded``;
