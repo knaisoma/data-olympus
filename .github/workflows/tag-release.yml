@@ -63,6 +63,29 @@ jobs:
       contents: read
       packages: write
 
+  # Publish sdist + wheel to PyPI via Trusted Publishing (OIDC, no token). Runs
+  # off the SAME decided tag as build-image, so a release publishes the image AND
+  # the package from one main-push flow. This is the primary PyPI path: the tag is
+  # pushed with GITHUB_TOKEN, which does NOT trigger publish-pypi.yml's `on: push
+  # tags`, so we call the reusable workflow here (exactly as build-image does).
+  #
+  # INERT UNTIL OPERATOR SETUP: until the pypi.org Trusted Publisher exists, the
+  # upload STEP inside the reusable workflow no-ops on failure (that step carries
+  # continue-on-error, which is only valid on a step, not on a `uses:` job like
+  # this one). So this job still succeeds pre-setup and does not block the GitHub
+  # Release; once the publisher is configured the upload succeeds for real. See
+  # docs/releases/pypi-trusted-publishing.md.
+  publish-pypi:
+    needs: decide
+    if: needs.decide.outputs.tag != ''
+    uses: ./.github/workflows/publish-pypi-reusable.yml
+    with:
+      ref: ${{ needs.decide.outputs.tag }}
+      upload: true
+    permissions:
+      contents: read
+      id-token: write
+
   release:
     needs: [decide, build-image]
     if: needs.decide.outputs.tag != ''

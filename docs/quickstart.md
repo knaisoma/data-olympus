@@ -6,6 +6,37 @@ with Python 3.13 and uv.
 
 ## 1. Install
 
+### Install from PyPI (recommended)
+
+Run the CLI directly with no clone, using `uvx`:
+
+```bash
+uvx data-olympus --help
+```
+
+Or install it as a persistent tool:
+
+```bash
+uv tool install data-olympus
+data-olympus --help
+```
+
+Then run the guided setup wizard to probe your server endpoint, wire your
+coding agents (Claude Code, Codex, Gemini, OpenCode), and optionally install the
+enforcement hooks:
+
+```bash
+data-olympus setup          # interactive
+data-olympus setup --check  # read-only doctor summary (also the update check)
+```
+
+> The PyPI package is published by the release chain via Trusted Publishing.
+> Until the one-time pypi.org publisher is configured (see
+> `docs/releases/pypi-trusted-publishing.md`), install from source with the dev
+> path below.
+
+### Install from source (development)
+
 ```bash
 # From the repo root
 uv venv && uv pip install -e '.[dev]'

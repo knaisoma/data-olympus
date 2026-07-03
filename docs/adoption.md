@@ -209,17 +209,69 @@ normally.
 Register the MCP endpoint with your agent. The server exposes MCP over
 streamable HTTP at `http://<host>:8080/mcp` (or the port you configured).
 
-For Claude Code, add an entry to `~/.claude/settings.json`:
+### Easiest: the setup wizard
+
+```bash
+data-olympus setup
+```
+
+The wizard probes the endpoint, detects which of Claude Code, Codex, Gemini, and
+OpenCode are installed, writes each agent's MCP registration (with a timestamped
+backup of any file it edits, and idempotent re-runs), optionally installs the
+enforcement hooks, and prints a doctor summary. `data-olympus setup --check` runs
+the same summary read-only and never changes anything.
+
+### Manual per-agent registration
+
+If you prefer to wire agents by hand, use the CURRENT surface for each. These are
+the same commands/files the wizard uses. Replace `http://localhost:8080` with
+your endpoint.
+
+**Claude Code** (use the `claude mcp` CLI; it writes `~/.claude.json`, not
+`settings.json`):
+
+```bash
+claude mcp add --transport http data-olympus http://localhost:8080/mcp
+```
+
+**Codex** (use the `codex mcp` CLI; it writes `[mcp_servers.*]` in
+`~/.codex/config.toml`):
+
+```bash
+codex mcp add data-olympus --url http://localhost:8080/mcp
+```
+
+**Gemini / Antigravity** (merge into `~/.gemini/settings.json`; note the explicit
+`"type": "http"`):
 
 ```json
 {
   "mcpServers": {
-    "my-kb": {
-      "url": "http://localhost:8080/mcp"
+    "data-olympus": {
+      "url": "http://localhost:8080/mcp",
+      "type": "http"
     }
   }
 }
 ```
+
+**OpenCode** (no native remote-HTTP transport; wrap via `mcp-remote` under the
+top-level `mcp` key in `~/.config/opencode/opencode.json`):
+
+```json
+{
+  "mcp": {
+    "data-olympus": {
+      "type": "local",
+      "command": ["npx", "-y", "mcp-remote", "http://localhost:8080/mcp", "--allow-http"],
+      "enabled": true
+    }
+  }
+}
+```
+
+Restart each agent's session after registering. Verify by asking it to call
+`kb_search`.
 
 The `kb` CLI in `bin/kb` is a thin client for the same HTTP API. Set
 `KB_ENDPOINT` and use it from the shell or from agent-invoked scripts:

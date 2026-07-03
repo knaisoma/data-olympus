@@ -62,6 +62,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **PyPI distribution + `data-olympus setup` wizard** (issue #70). The package is
+  now installable from PyPI (`uvx data-olympus`, `uv tool install data-olympus`),
+  published by the release chain via GitHub Actions Trusted Publishing (OIDC, no
+  API token). A new `.github/workflows/publish-pypi-reusable.yml` builds the
+  sdist + wheel, runs `twine check --strict` and a wheel smoke test, and uploads
+  through `pypa/gh-action-pypi-publish` to the `pypi` environment;
+  `tag-release.yml` calls it off the same decided tag as the container image, and
+  `.github/workflows/publish-pypi.yml` adds a PR-time dry run (build + twine
+  check, no upload) plus a manual-tag fallback. The publish path is **inert until
+  the operator completes the one-time pypi.org publisher setup** documented in
+  `docs/releases/pypi-trusted-publishing.md`. The wheel now ships the enforcement
+  machinery (`bin/kb-enforce-hook`, `_kb_enforce.py`, the OpenCode gate plugin)
+  as package data so the wizard works from a clean install.
+- **`data-olympus setup`** (new `src/data_olympus/setup_wizard.py` + CLI
+  subcommand): an idempotent, first-run/update wizard that probes the server
+  endpoint (`/api/v1/health`), detects installed agents (Claude Code, Codex,
+  Gemini, OpenCode), writes each agent's MCP registration with timestamped
+  backups (preferring `claude mcp add` / `codex mcp add` when the CLI is present,
+  merging documented config files otherwise), offers enforcement-hook install via
+  the existing provider registry, and prints a doctor summary (endpoint
+  reachability, agents wired, hooks installed, installed vs latest version with
+  offline-tolerant PyPI/GitHub lookup). `data-olympus setup --check` is a fully
+  read-only summary and update-check path.
+- `data_olympus.__version__` now reads from the installed distribution metadata
+  instead of a hand-maintained literal, so it cannot drift from the packaging
+  version the release chain tags on.
 - Specified `applies_when` in SPEC.md (WP4c, 0.3.0). `applies_when` is the
   highest-weight indexed field in `Index.search` (tied with `title`, ahead of
   `description` and body) and one of the three discriminating columns for the
@@ -217,6 +243,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   timeout (default 60s), so a hung git remote can no longer block the loop that
   answers the readiness probe. A push timeout is classified as a retryable
   failure.
+- Quickstart and adoption docs lead with the `uvx data-olympus` / `uv tool
+  install` install path and the setup wizard (issue #70). The adoption guide's
+  per-agent wiring section is corrected to the current registration surfaces
+  (Claude Code via `claude mcp add`, not a hand-edited `~/.claude/settings.json`;
+  Codex via `codex mcp add`; Gemini's `"type": "http"`; OpenCode's `mcp-remote`
+  wrapper).
 
 > Scope note: this wave makes write-path failures **visible** and recovers
 > orphaned commits. It does **not** fix the non-fast-forward publication stall
