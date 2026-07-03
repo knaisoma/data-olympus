@@ -105,6 +105,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("--emit-events", action="store_true",
                           help="record a gate_bypass audit event per unverified governed change")
     p_report.set_defaults(func=_cmd_report)
+    from data_olympus.cli.import_cmd import add_import_subparser
+    add_import_subparser(sub)
     return parser
 
 

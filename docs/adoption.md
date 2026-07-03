@@ -100,7 +100,75 @@ There is no required directory layout beyond the reserved file names. The
 `tech-stacks/`, `decisions/`, `workflows/`, `projects/`) is a proven pattern
 and is described in `SPEC.md`, but you can adapt it to your context.
 
-## 3. Validate
+## 3. Migrating an existing rule corpus
+
+If you already have agent rules in flat files (`CLAUDE.md`, `AGENTS.md`,
+`GEMINI.md`, `.cursorrules`), adr-tools ADR directories, or an OKF-produced
+bundle, the `import` command migrates them into governed drafts instead of
+requiring you to hand-write frontmatter for each concept:
+
+```bash
+uv run data-olympus import <source> --kind <kind> --tier <tier> [options]
+```
+
+- `<source>`: a flat rule file (for the flat kinds) or a directory (for `adr` /
+  `okf`).
+- `--kind`: one of `claude-md`, `agents-md`, `gemini-md`, `cursorrules`, `adr`,
+  `okf`.
+- `--tier`: the governance tier stamped on every draft (`T1`..`T4`, `meta`, or a
+  bare digit like `3`).
+- `--out <dir>`: output bundle directory (default: `<source>/imported-<kind>` or,
+  for a flat file, a sibling `imported-<kind>/` directory).
+- `--category <cat>`: optional `category` stamped on every draft.
+- `--id-prefix <prefix>`: id prefix for generated ids (default: per-kind, e.g.
+  `CLAUDE`, `AGENTS`, `OKF`; ADR imports always use `ADR-NNNN`).
+- `--force`: overwrite an output directory that was already used as an import
+  target (see re-run behavior below).
+- `--json`: emit the import report as JSON instead of the human-readable form.
+
+### What the importer does
+
+- **Flat rule files** are split into candidate concepts: markdown headings first
+  (each heading starts a section), and for heading-less files, blank-line
+  separated bullet clusters. Each concept becomes a draft with a generated id,
+  `type: standard`, `status: draft`, and a title/description/tags derived from
+  the source. The original text is preserved verbatim as the body; the importer
+  never rewrites your words. Sections too short to be a real concept are skipped
+  and listed in the report.
+- **ADR directories** (`doc/adr/NNNN-title.md`) map the number and title to an
+  `ADR-NNNN` id and title, parse the `## Status` section into `status` plus
+  `supersedes` / `superseded_by` references (`type: decision`), and preserve the
+  ADR body.
+- **OKF bundles** are normalized into the governance profile: alias field names
+  are renamed to the canonical schema keys, missing required fields are filled
+  with draft-safe defaults, and every inference is reported.
+
+### Safety and next steps
+
+- **Everything lands as `status: draft`** (or the ADR-derived status, which is
+  flagged for human review). Nothing auto-activates, and the importer never
+  commits to git: it only writes files into the output directory.
+- The command runs the existing lint machinery over the output; the happy path
+  produces lint-clean drafts. Any finding is included in the report.
+- **Re-run behavior:** the importer refuses to write into an output directory it
+  already used as an import target (or any directory that already holds governed
+  files), so a second run cannot silently duplicate or clobber. Pass `--force` to
+  overwrite, or choose a fresh `--out` directory.
+- **Converging with an existing KB:** the report's next-steps point at the dedup
+  pass (the `kb_cleanup_plan` MCP tool / `POST /api/v1/onboarding/cleanup-plan`),
+  which classifies each draft against your committed KB as
+  `imported_duplicate` / `partial_overlap` / `unique` and proposes thin-pointer
+  replacements for exact duplicates. Run it before activating the drafts so
+  imports converge with the KB instead of duplicating it.
+
+Example: import a `CLAUDE.md` into a new draft bundle and inspect the result:
+
+```bash
+uv run data-olympus import ./CLAUDE.md --kind claude-md --tier T3 --out ./imported
+uv run data-olympus lint ./imported
+```
+
+## 4. Validate
 
 ```bash
 uv run data-olympus lint <your-bundle-dir>
@@ -119,7 +187,7 @@ and reserved-file constraints. Fix any reported errors before proceeding.
 empty or mis-pathed bundle), so a clean pass always means real files were
 checked.
 
-## 4. Generate navigation and graph
+## 5. Generate navigation and graph
 
 ```bash
 uv run data-olympus index <your-bundle-dir>
@@ -136,7 +204,7 @@ uv run data-olympus visualize <your-bundle-dir> -o <your-bundle-dir>/viz.html --
 This generates an interactive HTML graph of all concepts and their
 cross-links. Open the file in a browser to explore the knowledge graph.
 
-## 5. Serve to agents
+## 6. Serve to agents
 
 ### Local (development)
 
@@ -204,7 +272,7 @@ but does not push, and the write pipeline is disabled. REST write routes
 `{"status": "write_pipeline_disabled"}` rather than crashing. Read routes work
 normally.
 
-## 6. Wire an agent
+## 7. Wire an agent
 
 Register the MCP endpoint with your agent. The server exposes MCP over
 streamable HTTP at `http://<host>:8080/mcp` (or the port you configured).
