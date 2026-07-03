@@ -23,8 +23,8 @@ mirrors `example-bundle/` in this repo.
 
 ### Required frontmatter fields
 
-Every concept file (every `.md` file that is not `index.md` or `log.md`) must
-include:
+Every concept file (every `.md` file that is not `index.md`, `log.md`, or
+`template.md`) must include:
 
 - `id`: a stable, globally unique identifier for the concept (e.g.
   `STD-U-001`, `ADR-007`, `WF-onboarding`).
@@ -48,12 +48,14 @@ definitions.
 
 ### Reserved files
 
-Two filenames have special meaning and must not carry concept frontmatter:
+Three filenames have special meaning and must not carry concept frontmatter:
 
 - `index.md`: generated navigation index (root index carries `spec_version`
   and `okf_version` frontmatter; see below).
 - `log.md`: human-maintained changelog for the bundle, date-grouped,
   newest entry first.
+- `template.md`: an authoring-scaffold file for a directory (not itself a
+  governed concept).
 
 ### Cross-links
 
