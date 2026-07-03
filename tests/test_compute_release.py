@@ -29,9 +29,10 @@ def test_classify_non_conventional_returns_none() -> None:
     assert classify("Merge pull request #55 from x", "") == (None, False)
 
 
-def test_feat_bumps_patch_pre_1_0() -> None:
-    bump, changes = bump_for([("feat: x", "")], functional_changed=True)
-    assert bump == "patch"
+def test_feat_bumps_minor_pre_1_0() -> None:
+    # data-olympus adopts the features-as-minor mapping (STD-U-810 §3.1.1 opt-in).
+    bump, changes = bump_for([("feat: x", "")], functional_changed=False)
+    assert bump == "minor"
     assert changes["features"] == ["feat: x"]
 
 
@@ -45,6 +46,24 @@ def test_breaking_bumps_minor_and_wins() -> None:
     bump, changes = bump_for(commits, functional_changed=True)
     assert bump == "minor"
     assert changes["breaking"] == ["feat!: c"]
+
+
+def test_breaking_bang_alone_bumps_minor_not_major_pre_1_0() -> None:
+    # Isolated from feat->minor: a breaking change with NO feat commit must still
+    # map to minor (never major) pre-1.0. Guards the breaking branch on its own,
+    # so a regression there cannot hide behind a feature commit that is also minor.
+    bump, changes = bump_for([("refactor!: rework store", "")], functional_changed=False)
+    assert bump == "minor"
+    assert changes["breaking"] == ["refactor!: rework store"]
+
+
+def test_breaking_footer_alone_bumps_minor_not_major_pre_1_0() -> None:
+    bump, changes = bump_for(
+        [("refactor: rework store", "BREAKING CHANGE: migration required")],
+        functional_changed=False,
+    )
+    assert bump == "minor"
+    assert changes["breaking"] == ["refactor: rework store"]
 
 
 def test_chore_only_no_functional_change_is_none() -> None:
