@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import os
 from typing import TYPE_CHECKING
 
 from data_olympus.models import (
@@ -13,15 +14,30 @@ from data_olympus.models import (
     RenameCandidateModel,
 )
 from data_olympus.onboarding import compute_status
+from data_olympus.onboarding_inflight import BootstrapInFlight
 
 if TYPE_CHECKING:
     from data_olympus.audit_log import AuditLog
     from data_olympus.auth import PathBlocklist
     from data_olympus.index import Index
+    from data_olympus.onboarding import OnboardingStatus
     from data_olympus.pending import PendingQueue
     from data_olympus.push_queue import PushQueue
     from data_olympus.rate_limit import SlidingWindowLimiter
     from data_olympus.worktrees import WorktreeRegistry
+
+
+def _pending_root(pending: PendingQueue) -> str:
+    """Best-effort read of the pending queue's on-disk root.
+
+    SEAM: PendingQueue has no public root accessor (module owned by a concurrent
+    Wave-1 package). We read the private ._root; if that ever disappears we fall
+    back to KB_PENDING_ROOT (the same env config.py reads) so the in-flight guard
+    still lands on the state volume rather than crashing."""
+    root = getattr(pending, "_root", None)
+    if isinstance(root, str):
+        return root
+    return os.getenv("KB_PENDING_ROOT", "/state/pending")
 
 
 def kb_onboarding_status_fn(
@@ -78,23 +94,137 @@ def kb_bootstrap_project_fn(
     can_auto_commit: bool = True,
     max_postimage_bytes: int = 0,
     max_files: int = 0,
+    in_flight: BootstrapInFlight | None = None,
 ) -> BootstrapResponse:
-    """Bootstrap a new workspace/component. Only callable when status=absent.
+    """Bootstrap a new workspace/component. Callable when status is ``absent`` or
+    ``partial``.
+
+    On ``absent`` all supplied files are written. On ``partial`` (some but not all
+    canonical files present) the request is narrowed to only the ``missing_files``
+    the status reports, so an in-progress onboarding can be completed without ever
+    overwriting a file already committed (item 1).
 
     Atomic outcome: ONE commit (high-conf) or ONE pending bundle (low-conf).
+
+    A committed bootstrap is not visible to ``compute_status`` until the push
+    queue drains and the index is rebuilt. To stop a second bootstrap
+    double-committing during that convergence window, an in-flight marker is
+    claimed once the request is admitted and held across a committed outcome
+    (item 2); the marker self-expires so a crash cannot wedge the workspace.
     """
-    # Server-side re-check that status is absent.
+    # Server-side re-check that status is absent OR partial. `partial` is a valid
+    # entry point: it means the workspace exists in the KB but is missing some
+    # canonical file(s), and this bootstrap completes it (item 1).
     s = compute_status(
         workspace=workspace, component=component,
         workspace_remote_url=workspace_remote_url,
         component_remote_url=component_remote_url,
         idx=idx,
     )
-    if s.state != "absent":
+    if s.state not in ("absent", "partial"):
         return BootstrapResponse(
             status="rejected_already_onboarded",
             rejected_paths=[],
         )
+
+    # Lazily materialize the in-flight guard on the same durable state volume as
+    # the pending queue, unless the caller injected one (tests). Both entry points
+    # (MCP tool, REST route) run in one process and share one PendingQueue, so a
+    # filesystem marker beside the pending root is a process-wide guard without
+    # threading a new argument through the off-limits server.py / rest_api.py
+    # wiring. SEAM: PendingQueue exposes no public root accessor yet, so we read
+    # its ._root. A one-line public `root` property on the Wave-1-owned pending
+    # module would let us drop this; flagged in the PR body.
+    if in_flight is None:
+        in_flight = BootstrapInFlight(
+            os.path.join(os.path.dirname(_pending_root(pending)), "bootstrap-inflight"),
+        )
+    # Claim the slot for this workspace/component. A live claim (a bootstrap
+    # already in the convergence window) rejects this one as in-progress and
+    # closes the double-bootstrap race the absent-recheck cannot (item 2).
+    if not in_flight.claim(workspace, component):
+        return BootstrapResponse(
+            status="rejected_already_in_progress",
+            rejected_paths=[f["target_path"] for f in files],
+        )
+    # From here on, any outcome that did NOT commit must release the claim so a
+    # legitimate retry is not blocked for the full TTL. Only a committed outcome
+    # holds the claim across the convergence window.
+    resp = _bootstrap_admitted(
+        status_obj=s,
+        workspace=workspace, component=component,
+        workspace_remote_url=workspace_remote_url,
+        component_remote_url=component_remote_url,
+        files=files, source_session=source_session,
+        agent_identity=agent_identity, confidence=confidence,
+        confidence_threshold=confidence_threshold,
+        worktrees=worktrees, push_queue=push_queue, pending=pending,
+        rate_limiter=rate_limiter, blocklist=blocklist,
+        remote_addr=remote_addr, can_auto_commit=can_auto_commit,
+        max_postimage_bytes=max_postimage_bytes, max_files=max_files,
+    )
+    if resp.status != "committed":
+        in_flight.release(workspace, component)
+    return resp
+
+
+def _bootstrap_admitted(
+    *,
+    status_obj: OnboardingStatus,
+    workspace: str,
+    component: str | None,
+    workspace_remote_url: str | None,
+    component_remote_url: str | None,
+    files: list[dict[str, str]],
+    source_session: str,
+    agent_identity: str,
+    confidence: float,
+    confidence_threshold: float,
+    worktrees: WorktreeRegistry,
+    push_queue: PushQueue,
+    pending: PendingQueue,
+    rate_limiter: SlidingWindowLimiter,
+    blocklist: PathBlocklist,
+    remote_addr: str,
+    can_auto_commit: bool,
+    max_postimage_bytes: int,
+    max_files: int,
+) -> BootstrapResponse:
+    """Body of a bootstrap that passed the state re-check and won the in-flight
+    claim. Split out so the outer function owns the claim/release lifecycle and
+    this body owns validation, injection, and the commit/pending outcome.
+
+    On ``partial`` state, ``files`` is narrowed to only those whose canonical
+    basename is one of ``status_obj.missing_files`` so an existing committed file
+    is never overwritten (item 1)."""
+    from data_olympus.auth import (
+        is_writable_path,
+        normalize_target_path,
+        safe_join_under_root,
+    )
+    from data_olympus.index import _classify_by_path
+
+    # Partial state: keep only the files that fill a reported gap. A file that
+    # targets an already-present canonical name is dropped rather than overwriting
+    # the committed copy. missing_files holds bare canonical filenames
+    # (e.g. "AGENTS.md"); match on the canonical basename.
+    if status_obj.state == "partial":
+        missing = set(status_obj.missing_files)
+        kept: list[dict[str, str]] = []
+        for f in files:
+            canonical = normalize_target_path(f["target_path"])
+            basename = canonical.rsplit("/", 1)[-1] if canonical else ""
+            if basename in missing:
+                kept.append(f)
+        if not kept:
+            # Every supplied file targets an already-present path (or none maps to
+            # a gap): nothing to do. Report the completed state truthfully rather
+            # than committing an empty change.
+            return BootstrapResponse(
+                status="rejected_already_onboarded",
+                rejected_paths=[f["target_path"] for f in files],
+            )
+        files = kept
 
     # Aggregate file-count cap: one request must not enqueue/write an unbounded
     # number of (individually capped) files. Aggregate byte size is bounded by the
@@ -112,8 +242,6 @@ def kb_bootstrap_project_fn(
     # operate on the same value that passed validation (item 4). Without this a
     # backslash path like ``decisions\\x.md`` validated as ``decisions/x.md`` yet
     # committed a literal root-level backslash file outside every indexed prefix.
-    from data_olympus.auth import is_writable_path, normalize_target_path
-    from data_olympus.index import _classify_by_path
     rejected: list[str] = []
     canonical_files: list[dict[str, str]] = []
     for f in files:
@@ -158,11 +286,15 @@ def kb_bootstrap_project_fn(
 
     if confidence < confidence_threshold or not can_auto_commit:
         # Low confidence (or caller not authorized to auto-commit): enqueue ALL
-        # files as a single pending bundle.
-        # For onboarding v1, we enqueue them one-by-one (the pending queue
-        # supports per-file entries; resolving "all" is the operator's choice).
-        # Future: native bundle support in PendingQueue.
+        # files as a single pending bundle. The pending queue stores per-file
+        # entries; every entry of one bootstrap shares a `bundle_id` in its meta
+        # so the operator (and a future bundle-aware resolve UX) can treat them as
+        # a unit. Bundle-aware resolve itself is out of scope here; the id is the
+        # seam (item 3).
+        import uuid
+
         from data_olympus.pending import PathLockBusyError, PendingQueueFullError
+        bundle_id = uuid.uuid4().hex
         # Atomicity: a bootstrap is one bundle. Reject up front if the whole
         # bundle would not fit, so we never leave a partial set of pending entries.
         if pending.would_exceed(len(files)):
@@ -170,7 +302,16 @@ def kb_bootstrap_project_fn(
                 status="rejected_pending_queue_full",
                 rejected_paths=[f["target_path"] for f in files],
             )
-        pending_ids = []
+        pending_ids: list[str] = []
+
+        def _rollback() -> None:
+            # Roll back every entry this bundle already enqueued so a failed
+            # bootstrap leaves zero orphan pending entries or held path locks
+            # (reject() releases the lock and removes the entry).
+            for pid in pending_ids:
+                with contextlib.suppress(Exception):
+                    pending.reject(pid)
+
         for f in files:
             try:
                 pid = pending.enqueue(
@@ -182,18 +323,26 @@ def kb_bootstrap_project_fn(
                           "source_session": source_session,
                           "confidence": confidence,
                           "bootstrap": True,
+                          "bundle_id": bundle_id,
                           "workspace": workspace,
                           "component": component},
                 )
                 pending_ids.append(pid)
             except PathLockBusyError:
-                pass  # already pending; skip
+                # A path in this bundle is already locked by another pending
+                # entry, so the bundle cannot be enqueued whole. Treat this like
+                # the queue-full race: roll the whole bundle back and reject it,
+                # rather than silently returning only the subset that fit (item 3).
+                # Partial enqueue is not a valid onboarding outcome.
+                _rollback()
+                return BootstrapResponse(
+                    status="rejected_path_locked",
+                    rejected_paths=[f["target_path"] for f in files],
+                )
             except PendingQueueFullError:
                 # Lost a capacity race after the pre-check: roll back this bundle's
                 # enqueued entries so the bootstrap stays all-or-nothing.
-                for pid in pending_ids:
-                    with contextlib.suppress(Exception):
-                        pending.reject(pid)
+                _rollback()
                 return BootstrapResponse(
                     status="rejected_pending_queue_full",
                     rejected_paths=[f["target_path"] for f in files],
@@ -201,15 +350,16 @@ def kb_bootstrap_project_fn(
         return BootstrapResponse(
             status="pending_confirmation",
             pending_id=pending_ids[0] if pending_ids else None,
-            operator_prompt=f"Bootstrap of {workspace} pending; run `kb pending` to see entries.",
+            operator_prompt=(
+                f"Bootstrap of {workspace} pending ({len(pending_ids)} files, "
+                f"bundle {bundle_id}); run `kb pending` to see entries."
+            ),
         )
 
     # High confidence: one atomic commit with all files.
-    import os
     import subprocess
 
     from data_olympus.audit_trailers import build_commit_message
-    from data_olympus.auth import safe_join_under_root
     wt = worktrees.get_or_create(source_session=source_session, agent_identity=agent_identity)
     for f in files:
         # Shared symlink-escape containment guard (see safe_join_under_root).
