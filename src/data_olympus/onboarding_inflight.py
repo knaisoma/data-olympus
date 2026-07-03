@@ -81,31 +81,52 @@ class BootstrapInFlight:
                 "expires_at": now + self._ttl,
             })
 
-        # Reclaim of an expired marker must stay a single-winner operation: an
-        # in-place O_TRUNC overwrite lets two callers that both observe the stale
-        # marker both "succeed", reopening the double-bootstrap race the guard
-        # exists to close (codex Concern). Instead, unlink the expired marker and
-        # re-race the exclusive create; only one O_CREAT|O_EXCL can win. Bounded
-        # retry so a pathological churn cannot spin forever.
-        for _ in range(3):
-            try:
-                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            except FileExistsError:
-                # A marker exists. A still-live claim means a bootstrap for this
-                # key is genuinely in flight; reject.
-                if not self._is_expired(path):
-                    return False
-                # Expired: drop it and retry the exclusive create. If another
-                # caller unlinked/recreated it first, the next iteration sees a
-                # fresh live marker and returns False.
-                with contextlib.suppress(FileNotFoundError):
-                    os.unlink(path)
-                continue
+        # Fast path: create the marker exclusively. If it does not yet exist, this
+        # single O_CREAT|O_EXCL is the whole claim and is inherently single-winner.
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
             with os.fdopen(fd, "w") as f:
                 f.write(_payload())
             return True
-        # Lost every reclaim race within the bound: treat as in-progress.
-        return False
+
+        # A marker exists. A still-live claim means a bootstrap for this key is
+        # genuinely in flight; reject without touching it.
+        if not self._is_expired(path):
+            return False
+
+        # The marker is expired and must be reclaimed. Reclaim must be a
+        # single-winner operation, otherwise two callers that both observe the
+        # stale marker could each unlink+recreate and both return True, reopening
+        # the double-bootstrap race the guard exists to close (codex Concern). A
+        # blind unlink is itself racy: a slow contender could delete the fresh
+        # marker a fast contender just wrote. So we gate the whole reclaim critical
+        # section behind an exclusive reclaim-lock: only the caller that creates
+        # the lock re-checks expiry, unlinks the stale marker, writes a fresh one,
+        # and drops the lock. Contenders that cannot take the lock reject.
+        reclaim_lock = path + ".reclaim"
+        try:
+            lock_fd = os.open(reclaim_lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            # Another caller is already reclaiming this slot; treat as in-progress.
+            return False
+        try:
+            os.close(lock_fd)
+            # Re-check under the lock: a winner may have already reclaimed and
+            # written a fresh, live marker between our expiry check and the lock.
+            if not self._is_expired(path):
+                return False
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(path)
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(_payload())
+            return True
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(reclaim_lock)
 
     def release(self, workspace: str, component: str | None) -> None:
         """Drop the in-flight marker (best effort). Called on the failure paths

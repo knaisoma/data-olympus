@@ -448,6 +448,35 @@ def test_expired_marker_reclaim_is_single_winner(tmp_path) -> None:
     assert live.claim("p", None) is False  # now live -> second caller rejected
 
 
+def test_concurrent_reclaim_grants_exactly_one_winner(tmp_path) -> None:
+    """Many threads racing to reclaim the SAME expired marker must yield exactly
+    one successful claim; the reclaim critical section is single-winner even under
+    contention (codex Concern)."""
+    import threading
+
+    from data_olympus.onboarding_inflight import BootstrapInFlight
+    # Seed an already-expired marker.
+    BootstrapInFlight(str(tmp_path / "inflight"), ttl_seconds=0.0).claim("p", None)
+
+    results: list[bool] = []
+    lock = threading.Lock()
+    start = threading.Barrier(8)
+
+    def _contend() -> None:
+        guard = BootstrapInFlight(str(tmp_path / "inflight"), ttl_seconds=900.0)
+        start.wait()
+        won = guard.claim("p", None)
+        with lock:
+            results.append(won)
+
+    threads = [threading.Thread(target=_contend) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sum(results) == 1  # exactly one reclaimer won
+
+
 def test_non_committed_bootstrap_releases_claim(tmp_path) -> None:
     """A rejected (non-committed) bootstrap must release its claim so a real retry
     is not blocked for the full TTL (item 2)."""
