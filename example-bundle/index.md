@@ -5,7 +5,9 @@ okf_version: "0.1"
 # Acme Knowledge Bundle
 
 An example data-olympus bundle demonstrating the full tier hierarchy (T1-T4 and
-meta), all supported concept types, and cross-links between concepts.
+meta), several supported concept types (`standard`, `decision`, `workflow`,
+`project`), and cross-links between concepts. It does not yet include
+`memory` or `reference` type documents, or a `superseded` document.
 
 See [log.md](log.md) for the change history of this bundle.
 

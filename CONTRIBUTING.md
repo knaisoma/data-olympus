@@ -40,7 +40,9 @@ Lint the example bundle to confirm the format tools work:
 uv run data-olympus lint example-bundle
 ```
 
-The expected output is `0 errors across 0 files`. If you get errors, fix them before committing.
+The expected output is `0 errors across 0 files (N linted)`, where `N` is the
+number of concept files found (nonzero for `example-bundle`). If you get
+errors, fix them before committing.
 
 ## PR requirements
 
