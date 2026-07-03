@@ -7,6 +7,7 @@ guarantees the queue entry survives a crash.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from typing import TYPE_CHECKING, Any
@@ -15,6 +16,8 @@ from data_olympus.durable import atomic_remove, atomic_write_json
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+log = logging.getLogger("data_olympus.push_queue")
 
 
 class PushQueue:
@@ -38,10 +41,36 @@ class PushQueue:
             return 0
         return sum(1 for f in os.listdir(self._root) if f.endswith(".json"))
 
+    def frozen_count(self) -> int:
+        """Number of queue entries that hit max_attempts and were frozen for
+        operator inspection. Health surfaces this so a stuck write path is
+        visible; the retry loop skips these entries (see drain())."""
+        if not os.path.isdir(self._root):
+            return 0
+        count = 0
+        for name in os.listdir(self._root):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(self._root, name)) as f:
+                    entry = json.load(f)
+            except (FileNotFoundError, ValueError):
+                continue
+            if entry.get("frozen"):
+                count += 1
+        return count
+
     def drain(self, *, push_fn: Callable[[str], None], max_attempts: int) -> None:
         """Iterate every queued entry. push_fn(worktree_path) is called; on
         success the entry is removed; on failure the entry is updated with
-        attempt count + last error and left in the queue."""
+        attempt count + last error and left in the queue.
+
+        Frozen entries (those that already hit ``max_attempts``) are skipped:
+        retrying them every interval forever accomplishes nothing and only spams
+        the remote. A frozen entry stays on disk for operator inspection and is
+        surfaced via ``frozen_count()`` in health; an operator clears it by
+        deleting or requeuing the entry file (see docs/serving.md).
+        """
         if not os.path.isdir(self._root):
             return
         for name in sorted(os.listdir(self._root)):
@@ -53,6 +82,10 @@ class PushQueue:
                     entry = json.load(f)
             except FileNotFoundError:
                 continue
+            if entry.get("frozen"):
+                # Already capped; do not retry. Skip silently (the freeze was
+                # already logged once, when it first crossed max_attempts).
+                continue
             try:
                 push_fn(entry["worktree_path"])
             except Exception as exc:  # noqa: BLE001 -- intentional: capture any push failure
@@ -60,8 +93,19 @@ class PushQueue:
                 entry["last_error"] = str(exc)
                 entry["last_error_at"] = time.time()
                 if entry["attempts"] >= max_attempts:
-                    # Cap reached; leave for operator inspection.
+                    # Cap reached; freeze for operator inspection and stop
+                    # retrying. Log once, at the moment it first freezes.
                     entry["frozen"] = True
+                    log.warning(
+                        "push queue entry frozen after %d attempts "
+                        "(sha=%s worktree=%s last_error=%s); it will no longer "
+                        "be retried until an operator clears it "
+                        "(see docs/serving.md unfreeze path)",
+                        entry["attempts"],
+                        entry.get("sha", "?"),
+                        entry.get("worktree_path", "?"),
+                        entry["last_error"],
+                    )
                 atomic_write_json(entry_path, entry)
                 continue
             atomic_remove(entry_path)

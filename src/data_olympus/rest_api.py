@@ -59,6 +59,8 @@ def _build_health(state: ServerState) -> HealthResponse:
         last_git_push_at=state.last_git_push_at,
         pending_count=state.pending_count,
         push_queue_size=state.push_queue_size,
+        push_queue_frozen=state.push_queue_frozen,
+        path_locks_held=state.pending.locks_held() if state.pending else 0,
         last_index_build_status=state.last_index_build_status,
         last_index_error=state.last_index_error,
         last_index_error_at=state.last_index_error_at,

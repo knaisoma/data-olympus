@@ -62,6 +62,72 @@ reports `degraded: true` only when the index has not been rebuilt within
 For a local read-only demo with no remote, set `KB_REMOTE_URL=""`. The server
 stays healthy as long as the index builds successfully on startup.
 
+## Push queue and write-path visibility
+
+Committed writes are published to `origin/main` through a durable push queue: a
+commit that returns "committed" has a queue entry on disk, and a background loop
+drains the queue with retry. Health surfaces the queue state so a stuck write
+path is diagnosable:
+
+- `push_queue_size` is the live count of queued (not-yet-pushed) entries.
+- `pending_count` is the live count of pending (awaiting-approval) entries.
+- `push_queue_frozen` is the count of entries that hit the retry cap and were
+  **frozen**.
+
+Both counts are computed at health-report time from the queues themselves, so
+they cannot drift.
+
+### Startup recovery
+
+A crash in the narrow window between `git commit` and the push-queue enqueue
+would otherwise orphan a commit on a session worktree branch that nothing pushes.
+On boot the server scans every session worktree and re-enqueues any commit
+reachable from its `HEAD` but not from `origin/main`. Entries already in the
+queue are left untouched, so recovery never double-enqueues. The recovery result
+is logged (`startup push recovery re-enqueued N orphaned commit(s)` or `no
+orphaned commits found`).
+
+### Frozen entries and how to unfreeze
+
+After `max_attempts` consecutive push failures a queue entry is **frozen**: the
+retry loop stops retrying it (retrying a permanently failing push every interval
+only spams the remote and hides the problem). The freeze is logged once at WARN
+with the sha, worktree, and last error, and the entry is counted in
+`push_queue_frozen`. **A nonzero `push_queue_frozen` means writes are stuck and
+need operator attention** (the common Wave-0 cause is a non-fast-forward push
+against a moved `origin/main`; the automatic rebase-retry fix for that is Wave 1).
+
+To unfreeze, an operator resolves the underlying push failure, then clears the
+entry file directly on the push-queue volume (`KB_PUSH_QUEUE_ROOT`, default
+`/state/push-queue`):
+
+- **Requeue** (retry from scratch): delete the `"frozen": true` and reset
+  `"attempts"` to `0` in the entry's JSON file (or delete and let startup
+  recovery re-enqueue it), then the retry loop picks it up again on its next
+  pass.
+- **Drop** (abandon the write): delete the entry's `<sha>.json` file. The commit
+  stays on its session worktree branch but is never published.
+
+There is no unfreeze API in this release; the file-level procedure above is the
+supported path.
+
+## Per-session worktree GC
+
+Each writing session gets its own git worktree (and a `kb-session/<safe_id>`
+branch) so in-flight edits are isolated. A background GC task, running every 5
+minutes, removes worktrees idle beyond `KB_WORKTREE_IDLE_SEC` (default 3600s) so
+KB checkouts do not accumulate one-per-session forever.
+
+GC is conservative and coupled to the push queue:
+
+- A worktree with commits **not yet reachable from `origin/main`** is deferred
+  (never removed) until the push queue drains those commits; the next GC pass
+  cleans it up once they land upstream.
+- When a worktree is removed, its `kb-session/<safe_id>` branch is deleted in the
+  same step. This matters because a returning session recreates its worktree with
+  `git worktree add -b kb-session/<safe_id>`, which would fail if the branch
+  still existed. Deleting the branch keeps a GC'd session able to write again.
+
 ## Streamable-http session lifecycle and reaping
 
 Each session-less `POST /mcp` handshake makes the underlying MCP SDK create a

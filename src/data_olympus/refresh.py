@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from data_olympus.pending import PendingQueue
     from data_olympus.push_queue import PushQueue
     from data_olympus.server import ServerState
+    from data_olympus.worktrees import WorktreeRegistry
 
 log = logging.getLogger("data_olympus.refresh")
 
@@ -117,16 +118,54 @@ async def push_retry_loop(
     git: GitOps,
     interval_sec: int,
     max_attempts: int = 30,
+    push_timeout_sec: int = 60,
 ) -> None:
-    """Periodically drain the push queue. Cancellable via asyncio."""
+    """Periodically drain the push queue. Cancellable via asyncio.
+
+    ``drain`` shells out to ``git push`` (blocking I/O), so it runs in a thread
+    executor rather than on the event loop: a hung origin must never block the
+    loop that also answers the readiness probe (the probe timing out would
+    crash-loop the pod). ``git.push`` itself is bounded by ``push_timeout_sec``;
+    a timeout surfaces as ``subprocess.TimeoutExpired``, which ``drain`` catches
+    and records as a retryable failure (attempt count increments, entry stays
+    queued) exactly like any other push error.
+    """
     while True:
         try:
-            push_queue.drain(
-                push_fn=lambda wt: git.push(wt),
+            fn = functools.partial(
+                push_queue.drain,
+                push_fn=lambda wt: git.push(wt, timeout_sec=push_timeout_sec),
                 max_attempts=max_attempts,
             )
+            await asyncio.get_event_loop().run_in_executor(None, fn)
         except Exception:
             log.exception("push_retry_loop iteration failed")
+        await asyncio.sleep(interval_sec)
+
+
+async def worktree_gc_loop(
+    *,
+    worktrees: WorktreeRegistry,
+    idle_sec: int,
+    interval_sec: int,
+) -> None:
+    """Periodically GC idle per-session worktrees. Cancellable via asyncio.
+
+    Without this loop one full KB checkout accumulates per session forever.
+    ``WorktreeRegistry.gc`` removes only worktrees idle beyond ``idle_sec`` whose
+    commits are all reachable from origin/main (it defers any with unpushed
+    commits so the push queue can drain first) AND deletes the session's
+    ``kb-session/<safe_id>`` branch so a returning session can create its
+    worktree again. Runs in a thread executor because gc shells out to git."""
+    while True:
+        try:
+            fn = functools.partial(worktrees.gc, idle_sec=idle_sec)
+            removed = await asyncio.get_event_loop().run_in_executor(None, fn)
+            if removed:
+                log.info("worktree gc removed %d idle worktree(s): %s",
+                         len(removed), ", ".join(removed))
+        except Exception:
+            log.exception("worktree_gc_loop iteration failed")
         await asyncio.sleep(interval_sec)
 
 

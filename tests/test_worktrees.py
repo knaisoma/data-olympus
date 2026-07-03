@@ -72,3 +72,67 @@ def test_gc_does_not_remove_active_worktree(tmp_path) -> None:
     wt.touch()  # now
     removed = reg.gc(idle_sec=3600)
     assert wt.path not in removed
+
+
+def _cloned_repo_with_origin(tmp_path):
+    """A working checkout whose origin/main exists, so _has_unpushed_commits
+    can actually distinguish pushed vs unpushed commits."""
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote)],
+                   check=True, env=_env())
+    repo = tmp_path / "main"
+    subprocess.run(["git", "clone", str(remote), str(repo)], check=True, env=_env())
+    (repo / "seed.md").write_text("seed")
+    subprocess.run(["git", "-C", str(repo), "add", "seed.md"], check=True, env=_env())
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, env=_env())
+    subprocess.run(["git", "-C", str(repo), "push", "origin", "main"], check=True, env=_env())
+    return repo
+
+
+def test_gc_deletes_session_branch_so_returning_session_can_write(tmp_path) -> None:
+    """CRITICAL coupled bug: GC must delete the kb-session branch, otherwise a
+    returning session's `worktree add -b <branch>` fails because the branch
+    already exists. This proves the session can create a worktree again after
+    being GC'd."""
+    repo = _cloned_repo_with_origin(tmp_path)
+    git = GitOps(repo)
+    reg = WorktreeRegistry(git=git, worktree_root=str(tmp_path / "wts"))
+
+    wt = reg.get_or_create(source_session="session-abc", agent_identity="claude")
+    safe = os.path.basename(wt.path)
+    assert git._branch_exists(f"kb-session/{safe}")
+
+    # Idle it out; GC removes worktree AND deletes the branch.
+    wt.touch(timestamp=time.time() - 7200)
+    removed = reg.gc(idle_sec=3600)
+    assert wt.path in removed
+    assert not git._branch_exists(f"kb-session/{safe}"), \
+        "GC left the kb-session branch behind; returning session would fail"
+
+    # Returning session: must succeed (this was the fatal error before the fix).
+    wt2 = reg.get_or_create(source_session="session-abc", agent_identity="claude")
+    assert os.path.isdir(wt2.path)
+    assert os.path.basename(wt2.path) == safe
+
+
+def test_gc_defers_worktree_with_unpushed_commits(tmp_path) -> None:
+    """GC must NOT remove a worktree that has commits not yet on origin/main
+    (the push queue still owes those); the _has_unpushed_commits guard holds."""
+    repo = _cloned_repo_with_origin(tmp_path)
+    git = GitOps(repo)
+    reg = WorktreeRegistry(git=git, worktree_root=str(tmp_path / "wts"))
+
+    wt = reg.get_or_create(source_session="session-xyz", agent_identity="claude")
+    # Make an unpushed commit inside the session worktree.
+    (os.path.join(wt.path, "draft.md"))
+    with open(os.path.join(wt.path, "draft.md"), "w") as f:
+        f.write("unpushed work")
+    subprocess.run(["git", "-C", wt.path, "add", "draft.md"], check=True, env=_env())
+    subprocess.run(["git", "-C", wt.path, "commit", "-m", "wip"], check=True, env=_env())
+    # Fetch so origin/main is a known ref in this worktree.
+    subprocess.run(["git", "-C", wt.path, "fetch", "origin"], check=True, env=_env())
+
+    wt.touch(timestamp=time.time() - 7200)  # idle
+    removed = reg.gc(idle_sec=3600)
+    assert wt.path not in removed, "GC removed a worktree with unpushed commits"
+    assert os.path.isdir(wt.path)

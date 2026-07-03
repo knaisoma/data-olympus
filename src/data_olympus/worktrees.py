@@ -89,6 +89,14 @@ class WorktreeRegistry:
             if self._has_unpushed_commits(wt_path):
                 continue
             self._git.worktree_remove(wt_path, force=True)
+            # CRITICAL: also delete the kb-session branch. get_or_create() uses
+            # `worktree add -b kb-session/<safe_id>`, which FAILS if the branch
+            # already exists. Removing the worktree alone leaves the branch
+            # behind, so a returning session would hit a fatal "branch already
+            # exists" error on its next write. Deleting the branch here keeps a
+            # GC'd session able to write again. `entry` is the safe_id (the
+            # worktree dir name), which is exactly the branch suffix.
+            self._git.delete_branch(f"kb-session/{entry}")
             os.unlink(meta_path)
             removed.append(wt_path)
         return removed

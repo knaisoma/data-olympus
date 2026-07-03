@@ -134,8 +134,6 @@ class ServerState:
         self.last_git_fetch_at: float | None = None
         self.last_successful_refresh_at: float | None = None
         self.remote_head_sha: str | None = None
-        self.pending_count: int = 0
-        self.push_queue_size: int = 0
         self.last_index_build_status: str = "ok"
         self.last_index_error: str | None = None
         self.last_index_error_at: float | None = None
@@ -152,6 +150,44 @@ class ServerState:
         # count. None until then / in tests, so health reports live_sessions=None
         # rather than a misleading 0. See session_metrics.
         self.session_count_provider: Callable[[], int | None] | None = None
+
+    @property
+    def pending_count(self) -> int:
+        """Live count of entries in the pending queue. Computed on read so it can
+        never drift from the queue's actual contents (the previous static
+        attribute was initialised to 0 and never updated, so health reported 0
+        forever). 0 when the pending queue is not initialised (read-only replica
+        / tests)."""
+        if self.pending is None:
+            return 0
+        try:
+            return self.pending.size()
+        except Exception:  # pragma: no cover - defensive; health must not crash
+            return 0
+
+    @property
+    def push_queue_size(self) -> int:
+        """Live count of entries in the push queue (see pending_count for why
+        this is computed rather than stored). 0 when the push queue is not
+        initialised."""
+        if self.push_queue is None:
+            return 0
+        try:
+            return self.push_queue.size()
+        except Exception:  # pragma: no cover - defensive; health must not crash
+            return 0
+
+    @property
+    def push_queue_frozen(self) -> int:
+        """Live count of frozen push-queue entries (hit max_attempts, skipped by
+        the retry loop). A nonzero value means writes are stuck and need
+        operator intervention. 0 when the push queue is not initialised."""
+        if self.push_queue is None:
+            return 0
+        try:
+            return self.push_queue.frozen_count()
+        except Exception:  # pragma: no cover - defensive; health must not crash
+            return 0
 
     def record_pull(self, ts: float) -> None:
         self.last_git_pull_at = ts
@@ -379,6 +415,7 @@ def build_app(
             last_git_push_at=state.last_git_push_at,
             pending_count=state.pending_count,
             push_queue_size=state.push_queue_size,
+            push_queue_frozen=state.push_queue_frozen,
             last_index_build_status=state.last_index_build_status,
             last_index_error=state.last_index_error,
             last_index_error_at=state.last_index_error_at,
@@ -805,8 +842,35 @@ def main() -> None:
             git_pull_loop,
             pending_gc_loop,
             push_retry_loop,
+            worktree_gc_loop,
         )
         from data_olympus.session_metrics import session_reaper_loop
+
+        # Startup recovery: a crash between `git commit` and `push_queue.enqueue`
+        # (tools_write) leaves a committed-but-unqueued orphan on a session
+        # worktree branch that no loop would ever push. Before the push-retry
+        # loop starts, scan every session worktree and re-enqueue any commit
+        # reachable from its HEAD but not from origin/main. init_recovery skips
+        # shas already queued, so this cannot double-enqueue.
+        if state.push_queue is not None and state.worktrees is not None:
+            try:
+                before = state.push_queue.size()
+                state.push_queue.init_recovery(
+                    worktree_root=config.worktree_root,
+                    list_unpushed_shas=state.git.list_unpushed_shas,
+                )
+                recovered = state.push_queue.size() - before
+                if recovered > 0:
+                    log.warning(
+                        "startup push recovery re-enqueued %d orphaned "
+                        "commit(s) from session worktrees under %s",
+                        recovered, config.worktree_root,
+                    )
+                else:
+                    log.info("startup push recovery: no orphaned commits found")
+            except Exception:
+                log.exception("startup push recovery failed (continuing)")
+
         tasks = [
             asyncio.create_task(
                 git_pull_loop(state, config.sync_interval_sec),
@@ -821,6 +885,15 @@ def main() -> None:
                     interval_sec=30,
                 ),
                 name="push_retry_loop",
+            ))
+        if state.worktrees is not None:
+            tasks.append(asyncio.create_task(
+                worktree_gc_loop(
+                    worktrees=state.worktrees,
+                    idle_sec=config.worktree_idle_sec,
+                    interval_sec=300,
+                ),
+                name="worktree_gc_loop",
             ))
         if state.pending is not None:
             tasks.append(asyncio.create_task(

@@ -174,3 +174,90 @@ def test_push_retry_loop_invokes_drain_periodically() -> None:
 
     asyncio.run(runner())
     assert len(calls) >= 1
+
+
+def test_push_retry_loop_runs_drain_off_the_event_loop() -> None:
+    """drain shells out to git push (blocking); it must run in a thread executor,
+    not on the event loop, so a hung origin can't block the readiness probe.
+    We assert drain executes on a non-main thread."""
+    import threading
+
+    from data_olympus.refresh import push_retry_loop
+
+    threads: list[int] = []
+    main_thread = threading.get_ident()
+
+    class FakePushQueue:
+        def drain(self, *, push_fn, max_attempts):  # noqa: ARG002
+            threads.append(threading.get_ident())
+
+    class FakeGitOps:
+        def push(self, worktree_path, *, timeout_sec=60):  # noqa: ARG002
+            pass
+
+    async def runner():
+        task = asyncio.create_task(
+            push_retry_loop(push_queue=FakePushQueue(), git=FakeGitOps(),
+                            interval_sec=0.01, max_attempts=3)
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(runner())
+    assert threads, "drain must have run at least once"
+    assert all(t != main_thread for t in threads), \
+        "drain ran on the event-loop thread; it must use run_in_executor"
+
+
+def test_push_retry_loop_passes_push_timeout_to_git_push() -> None:
+    """The loop must bound git.push with a timeout so a hung origin can't wedge
+    the drain thread forever."""
+    from data_olympus.refresh import push_retry_loop
+
+    seen_timeouts: list[int] = []
+
+    class FakePushQueue:
+        def drain(self, *, push_fn, max_attempts):  # noqa: ARG002
+            push_fn("/tmp/wt")  # exercise the closure so git.push is called
+
+    class FakeGitOps:
+        def push(self, worktree_path, *, timeout_sec=60):  # noqa: ARG002
+            seen_timeouts.append(timeout_sec)
+
+    async def runner():
+        task = asyncio.create_task(
+            push_retry_loop(push_queue=FakePushQueue(), git=FakeGitOps(),
+                            interval_sec=0.01, max_attempts=3, push_timeout_sec=42)
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(runner())
+    assert seen_timeouts and all(t == 42 for t in seen_timeouts)
+
+
+def test_worktree_gc_loop_invokes_gc_periodically() -> None:
+    from data_olympus.refresh import worktree_gc_loop
+
+    calls: list[int] = []
+
+    class FakeRegistry:
+        def gc(self, *, idle_sec):
+            calls.append(idle_sec)
+            return []
+
+    async def runner():
+        task = asyncio.create_task(
+            worktree_gc_loop(worktrees=FakeRegistry(), idle_sec=3600, interval_sec=0.01)
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(runner())
+    assert calls and all(c == 3600 for c in calls)

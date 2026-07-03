@@ -119,19 +119,36 @@ class GitOps:
             timeout=timeout_sec,
         )
 
+    def _branch_exists(self, branch: str) -> bool:
+        result = subprocess.run(
+            ["git", "-C", str(self._repo), "rev-parse", "--verify", "--quiet",
+             f"refs/heads/{branch}"],
+            check=False, capture_output=True,
+        )
+        return result.returncode == 0
+
     def worktree_add(self, worktree_path: str, *, branch: str) -> None:
-        """git worktree add <worktree_path> -b <branch>. Idempotent: a no-op
-        if the worktree already exists at that path."""
+        """git worktree add <worktree_path> for <branch>. Idempotent: a no-op
+        if the worktree already exists at that path.
+
+        Normally the branch is created fresh (``-b``). If the branch already
+        exists (a residual ``kb-session/<safe_id>`` left behind by a GC that
+        removed the worktree but crashed before deleting the branch), attach to
+        the existing branch instead of failing with "branch already exists".
+        This is belt-and-suspenders on top of GC's branch deletion so a
+        returning session can always get a worktree."""
         if os.path.isdir(os.path.join(worktree_path, ".git")) or os.path.exists(
             os.path.join(worktree_path, ".git")
         ):
             return  # already exists
         os.makedirs(os.path.dirname(worktree_path), exist_ok=True)
-        subprocess.run(
-            ["git", "-C", str(self._repo), "worktree", "add",
-             worktree_path, "-b", branch],
-            check=True, capture_output=True,
-        )
+        if self._branch_exists(branch):
+            args = ["git", "-C", str(self._repo), "worktree", "add",
+                    worktree_path, branch]
+        else:
+            args = ["git", "-C", str(self._repo), "worktree", "add",
+                    worktree_path, "-b", branch]
+        subprocess.run(args, check=True, capture_output=True)
 
     def worktree_remove(self, worktree_path: str, *, force: bool = False) -> None:
         """git worktree remove <worktree_path>. Idempotent: a no-op if absent."""
@@ -142,11 +159,44 @@ class GitOps:
             args.append("--force")
         subprocess.run(args, check=True, capture_output=True)
 
-    def push(self, worktree_path: str) -> None:
-        import subprocess
+    def delete_branch(self, branch: str) -> None:
+        """git branch -D <branch> in the main repo. Idempotent: a no-op if the
+        branch does not exist. Used after worktree removal so a GC'd session's
+        ``kb-session/<safe_id>`` branch does not linger and collide with the
+        ``worktree add -b`` a returning session performs."""
+        subprocess.run(
+            ["git", "-C", str(self._repo), "branch", "-D", branch],
+            check=False, capture_output=True,
+        )
+
+    def list_unpushed_shas(self, worktree_path: str, *, timeout_sec: int = 10) -> list[str]:
+        """SHAs reachable from the worktree's HEAD but not from origin/main.
+
+        Used by push-queue init-recovery to find commits that were made but
+        never enqueued (a crash between ``git commit`` and ``push_queue.enqueue``
+        orphans them). Returns [] on any error so recovery degrades to a no-op
+        rather than crashing startup."""
+        try:
+            result = subprocess.run(
+                ["git", "-C", worktree_path, "rev-list", "HEAD", "--not", "origin/main"],
+                check=False, capture_output=True, text=True, timeout=timeout_sec,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return []
+        if result.returncode != 0:
+            return []
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    def push(self, worktree_path: str, *, timeout_sec: int = 60) -> None:
+        """Push the worktree's HEAD to origin/main.
+
+        A bounded ``timeout_sec`` (default 60s) prevents a hung origin from
+        blocking the push-retry loop indefinitely; on timeout,
+        ``subprocess.TimeoutExpired`` propagates and the caller classifies it as
+        a retryable failure (see refresh.push_retry_loop)."""
         subprocess.run(
             ["git", "-C", worktree_path, "push", "origin", "HEAD:main"],
-            check=True, capture_output=True,
+            check=True, capture_output=True, timeout=timeout_sec,
         )
 
 
