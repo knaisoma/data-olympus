@@ -114,18 +114,41 @@ def kb_search_fn(
     tier: str | None = None,
     category: str | None = None,
     status: str | None = None,
+    in_force: bool = False,
     doc_type: str | None = None,
+    abstain: bool = False,
 ) -> SearchResponse:
-    # Clamp to 1..100 (item 8). Clamping only the upper bound let a negative
+    from data_olympus.search_gate import abstain_gate
+
+    # Clamp to 1..100. Clamping only the upper bound let a negative
     # ``limit`` (e.g. -1) reach SQLite as ``LIMIT -1``, which SQLite treats as
     # "no limit" and dumps the entire corpus in one request. Bound both ends.
     if limit > 100:
         limit = 100
     elif limit < 1:
         limit = 1
-    hits = idx.search(
-        query, limit=limit, tier=tier, category=category, status=status, doc_type=doc_type
-    )
+    search_kwargs: dict[str, object] = {
+        "tier": tier,
+        "category": category,
+        "status": status,
+        "in_force": in_force,
+        "doc_type": doc_type,
+    }
+    abstained = False
+    abstain_reason: str | None = None
+    if abstain:
+        # Single-sourced signal gate (search_gate.abstain_gate). ``None`` means
+        # the gate fired: return an explicit abstained response, not just zero
+        # hits, so a caller can tell "no governing rule" from "search found none".
+        gated = abstain_gate(idx, query, limit=limit, **search_kwargs)
+        if gated is None:
+            hits = []
+            abstained = True
+            abstain_reason = "no_signal_match"
+        else:
+            hits = gated
+    else:
+        hits = idx.search(query, limit=limit, **search_kwargs)  # type: ignore[arg-type]
     health = idx.health()
     return SearchResponse(
         query=query,
@@ -143,6 +166,8 @@ def kb_search_fn(
         ],
         source_commit=str(health["source_commit"]),
         total_returned=len(hits),
+        abstained=abstained,
+        abstain_reason=abstain_reason,
     )
 
 

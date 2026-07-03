@@ -46,7 +46,7 @@ on. The `vector_rag.py` adapter is implemented and available behind `[bench]`.
 
 | Name | Description |
 |---|---|
-| `data-olympus` | Real `Index.search(query, status="active")` with outline + snippet payload |
+| `data-olympus` | Real `Index.search(query, in_force=True)` (in-force status class: active/accepted/approved) with outline + snippet payload |
 | `whole-dump` | Concatenate every file in the corpus; no ranking |
 | `grep-read` | Match files by keyword; concatenate matched files |
 | `bm25` | BM25 over 512-token whitespace chunks; top-5 chunks as payload |

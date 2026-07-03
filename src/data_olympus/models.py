@@ -80,6 +80,22 @@ class SearchResponse(BaseModel):
     hits: list[SearchHitModel]
     source_commit: str
     total_returned: int = Field(description="Number of hits actually returned (after limit).")
+    abstained: bool = Field(
+        default=False,
+        description=(
+            "True when abstain=True was requested and the signal gate fired: the "
+            "query matched no discriminating column, so the search deliberately "
+            "returned no hits instead of surfacing a weak, out-of-scope match. "
+            "Distinct from an ordinary zero-hit search (abstained stays False)."
+        ),
+    )
+    abstain_reason: str | None = Field(
+        default=None,
+        description=(
+            "Machine-readable reason present only when abstained is True (e.g. "
+            "'no_signal_match'). None otherwise."
+        ),
+    )
 
 
 class GetResponse(BaseModel):
