@@ -5,8 +5,12 @@ reasonable term in the corpus, the handful of other terms it most strongly
 co-occurs with (measured by pointwise mutual information, PMI, at document
 granularity) and store a small bounded ``related_terms`` table alongside the
 FTS index. At query time an expander looks each query term up in that table and
-appends its top related terms, DOWN-WEIGHTED by appending them after the
-originals so BM25 still favours the terms the user actually typed.
+appends its top related terms. Those appended terms are DOWN-WEIGHTED not by
+their position (FTS5 bm25 has no positional preference) but because
+``Index.search`` matches the expansion terms in a SEPARATE penalized backfill
+pass whose hits can only rank BELOW the worst primary-term hit (finding (a); see
+``Index._expansion_backfill``). So a doc that matches only a corpus-related term
+can never outrank a doc matching a term the user actually typed.
 
 Why PMI over raw co-occurrence counts: raw counts are dominated by globally
 frequent tokens (every doc mentions "the", "a", "you"), so a raw-count table
@@ -102,9 +106,28 @@ def tokenize_doc(*parts: str) -> set[str]:
 
 # Defaults for the bounded table. Kept small so both build cost and query-time
 # MATCH growth stay negligible.
+#
+# min_count=3 / min_pmi>0 (finding (b)): at min_count=2 / min_pmi=0 a single pair
+# of docs sharing any two tokens produces a "related" edge, which on a small
+# corpus is noise, not signal. Requiring a pair to co-occur in at least 3 docs
+# and to have STRICTLY positive PMI (co-occur MORE than chance) keeps only edges
+# with real corpus support.
 DEFAULT_K = 5
-DEFAULT_MIN_COUNT = 2
-DEFAULT_MIN_PMI = 0.0
+DEFAULT_MIN_COUNT = 3
+DEFAULT_MIN_PMI = 0.1
+
+# Corpus-size floor below which co-occurrence expansion is auto-disabled (finding
+# (b)). PMI is a ratio estimate; on a handful of docs the marginal counts are too
+# small for it to mean anything, so we skip building the table entirely rather
+# than emit noise. A deployment can lower it via KB_COOCCURRENCE_MIN_DOCS.
+DEFAULT_MIN_DOCS = 50
+
+# Cap on the number of unique tokens from one document fed into pair counting
+# (finding (b)). Pair counting is O(unique-tokens^2) per doc; a multi-thousand-
+# word doc with thousands of unique tokens is a build-time memory/CPU cliff. The
+# most topical tokens are kept (longest first, then alphabetical for determinism)
+# so the cap trims the long tail of incidental vocabulary, not the signal.
+DEFAULT_MAX_DOC_TOKENS = 400
 
 
 def build_cooccurrence_table(
@@ -113,6 +136,8 @@ def build_cooccurrence_table(
     k: int = DEFAULT_K,
     min_count: int = DEFAULT_MIN_COUNT,
     min_pmi: float = DEFAULT_MIN_PMI,
+    min_docs: int = DEFAULT_MIN_DOCS,
+    max_doc_tokens: int = DEFAULT_MAX_DOC_TOKENS,
 ) -> dict[str, list[str]]:
     """Compute a bounded ``{term: [related...]}`` table from per-doc token sets.
 
@@ -130,16 +155,31 @@ def build_cooccurrence_table(
     The result is directional in storage (both ``a -> b`` and ``b -> a`` are
     emitted, each capped independently at k) so a lookup of either term finds the
     other. Returns an order-stable dict; each value is at most ``k`` long.
+
+    Returns the empty table (co-occurrence auto-disabled) when the corpus has
+    fewer than ``min_docs`` documents (finding (b)): PMI is a ratio estimate that
+    is pure noise on a handful of docs. Each document contributes at most
+    ``max_doc_tokens`` unique tokens to pair counting (finding (b)); pair counting
+    is O(unique-tokens^2) per doc, so an unbounded huge doc is a build-time cliff.
+    The kept tokens are the longest ones (most topical), tie-broken alphabetically.
     """
     materialised = [s for s in doc_token_sets if s]
     n_docs = len(materialised)
-    if n_docs < 2 or k <= 0:
+    # Corpus-size floor: below it PMI is noise, so skip building entirely.
+    if n_docs < max(2, min_docs) or k <= 0:
         return {}
 
     term_counts: Counter[str] = Counter()
     pair_counts: Counter[tuple[str, str]] = Counter()
     for tokens in materialised:
         ordered = sorted(tokens)
+        # Cap the per-doc unique-token count fed into O(n^2) pair counting. Keep
+        # the longest tokens (most topical), tie-broken alphabetically so the
+        # trim is deterministic, then re-sort alphabetically for stable pairing.
+        if max_doc_tokens > 0 and len(ordered) > max_doc_tokens:
+            ordered = sorted(
+                sorted(ordered, key=lambda t: (-len(t), t))[:max_doc_tokens]
+            )
         for tok in ordered:
             term_counts[tok] += 1
         for i, a in enumerate(ordered):
@@ -240,8 +280,10 @@ def make_cooccurrence_expander(
     to the live index DB via ``Index``). The returned callable keeps the original
     terms first (order-stable, de-duplicated) and then appends related terms
     (also de-duplicated, bounded by ``max_terms``). Originals are never dropped
-    by the cap; related terms are down-weighted purely by appending them after
-    the originals (BM25 OR-matching favours the earlier / user-typed terms).
+    by the cap. The appended related terms are down-weighted by ``Index.search``
+    matching them in a separate penalized backfill pass (they can only rank below
+    the primary hits); the "first" positioning here is only so ``Index.search``
+    can split originals from expansion terms, NOT a bm25 positional effect.
     """
 
     def expander(terms: list[str]) -> list[str]:
@@ -334,9 +376,18 @@ def cooccurrence_enabled() -> bool:
 
 
 def cooccurrence_build_params() -> dict[str, int | float]:
-    """Build-time knobs from env: k, min_count, min_pmi (with sane defaults)."""
+    """Build-time knobs from env: k, min_count, min_pmi, min_docs, max_doc_tokens.
+
+    All have sane defaults (see the module constants). ``min_docs`` is the corpus
+    floor below which the table is auto-disabled; ``max_doc_tokens`` caps the
+    per-doc unique tokens fed into O(n^2) pair counting (finding (b)).
+    """
     return {
         "k": _env_int("KB_COOCCURRENCE_K", DEFAULT_K),
         "min_count": _env_int("KB_COOCCURRENCE_MIN_COUNT", DEFAULT_MIN_COUNT),
         "min_pmi": _env_float("KB_COOCCURRENCE_MIN_PMI", DEFAULT_MIN_PMI),
+        "min_docs": _env_int("KB_COOCCURRENCE_MIN_DOCS", DEFAULT_MIN_DOCS),
+        "max_doc_tokens": _env_int(
+            "KB_COOCCURRENCE_MAX_DOC_TOKENS", DEFAULT_MAX_DOC_TOKENS
+        ),
     }

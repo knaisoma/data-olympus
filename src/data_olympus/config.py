@@ -57,15 +57,21 @@ class Config:
     # honours them without threading Config through.
     cooccurrence_enabled: bool = True
     cooccurrence_k: int = 5
-    cooccurrence_min_count: int = 2
-    cooccurrence_min_pmi: float = 0.0
+    cooccurrence_min_count: int = 3
+    cooccurrence_min_pmi: float = 0.1
+    # Corpus-size floor below which co-occurrence is auto-disabled, and per-doc
+    # unique-token cap on O(n^2) pair counting (finding (b), WP2b).
+    cooccurrence_min_docs: int = 50
+    cooccurrence_max_doc_tokens: int = 400
     # Trigram fuzzy-match fallback (issue #41). Default OFF so existing search
     # behaviour is unchanged. When on, a primary FTS query returning at or below
     # ``trigram_fallback_threshold`` hits is backfilled from the trigram index so
     # a typo or partial identifier still reaches its document; the backfill only
-    # ever appends after primary hits. Surfaced here for discoverability; the
-    # build always creates the trigram table (cost is one extra insert/doc), and
-    # Index.search reads these to gate the query-time fallback.
+    # ever appends after primary hits (as a RANK_CLASS_BACKFILL class). Surfaced
+    # here for discoverability. The trigram table is now created and populated
+    # ONLY when the fallback is enabled (KB_TRIGRAM_MODE=on) (finding (c), WP2b),
+    # so a default deployment pays no trigram build/size cost; Index.search reads
+    # these to gate the query-time fallback.
     trigram_fallback_enabled: bool = False
     trigram_fallback_threshold: int = 3
     # Optional local-embedding hybrid ranking (issue #42). Default OFF so the
@@ -206,6 +212,8 @@ def load_config() -> Config:
         cooccurrence_k=int(cooc_params["k"]),
         cooccurrence_min_count=int(cooc_params["min_count"]),
         cooccurrence_min_pmi=float(cooc_params["min_pmi"]),
+        cooccurrence_min_docs=int(cooc_params["min_docs"]),
+        cooccurrence_max_doc_tokens=int(cooc_params["max_doc_tokens"]),
         trigram_fallback_enabled=trigram_enabled,
         trigram_fallback_threshold=trigram_threshold,
         embeddings_enabled=emb_enabled,
