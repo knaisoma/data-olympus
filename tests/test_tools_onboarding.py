@@ -127,6 +127,16 @@ def test_inject_remote_url_newline_cannot_forge_keys() -> None:
     assert fm["title"] == "P"
 
 
+def test_inject_remote_url_preserves_malformed_frontmatter() -> None:
+    """Unparseable frontmatter is left untouched, never clobbered with a rebuilt
+    block (injection is skipped for that file)."""
+    from data_olympus.tools_onboarding import _inject_remote_url
+    malformed = "---\n: [unbalanced\n---\n\nbody\n"
+    files = [{"target_path": "projects/p/README.md", "postimage": malformed}]
+    out = _inject_remote_url(files, "https://x/r.git", target_filename="README.md")
+    assert out[0]["postimage"] == malformed
+
+
 def test_bootstrap_cap_counts_injected_postimage(tmp_path) -> None:
     """item 3: the size cap must count the post-injection postimage. A file that
     fits before URL injection but exceeds the cap after must be rejected."""

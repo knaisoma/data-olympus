@@ -265,10 +265,15 @@ def _inject_remote_url(
                 rest = postimage[fm_end + len("\n---\n"):]
                 try:
                     fm = yaml.safe_load(fm_text) or {}
-                    if not isinstance(fm, dict):
-                        fm = {}
                 except yaml.YAMLError:
-                    fm = {}
+                    fm = None
+                if not isinstance(fm, dict):
+                    # Unparseable or non-mapping frontmatter: leave the file
+                    # untouched rather than clobber caller data with a rebuilt
+                    # block (codex round-2 Concern: silent metadata loss). The
+                    # injection is skipped, matching the no-closing-fence case.
+                    out.append(f)
+                    continue
                 if fm.get("git_remote_url") == url:
                     out.append(f)
                     continue
