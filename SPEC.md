@@ -87,11 +87,16 @@ The following fields are added by this profile. OKF consumers silently ignore un
 - `description`: one or two sentences summarizing the concept; used in generated index files and search results.
 - `tags`: a YAML list of lowercase strings for faceted search.
 - `timestamp`: ISO 8601 date or datetime of last meaningful content change.
-- `supersedes`: concept ID (or list of IDs) that this document replaces; enables machine-readable ADR chains.
+
+`tags` should always be a list; a scalar value is a warning.
+
+**Optional decision-chain fields** (not checked by `kb lint`; documented convention only):
+
+- `supersedes`: concept ID (or list of IDs) that this document replaces.
 - `superseded_by`: concept ID of the document that replaces this one; set when `status: superseded`.
 - `owner`: team or individual responsible for the concept.
 
-Note: `supersedes` and `superseded_by` are governance extensions not present in base OKF. `tags` should always be a list; a scalar value is a warning.
+Note: `supersedes` and `superseded_by` are governance extensions not present in base OKF. They are read by humans and agents tracing decision history, but the current tooling does not resolve, validate, or warn on them: a missing, malformed, or dangling `supersedes`/`superseded_by`/`owner` value produces no `kb lint` finding today.
 
 **Reserved-file exemption.** Files named `index.md`, `log.md`, or `template.md` in any directory are exempt from both required and recommended field validation. They may carry any frontmatter (or none at all), subject to the rules in sections 6 and 7.
 
@@ -130,7 +135,7 @@ Links between concepts use standard markdown hyperlink syntax. The preferred for
 
 Links are **untyped directed edges**: the format does not define a link-type vocabulary. Semantic relationships (supersedes, implements, references) are expressed in frontmatter fields, not in link syntax.
 
-Consumers MUST tolerate broken links. A link that points to a file that does not exist in the bundle is not a conformance error; it is an informational warning from `kb lint`.
+Consumers MUST tolerate broken links. A link that points to a file that does not exist in the bundle is not a conformance error. The current `kb lint` does not check links at all (no warning is emitted either way); link-checking is not yet implemented.
 
 Link targets are always other markdown files within the bundle. Links to external URLs in the body are citations (see section 2) and are not part of the concept graph.
 
@@ -149,7 +154,7 @@ Index file conventions:
 
 The **bundle-root `index.md`** (the `index.md` at the root of the bundle directory) carries the version metadata for the bundle. It MAY include the following frontmatter fields:
 
-- `okf_version`: the OKF spec version this bundle targets (for example, `"1.0"`).
+- `okf_version`: the OKF spec version this bundle targets (for example, `"0.1"`).
 - `spec_version`: the data-olympus format spec version this bundle targets (for example, `"0.1"`).
 
 These fields MUST NOT appear in subdirectory `index.md` files.
@@ -204,7 +209,7 @@ These three are mirrored as the `kb_consult`, `kb_gate_check`, and `kb_complianc
 
 **A bundle conforms to this spec when:**
 
-1. Every `.md` file in the bundle that is not a reserved filename (`index.md`, `log.md`) contains a parseable YAML frontmatter block (a valid YAML mapping between opening and closing `---` delimiters at the top of the file).
+1. Every `.md` file in the bundle that is not a reserved filename (`index.md`, `log.md`, `template.md`) contains a parseable YAML frontmatter block (a valid YAML mapping between opening and closing `---` delimiters at the top of the file).
 2. Every such non-reserved concept document contains all four required fields (`id`, `type`, `status`, `tier`) with values from their respective controlled vocabularies:
    - `type`: one of `decision`, `memory`, `project`, `reference`, `standard`, `workflow`
    - `status`: one of `draft`, `active`, `deprecated`, `superseded`, `proposed`, `accepted`, `rejected`
@@ -226,7 +231,7 @@ These three are mirrored as the `kb_consult`, `kb_gate_check`, and `kb_complianc
 **`kb lint` severity levels:**
 
 - `error`: missing required field, invalid enum value, or YAML parse failure. Blocks CI.
-- `warning`: missing recommended field, `tags` is not a list, or a broken link. Does not block CI by default.
+- `warning`: missing recommended field (`title`, `description`, `tags`, `timestamp`), or `tags` is not a list. Does not block CI by default. Broken links and missing `supersedes`/`superseded_by`/`owner` are not checked and produce no finding either way (see sections 4.2 and 5).
 
 ---
 
@@ -235,7 +240,7 @@ These three are mirrored as the `kb_consult`, `kb_gate_check`, and `kb_complianc
 The format is versioned independently of the data-olympus package. Two version fields are declared in the bundle-root `index.md` frontmatter:
 
 - `spec_version`: the data-olympus format spec version (this document); for example, `"0.1"`.
-- `okf_version`: the OKF spec version the bundle targets; for example, `"1.0"`.
+- `okf_version`: the OKF spec version the bundle targets; for example, `"0.1"`.
 
 Version numbering follows semver semantics:
 

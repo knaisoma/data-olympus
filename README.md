@@ -9,7 +9,7 @@ data-olympus is a governance-grade knowledge-base format and server for agent wo
 
 It governs *decisions*, not code. When an agent is about to make a choice (a library, a pattern, a migration), data-olympus surfaces the established standard or decision that should govern that choice. It is deliberately **not** a code-search, reference-finding, or "where is X used" tool: LSP, grep, and Sourcegraph already do that well. The retrieval task it targets is coding-intent to governing-rule, and it helps where current model interaction during vibe-coding is weakest: keeping the model aligned to patterns the team has already established as correct.
 
-**Status: pre-release (v0.1).**
+**Status: pre-release (v0.2.0 shipped; v0.3.0 in progress).**
 
 ## Why
 
@@ -21,6 +21,8 @@ It governs *decisions*, not code. When an agent is about to make a choice (a lib
 - **OKF-compatible.** Any OKF consumer can read a data-olympus bundle. Any OKF-produced bundle can be governed by data-olympus tools.
 
 ## Quickstart
+
+Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 # Install
@@ -43,6 +45,8 @@ See `docs/quickstart.md` for the full local-run walkthrough, including curl and 
 - [`docs/serving.md`](docs/serving.md): single-replica serving model, read-only replicas, git pull loop.
 - [`docs/comparison.md`](docs/comparison.md): how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 - [`docs/enforcement.md`](docs/enforcement.md): turning the KB into a mandatory consultation gate (hooks, `kb enforce`).
+- [`benchmarks/README.md`](benchmarks/README.md): retrieval benchmark methodology and how to reproduce the numbers in `docs/comparison.md`.
+- [`SECURITY.md`](SECURITY.md): supported versions and how to report a vulnerability.
 
 ## License
 
