@@ -42,9 +42,32 @@ Including these fields improves search quality and the generated index:
 - `description`: one-sentence summary.
 - `tags`: list of keywords.
 - `timestamp`: ISO 8601 date the document was last meaningfully updated.
+- `applies_when`: list of trigger phrases describing the coding intents this
+  document governs (see below).
 
 See `SPEC.md` for the full schema, cross-linking conventions, and tier
 definitions.
+
+### Authoring `applies_when`
+
+`applies_when` is a list of short verb phrases in an agent's own vocabulary,
+not the document's internal terminology: `"reading a .env file"`, not
+`"security"`. It matters because it is the highest-weight field in the
+reference search index, tied with `title`, ahead of `description` and body
+text: a standard titled "Secrets Handling" is retrieved when an agent is
+mid-task on "logging a request body" only because that phrase is listed in
+`applies_when`, not because the title or body happen to share vocabulary
+with the query.
+
+```yaml
+applies_when:
+  - "reading a .env file"
+  - "committing a credential or API key"
+  - "logging a request or response body"
+```
+
+Add it to every `standard` and `decision` document you expect an agent to hit
+mid-task, phrased as that moment, not as a topic label.
 
 ### Reserved files
 
