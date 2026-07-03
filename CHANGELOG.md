@@ -12,6 +12,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-03
+
 ### Added
 
 - Content-free real-corpus retrieval eval harness (`benchmarks/real_corpus_eval.py`
@@ -375,5 +377,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/knaisoma/data-olympus/compare/v0.1.1...v0.2.0
 [0.1.0]: https://github.com/knaisoma/data-olympus/releases/tag/v0.1.0
