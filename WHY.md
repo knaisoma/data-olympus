@@ -220,7 +220,7 @@ that share almost no words with the authored rule, every keyword method does
 poorly, and ours is no exception (recall 0.037). That is the territory where dense
 or vector retrieval has a real advantage; our optional local-embedding hybrid (off
 by default) closes much of it — it lifts held-out paraphrase recall from about
-0.41 to about 0.60 in the governance ablation — but the default full-text stack
+0.31 to about 0.53 in the governance ablation — but the default full-text stack
 cannot follow a phrasing nobody wrote down, and we say so plainly rather than
 hiding it.
 

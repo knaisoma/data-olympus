@@ -5,7 +5,11 @@ Ablates five configurations over a governance corpus + query set:
 - fts+description:        Index.search with columns=[title, tags, description, body]
 - fts+applies_when:       Index.search with all columns (production default)
 - fts+applies_when+abstain: signal gate (abstain when no discriminating-column match)
-- bm25-baseline:          Bm25Method (no index metadata at all)
+- bm25-baseline:          Bm25Method — raw-file BM25 over body + frontmatter text,
+                          with NO structured metadata filtering (it sees the
+                          applies_when/status text as words, but cannot filter or
+                          column-weight on them; this isolates structured metadata
+                          use, not metadata text visibility)
 
 For each config, computes per-stratum:
 - recall@k (fraction of queries where gold is in top-k)

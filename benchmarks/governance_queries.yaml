@@ -114,12 +114,6 @@
   - GOV_DATABASE_MIGRATIONS
   current_id: GOV_DATABASE_MIGRATIONS
   stale_id: ''
-- text: How should I handle change the database schema?
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_DATABASE_MIGRATIONS
-  current_id: GOV_DATABASE_MIGRATIONS
-  stale_id: ''
 - text: What is the approved approach for add a column?
   stratum: paraphrase_uncovered
   gold_ids:
@@ -247,12 +241,6 @@
   - GOV_NEW_CANARY_ROLLOUTS
   current_id: GOV_NEW_CANARY_ROLLOUTS
   stale_id: ''
-- text: What is the approved approach for gradual rollout?
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_NEW_CANARY_ROLLOUTS
-  current_id: GOV_NEW_CANARY_ROLLOUTS
-  stale_id: ''
 - text: Looking for guidance on test in production.
   stratum: paraphrase_uncovered
   gold_ids:
@@ -363,12 +351,6 @@
   - GOV_IDEMPOTENCY
   current_id: GOV_IDEMPOTENCY
   stale_id: ''
-- text: What is the approved approach for safe to retry?
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_IDEMPOTENCY
-  current_id: GOV_IDEMPOTENCY
-  stale_id: ''
 - text: Looking for guidance on send twice.
   stratum: paraphrase_uncovered
   gold_ids:
@@ -412,24 +394,6 @@
   - GOV_CONNECTION_POOLING
   current_id: GOV_CONNECTION_POOLING
   stale_id: ''
-- text: How should I handle reuse database connections?
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_CONNECTION_POOLING
-  current_id: GOV_CONNECTION_POOLING
-  stale_id: ''
-- text: What is the approved approach for too many db connections?
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_CONNECTION_POOLING
-  current_id: GOV_CONNECTION_POOLING
-  stale_id: ''
-- text: Looking for guidance on pool exhaustion.
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_CONNECTION_POOLING
-  current_id: GOV_CONNECTION_POOLING
-  stale_id: ''
 - text: I am using launchdarkly and flag toggle
   stratum: trigger_covered
   gold_ids:
@@ -448,12 +412,6 @@
   - GOV_FEATURE_FLAGS
   current_id: GOV_FEATURE_FLAGS
   stale_id: ''
-- text: Looking for guidance on runtime toggle.
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_FEATURE_FLAGS
-  current_id: GOV_FEATURE_FLAGS
-  stale_id: ''
 - text: I am using cursor pagination and offset limit
   stratum: trigger_covered
   gold_ids:
@@ -467,12 +425,6 @@
   current_id: GOV_NEW_PAGINATION
   stale_id: ''
 - text: What is the approved approach for paginate a large list?
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_NEW_PAGINATION
-  current_id: GOV_NEW_PAGINATION
-  stale_id: ''
-- text: Looking for guidance on next page link.
   stratum: paraphrase_uncovered
   gold_ids:
   - GOV_NEW_PAGINATION
@@ -545,12 +497,6 @@
   - GOV_NEW_SCHEMA_EVOLUTION
   current_id: GOV_NEW_SCHEMA_EVOLUTION
   stale_id: ''
-- text: What is the approved approach for add a field safely?
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_NEW_SCHEMA_EVOLUTION
-  current_id: GOV_NEW_SCHEMA_EVOLUTION
-  stale_id: ''
 - text: Looking for guidance on evolve the payload.
   stratum: paraphrase_uncovered
   gold_ids:
@@ -600,12 +546,6 @@
   - GOV_TRACING
   current_id: GOV_TRACING
   stale_id: ''
-- text: What is the approved approach for distributed trace?
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_TRACING
-  current_id: GOV_TRACING
-  stale_id: ''
 - text: Looking for guidance on correlation id.
   stratum: paraphrase_uncovered
   gold_ids:
@@ -619,18 +559,6 @@
   current_id: GOV_NEW_CONFIG_MANAGEMENT
   stale_id: ''
 - text: How should I handle change settings without redeploy?
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_NEW_CONFIG_MANAGEMENT
-  current_id: GOV_NEW_CONFIG_MANAGEMENT
-  stale_id: ''
-- text: What is the approved approach for environment specific config?
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_NEW_CONFIG_MANAGEMENT
-  current_id: GOV_NEW_CONFIG_MANAGEMENT
-  stale_id: ''
-- text: Looking for guidance on runtime config.
   stratum: paraphrase_uncovered
   gold_ids:
   - GOV_NEW_CONFIG_MANAGEMENT
@@ -693,12 +621,6 @@
   stale_id: ''
 - text: I am using saga pattern and compensating transaction
   stratum: trigger_covered
-  gold_ids:
-  - GOV_NEW_SAGA_ORCHESTRATION
-  current_id: GOV_NEW_SAGA_ORCHESTRATION
-  stale_id: ''
-- text: How should I handle distributed transaction?
-  stratum: paraphrase_uncovered
   gold_ids:
   - GOV_NEW_SAGA_ORCHESTRATION
   current_id: GOV_NEW_SAGA_ORCHESTRATION

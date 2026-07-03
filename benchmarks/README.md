@@ -29,9 +29,13 @@ For each (method, query) pair the harness records:
   new doc are lexically identical, so a status-blind ranker ties them and this
   number depends on an arbitrary tiebreak; **Serves-Stale is the honest signal.**
 
-Every reported mean carries a **95% bootstrap confidence interval** (percentile
+The headline means — **recall@k** (per-category run) and every governance
+ablation recall — carry a **95% bootstrap confidence interval** (percentile
 bootstrap, deterministic and seeded via `metrics.bootstrap_mean_ci`), so a reader
-can tell a real gap from sampling noise at each stratum size.
+can tell a real gap from sampling noise at each stratum size. The CI is computed
+for token, normalized-token, contains-gold, and recall means; NDCG/MRR/precision/
+staleness/serves-stale are reported as plain point means. The bootstrap machinery
+is reusable if those need intervals later.
 
 Queries are grouped into four categories:
 

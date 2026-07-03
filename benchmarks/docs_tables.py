@@ -185,12 +185,50 @@ def extract_block(text: str, name: str) -> str:
     return text[i + len(start): j].strip("\n")
 
 
+# Prose numbers quoted OUTSIDE the marked tables. The marker mechanism only
+# guards generated tables; benchmark numbers cited in prose would otherwise drift
+# silently. Each entry ties a hand-written figure to a value derived from the
+# committed result JSONs, so the guard fails if the prose and the results
+# disagree. Keep this list in sync when the prose cites a new number.
+def _prose_number_claims() -> list[tuple[str, str, str]]:
+    """Return (doc_rel, literal_string_that_must_appear, derived_from) claims.
+
+    The literal must appear verbatim in the doc; the derived value proves the
+    literal matches the current results (so a stale hand-edit is caught).
+    """
+    synth = _synth_rows()
+    gov = _load(_GOV)
+    gov_by = {(r["config"], r["stratum"]): r for r in gov["rows"]}
+    real = _load(_REAL)
+
+    do_all = synth[("data-olympus", "ALL")]
+    bm_all = synth[("bm25", "ALL")]
+    aw_para = gov_by[("fts+applies_when", "paraphrase_uncovered")]
+    nom_para = gov_by[("fts-no-metadata", "paraphrase_uncovered")]
+    aw_all = gov_by[("fts+applies_when", "ALL")]
+
+    claims: list[tuple[str, str, str]] = [
+        # comparison.md prose figures
+        ("docs/comparison.md", f"{do_all['recall']:.3f}", "data-olympus ALL recall"),
+        ("docs/comparison.md", f"{bm_all['recall']:.3f}", "bm25 ALL recall"),
+        ("docs/comparison.md", f"{bm_all['serves_stale']:.3f}", "bm25 serves-stale"),
+        ("docs/comparison.md", f"{aw_para['recall']:.3f}", "applies_when paraphrase recall"),
+        ("docs/comparison.md", f"{nom_para['recall']:.3f}", "no-metadata paraphrase recall"),
+        ("docs/comparison.md", f"{aw_all['recall']:.3f}", "applies_when ALL recall"),
+        # real-corpus prose figure
+        ("docs/comparison.md", f"{real['labeled_queries']}", "real-corpus labeled query count"),
+    ]
+    return claims
+
+
 def check_or_write(*, write: bool) -> list[str]:
-    """Sync each doc's marked blocks against the renderers.
+    """Sync each doc's marked blocks against the renderers, and verify that a
+    curated set of prose-quoted numbers still match the results.
 
     Returns a list of human-readable drift messages (empty when in sync). When
-    ``write`` is True the docs are rewritten in place and the returned list is
-    always empty.
+    ``write`` is True the docs are rewritten in place (tables only) and the
+    returned list is always empty — prose is hand-written, so a --write cannot
+    fix a prose drift, only surface it in check mode.
     """
     problems: list[str] = []
     for rel, block_names in DOC_BLOCKS.items():
@@ -211,6 +249,18 @@ def check_or_write(*, write: bool) -> list[str]:
                     )
         if write and new_text != text:
             path.write_text(new_text, encoding="utf-8")
+
+    if not write:
+        # Prose-number guard: each curated literal must appear in its doc.
+        doc_cache: dict[str, str] = {}
+        for rel, literal, label in _prose_number_claims():
+            if rel not in doc_cache:
+                doc_cache[rel] = (_REPO_ROOT / rel).read_text(encoding="utf-8")
+            if literal not in doc_cache[rel]:
+                problems.append(
+                    f"{rel}: prose is missing the current value {literal!r} for "
+                    f"{label!r} (a quoted number drifted from the results)."
+                )
     return problems
 
 
