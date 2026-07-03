@@ -103,6 +103,17 @@ def test_principal_without_token_is_skipped() -> None:
     assert reg.auth_configured is False
 
 
+def test_cleanup_plan_is_auth_required() -> None:
+    """item 6: the MCP enforcement plane must gate kb_cleanup_plan behind auth when
+    configured, matching the REST /onboarding/cleanup-plan gating. The middleware
+    (server.py) consults AUTH_REQUIRED_TOOLS, so membership here is the mechanism."""
+    from data_olympus.principals import AUTH_REQUIRED_TOOLS
+    assert "kb_cleanup_plan" in AUTH_REQUIRED_TOOLS
+    # And the pre-existing enforcement tools stay gated.
+    assert "kb_consult" in AUTH_REQUIRED_TOOLS
+    assert "kb_gate_check" in AUTH_REQUIRED_TOOLS
+
+
 def test_parse_principals_env_tolerates_garbage() -> None:
     assert parse_principals_env("") == []
     assert parse_principals_env("not json") == []

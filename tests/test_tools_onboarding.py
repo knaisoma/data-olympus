@@ -63,6 +63,96 @@ def test_low_conf_bootstrap_is_atomic_when_queue_would_overflow(tmp_path) -> Non
     assert pending.size() == 0  # atomic: nothing was enqueued
 
 
+def test_bootstrap_canonicalizes_backslash_path(tmp_path) -> None:
+    """item 4: a backslash path in a bootstrap file is stored canonical in the
+    pending entry, never as a literal root-level backslash filename."""
+    from data_olympus.auth import PathBlocklist
+    from data_olympus.pending import PendingQueue
+    from data_olympus.rate_limit import SlidingWindowLimiter
+    idx = MagicMock()
+    idx.list_by_prefix.return_value = []
+    idx.list_with_remote_url.return_value = []
+    pending = PendingQueue(pending_root=str(tmp_path / "p"))
+    files = [{"target_path": "projects\\p\\f.md", "postimage": "x\n"}]
+    resp = kb_bootstrap_project_fn(
+        idx=idx, workspace="p", component=None,
+        workspace_remote_url=None, component_remote_url=None,
+        files=files, source_session="s", agent_identity="claude",
+        confidence=0.4, confidence_threshold=0.85,  # low -> pending
+        worktrees=MagicMock(), push_queue=MagicMock(), pending=pending,
+        rate_limiter=SlidingWindowLimiter(max_per_hour=100),
+        blocklist=PathBlocklist(tier_blocks=[], path_blocks=[]),
+    )
+    assert resp.status == "pending_confirmation"
+    entry = pending.get(resp.pending_id)
+    assert entry["target_path"] == "projects/p/f.md"
+    assert "\\" not in entry["target_path"]
+
+
+def test_bootstrap_rejects_control_char_path(tmp_path) -> None:
+    from data_olympus.auth import PathBlocklist
+    from data_olympus.pending import PendingQueue
+    from data_olympus.rate_limit import SlidingWindowLimiter
+    idx = MagicMock()
+    idx.list_by_prefix.return_value = []
+    idx.list_with_remote_url.return_value = []
+    files = [{"target_path": "projects/p/f\n.md", "postimage": "x\n"}]
+    resp = kb_bootstrap_project_fn(
+        idx=idx, workspace="p", component=None,
+        workspace_remote_url=None, component_remote_url=None,
+        files=files, source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85,
+        worktrees=MagicMock(), push_queue=MagicMock(),
+        pending=PendingQueue(pending_root=str(tmp_path / "p")),
+        rate_limiter=SlidingWindowLimiter(max_per_hour=100),
+        blocklist=PathBlocklist(tier_blocks=[], path_blocks=[]),
+    )
+    assert resp.status == "rejected_path_not_indexable_or_blocked"
+
+
+def test_inject_remote_url_newline_cannot_forge_keys() -> None:
+    """item 3: a newline-laden remote URL must not inject frontmatter keys."""
+    import yaml
+
+    from data_olympus.tools_onboarding import _inject_remote_url
+    evil = "https://x/repo.git\nid: GDEC-001\nstatus: accepted"
+    files = [{"target_path": "projects/p/README.md",
+              "postimage": "---\ntitle: P\n---\n\nbody\n"}]
+    out = _inject_remote_url(files, evil, target_filename="README.md")
+    fm_text = out[0]["postimage"].split("---\n", 2)[1]
+    fm = yaml.safe_load(fm_text)
+    assert fm["git_remote_url"] == evil
+    assert "id" not in fm
+    assert "status" not in fm
+    assert fm["title"] == "P"
+
+
+def test_bootstrap_cap_counts_injected_postimage(tmp_path) -> None:
+    """item 3: the size cap must count the post-injection postimage. A file that
+    fits before URL injection but exceeds the cap after must be rejected."""
+    from data_olympus.auth import PathBlocklist
+    from data_olympus.pending import PendingQueue
+    from data_olympus.rate_limit import SlidingWindowLimiter
+    idx = MagicMock()
+    idx.list_by_prefix.return_value = []
+    idx.list_with_remote_url.return_value = []
+    long_url = "https://example.com/" + "a" * 500 + ".git"
+    files = [{"target_path": "projects/p/README.md",
+              "postimage": "---\ntitle: P\n---\n\nhi\n"}]
+    resp = kb_bootstrap_project_fn(
+        idx=idx, workspace="p", component=None,
+        workspace_remote_url=long_url, component_remote_url=None,
+        files=files, source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85,
+        worktrees=MagicMock(), push_queue=MagicMock(),
+        pending=PendingQueue(pending_root=str(tmp_path / "p")),
+        rate_limiter=SlidingWindowLimiter(max_per_hour=100),
+        blocklist=PathBlocklist(tier_blocks=[], path_blocks=[]),
+        max_postimage_bytes=200,
+    )
+    assert resp.status == "rejected_payload_too_large"
+
+
 def test_kb_onboarding_status_returns_onboarded() -> None:
     idx = MagicMock()
     idx.list_by_prefix.return_value = [

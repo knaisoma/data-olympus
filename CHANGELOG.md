@@ -35,12 +35,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     prefix and invisible to `KB_WRITE_BLOCK_PATHS`. Path normalization now returns
     the canonical form and every downstream operation (classification, blocklist,
     join, `git add`, pending record) uses it; control characters (newline, CR, tab,
-    NUL) in a target path are rejected.
+    NUL) in a target path are rejected. The same canonical-path handling and safe
+    YAML frontmatter (with the size cap applied after remote-URL injection) now
+    also cover the onboarding bootstrap path.
   - **Enforcement-plane auth + rate limiting.** `/consult`, `/gate/check`, and
     `/onboarding/cleanup-plan` were anonymous-allowed even when auth was configured
     and were unthrottled. They now require an authenticated principal when auth is
     configured (no-auth deployments are unchanged) and are subject to the shared
-    rate limiter.
+    rate limiter. `kb_cleanup_plan` is added to the MCP auth-required tool set so
+    the MCP enforcement plane matches REST.
   - **Viewer HTML injection.** A doc body containing `</script>` could break out of
     the embedded `<script>` block and run arbitrary JS; `</` is now escaped to
     `<\/`. Fixed a substitution-ordering bug where a body containing the literal
