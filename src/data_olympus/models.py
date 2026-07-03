@@ -217,12 +217,13 @@ class GetResponse(BaseModel):
 
         Keeps the full ``content_markdown`` body by default: agents call kb_get
         precisely to read the doc, so truncating it would break the primary use.
-        Trims only the low-value envelope fields that the body already implies or
-        that a caller rarely needs inline: ``path`` (derivable from ``id`` /
-        present in the body's own links), ``git_remote_url``,
-        ``last_modified_source``, and ``source_commit``. Omits empty ``status`` /
-        ``type`` / ``applies_when`` / ``description``. ``verbose=True`` restores
-        the full shape.
+        Retains provenance a direct caller needs: ``source_commit`` (the commit
+        the doc was read at) and ``last_modified`` are kept. Trims only low-value
+        envelope fields: ``path`` (recoverable with ``kb_get(id, verbose=True)``),
+        ``git_remote_url`` (null for most docs), and ``last_modified_source`` (a
+        provenance *label* like ``git``/``mtime-fallback``, not the timestamp).
+        Omits empty ``status`` / ``type`` / ``applies_when`` / ``description``.
+        ``verbose=True`` restores the full shape.
         """
         d: dict[str, object] = {
             "id": self.id,
@@ -241,6 +242,7 @@ class GetResponse(BaseModel):
             d["description"] = self.description
         d["content_markdown"] = self.content_markdown
         d["last_modified"] = self.last_modified
+        d["source_commit"] = self.source_commit
         return d
 
 

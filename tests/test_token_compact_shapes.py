@@ -99,8 +99,11 @@ def test_get_compact_keeps_full_body_trims_envelope(
     compact = shape_response(resp, verbose=False)
 
     assert compact["content_markdown"] == resp.content_markdown, "full body preserved"
-    for dropped in ("path", "git_remote_url", "last_modified_source", "source_commit"):
+    for dropped in ("path", "git_remote_url", "last_modified_source"):
         assert dropped not in compact
+    # Provenance a direct caller needs is retained.
+    assert compact["source_commit"] == resp.source_commit
+    assert compact["last_modified"] == resp.last_modified
     assert compact["id"] == "STD-U-001"
     assert compact["tier"] == resp.tier
 

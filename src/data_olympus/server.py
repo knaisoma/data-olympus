@@ -504,10 +504,11 @@ def build_app(
         Returns the full content markdown plus metadata.
 
         verbose: False (default) returns the full `content_markdown` body (kb_get
-        exists to read the doc) with a trimmed envelope: `path`, `git_remote_url`,
-        `last_modified_source`, and `source_commit` are dropped and empty
-        status/type/applies_when/description are omitted. verbose=True returns the
-        full legacy envelope with every field."""
+        exists to read the doc) with a trimmed envelope: `path`,
+        `git_remote_url`, and `last_modified_source` are dropped and empty
+        status/type/applies_when/description are omitted; `source_commit` and
+        `last_modified` provenance are kept. verbose=True returns the full legacy
+        envelope with every field."""
         from data_olympus.tools_read import KbNotFoundError, kb_get_fn
         try:
             resp = kb_get_fn(idx=state.idx, id=id)

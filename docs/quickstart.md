@@ -90,9 +90,10 @@ representation, the compact default:
   is not currently in force** (e.g. `superseded`) and `type` when set. The `query`
   echo, the per-hit `path`, and the raw relevance `score` are dropped. To read a
   hit in full, call `kb_get` with its `id`; array order conveys rank.
-- `kb_get`: keeps the full `content_markdown` body (that is why you call it) and
-  trims low-value envelope fields (`path`, `git_remote_url`,
-  `last_modified_source`, `source_commit`).
+- `kb_get`: keeps the full `content_markdown` body (that is why you call it) plus
+  `source_commit`/`last_modified` provenance, and trims low-value envelope fields
+  (`path`, `git_remote_url`, `last_modified_source`). `path` is recoverable with
+  `kb_get(id, verbose=true)`.
 - `kb_list`: drops the per-entry `path` (fetch via `kb_get(id)`).
 - `kb_health`: keeps the core snapshot and omits diagnostic fields that are unset.
 - `kb_outline`: already lean; unchanged.
