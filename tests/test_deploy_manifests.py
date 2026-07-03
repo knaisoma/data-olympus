@@ -116,6 +116,27 @@ def test_readiness_probe_points_at_readyz() -> None:
     assert container["readinessProbe"]["httpGet"]["path"] == "/readyz"
 
 
+def test_image_tag_supports_readyz_and_rootless_flow() -> None:
+    """The manifest now depends on /readyz and the rootless /state/git-key flow,
+    both introduced in v0.3.0. Applying it against an older image (e.g. the old
+    placeholder v0.1.1) would leave the pod NotReady and break the deploy key, so
+    both containers must reference a tag >= v0.3.0 and share the same tag."""
+    sts = _statefulset()
+    spec = sts["spec"]["template"]["spec"]
+    main_img = spec["containers"][0]["image"]
+    init_img = spec["initContainers"][0]["image"]
+    # Both point at the same image (init prepares state the main container reads).
+    assert main_img == init_img, (main_img, init_img)
+    # Must not be a pre-/readyz tag. Guard against the specific stale placeholder
+    # and, generically, any v0.1.x / v0.2.x tag.
+    for img in (main_img, init_img):
+        tag = img.rsplit(":", 1)[-1]
+        assert tag != "v0.1.1", f"stale placeholder image tag: {img}"
+        assert not tag.startswith(("v0.1.", "v0.2.")), (
+            f"image tag {tag} predates /readyz + rootless flow (need >= v0.3.0)"
+        )
+
+
 def test_dockerfile_is_digest_pinned_and_rootless() -> None:
     text = (DOCKER_DIR / "Dockerfile").read_text()
     assert "python:3.13-slim@sha256:" in text  # digest-pinned base

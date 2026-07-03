@@ -32,7 +32,10 @@ spec:
       # transition anywhere in the pod.
       initContainers:
         - name: prepare-git
-          image: ghcr.io/knaisoma/data-olympus:v0.1.1  # keep in sync with the main container tag
+          # Must be >= v0.3.0: the rootless deploy-key staging (/state/git-key) and
+          # the /readyz probe below only exist from that release. Keep in sync with
+          # the main container tag.
+          image: ghcr.io/knaisoma/data-olympus:v0.3.0  # replace with your registry/tag or digest
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -94,7 +97,10 @@ spec:
           # For opt-in auto-update, switch to a mutable channel tag (e.g.
           # ghcr.io/knaisoma/data-olympus:stable) with imagePullPolicy: Always and
           # a scheduled `kubectl rollout restart` or an image-update controller.
-          image: ghcr.io/knaisoma/data-olympus:v0.1.1  # replace with your registry/tag or digest
+          # Must be >= v0.3.0: this manifest's /readyz probe and rootless
+          # /state/git-key entrypoint flow only exist from that release; an older
+          # image would stay NotReady and could not find the staged deploy key.
+          image: ghcr.io/knaisoma/data-olympus:v0.3.0  # replace with your registry/tag or digest
           imagePullPolicy: IfNotPresent
           # Fully non-root: the deploy-key staging + first-boot clone moved to the
           # non-root initContainer above, so the main container needs no root, no

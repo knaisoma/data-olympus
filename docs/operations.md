@@ -59,7 +59,10 @@ curl -s http://<host>/api/v1/audit/verify   # {"ok": true, "first_broken_index":
 
 `ok: false` means the hash chain is broken at `first_broken_index` (counted across
 all rotated segments + the live file, chronologically). Investigate before trusting
-recent audit records. See §2.2 and §4.5.
+recent audit records: someone edited, deleted, reordered, or (if `KB_AUDIT_HMAC_KEY`
+is set) forged a record, or a rotated segment was hand-edited (see §2.2). Preserve
+the current `/state/audit/` for forensics before any further writes; a clean backup
+(§2.2) taken while `verify` was `ok` is the recovery baseline.
 
 ---
 
@@ -292,21 +295,32 @@ default `/state/push-queue`):
 - **Drop:** delete the entry's `<sha>.json`. The commit stays on its session
   worktree branch but is never published.
 
-### 4.5 Rebase-conflict demotions (PR #89)
+### 4.5 Push-queue demotions to pending (PR #89)
 
 **Symptom:** a `push_conflict_demoted` audit event; a new **pending** entry appears
 in `kb_list_pending` that the agent did not create; `pending_count` rose without a
 new low-confidence proposal.
 
 **Cause (this is normal, not a fault):** a second overlapping session moved
-`origin/main` between a session's commit and its push, the push was rejected
-non-fast-forward, and the automatic rebase **conflicted** (both sessions edited the
-same lines). Rather than retry forever, the push loop **demoted** the commit to a
-pending proposal for operator resolution: it re-proposed the postimage as a pending
-edit (carrying the base the commit sat on), removed the push-queue entry, and
-recorded the audit event. Pure repeated contention (a non-conflicting non-FF that
-keeps losing the race) is retried in-line for a bounded number of passes and then
-demoted the same way instead of being counted toward the freeze cap.
+`origin/main` between a session's commit and its push and the push was rejected
+non-fast-forward. Rather than retry forever, the push loop **demoted** the commit
+to a pending proposal for operator resolution: it re-proposed the postimage as a
+pending edit (carrying the base the commit sat on), removed the push-queue entry,
+and recorded a `push_conflict_demoted` audit event (status `demoted_to_pending`).
+Two situations reach this same demotion path and emit the same audit
+event_type/status:
+
+- **Rebase conflict** — the automatic fetch+rebase could not re-apply the commit
+  because both sessions edited the same lines.
+- **Persistent contention** — a non-conflicting non-FF that kept losing the race
+  is retried in-line for a bounded number of passes, then demoted the same way
+  instead of counting toward the freeze cap.
+
+Both surface identically (one `push_conflict_demoted` status; the pending entry's
+`reason` is a generic "demoted from push queue after rebase conflict"), so do not
+rely on the audit record to tell the two apart. To confirm which occurred, inspect
+the push loop logs around the demotion timestamp: a rebase conflict logs the
+conflicting paths, whereas contention logs repeated non-FF retry passes.
 
 **Recovery:** resolve the demoted pending entry like any other. Approving re-applies
 the change on the current base, subject to the CAS / content-validation gates:
