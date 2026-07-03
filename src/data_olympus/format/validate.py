@@ -12,6 +12,15 @@ TYPES = frozenset({"standard", "decision", "workflow", "project", "memory", "ref
 STATUSES = frozenset(
     {"draft", "active", "deprecated", "superseded", "proposed", "accepted", "rejected"}
 )
+# The in-force status class: guidance that currently applies and should be
+# retrievable, as opposed to retired (superseded/deprecated/rejected) or
+# not-yet-in-force (draft/proposed) statuses. This is the SINGLE definition of
+# the class; Index.search(in_force=True) and the status reranker both consult it.
+# ``approved`` is not in the schema STATUSES enum above (the SPEC vocabulary uses
+# ``accepted`` for in-force decisions), but the target KB also uses ``approved``
+# for accepted decisions, so it is included here so an in-force filter over a
+# real KB does not silently drop those docs (issue #68).
+IN_FORCE_STATUSES = frozenset({"active", "accepted", "approved"})
 TIERS = frozenset({"T1", "T2", "T3", "T4", "meta"})
 RESERVED = frozenset({"index.md", "log.md", "template.md"})
 REQUIRED = ("id", "type", "status", "tier")
