@@ -25,16 +25,17 @@ if TYPE_CHECKING:
     from data_olympus.push_queue import PushQueue
     from data_olympus.rate_limit import SlidingWindowLimiter
     from data_olympus.worktrees import WorktreeRegistry
+    from data_olympus.write_gate import WriteSerializer
 
 
 def _pending_root(pending: PendingQueue) -> str:
-    """Best-effort read of the pending queue's on-disk root.
+    """The pending queue's on-disk root, via its public ``root`` property.
 
-    SEAM: PendingQueue has no public root accessor (module owned by a concurrent
-    Wave-1 package). We read the private ._root; if that ever disappears we fall
-    back to KB_PENDING_ROOT (the same env config.py reads) so the in-flight guard
-    still lands on the state volume rather than crashing."""
-    root = getattr(pending, "_root", None)
+    (The Wave-1 write-pipeline package added ``PendingQueue.root`` so this no
+    longer reaches into the private ``_root``.) Falls back to KB_PENDING_ROOT
+    (the same env config.py reads) if the accessor is somehow unavailable, so the
+    in-flight guard still lands on the state volume rather than crashing."""
+    root = getattr(pending, "root", None)
     if isinstance(root, str):
         return root
     return os.getenv("KB_PENDING_ROOT", "/state/pending")
@@ -95,6 +96,7 @@ def kb_bootstrap_project_fn(
     max_postimage_bytes: int = 0,
     max_files: int = 0,
     in_flight: BootstrapInFlight | None = None,
+    serializer: WriteSerializer | None = None,
 ) -> BootstrapResponse:
     """Bootstrap a new workspace/component. Callable when status is ``absent`` or
     ``partial``.
@@ -131,10 +133,9 @@ def kb_bootstrap_project_fn(
     # the pending queue, unless the caller injected one (tests). Both entry points
     # (MCP tool, REST route) run in one process and share one PendingQueue, so a
     # filesystem marker beside the pending root is a process-wide guard without
-    # threading a new argument through the off-limits server.py / rest_api.py
-    # wiring. SEAM: PendingQueue exposes no public root accessor yet, so we read
-    # its ._root. A one-line public `root` property on the Wave-1-owned pending
-    # module would let us drop this; flagged in the PR body.
+    # threading a new argument through the server.py / rest_api.py wiring. The
+    # pending root is read via the public ``PendingQueue.root`` property (added by
+    # the Wave-1 write-pipeline package) through ``_pending_root``.
     if in_flight is None:
         in_flight = BootstrapInFlight(
             os.path.join(os.path.dirname(_pending_root(pending)), "bootstrap-inflight"),
@@ -157,6 +158,7 @@ def kb_bootstrap_project_fn(
     committed = False
     try:
         resp = _bootstrap_admitted(
+            idx=idx,
             status_obj=s,
             workspace=workspace, component=component,
             workspace_remote_url=workspace_remote_url,
@@ -168,6 +170,7 @@ def kb_bootstrap_project_fn(
             rate_limiter=rate_limiter, blocklist=blocklist,
             remote_addr=remote_addr, can_auto_commit=can_auto_commit,
             max_postimage_bytes=max_postimage_bytes, max_files=max_files,
+            serializer=serializer,
         )
         committed = resp.status == "committed"
         return resp
@@ -178,6 +181,7 @@ def kb_bootstrap_project_fn(
 
 def _bootstrap_admitted(
     *,
+    idx: Index,
     status_obj: OnboardingStatus,
     workspace: str,
     component: str | None,
@@ -197,6 +201,7 @@ def _bootstrap_admitted(
     can_auto_commit: bool,
     max_postimage_bytes: int,
     max_files: int,
+    serializer: WriteSerializer | None = None,
 ) -> BootstrapResponse:
     """Body of a bootstrap that passed the state re-check and won the in-flight
     claim. Split out so the outer function owns the claim/release lifecycle and
@@ -208,7 +213,6 @@ def _bootstrap_admitted(
     from data_olympus.auth import (
         is_writable_path,
         normalize_target_path,
-        safe_join_under_root,
     )
     from data_olympus.index import _classify_by_path
 
@@ -372,37 +376,42 @@ def _bootstrap_admitted(
             ),
         )
 
-    # High confidence: one atomic commit with all files.
-    import subprocess
-
-    from data_olympus.audit_trailers import build_commit_message
-    wt = worktrees.get_or_create(source_session=source_session, agent_identity=agent_identity)
-    for f in files:
-        # Shared symlink-escape containment guard (see safe_join_under_root).
-        full_path = safe_join_under_root(wt.path, f["target_path"])
-        if full_path is None:
-            return BootstrapResponse(status="rejected_symlink_escape",
-                                     rejected_paths=[f["target_path"]])
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        with open(full_path, "w", encoding="utf-8") as out:
-            out.write(f["postimage"])
-        subprocess.run(["git", "-C", wt.path, "add", f["target_path"]], check=True)
+    # High confidence: one atomic commit with all files, through the SHARED
+    # serialized/validated write path (Codex Blocker 2). This gives bootstrap the
+    # same integrity guarantees as memory/edit/resolve: process-wide write lock,
+    # per-path advisory locks (shared with the pending queue), the
+    # content-validation gate on every postimage, and reset-on-failure so a
+    # partial bundle never leaks into the next commit.
+    from data_olympus.pending import PathLockBusyError
+    from data_olympus.tools_write import (
+        _DEFAULT_SERIALIZER,
+        _WriteRejected,
+        commit_multifile_in_worktree,
+    )
     subject = (f"bootstrap: workspace={workspace}, component={component or ''}, "
                f"{len(files)} files")
-    msg = build_commit_message(
-        subject=subject,
-        source_session=source_session, agent_identity=agent_identity,
-        confidence_original=confidence, operator_confirmed=False,
-        proposal_type="edit",
-        target_tier="T4" if component else "T3",
-        target_path=f"projects/{workspace}/" + (f"components/{component}/" if component else ""),
-    )
-    subprocess.run(["git", "-C", wt.path, "commit", "-m", msg], check=True)
-    sha = subprocess.check_output(["git", "-C", wt.path, "rev-parse", "HEAD"], text=True).strip()
-    push_queue.enqueue(sha=sha, worktree_path=wt.path,
-                       meta={"source_session": source_session,
-                             "agent_identity": agent_identity, "bootstrap": True})
-    return BootstrapResponse(status="committed", commit_sha=sha, push_state="queued")
+    tier = "T4" if component else "T3"
+    path_for_msg = (f"projects/{workspace}/"
+                    + (f"components/{component}/" if component else ""))
+    try:
+        sha, push_state = commit_multifile_in_worktree(
+            worktrees=worktrees, push_queue=push_queue, pending=pending,
+            serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
+            source_session=source_session, agent_identity=agent_identity,
+            files=files, subject=subject, target_tier=tier,
+            target_path_for_msg=path_for_msg, confidence=confidence,
+            push_meta={"source_session": source_session,
+                       "agent_identity": agent_identity, "bootstrap": True},
+        )
+    except _WriteRejected as rej:
+        resp = rej.response
+        return BootstrapResponse(status=resp.status,
+                                 rejected_paths=[resp.target_path or ""])
+    except PathLockBusyError as busy:
+        return BootstrapResponse(status="rejected_path_lock_busy",
+                                 rejected_paths=[str(busy)])
+    return BootstrapResponse(status="committed", commit_sha=sha,
+                             push_state=push_state)
 
 
 def _inject_remote_url(

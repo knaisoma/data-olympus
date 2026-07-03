@@ -2,6 +2,19 @@
 # Runs as root. Handles SSH key + (optional) /kb-main bootstrap, then drops to uid 65534.
 set -e
 
+# --- Git author/committer identity (scope item 10) ---------------------------
+# The shipped image sets no git user, so a commit inside a fresh container fails
+# with "Please tell me who you are". Export a default identity (operator-
+# overridable via KB_GIT_AUTHOR_NAME / KB_GIT_AUTHOR_EMAIL) so the artifact can
+# commit out of the box. The GIT_* vars are inherited by every git subprocess the
+# server spawns (tools_write, push queue). See docs/serving.md.
+GIT_NAME="${KB_GIT_AUTHOR_NAME:-data-olympus-mcp}"
+GIT_EMAIL="${KB_GIT_AUTHOR_EMAIL:-data-olympus-mcp@localhost}"
+export GIT_AUTHOR_NAME="$GIT_NAME"
+export GIT_AUTHOR_EMAIL="$GIT_EMAIL"
+export GIT_COMMITTER_NAME="$GIT_NAME"
+export GIT_COMMITTER_EMAIL="$GIT_EMAIL"
+
 # --- Writable scratch under a read-only root filesystem ----------------------
 # When the container runs with readOnlyRootFilesystem, /tmp is an emptyDir mount
 # that starts empty (masking the image's pre-created /tmp/uv-cache). Recreate the

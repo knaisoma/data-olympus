@@ -222,9 +222,12 @@ A conformant write-enabled data-olympus server MUST run as a **single replica**,
 
 **Rationale.** The write path is intentionally single-writer:
 
-- Per-path advisory locks prevent two concurrent write operations from racing on the same concept file.
+- A process-wide write serializer wraps the write → `git add` → commit → enqueue critical section, so two concurrent write operations in the same session cannot interleave (one thread's commit sweeping another's staged file).
+- Per-path advisory locks prevent two concurrent write operations from racing on the same concept file. The lock is SHARED between the auto-commit path and the pending queue: an auto-commit cannot land on a path that already has a pending proposal in flight (whose later approval would clobber it), and vice versa. An orphaned lock (a crash between lock acquisition and the pending entry write) is reclaimed by the pending GC loop.
+- Committed postimages pass a content-validation gate before commit: malformed YAML frontmatter, an invalid `type`/`status`/`tier` enum value, and a forged/duplicate `id` (one already used by a different path, which would break every subsequent index rebuild) are rejected `rejected_invalid_document` rather than pushed to `origin/main`.
+- Optimistic concurrency: when a caller supplies a base marker (`base_commit` / `base_blob_sha` / `target_file_hash`) the server refreshes the session worktree's base onto `origin/main` and compares; a stale base is rejected `rejected_stale_base` without committing. When no marker is supplied behavior is unchanged.
 - Per-session git worktrees isolate in-flight proposed edits from the live index until they are committed.
-- A durable push queue serializes outbound git pushes so no write is lost if the remote is briefly unavailable.
+- A durable push queue serializes outbound git pushes so no write is lost if the remote is briefly unavailable. A push rejected non-fast-forward (a second overlapping session moved `origin/main`) triggers a fetch + rebase of the session branch and a retry; if the rebase conflicts, the commit is demoted to a pending entry for operator resolution (with a `push_conflict_demoted` audit event) rather than retrying forever.
 
 A single shared HTTP surface, rather than N independent stdio processes, gives every agent one synchronized conversation with the server. When multiple agents each run their own stdio MCP process against the same git working tree, they race each other's worktrees and lock state. Streamable HTTP eliminates that race: all agents share the same server process and its in-process coordination.
 

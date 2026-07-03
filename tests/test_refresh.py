@@ -153,11 +153,11 @@ def test_push_retry_loop_invokes_drain_periodically() -> None:
     calls = []
 
     class FakePushQueue:
-        def drain(self, *, push_fn, max_attempts):  # noqa: ARG002
+        def drain(self, *, push_fn, max_attempts, on_rebase_conflict=None):  # noqa: ARG002
             calls.append(time.time())
 
     class FakeGitOps:
-        def push(self, worktree_path):  # noqa: ARG002
+        def push_with_rebase_recovery(self, worktree_path, *, timeout_sec=60):  # noqa: ARG002
             pass
 
     pq = FakePushQueue()
@@ -188,11 +188,11 @@ def test_push_retry_loop_runs_drain_off_the_event_loop() -> None:
     main_thread = threading.get_ident()
 
     class FakePushQueue:
-        def drain(self, *, push_fn, max_attempts):  # noqa: ARG002
+        def drain(self, *, push_fn, max_attempts, on_rebase_conflict=None):  # noqa: ARG002
             threads.append(threading.get_ident())
 
     class FakeGitOps:
-        def push(self, worktree_path, *, timeout_sec=60):  # noqa: ARG002
+        def push_with_rebase_recovery(self, worktree_path, *, timeout_sec=60):  # noqa: ARG002
             pass
 
     async def runner():
@@ -219,11 +219,11 @@ def test_push_retry_loop_passes_push_timeout_to_git_push() -> None:
     seen_timeouts: list[int] = []
 
     class FakePushQueue:
-        def drain(self, *, push_fn, max_attempts):  # noqa: ARG002
-            push_fn("/tmp/wt")  # exercise the closure so git.push is called
+        def drain(self, *, push_fn, max_attempts, on_rebase_conflict=None):  # noqa: ARG002
+            push_fn("/tmp/wt")  # exercise the closure so the push is called
 
     class FakeGitOps:
-        def push(self, worktree_path, *, timeout_sec=60):  # noqa: ARG002
+        def push_with_rebase_recovery(self, worktree_path, *, timeout_sec=60):  # noqa: ARG002
             seen_timeouts.append(timeout_sec)
 
     async def runner():
@@ -261,3 +261,56 @@ def test_worktree_gc_loop_invokes_gc_periodically() -> None:
 
     asyncio.run(runner())
     assert calls and all(c == 3600 for c in calls)
+
+
+# ---- item 7: pending expiry emits an audit event + orphan-lock reclaim ----
+
+
+def test_pending_gc_loop_emits_expiry_audit_and_reclaims_locks(tmp_path) -> None:
+    """An expired (>timeout) pending entry is auto-rejected AND records a
+    pending_expired audit event (item 7); orphaned path locks are reclaimed."""
+    import uuid
+
+    from data_olympus.audit_log import AuditLog
+    from data_olympus.pending import PendingQueue
+    from data_olympus.refresh import pending_gc_loop
+
+    pen = PendingQueue(pending_root=str(tmp_path / "p"))
+    audit = AuditLog(log_path=str(tmp_path / "audit.log"), hmac_key="")
+    # Enqueue an entry, then backdate it so it is already expired.
+    pid = pen.enqueue(
+        proposal_type="edit", target_path="decisions/expired.md",
+        postimage="x", base_commit="c", base_blob_sha=None, target_file_hash=None,
+        meta={"agent_identity": "claude"},
+    )
+    entry_file = tmp_path / "p" / f"{pid}.json"
+    import json
+    data = json.loads(entry_file.read_text())
+    data["enqueued_at"] = time.time() - 10_000
+    entry_file.write_text(json.dumps(data))
+    # Plant an orphaned lock (crash between lock create and entry write).
+    orphan = uuid.uuid4().hex
+    pen._acquire_lock("decisions/orphan.md", orphan)  # noqa: SLF001
+
+    async def runner():
+        task = asyncio.create_task(
+            pending_gc_loop(pending=pen, timeout_sec=3600, interval_sec=0.01,
+                            audit_log=audit)
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(runner())
+
+    # The expired entry is gone.
+    assert pen.size() == 0
+    # The orphaned lock was reclaimed.
+    assert pen.locks_held() == 0
+    # A pending_expired audit event was recorded.
+    events = list(audit.iter_filtered())
+    expired = [e for e in events if e.get("event_type") == "pending_expired"]
+    assert expired
+    assert expired[0]["status"] == "auto_rejected"
+    assert expired[0]["target_path"] == "decisions/expired.md"

@@ -40,6 +40,13 @@ class WorktreeRegistry:
         self._root = worktree_root
         os.makedirs(self._root, exist_ok=True)
 
+    @property
+    def git(self) -> GitOps:
+        """The GitOps handle for the main repo backing this registry. The write
+        path uses it to refresh a session worktree's base onto origin/main (git
+        subcommands accept ``-C <worktree>``, so one handle serves any worktree)."""
+        return self._git
+
     def get_or_create(
         self,
         *,

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from data_olympus.auth import PathBlocklist
@@ -487,3 +488,325 @@ def test_pending_get_rejects_traversal_id(tmp_path) -> None:
     import pytest
     with pytest.raises(PendingNotFoundError):
         pen.get("../../etc/passwd")
+
+
+# ---- 0.3.0 epic #72: CAS, validation gate, filename collision, double-resolve ----
+
+
+def _build_index(repo):
+    """Build an Index over the current repo HEAD so the validation gate has a
+    live corpus to check duplicate ids against."""
+    import tempfile
+
+    from data_olympus.index import Index
+    idx = Index(Path(tempfile.mkdtemp()) / "index.db")
+    idx.build(Path(str(repo)), source_commit="seed")
+    return idx
+
+
+def test_propose_edit_stale_base_rejected(tmp_path, monkeypatch) -> None:
+    """CAS (item 3): a base_blob_sha that does not match the current target
+    content on the refreshed base is rejected rejected_stale_base without a
+    commit."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    target, _real_blob = _seed_t1_file(repo)
+    # Supply a WRONG base blob sha -> stale.
+    from data_olympus.write_gate import _blob_sha
+    wrong = _blob_sha(b"content the caller wrongly believes is there\n")
+    resp = kb_propose_edit_fn(
+        target_path=target, postimage="new body\n", base_commit="HEAD",
+        base_blob_sha=wrong, target_file_hash=None, reason="fix",
+        source_session="s", agent_identity="claude", confidence=0.95,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    assert resp.status == "rejected_stale_base"
+    assert pq.size() == 0
+
+
+def test_propose_edit_correct_base_commits(tmp_path, monkeypatch) -> None:
+    """CAS pass-through: the correct base_blob_sha commits normally."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    target, blob = _seed_t1_file(repo)
+    # blob from _seed_t1_file is the ls-tree blob of the seeded content, which is
+    # what the session worktree's base holds. It must match.
+    resp = kb_propose_edit_fn(
+        target_path=target, postimage="new body\n", base_commit="HEAD",
+        base_blob_sha=blob, target_file_hash=None, reason="fix",
+        source_session="s", agent_identity="claude", confidence=0.95,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    assert resp.status == "committed"
+    assert pq.size() == 1
+
+
+def test_propose_edit_malformed_yaml_rejected(tmp_path, monkeypatch) -> None:
+    """Validation gate (item 4): a postimage with unterminated frontmatter is
+    rejected rejected_invalid_document, not committed."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    idx = _build_index(git._repo)
+    resp = kb_propose_edit_fn(
+        target_path="universal/foundation/STD-U-099.md",
+        postimage="---\nid: X\n# never closed\nbody\n",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason="", source_session="s", agent_identity="claude", confidence=0.95,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4", idx=idx,
+    )
+    assert resp.status == "rejected_invalid_document"
+    assert pq.size() == 0
+
+
+def test_propose_edit_duplicate_id_rejected(tmp_path, monkeypatch) -> None:
+    """Validation gate (item 4): a forged duplicate id (already used at a
+    different path) is rejected so the next index rebuild cannot break."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    # Seed STD-U-001 in the repo so the index knows that id -> that path.
+    _seed_t1_file(repo)
+    idx = _build_index(repo)
+    forged = "---\nid: STD-U-001\ntype: standard\nstatus: active\ntier: T1\n---\nforged\n"
+    resp = kb_propose_edit_fn(
+        target_path="decisions/DEC-forged.md", postimage=forged,
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason="", source_session="s", agent_identity="claude", confidence=0.95,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4", idx=idx,
+    )
+    assert resp.status == "rejected_invalid_document"
+    assert "already used" in (resp.reason or "").lower()
+    assert pq.size() == 0
+
+
+def test_memory_filename_collision_distinct_sessions(tmp_path, monkeypatch) -> None:
+    """item 6: two same-day, same-slug memories from DIFFERENT sessions get
+    distinct filenames (the uniquifier), so neither overwrites the other."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    common = dict(
+        text="daily standup note", tags=[], confidence=0.95,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=SlidingWindowLimiter(max_per_hour=100), blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    r1 = kb_propose_memory_fn(source_session="session-A", agent_identity="claude",
+                              **common)
+    r2 = kb_propose_memory_fn(source_session="session-B", agent_identity="claude",
+                              **common)
+    assert r1.status == "committed"
+    assert r2.status == "committed"
+    # Both files exist under memory/inbox with DIFFERENT names.
+    import glob
+    wt_a = reg.get_or_create(source_session="session-A", agent_identity="claude")
+    wt_b = reg.get_or_create(source_session="session-B", agent_identity="claude")
+    files_a = {os.path.basename(p)
+               for p in glob.glob(os.path.join(wt_a.path, "memory", "inbox", "*.md"))}
+    files_b = {os.path.basename(p)
+               for p in glob.glob(os.path.join(wt_b.path, "memory", "inbox", "*.md"))}
+    assert files_a and files_b
+    assert files_a != files_b  # distinct filenames, no silent overwrite
+
+
+def test_double_resolve_second_reports_already_resolved_or_not_found(
+    tmp_path, monkeypatch,
+) -> None:
+    """item 5: after one resolve commits, a second resolve of the same id does
+    NOT produce a second commit. The loser surfaces already_resolved (concurrent
+    window) or PendingNotFoundError (sequential, entry gone)."""
+    _set_git_env(monkeypatch)
+    from data_olympus.pending import PendingNotFoundError
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    m = kb_propose_memory_fn(
+        text="a memory", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.3, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    first = kb_resolve_pending_fn(
+        pending_id=m.pending_id, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=pq, pending=pen,
+        source_session="s", agent_identity="operator",
+    )
+    assert first.status == "committed"
+    assert pq.size() == 1
+    import pytest
+    with pytest.raises(PendingNotFoundError):
+        kb_resolve_pending_fn(
+            pending_id=m.pending_id, decision="approve", edited_text=None,
+            worktrees=reg, push_queue=pq, pending=pen,
+            source_session="s", agent_identity="operator",
+        )
+    # Still exactly one commit enqueued.
+    assert pq.size() == 1
+
+
+# ---- Codex round-2 Blocker B: resolve gate rejection restores the pending entry ----
+
+
+def test_resolve_stale_base_restores_pending_entry(tmp_path, monkeypatch) -> None:
+    """If CAS rejects during a resolve, the pending entry is put back (not lost)
+    and the path lock stays held, so the operator can re-resolve it."""
+    _set_git_env(monkeypatch)
+    from data_olympus.write_gate import _blob_sha
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    target, _blob = _seed_t1_file(repo)
+    # Park a low-conf edit as pending with a STALE base_blob_sha so the resolve's
+    # CAS gate rejects it.
+    stale = _blob_sha(b"content the proposer wrongly believed\n")
+    m = kb_propose_edit_fn(
+        target_path=target, postimage="new body\n", base_commit="HEAD",
+        base_blob_sha=stale, target_file_hash=None, reason="lowconf",
+        source_session="s", agent_identity="claude", confidence=0.3,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    assert m.status == "pending_confirmation"
+    assert pen.size() == 1
+    resp = kb_resolve_pending_fn(
+        pending_id=m.pending_id, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=pq, pending=pen,
+        source_session="s", agent_identity="operator",
+    )
+    assert resp.status == "rejected_stale_base"
+    assert pq.size() == 0
+    # The entry is restored (not consumed) so it can be re-resolved.
+    assert pen.size() == 1
+    assert pen.locks_held() == 1  # path lock still held by the restored entry
+
+
+# ---- Codex round-3: truthful push_state on post-commit enqueue failure ----
+
+
+def test_enqueue_failure_reports_recovery_pending_not_queued(tmp_path, monkeypatch) -> None:
+    """If BOTH the enqueue and the in-process recovery re-enqueue fail after a
+    successful commit, the response push_state is the truthful
+    enqueue_failed_recovery_pending (not 'queued'), and the commit still exists
+    (recoverable by init_recovery)."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+
+    class FailingPushQueue:
+        def enqueue(self, **_kwargs):
+            raise OSError("state volume full")
+
+    resp = kb_propose_memory_fn(
+        text="a note", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85, worktrees=reg,
+        push_queue=FailingPushQueue(), pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    assert resp.status == "committed"
+    assert resp.commit_sha  # the commit was made and is durable
+    assert resp.push_state == "enqueue_failed_recovery_pending"
+
+
+def test_enqueue_recovery_retry_succeeds_reports_queued(tmp_path, monkeypatch) -> None:
+    """If the first enqueue fails but the in-process recovery retry succeeds, the
+    push_state is 'queued' (the entry landed)."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+
+    class FlakyPushQueue:
+        def __init__(self):
+            self.calls = 0
+            self.enqueued = []
+
+        def enqueue(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError("transient")
+            self.enqueued.append(kwargs["sha"])
+
+    fq = FlakyPushQueue()
+    resp = kb_propose_memory_fn(
+        text="a note", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85, worktrees=reg,
+        push_queue=fq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    assert resp.status == "committed"
+    assert resp.push_state == "queued"
+    assert fq.enqueued == [resp.commit_sha]
+
+
+def test_resolve_enqueue_failure_reports_recovery_pending(tmp_path, monkeypatch) -> None:
+    """Codex round-4: a resolve whose post-commit enqueue fails surfaces the
+    truthful push_state on ResolvePendingResponse (not a bare committed), while
+    still consuming the pending entry (the commit is durable)."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    # Park a low-conf memory as pending using the real queue.
+    m = kb_propose_memory_fn(
+        text="note", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.3, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+
+    class FailingPushQueue:
+        def enqueue(self, **_kwargs):
+            raise OSError("state volume full")
+
+    resp = kb_resolve_pending_fn(
+        pending_id=m.pending_id, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=FailingPushQueue(), pending=pen,
+        source_session="s", agent_identity="operator",
+    )
+    assert resp.status == "committed"
+    assert resp.commit_sha
+    assert resp.push_state == "enqueue_failed_recovery_pending"
+    assert pen.size() == 0  # entry consumed (commit exists; recovery republishes)
+
+
+def test_cas_marker_with_refresh_failure_rejects_stale_base(tmp_path, monkeypatch) -> None:
+    """Codex round-5: when the caller supplied an enforceable base marker but the
+    worktree base cannot be refreshed onto origin/main, CAS cannot be verified, so
+    the write is rejected rejected_stale_base instead of committing against a
+    possibly-stale base."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    target, blob = _seed_t1_file(repo)
+
+    # Force refresh_base to fail (e.g. network/fetch error) for this registry.
+    def boom(_wt, **_kw):
+        raise RuntimeError("fetch_failed: origin unreachable")
+    monkeypatch.setattr(reg.git, "refresh_base", boom)
+
+    resp = kb_propose_edit_fn(
+        target_path=target, postimage="new body\n", base_commit="HEAD",
+        base_blob_sha=blob,  # enforceable marker -> refresh failure is fatal
+        target_file_hash=None, reason="fix", source_session="s",
+        agent_identity="claude", confidence=0.95, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    assert resp.status == "rejected_stale_base"
+    assert "refreshed" in (resp.reason or "")
+    assert pq.size() == 0
+
+
+def test_no_marker_with_refresh_failure_still_commits(tmp_path, monkeypatch) -> None:
+    """A refresh failure with NO base marker (CAS is a no-op) stays non-fatal: the
+    commit sits on the unrefreshed base and the push path's non-FF recovery
+    publishes it."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+
+    def boom(_wt, **_kw):
+        raise RuntimeError("fetch_failed")
+    monkeypatch.setattr(reg.git, "refresh_base", boom)
+
+    resp = kb_propose_memory_fn(
+        text="note", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    assert resp.status == "committed"
+    assert pq.size() == 1
