@@ -42,7 +42,8 @@ See `docs/quickstart.md` for the full local-run walkthrough, including curl and 
 - [`SPEC.md`](SPEC.md): format specification (bundle layout, frontmatter schema, serving contracts).
 - [`docs/quickstart.md`](docs/quickstart.md): verified local-run procedure.
 - [`docs/adoption.md`](docs/adoption.md): bring-your-own-KB guide (author, lint, index, serve, wire an agent).
-- [`docs/serving.md`](docs/serving.md): single-replica serving model, read-only replicas, git pull loop.
+- [`docs/serving.md`](docs/serving.md): single-replica serving model, read-only replicas, git pull loop, health/readiness/liveness split, proxy headers, audit-log rotation.
+- [`docs/operations.md`](docs/operations.md): production runbook — backup, upgrade, recovery playbooks (degraded/fetch-failed, history rewrite, frozen/demoted push entries, orphaned locks), and the health/alerting model.
 - [`docs/comparison.md`](docs/comparison.md): how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 - [`docs/enforcement.md`](docs/enforcement.md): turning the KB into a mandatory consultation gate (hooks, `kb enforce`).
 - [`benchmarks/README.md`](benchmarks/README.md): retrieval benchmark methodology and how to reproduce the numbers in `docs/comparison.md`.

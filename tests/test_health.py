@@ -95,6 +95,44 @@ def test_health_response_includes_path_locks_held(tmp_kb, tmp_index_path):
     assert resp.path_locks_held == 2
 
 
+def test_snapshot_surfaces_malformed_frontmatter(tmp_kb, tmp_path):
+    """malformed_frontmatter from Index.health() is threaded onto the snapshot and
+    does NOT flip degraded (it is a warning signal)."""
+    idx = Index(tmp_path / "idx.db")
+    idx.build(tmp_kb, source_commit="x")
+    state = snapshot(idx=idx, last_git_pull_at=time.time(), staleness_degraded_sec=600)
+    # Clean corpus: zero malformed, healthy.
+    assert state.malformed_frontmatter == 0
+    assert state.degraded is False
+
+
+def test_malformed_frontmatter_does_not_flip_degraded(tmp_path, monkeypatch):
+    """Even with a non-zero malformed count, degraded stays driven by staleness /
+    build status only."""
+    idx = Index(tmp_path / "idx.db")
+
+    def fake_health() -> dict[str, object]:
+        return {
+            "source_commit": "c", "index_built_at": 1.0, "total_docs": 5,
+            "db_size_bytes": 100, "malformed_frontmatter": 3,
+        }
+
+    monkeypatch.setattr(idx, "health", fake_health)
+    state = snapshot(idx=idx, last_git_pull_at=time.time(), staleness_degraded_sec=600)
+    assert state.malformed_frontmatter == 3
+    assert state.degraded is False
+
+
+def test_health_response_surfaces_malformed_frontmatter(tmp_kb, tmp_index_path):
+    from data_olympus.index import Index
+    from data_olympus.tools_read import kb_health_fn
+
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    resp = kb_health_fn(idx=idx, last_git_pull_at=None, staleness_degraded_sec=600)
+    assert resp.malformed_frontmatter == 0
+
+
 def test_snapshot_threads_push_queue_frozen(tmp_kb, tmp_path):
     idx = Index(tmp_path / "idx.db")
     idx.build(tmp_kb, source_commit="x")

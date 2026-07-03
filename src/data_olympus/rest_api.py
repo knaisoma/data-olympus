@@ -342,9 +342,50 @@ def register_routes(
         resp = _build_health(state)
         # Degraded health responses MUST return 503 so the
         # CLI's --no-stale contract (exit 2 on HTTP 200 or 503 degraded) is meaningful.
+        # NOTE: /api/v1/health is DELIBERATELY not the k8s readiness probe target
+        # (that is /readyz). Data staleness (a >KB_STALENESS_DEGRADED_SEC git-remote
+        # outage) flips degraded here, and if this route drove readiness a stale-but-
+        # serviceable single pod would be ejected from the Service, turning "reads are
+        # a bit old" into a hard 503. Alert on this route's degraded flag instead
+        # (see docs/operations.md). The CLI --no-stale contract still depends on the
+        # 503-on-degraded behaviour, so it stays here.
         status = 503 if resp.degraded else 200
         verbose = _query_bool(request.query_params.get("verbose"))
         return JSONResponse(shape_response(resp, verbose=verbose), status_code=status)
+
+    @app.custom_route("/readyz", methods=["GET"])
+    async def readyz(_request: Request) -> JSONResponse:
+        # Kubernetes READINESS probe target. Ready == the process is up and the
+        # index is loaded and serviceable, INDEPENDENT of data staleness. This is
+        # the split from /api/v1/health: a git-remote outage makes the KB stale
+        # (health degraded -> 503) but the last-good index still answers reads
+        # perfectly, so readiness must stay 200 and keep the pod in the Service.
+        # We report NOT-ready only when reads genuinely cannot be served: no index
+        # built yet (cold start / never-successful build) or the last index build
+        # failed (a corrupt/duplicate-id rebuild left no swap-in). Served inline
+        # (like /api/v1/health) so the probe never queues behind the worker pool.
+        resp = _build_health(state)
+        ready = resp.index_built_at is not None and resp.last_index_build_status == "ok"
+        body = {
+            "ready": ready,
+            "index_built_at": resp.index_built_at,
+            "total_rules": resp.total_rules,
+            "last_index_build_status": resp.last_index_build_status,
+        }
+        if not ready:
+            body["error"] = "not_ready"
+        return JSONResponse(body, status_code=200 if ready else 503)
+
+    @app.custom_route("/livez", methods=["GET"])
+    async def livez(_request: Request) -> JSONResponse:
+        # Kubernetes LIVENESS probe target. Liveness answers "is the process
+        # responsive?" only: if this handler runs at all, the event loop is alive,
+        # so it is always 200. Deliberately independent of index/git/staleness
+        # state so a degraded-but-running pod is NOT killed and restarted (a
+        # restart cannot fix an upstream git-remote outage and only drops the
+        # last-good index). The existing tcpSocket liveness probe is equivalent;
+        # this HTTP variant is offered for operators who prefer an explicit route.
+        return JSONResponse({"alive": True}, status_code=200)
 
     @app.custom_route("/api/v1/outline", methods=["GET"])
     async def outline(request: Request) -> JSONResponse:

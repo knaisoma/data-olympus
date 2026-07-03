@@ -35,6 +35,11 @@ class Config:
     git_key_path: str = "/tmp/git-key"
     audit_log_path: str = "/state/audit/events.log"
     audit_hmac_key: str = ""
+    # Size-based audit-log rotation threshold in bytes (KB_AUDIT_MAX_BYTES). 0
+    # (default) disables rotation: the log stays a single file (backward
+    # compatible). When set, a fresh append rotates the live file once it exceeds
+    # this size; the tamper-evident hash chain carries across the boundary.
+    audit_max_bytes: int = 0
     auth_token: str = ""
     auth_principals: list[dict[str, Any]] = field(default_factory=list)
     consult_ttl_sec: int = 300
@@ -85,6 +90,14 @@ class Config:
     embeddings_enabled: bool = False
     embeddings_weight: float = 0.35
     embeddings_model: str = "BAAI/bge-small-en-v1.5"
+    # Trusted reverse-proxy addresses for X-Forwarded-For handling
+    # (KB_TRUSTED_PROXIES, comma-separated). Empty (default) means uvicorn runs
+    # with proxy_headers OFF: X-Forwarded-For is ignored and the real remote_addr
+    # is the immediate peer, so a client cannot spoof its address to dodge the
+    # per-IP rate limiter. Set to the ingress/proxy IP(s) (or ``*`` to trust any
+    # peer, ONLY safe when nothing untrusted can reach the port directly) to make
+    # the rate limiter see the true client IP behind the proxy. See docs/serving.md.
+    trusted_proxies: list[str] = field(default_factory=list)
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -142,6 +155,7 @@ def load_config() -> Config:
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
     audit_log_path = os.getenv("KB_AUDIT_LOG_PATH", "/state/audit/events.log")
     audit_hmac_key = os.getenv("KB_AUDIT_HMAC_KEY", "")
+    audit_max_bytes = int(os.getenv("KB_AUDIT_MAX_BYTES", "0"))
     auth_token = os.getenv("KB_AUTH_TOKEN", "")
     from data_olympus.principals import parse_principals_env
     auth_principals = parse_principals_env(os.getenv("KB_AUTH_PRINCIPALS", ""))
@@ -175,6 +189,7 @@ def load_config() -> Config:
     )
     emb_enabled = _embeddings_enabled()
     emb_cfg = _embeddings_config()
+    trusted_proxies = _split_csv(os.getenv("KB_TRUSTED_PROXIES", ""))
     return Config(
         kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
         kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
@@ -200,6 +215,7 @@ def load_config() -> Config:
         git_key_path=git_key_path,
         audit_log_path=audit_log_path,
         audit_hmac_key=audit_hmac_key,
+        audit_max_bytes=audit_max_bytes,
         auth_token=auth_token,
         auth_principals=auth_principals,
         consult_ttl_sec=consult_ttl_sec,
@@ -219,4 +235,5 @@ def load_config() -> Config:
         embeddings_enabled=emb_enabled,
         embeddings_weight=emb_cfg.weight,
         embeddings_model=emb_cfg.model_name,
+        trusted_proxies=trusted_proxies,
     )

@@ -105,6 +105,7 @@ def kb_health_fn(
         last_successful_refresh_at=state.last_successful_refresh_at,
         remote_head_sha=state.remote_head_sha,
         live_sessions=state.live_sessions,
+        malformed_frontmatter=state.malformed_frontmatter,
     )
 
 

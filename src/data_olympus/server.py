@@ -243,6 +243,7 @@ def build_app(
     auth_token: str = "",
     auth_principals: list[dict[str, Any]] | None = None,
     audit_hmac_key: str = "",
+    audit_max_bytes: int = 0,
     ledger_path: str | None = None,
     session_idle_timeout_sec: int = 1800,
     session_reap_interval_sec: int = 60,
@@ -289,6 +290,7 @@ def build_app(
         auth_token=auth_token,
         auth_principals=auth_principals or [],
         audit_hmac_key=audit_hmac_key,
+        audit_max_bytes=audit_max_bytes,
         session_idle_timeout_sec=session_idle_timeout_sec,
         session_reap_interval_sec=session_reap_interval_sec,
         status_weights=status_weights,
@@ -405,6 +407,7 @@ def build_app(
         audit_log = AuditLog(
             log_path=audit_log_path or config.audit_log_path,
             hmac_key=config.audit_hmac_key,
+            max_bytes=config.audit_max_bytes,
         )
         state.audit_log = audit_log
 
@@ -860,6 +863,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         auth_token=config.auth_token,
         auth_principals=list(config.auth_principals),
         audit_hmac_key=config.audit_hmac_key,
+        audit_max_bytes=config.audit_max_bytes,
         ledger_path=config.ledger_path,
         session_idle_timeout_sec=config.session_idle_timeout_sec,
         session_reap_interval_sec=config.session_reap_interval_sec,
@@ -869,6 +873,26 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         embeddings_weight=config.embeddings_weight,
         embeddings_model=config.embeddings_model,
     )
+
+
+def _uvicorn_proxy_kwargs(trusted_proxies: list[str]) -> dict[str, Any]:
+    """Build the uvicorn proxy-header kwargs from the trusted-proxy list.
+
+    Empty list -> ``{"proxy_headers": False}``: X-Forwarded-For is ignored and
+    ``request.client.host`` is the immediate peer, so a client cannot spoof its
+    address to evade the per-IP rate limiter. This is the safe default.
+
+    Non-empty -> enable ``proxy_headers`` and set ``forwarded_allow_ips`` to the
+    trusted set so uvicorn rewrites ``remote_addr`` from XFF ONLY when the peer is
+    one of those proxies. ``["*"]`` trusts any peer (only safe when nothing
+    untrusted can reach the port directly). uvicorn expects a comma-separated
+    string for ``forwarded_allow_ips``."""
+    if not trusted_proxies:
+        return {"proxy_headers": False}
+    return {
+        "proxy_headers": True,
+        "forwarded_allow_ips": ",".join(trusted_proxies),
+    }
 
 
 def _ensure_git_identity() -> None:
@@ -1033,9 +1057,19 @@ def main() -> None:
                 ),
                 name="session_reaper_loop",
             ))
+        # Proxy-header handling (WP3a item 3). By default uvicorn ignores
+        # X-Forwarded-For, so behind an ingress every client collapses to the
+        # proxy's address and the per-IP rate limiter throttles all clients as
+        # one. When KB_TRUSTED_PROXIES is set we enable proxy_headers and restrict
+        # forwarded_allow_ips to those proxies, so uvicorn rewrites remote_addr
+        # from XFF ONLY when the immediate peer is trusted (a direct client cannot
+        # then spoof its IP). Empty (default) keeps proxy_headers OFF: safe by
+        # default, no spoofing surface.
+        uvicorn_kwargs = _uvicorn_proxy_kwargs(config.trusted_proxies)
         server = uvicorn.Server(
             uvicorn.Config(
-                http_app, host="0.0.0.0", port=config.http_port, log_level="info"
+                http_app, host="0.0.0.0", port=config.http_port, log_level="info",
+                **uvicorn_kwargs,
             )
         )
         try:

@@ -155,7 +155,13 @@ def kb_compliance_fn(
     counts. Ignores non-enforcement audit events."""
     counts: dict[str, int] = {}
     by_agent: dict[str, dict[str, int]] = {}
-    for ev in audit_log.iter_filtered(since=since, agent=agent):
+    # A ``since`` window may reach into rotated segments; include them so the
+    # aggregate is complete over the requested window (the ``since`` floor bounds
+    # the scan). Without ``since`` the aggregate is over the live file only,
+    # matching the pre-rotation behaviour.
+    for ev in audit_log.iter_filtered(
+        since=since, agent=agent, include_rotated=since is not None,
+    ):
         et = ev.get("event_type", "")
         if et not in ENFORCE_EVENT_TYPES:
             continue
