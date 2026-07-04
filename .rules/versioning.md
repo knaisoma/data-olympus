@@ -64,5 +64,13 @@ previous rule was squash-only):
   merge commit itself carries no bump-relevant type: `compute_release.py` reads
   the constituent commits, and `tag-release.yml` keys off the `pyproject.toml`
   version bump reaching `main`, so both are unaffected by the merge method.
+  (`compute_release.py` walks `git log --no-merges`, so the merge commit is
+  invisible to the bump computation by construction.)
+- **Do not confuse the two release branch kinds.** The daily release-cutter
+  routine (`.rules/release-routine.md`) opens `chore/release-v<next>` PR
+  branches containing a single version-cut commit; those are one logical
+  change and stay squash-merged. `release/X.Y.Z` integration branches, used
+  when a coordinated program lands many features/fixes together before one
+  gated merge to `main`, are the case the merge-commit rule above exists for.
 - Every functional PR updates the CHANGELOG `[Unreleased]` block (see
   `.rules/changelog-per-release.md`).
