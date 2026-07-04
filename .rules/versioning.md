@@ -47,7 +47,22 @@ The project stays pre-1.0 until `v1.0.0` is cut deliberately. When it reaches
 
 ## PR discipline
 
-- Squash-merge only; the PR title is the one Conventional Commit and is linted by
-  `.github/workflows/pr-title-lint.yml` (STD-U-810 §7.1 equivalent).
+Merge method follows the granularity of the change (amended 2026-07-04; the
+previous rule was squash-only):
+
+- **Feature/fix PRs (one logical change) are squash-merged.** The PR title is
+  the one Conventional Commit and is linted by
+  `.github/workflows/pr-title-lint.yml` (STD-U-810 §7.1 equivalent). This
+  applies equally to PRs targeting `main` and PRs targeting a release branch.
+- **Release/integration branches (`release/X.Y.Z`) merge into `main` with a
+  merge commit, never a squash.** Each constituent commit on the release branch
+  is already one squashed Conventional Commit per feature/fix, so a merge
+  commit preserves one readable commit per change on `main` (blame and bisect
+  keep per-feature granularity), while squashing again would collapse the whole
+  release into a single opaque commit. The release PR title still follows the
+  Conventional format (`chore(release): vX.Y.Z`) for the PR-title lint, but the
+  merge commit itself carries no bump-relevant type: `compute_release.py` reads
+  the constituent commits, and `tag-release.yml` keys off the `pyproject.toml`
+  version bump reaching `main`, so both are unaffected by the merge method.
 - Every functional PR updates the CHANGELOG `[Unreleased]` block (see
   `.rules/changelog-per-release.md`).
