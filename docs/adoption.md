@@ -293,8 +293,23 @@ data-olympus setup
 The wizard probes the endpoint, detects which of Claude Code, Codex, Gemini, and
 OpenCode are installed, writes each agent's MCP registration (with a timestamped
 backup of any file it edits, and idempotent re-runs), optionally installs the
-enforcement hooks, and prints a doctor summary. `data-olympus setup --check` runs
-the same summary read-only and never changes anything.
+enforcement hooks, and prints a doctor summary.
+
+Flags:
+
+- `--endpoint <url>`: server endpoint to wire (default `$KB_ENDPOINT` or
+  `http://localhost:8080`).
+- `--check`: read-only doctor summary (also the update-check path); changes
+  nothing.
+- `-y` / `--yes`: non-interactive; accept defaults (register detected agents,
+  skip hook prompts).
+- `--no-version-check`: skip the PyPI/GitHub latest-version lookup (fully
+  offline).
+
+When you point agents at a server, use `GET /readyz` (not `/api/v1/health`) as
+the readiness probe: it returns 200 once the process is up and the index is
+loaded, independent of data staleness. See `docs/serving.md` for the full
+health/readiness/liveness split.
 
 ### Manual per-agent registration
 

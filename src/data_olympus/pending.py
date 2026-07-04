@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from contextlib import AbstractContextManager
 
 from data_olympus.durable import atomic_remove, atomic_write_json
 
@@ -83,24 +84,95 @@ class PendingQueue:
         ``_root`` attribute."""
         return self._root
 
-    def _acquire_lock(self, target_path: str, pending_id: str) -> None:
+    def _acquire_lock(
+        self,
+        target_path: str,
+        pending_id: str,
+        *,
+        owner_kind: str = "pending",
+    ) -> float:
+        """Create the exclusive lock file for ``target_path``. Returns the
+        ``acquired_at`` timestamp stamped into the file so the caller can hand it
+        back to ``_release_lock`` for an ownership-checked delete."""
         lock_path = os.path.join(self._locks_dir, _path_lock_filename(target_path))
         try:
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             raise PathLockBusyError(target_path) from None
+        acquired_at = time.time()
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump({"pending_id": pending_id, "target_path": target_path,
-                           "acquired_at": time.time()}, f)
+                           "owner_kind": owner_kind, "acquired_at": acquired_at}, f)
         except Exception:
             os.unlink(lock_path)
             raise
+        return acquired_at
 
-    def _release_lock(self, target_path: str) -> None:
+    def _release_lock(
+        self, target_path: str, *, expected_acquired_at: float | None = None,
+    ) -> bool:
+        """Delete the lock file for ``target_path``. Returns True iff a file was
+        actually unlinked (an ownership-checked call that skips returns False).
+
+        When ``expected_acquired_at`` is given, the delete is ownership-checked so a
+        holder or the reclaimer removes ONLY the lock it acquired/inspected, never a
+        successor's. Two independent guards:
+
+        - **``acquired_at`` is the ownership token.** It is ``time.time()`` at
+          acquisition, unique per acquire to sub-microsecond, so a successor (which
+          re-acquires with its own fresh timestamp) never matches the token of the
+          lock we meant to delete. A file whose on-disk ``acquired_at`` differs is
+          left alone.
+        - **inode re-stat closes this call's own open-to-unlink window.** We open
+          the file, pin its inode, verify ``acquired_at``, then confirm the path
+          still resolves to the SAME inode immediately before ``unlink`` (a
+          successor is a fresh ``O_EXCL`` inode). This stops a delete that raced a
+          concurrent free+re-acquire between our read and our unlink.
+
+        The residual gap between the final re-stat and ``unlink`` is a single
+        syscall and is not closable portably (the stdlib has no ``funlinkat``); it
+        is vanishingly narrow next to the minutes-long staleness that gates a
+        reclaim, and a successor would still need a colliding ``acquired_at`` (which
+        cannot happen) to be wrongly deleted.
+
+        When ``expected_acquired_at`` is ``None`` (the pending queue's own release
+        paths, which hold the lock unbroken from enqueue to resolve and are never
+        TTL-reclaimed) the delete is unconditional, as before."""
         lock_path = os.path.join(self._locks_dir, _path_lock_filename(target_path))
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(lock_path)
+        if expected_acquired_at is None:
+            try:
+                os.unlink(lock_path)
+            except FileNotFoundError:
+                return False
+            return True
+        # Ownership-checked delete. Open + fstat pins the inode we verify.
+        try:
+            fd = os.open(lock_path, os.O_RDONLY)
+        except FileNotFoundError:
+            return False
+        try:
+            pinned_ino = os.fstat(fd).st_ino
+            try:
+                info = json.load(os.fdopen(os.dup(fd), "r"))
+            except ValueError:
+                return False
+            if info.get("acquired_at") != expected_acquired_at:
+                return False
+            # Confirm the path still resolves to the inode we verified (a successor
+            # would have a different, freshly-created inode) right before unlinking.
+            try:
+                if os.stat(lock_path).st_ino != pinned_ino:
+                    return False
+            except FileNotFoundError:
+                return False
+            try:
+                os.unlink(lock_path)
+            except FileNotFoundError:
+                return False
+            return True
+        finally:
+            os.close(fd)
 
     @contextlib.contextmanager
     def path_lock(self, target_path: str, *, owner: str) -> Iterator[None]:
@@ -112,13 +184,22 @@ class PendingQueue:
         pending proposal in flight (the later approval would clobber it) and two
         auto-commits to the same path cannot interleave. ``owner`` is a marker
         (e.g. ``auto-commit:<sha_or_session>``) recorded in the lock file for
-        operator diagnosis; it is not a pending_id. Raises :class:`PathLockBusyError`
-        when the path is already locked. Releases on exit."""
-        self._acquire_lock(target_path, owner)
+        operator diagnosis; it is not a pending_id. The lock records
+        ``owner_kind="auto_commit"`` so ``reclaim_stale_auto_commit_locks`` can
+        safely free it if a crash orphans it (an auto-commit critical section is
+        seconds long, so a lock older than the TTL cannot have a live holder).
+        Raises :class:`PathLockBusyError` when the path is already locked.
+        Releases on exit."""
+        acquired_at = self._acquire_lock(
+            target_path, owner, owner_kind="auto_commit",
+        )
         try:
             yield
         finally:
-            self._release_lock(target_path)
+            # Ownership-checked release: if the lock was TTL-reclaimed while this
+            # (slow) holder ran and a successor re-acquired the path, the
+            # acquired_at will not match and the successor's lock is left intact.
+            self._release_lock(target_path, expected_acquired_at=acquired_at)
 
     def enqueue(
         self,
@@ -285,12 +366,11 @@ class PendingQueue:
         proposal to that path is rejected ``rejected_path_lock_busy``. Each lock
         file records the ``pending_id`` that holds it; if neither ``<pid>.json``
         nor ``<pid>.claimed`` exists, the lock is orphaned and is removed. Locks
-        held by the shared auto-commit path (``owner`` is not a hex uuid) are
-        left alone: those are held only for the duration of an in-process commit
-        and are never orphaned across a restart (a restart clears the process,
-        and a stale one is released by the ``finally`` of ``path_lock``; but if a
-        hard crash left one, its non-uuid owner means we cannot prove it orphaned,
-        so we conservatively skip it). Returns the number of locks removed."""
+        held by the shared auto-commit path (``owner_kind == "auto_commit"``) are
+        left alone HERE: they have no pending entry to key off, so a hung/crashed
+        auto-commit lock is reclaimed by the age-bounded
+        :meth:`reclaim_stale_auto_commit_locks` instead. Returns the number of
+        locks removed."""
         if not os.path.isdir(self._locks_dir):
             return 0
         removed = 0
@@ -316,6 +396,123 @@ class PendingQueue:
                 os.unlink(lock_path)
                 removed += 1
         return removed
+
+    def reclaim_stale_auto_commit_locks(
+        self,
+        *,
+        max_age_sec: float,
+        serializer: AbstractContextManager[Any] | None = None,
+    ) -> int:
+        """Reclaim auto-commit path locks left behind by a crash.
+
+        An auto-commit takes a per-path lock (``owner_kind == "auto_commit"``) for
+        the duration of its write -> git add -> commit critical section, which is
+        bounded by the process-wide write serializer and completes in seconds. If
+        the process is killed while holding one, the lock file survives on the
+        ``/state`` volume and wedges that path forever
+        (``rejected_path_lock_busy``): unlike a pending-proposal lock, there is no
+        entry to key an orphan-reclaim off, and unlike a clean shutdown the
+        ``finally`` in :meth:`path_lock` never ran.
+
+        A lock is reclaimed only when ALL of these hold:
+
+        - it is an auto-commit lock (``owner_kind == "auto_commit"``, or a pre-fix
+          legacy lock recognised by its ``auto-commit:`` ``pending_id`` prefix so an
+          upgrade on a persistent ``/state`` volume still frees old wedged locks).
+          Pending-proposal locks legitimately live until the operator resolves or
+          the entry expires, so they are NEVER TTL-reclaimed here;
+        - its ``acquired_at`` is older than ``max_age_sec``.
+
+        Concurrency safety. ``serializer`` MUST be the process-wide
+        :class:`~data_olympus.write_gate.WriteSerializer` that
+        :meth:`path_lock` (via ``tools_write``) already runs its acquire/release
+        under. Holding it for the whole reclaim scan makes lock deletion mutually
+        exclusive with every auto-commit acquire/release, which is what closes the
+        two-deleter race: a stale holder that resumes cannot run its own
+        ``path_lock`` release (and no successor can acquire) while the reclaimer is
+        mid-scan, so the reclaimer's ``unlink`` can never land on a successor that
+        replaced the file after an interleaved free. The inode+``acquired_at``
+        ownership check in :meth:`_release_lock` is retained as defense in depth.
+        When ``serializer`` is ``None`` (tests, or the startup sweep where the write
+        loops have not started so nothing contends) the scan runs without it.
+
+        The age bound is the other half: a real auto-commit critical section is
+        seconds long, so any auto-commit lock older than the (minutes-long) TTL
+        cannot have a live holder still inside its section.
+
+        Pass ``max_age_sec=0`` to reclaim EVERY auto-commit lock unconditionally;
+        the server uses this at startup, where a fresh process provably holds none.
+        Returns the number of locks reclaimed."""
+        ctx: AbstractContextManager[Any] = (
+            serializer if serializer is not None else contextlib.nullcontext()
+        )
+        with ctx:
+            return self._reclaim_stale_auto_commit_locks_locked(max_age_sec)
+
+    def _reclaim_stale_auto_commit_locks_locked(self, max_age_sec: float) -> int:
+        if not os.path.isdir(self._locks_dir):
+            return 0
+        now = time.time()
+        removed = 0
+        for name in os.listdir(self._locks_dir):
+            if not name.endswith(".lock"):
+                continue
+            lock_path = os.path.join(self._locks_dir, name)
+            try:
+                with open(lock_path) as f:
+                    info = json.load(f)
+            except (FileNotFoundError, ValueError):
+                continue
+            if not self._is_auto_commit_lock(info):
+                continue
+            target_path = info.get("target_path")
+            if not isinstance(target_path, str):
+                continue
+            acquired_at = info.get("acquired_at")
+            if not isinstance(acquired_at, int | float):
+                # Malformed/legacy lock with no usable timestamp: treat as stale
+                # only in the unconditional (startup) sweep, never on the TTL path.
+                if max_age_sec > 0:
+                    continue
+                if self._lock_still_matches(lock_path, expected=info):
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(lock_path)
+                        removed += 1
+                continue
+            if now - acquired_at <= max_age_sec:
+                continue
+            # Ownership-checked delete (defense in depth under the serializer):
+            # removes ONLY the exact lock we inspected.
+            if self._release_lock(target_path, expected_acquired_at=acquired_at):
+                removed += 1
+        return removed
+
+    @staticmethod
+    def _is_auto_commit_lock(info: dict[str, Any]) -> bool:
+        """Whether a lock file describes an auto-commit hold (vs a pending
+        proposal). New-format locks carry ``owner_kind == "auto_commit"``. Locks
+        written by a PRE-fix build have no ``owner_kind`` and stash the auto-commit
+        marker in ``pending_id`` (``"auto-commit:<...>"``); those are recognised
+        here so an upgrade on a persistent ``/state`` volume still reclaims them.
+        A pending-proposal lock always has a 32-hex-char UUID ``pending_id`` and no
+        ``auto-commit:`` prefix, so it never matches either arm."""
+        if info.get("owner_kind") == "auto_commit":
+            return True
+        if "owner_kind" in info:
+            # A new-format lock that is explicitly some other kind: not ours.
+            return False
+        holder = info.get("pending_id", "")
+        return isinstance(holder, str) and holder.startswith("auto-commit:")
+
+    def _lock_still_matches(self, lock_path: str, *, expected: dict[str, Any]) -> bool:
+        """True if the lock file at ``lock_path`` still holds exactly ``expected``
+        (used for the timestamp-less legacy-lock reclaim, where there is no
+        ``acquired_at`` to key an ownership check off)."""
+        try:
+            with open(lock_path) as f:
+                return bool(json.load(f) == expected)
+        except (FileNotFoundError, ValueError):
+            return False
 
     def would_exceed(self, n: int) -> bool:
         """True if enqueuing ``n`` more entries would exceed the cap (0 = unlimited).

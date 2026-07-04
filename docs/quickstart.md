@@ -6,9 +6,29 @@ with Python 3.13 and uv.
 
 ## 1. Install
 
-### Install from PyPI (recommended)
+### Install from source
 
-Run the CLI directly with no clone, using `uvx`:
+This is the path that works today, from a clone of the repo:
+
+```bash
+# From the repo root
+uv venv && uv pip install -e '.[dev]'
+```
+
+Or simply use `uv run` (which handles the venv automatically):
+
+```bash
+uv run data-olympus-mcp --help   # confirms the entry point is installed
+```
+
+### Install from PyPI
+
+> The PyPI package is available from v0.3.0 onward, but publishing goes live only
+> after the operator completes the one-time pypi.org Trusted Publishing setup (see
+> `docs/releases/pypi-trusted-publishing.md`). Until that first publish lands the
+> commands below fail; use the from-source path above.
+
+Once the package is published, run the CLI directly with no clone, using `uvx`:
 
 ```bash
 uvx data-olympus --help
@@ -28,24 +48,6 @@ enforcement hooks:
 ```bash
 data-olympus setup          # interactive
 data-olympus setup --check  # read-only doctor summary (also the update check)
-```
-
-> The PyPI package is published by the release chain via Trusted Publishing.
-> Until the one-time pypi.org publisher is configured (see
-> `docs/releases/pypi-trusted-publishing.md`), install from source with the dev
-> path below.
-
-### Install from source (development)
-
-```bash
-# From the repo root
-uv venv && uv pip install -e '.[dev]'
-```
-
-Or simply use `uv run` (which handles the venv automatically):
-
-```bash
-uv run data-olympus-mcp --help   # confirms the entry point is installed
 ```
 
 ## 2. Run the server

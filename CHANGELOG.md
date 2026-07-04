@@ -417,6 +417,22 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Stale auto-commit path locks are reclaimed.** A hard kill while an auto-commit
+  held a per-path advisory lock left the lock on the `/state` volume with no
+  in-process holder to release it, wedging that path (`rejected_path_lock_busy`)
+  until manual cleanup. Locks now record an `owner_kind`; crash-orphaned
+  auto-commit locks are reclaimed unconditionally at server startup (a fresh
+  process holds none) and, while running, once older than
+  `KB_AUTO_COMMIT_LOCK_TTL_SEC` (default 600s, far above a seconds-long commit
+  critical section). The periodic reclaim runs under the same process-wide write
+  serializer that `path_lock` acquire/release runs under, so a stalled holder that
+  resumes cannot free the path (and let a successor re-acquire it) mid-reclaim;
+  the delete is additionally inode + timestamp ownership-checked as defense in
+  depth. Pre-fix legacy auto-commit locks (no `owner_kind`, `auto-commit:`
+  `pending_id` prefix) are recognised too, so an upgrade on a persistent `/state`
+  volume frees any old wedged path. Pending-proposal locks are never TTL-reclaimed
+  (they legitimately live until the operator resolves or the entry expires).
+
 - Search pipeline hardening (WP2b, epic #75), bug + perf fixes:
   - `Index.search` could return MORE than `limit` hits when embeddings were
     configured but no reranker was set (finding h): the dense union widened the

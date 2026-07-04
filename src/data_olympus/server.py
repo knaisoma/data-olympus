@@ -1006,6 +1006,25 @@ def main() -> None:
             except Exception:
                 log.exception("startup push recovery failed (continuing)")
 
+        # Startup lock recovery: a hard kill while an auto-commit held a per-path
+        # lock leaves it on the /state volume with no in-process holder to release
+        # it, wedging that path (rejected_path_lock_busy) until manual cleanup. A
+        # fresh process provably holds no auto-commit lock, so reclaim every
+        # auto-commit lock unconditionally (max_age_sec=0). Pending-proposal locks
+        # are untouched: they legitimately outlive a restart.
+        if state.pending is not None:
+            try:
+                reclaimed = state.pending.reclaim_stale_auto_commit_locks(
+                    max_age_sec=0,
+                )
+                if reclaimed > 0:
+                    log.warning(
+                        "startup reclaimed %d stale auto-commit path lock(s)",
+                        reclaimed,
+                    )
+            except Exception:
+                log.exception("startup auto-commit lock reclaim failed (continuing)")
+
         tasks = [
             asyncio.create_task(
                 git_pull_loop(state, config.sync_interval_sec),
@@ -1041,6 +1060,14 @@ def main() -> None:
                     pending=state.pending,
                     timeout_sec=config.pending_timeout_sec,
                     interval_sec=300,
+                    # Crash-orphaned auto-commit path locks older than this are
+                    # reclaimed each pass so a hard kill mid-commit does not wedge
+                    # the path with rejected_path_lock_busy forever.
+                    auto_commit_lock_ttl_sec=config.auto_commit_lock_ttl_sec,
+                    # The reclaim runs under the SAME write serializer that
+                    # path_lock acquire/release runs under, so a stale holder that
+                    # resumes cannot free+let-a-successor-acquire the path mid-scan.
+                    write_serializer=state.write_serializer,
                     # Scope item 7: emit an audit event on each expiry instead of
                     # silently rejecting >24h entries.
                     audit_log=state.audit_log,

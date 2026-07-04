@@ -210,7 +210,7 @@ keep. It does: on intents whose phrasing is covered by a trigger, it lifts recal
 from 0.667 to 1.000, at roughly half the token cost of the BM25 baseline. And
 because plain keyword search will always return something, even for a question
 that has no governing rule at all, we added an optional abstention mode that drops
-the false-positive rate on those out-of-scope queries from 1.000 to about 0.10
+the false-positive rate on those out-of-scope queries from 1.000 to 0.097
 (a few distractors still share a real word with a rule; we report that residual
 rather than round it away). For a governance tool, abstaining beats confidently
 handing back a rule that does not apply.

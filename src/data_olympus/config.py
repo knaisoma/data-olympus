@@ -1,10 +1,13 @@
 """Configuration loading from environment variables."""
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger("data_olympus.config")
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +34,13 @@ class Config:
     max_bootstrap_files: int = 50
     pending_timeout_sec: int = 86400
     pending_queue_cap: int = 100
+    # Age (seconds) after which a crash-orphaned AUTO-COMMIT path lock is reclaimed
+    # by pending_gc_loop (KB_AUTO_COMMIT_LOCK_TTL_SEC). An auto-commit critical
+    # section is seconds long, so a lock older than this cannot have a live holder;
+    # the default of 600s (10 min) is a wide safety margin. Pending-proposal locks
+    # are NEVER reclaimed by this TTL (they live until resolve/expiry). Startup
+    # reclaims every auto-commit lock unconditionally (a fresh process holds none).
+    auto_commit_lock_ttl_sec: int = 600
     worktree_idle_sec: int = 3600
     git_key_path: str = "/tmp/git-key"
     audit_log_path: str = "/state/audit/events.log"
@@ -151,6 +161,17 @@ def load_config() -> Config:
     max_bootstrap_files = int(os.getenv("KB_MAX_BOOTSTRAP_FILES", "50"))
     pending_timeout_sec = int(os.getenv("KB_PENDING_TIMEOUT_SEC", "86400"))
     pending_queue_cap = int(os.getenv("KB_PENDING_QUEUE_CAP", "100"))
+    auto_commit_lock_ttl_sec = int(os.getenv("KB_AUTO_COMMIT_LOCK_TTL_SEC", "600"))
+    if auto_commit_lock_ttl_sec <= 0:
+        # A non-positive periodic TTL is unsafe: reclaim treats max_age_sec=0 as the
+        # unconditional (startup) sweep sentinel, so the running loop would reclaim
+        # FRESH auto-commit locks and could free a live one. Clamp to the default.
+        _log.warning(
+            "KB_AUTO_COMMIT_LOCK_TTL_SEC=%s is non-positive; clamping to 600s "
+            "(a non-positive periodic TTL would reclaim live auto-commit locks)",
+            auto_commit_lock_ttl_sec,
+        )
+        auto_commit_lock_ttl_sec = 600
     worktree_idle_sec = int(os.getenv("KB_WORKTREE_IDLE_SEC", "3600"))
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
     audit_log_path = os.getenv("KB_AUDIT_LOG_PATH", "/state/audit/events.log")
@@ -211,6 +232,7 @@ def load_config() -> Config:
         max_bootstrap_files=max_bootstrap_files,
         pending_timeout_sec=pending_timeout_sec,
         pending_queue_cap=pending_queue_cap,
+        auto_commit_lock_ttl_sec=auto_commit_lock_ttl_sec,
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
         audit_log_path=audit_log_path,
