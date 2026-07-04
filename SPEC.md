@@ -1,8 +1,8 @@
 # data-olympus Knowledge Format
 
-**Version:** 0.1 (draft)
-**Date:** 2026-06-24
-**Status:** Draft
+**Version:** 0.1
+**Date:** 2026-07-03
+**Status:** Stable (shipped with data-olympus v0.3.0; the format is versioned independently of the package, see section 10)
 
 ---
 
@@ -237,6 +237,8 @@ The single-replica invariant applies only to the write-enabled server. Deploymen
 
 The serving transport MUST be streamable HTTP (not stdio). The MCP endpoint is `/mcp` by convention.
 
+**Readiness probes MUST NOT target `/api/v1/health`.** A load balancer or orchestrator readiness check MUST use `GET /readyz` (200 once the process is up and the index is loaded, independent of data staleness). `/api/v1/health` keeps a 503-on-degraded contract for data-freshness alerting; wiring it as a readiness probe would eject a healthy single replica from its Service on a transient git-remote staleness. See [`docs/serving.md`](docs/serving.md).
+
 **Enforcement endpoints.** A server MAY expose an enforcement surface that turns the advisory KB into a gated consultation proxy for code and architectural decisions. The endpoints are:
 
 - `POST /api/v1/consult`: record a consultation for a `(source_session, workspace)` pair and return the governing rules for the supplied intent.
@@ -244,6 +246,8 @@ The serving transport MUST be streamable HTTP (not stdio). The MCP endpoint is `
 - `GET /api/v1/compliance`: return aggregated enforcement-event counts, overall and per agent.
 
 These three are mirrored as the `kb_consult`, `kb_gate_check`, and `kb_compliance` MCP tools. See [`docs/enforcement.md`](docs/enforcement.md) for the request bodies, configuration (`KB_CONSULT_TTL_SEC`, `KB_ENFORCE_FAIL_MODE`), and the Claude Code hook installer.
+
+**Only an explicit-trigger consultation satisfies the gate.** `POST /api/v1/gate/check` returns `allow` only when a fresh `POST /api/v1/consult` is on record for the action's `(session_id, workspace)` pair. A read-only KB search or any other tool call does NOT count as a consultation and does NOT clear the gate; the agent MUST issue an explicit `kb_consult` (or the REST equivalent) whose freshness is bounded by `KB_CONSULT_TTL_SEC`. See [`docs/enforcement.md`](docs/enforcement.md).
 
 ---
 

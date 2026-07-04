@@ -23,6 +23,21 @@ each run their own stdio MCP process against the same git working tree, they
 race each other's worktrees and lock state. Streamable HTTP eliminates that
 race.
 
+## Core configuration reference
+
+A few server-wide settings, beyond the feature-specific env vars documented in
+their own sections below (search ranking, synonyms, embeddings, co-occurrence,
+trigram, auth, audit rotation):
+
+- `KB_HTTP_PORT`: TCP port the MCP HTTP server binds (default `8080`).
+- `KB_CONFIDENCE_THRESHOLD`: the auto-commit confidence cutoff, in `[0, 1]`
+  (default `0.85`). A proposal at or above it from a principal holding
+  `auto_commit` is committed; below it (or from a principal without that
+  capability) it is parked as pending. An out-of-range value fails startup loudly.
+- `KB_PENDING_TIMEOUT_SEC`: age after which an unresolved pending proposal is
+  auto-expired by the pending GC loop (default `86400`, i.e. 24h). Each expiry
+  emits an audit event.
+
 ## Read-only mirrors may scale horizontally
 
 Set `KB_READ_ONLY=true` to run an instance as a read-only replica. In this mode
@@ -439,6 +454,46 @@ Cost: build adds one batched local embedding pass over the corpus (seconds for a
 small KB); storage adds `dim x 4` bytes per document in `doc_vectors` (~1.5 KB
 per doc for the 384-dim default). Query-time cost is one query embedding plus a
 cosine over the (bounded) candidate pool.
+
+## Corpus co-occurrence query expansion
+
+A build-time pass mines the corpus for term pairs that co-occur far more often
+than chance (positive pointwise mutual information) and stores the top related
+terms per term. At query time the expander adds those related terms so a query
+reaches documents that use a different-but-associated vocabulary, without a
+hand-curated synonym map. This is **ON by default** and adds no query-time
+network call. It auto-disables on a corpus below the doc floor (too little
+signal), and the O(n^2) pair counting is bounded per document.
+
+Tune it with:
+
+- `KB_COOCCURRENCE_MODE`: `off` disables it (both the build-time table and the
+  query-time expansion); any other value (including unset) leaves it **on**.
+- `KB_COOCCURRENCE_K`: max related terms kept per term (default `5`).
+- `KB_COOCCURRENCE_MIN_COUNT`: minimum raw co-occurrence count for a pair to
+  qualify (default `3`).
+- `KB_COOCCURRENCE_MIN_PMI`: minimum PMI for a pair to qualify (default `0.1`).
+- `KB_COOCCURRENCE_MIN_DOCS`: corpus-size floor below which co-occurrence is
+  auto-disabled (default `50`).
+- `KB_COOCCURRENCE_MAX_DOC_TOKENS`: per-document unique-token cap on the pair
+  counting, bounding the O(n^2) work on large docs (default `400`).
+
+## Trigram fuzzy-match fallback
+
+For typos and partial identifiers, an optional trigram index backfills results
+when the primary FTS query returns few hits. This is **OFF by default** so the
+default deployment pays no trigram build or storage cost; when off, the trigram
+table is neither created nor populated. When on, a primary query returning at or
+below the threshold is backfilled from the trigram index, and the backfill only
+ever appends after the primary hits (never reorders them).
+
+Tune it with:
+
+- `KB_TRIGRAM_MODE`: `on` (case-insensitive) enables it; any other value
+  (including unset) leaves it off.
+- `KB_TRIGRAM_FALLBACK_THRESHOLD`: primary-hit count at or below which the
+  fallback fires (default `3`). A malformed or negative value falls back to the
+  default.
 
 ## Authentication and network security
 

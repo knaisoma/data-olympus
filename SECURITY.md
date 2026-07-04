@@ -70,6 +70,8 @@ Authentication is resolved from the `Authorization: Bearer <token>` header again
 
   A principal with `propose` but not `auto_commit` may propose, but its proposals are always parked as pending (the confidence clamp).
 
+  **Breaking change in v0.3.0:** a `KB_AUTH_PRINCIPALS` entry that omits the `capabilities` field now defaults to least privilege (`{read, propose}`) instead of all capabilities; grant `resolve`, `auto_commit`, `bootstrap`, or `record_event` by listing them explicitly. This prevents an agent token from silently gaining self-approval (`resolve` + `auto_commit`).
+
 Tokens are compared with `hmac.compare_digest` (constant time).
 
 **Coverage is REST and MCP.** Unlike earlier releases where the token guarded REST routes only, an MCP-transport middleware enforces the same capabilities on the MCP write tools (`kb_propose_*`, `kb_resolve_pending`, `kb_bootstrap_project`, `kb_record_event`). The observability/enforcement tools (`kb_list_pending`, `kb_audit`, `kb_consult`, `kb_gate_check`, `kb_compliance`) likewise require an authenticated principal over MCP when auth is configured, matching the REST gating. A token-less MCP client can no longer call write or observability tools when auth is configured.

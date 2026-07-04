@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from data_olympus.index import DuplicateIdError, Index
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
     from pathlib import Path
 
     from data_olympus.audit_log import AuditLog
@@ -257,6 +258,8 @@ async def pending_gc_loop(
     pending: PendingQueue,
     timeout_sec: int,
     interval_sec: int,
+    auto_commit_lock_ttl_sec: float = 600,
+    write_serializer: AbstractContextManager[Any] | None = None,
     audit_log: AuditLog | None = None,
 ) -> None:
     """Periodically expire pending entries older than timeout_sec and reclaim
@@ -272,7 +275,10 @@ async def pending_gc_loop(
 
     Orphaned path locks (a crash between lock create and entry write, scope item
     5) are reclaimed each pass via ``gc_orphan_locks`` so a path is not locked
-    forever with no entry to release it.
+    forever with no entry to release it. Crash-orphaned AUTO-COMMIT locks (held
+    across a seconds-long commit, wedged by a hard kill) are separately reclaimed
+    each pass once older than ``auto_commit_lock_ttl_sec``; pending-proposal locks
+    are never TTL-reclaimed.
     """
     from data_olympus.pending import (
         PendingAlreadyResolvedError,
@@ -305,6 +311,19 @@ async def pending_gc_loop(
             if reclaimed:
                 log.warning("pending_gc reclaimed %d orphaned path lock(s)",
                             reclaimed)
+            # Defense in depth: never pass max_age_sec<=0 from the periodic path,
+            # since 0 is the unconditional (startup) reclaim sentinel and would free
+            # fresh auto-commit locks. Config already clamps this; guard anyway.
+            if auto_commit_lock_ttl_sec > 0:
+                stale_ac = pending.reclaim_stale_auto_commit_locks(
+                    max_age_sec=auto_commit_lock_ttl_sec,
+                    serializer=write_serializer,
+                )
+                if stale_ac:
+                    log.warning(
+                        "pending_gc reclaimed %d stale auto-commit path lock(s) "
+                        "(older than %ss)", stale_ac, auto_commit_lock_ttl_sec,
+                    )
         except Exception:
             log.exception("pending_gc_loop iteration failed")
         await asyncio.sleep(interval_sec)

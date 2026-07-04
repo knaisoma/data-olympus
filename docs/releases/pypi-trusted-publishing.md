@@ -12,6 +12,25 @@ GitHub Release normally; only the PyPI upload step fails (and it is marked
 `continue-on-error`, so it does not block the release). Once the pending
 publisher exists, the next release uploads to PyPI with no further action.
 
+## After setup: tighten the release chain
+
+Once the publishers are configured and the first release has published to PyPI
+for real, harden the chain so a broken upload can no longer pass silently. Do
+NOT make these edits before setup: pre-setup the upload step fails by design, so
+removing its tolerance would break every release.
+
+Two edits, both post-first-successful-publish:
+
+- In `.github/workflows/publish-pypi-reusable.yml`, remove the
+  `continue-on-error: true` line from the **Publish to PyPI (Trusted
+  Publishing)** step (the `pypa/gh-action-pypi-publish@release/v1` step). A real
+  upload failure then fails the job instead of no-oping.
+- In `.github/workflows/tag-release.yml`, add `publish-pypi` to the `release`
+  job's `needs`, i.e. change `needs: [decide, build-image]` to
+  `needs: [decide, build-image, publish-pypi]`. The GitHub Release is then cut
+  only after the PyPI upload succeeds, so a release never advertises a version
+  that failed to publish.
+
 ## What binds the publisher
 
 Trusted Publishing matches four values exactly. Ours are:
