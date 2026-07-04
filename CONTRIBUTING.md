@@ -79,7 +79,10 @@ By contributing you agree to abide by the project's [Code of Conduct](CODE_OF_CO
 
 Releases follow STD-U-810 and are documented in `.rules/versioning.md`. In short:
 
-- Merge PRs with squash-merge; the PR title must be a Conventional Commit.
+- Merge feature/fix PRs with squash-merge; the PR title must be a Conventional
+  Commit. Release branches (`release/X.Y.Z`) merge into `main` with a merge
+  commit instead, so each squashed feature/fix commit survives on `main`; see
+  `.rules/versioning.md`.
 - A daily routine opens a release PR when `main` has releasable changes.
 - Merging the release PR cuts an annotated `vX.Y.Z` tag, a GitHub Release, and
   the Docker image. No tags are cut by hand under normal operation.
