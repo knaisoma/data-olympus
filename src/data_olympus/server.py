@@ -123,6 +123,7 @@ class ServerState:
         push_queue: PushQueue | None = None,
         pending: PendingQueue | None = None,
         rate_limiter: SlidingWindowLimiter | None = None,
+        gate_rate_limiter: SlidingWindowLimiter | None = None,
         blocklist: PathBlocklist | None = None,
         audit_log: AuditLog | None = None,
         classifier: IntentClassifier | None = None,
@@ -147,6 +148,10 @@ class ServerState:
         self.push_queue: PushQueue | None = push_queue
         self.pending: PendingQueue | None = pending
         self.rate_limiter: SlidingWindowLimiter | None = rate_limiter
+        # Separate limiter for /api/v1/gate/check (None = unthrottled, the default).
+        # Kept distinct from `rate_limiter` so gate-check traffic and the write /
+        # consult / cleanup-plan quota never share a bucket.
+        self.gate_rate_limiter: SlidingWindowLimiter | None = gate_rate_limiter
         self.blocklist: PathBlocklist | None = blocklist
         self.audit_log: AuditLog | None = audit_log
         # Process-wide write serializer (scope item 1): one instance shared by
@@ -232,6 +237,7 @@ def build_app(
     confidence_threshold: float = 0.85,
     rate_limit_per_hour: int = 100,
     rate_limit_per_ip_per_hour: int = 0,
+    gate_check_rate_limit_per_hour: int = 0,
     max_text_bytes: int = 262144,
     max_postimage_bytes: int = 1048576,
     max_body_bytes: int = 2097152,
@@ -279,6 +285,7 @@ def build_app(
         write_block_paths=write_block_paths or [],
         rate_limit_per_hour=rate_limit_per_hour,
         rate_limit_per_ip_per_hour=rate_limit_per_ip_per_hour,
+        gate_check_rate_limit_per_hour=gate_check_rate_limit_per_hour,
         max_text_bytes=max_text_bytes,
         max_postimage_bytes=max_postimage_bytes,
         max_body_bytes=max_body_bytes,
@@ -393,6 +400,13 @@ def build_app(
             max_per_hour=config.rate_limit_per_hour,
             max_per_ip_per_hour=config.rate_limit_per_ip_per_hour,
         )
+        # gate/check gets its own limiter only when a positive ceiling is set;
+        # 0 (default) leaves it unthrottled (see Config.gate_check_rate_limit_per_hour).
+        gate_rate_limiter = (
+            SlidingWindowLimiter(max_per_hour=config.gate_check_rate_limit_per_hour)
+            if config.gate_check_rate_limit_per_hour > 0
+            else None
+        )
         blocklist = PathBlocklist(
             tier_blocks=config.write_block_tiers,
             path_blocks=config.write_block_paths,
@@ -401,6 +415,7 @@ def build_app(
         state.push_queue = push_queue
         state.pending = pending
         state.rate_limiter = rate_limiter
+        state.gate_rate_limiter = gate_rate_limiter
         state.blocklist = blocklist
 
     if config.kb_remote_url and not config.read_only:
@@ -545,17 +560,22 @@ def build_app(
         )
         return resp.model_dump()
 
-    def _mcp_rate_limited() -> dict[str, object] | None:
-        """Apply the shared sliding-window limiter to an MCP enforcement-plane tool
+    def _mcp_rate_limited(*, gate: bool = False) -> dict[str, object] | None:
+        """Apply a sliding-window limiter to an MCP enforcement-plane tool
         (WP0b item (b)).
 
-        The REST consult / gate-check / cleanup-plan routes throttle via
-        ``_rate_limited``; the MCP tool paths did not, so an agent could hammer the
-        classifier/ledger unbounded. Key on the resolved principal (there is no
-        per-request remote addr on the MCP transport, so the limiter's per-agent
-        quota is the meaningful dimension). Returns a rejection dict when over
-        quota, else None. Skipped when no limiter is wired (read-only deploy)."""
-        limiter = state.rate_limiter
+        The REST consult / cleanup-plan routes throttle via ``_rate_limited``; the
+        MCP tool paths did not, so an agent could hammer the classifier/ledger
+        unbounded. Key on the resolved principal (there is no per-request remote
+        addr on the MCP transport, so the limiter's per-agent quota is the
+        meaningful dimension). Returns a rejection dict when over quota, else None.
+
+        ``gate=True`` (kb_gate_check) consults ``state.gate_rate_limiter`` instead
+        of the write limiter; that limiter is None by default, so the
+        high-frequency freshness probe is unthrottled unless explicitly capped,
+        matching the REST /api/v1/gate/check route. Skipped when the resolved
+        limiter is None (read-only deploy, or gate-check with no ceiling set)."""
+        limiter = state.gate_rate_limiter if gate else state.rate_limiter
         if limiter is None:
             return None
         principal_name = _current_principal.get().name
@@ -768,7 +788,7 @@ def build_app(
         ) -> dict[str, object]:
             """Return a verdict (allow | consult_required) for a pending code action.
             Governed actions require a fresh consultation on record."""
-            if (throttled := _mcp_rate_limited()) is not None:
+            if (throttled := _mcp_rate_limited(gate=True)) is not None:
                 return throttled
             import time as _time
 

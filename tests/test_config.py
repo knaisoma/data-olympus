@@ -105,6 +105,7 @@ def test_config_loads_new_write_env_vars(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("KB_WRITE_BLOCK_TIERS", "T1,T2")
     monkeypatch.setenv("KB_WRITE_BLOCK_PATHS", "decisions/DEC-008-*.md")
     monkeypatch.setenv("KB_RATE_LIMIT_PER_HOUR", "50")
+    monkeypatch.setenv("KB_GATE_CHECK_RATE_LIMIT_PER_HOUR", "7")
     monkeypatch.setenv("KB_PENDING_TIMEOUT_SEC", "86400")
     monkeypatch.setenv("KB_PENDING_QUEUE_CAP", "100")
     monkeypatch.setenv("KB_WORKTREE_IDLE_SEC", "1800")
@@ -118,6 +119,7 @@ def test_config_loads_new_write_env_vars(monkeypatch, tmp_path) -> None:
     assert cfg.write_block_tiers == ["T1", "T2"]
     assert cfg.write_block_paths == ["decisions/DEC-008-*.md"]
     assert cfg.rate_limit_per_hour == 50
+    assert cfg.gate_check_rate_limit_per_hour == 7
     assert cfg.pending_timeout_sec == 86400
     assert cfg.pending_queue_cap == 100
     assert cfg.worktree_idle_sec == 1800
@@ -128,6 +130,7 @@ def test_config_defaults_for_new_write_vars(monkeypatch, tmp_path) -> None:
     """Empty defaults for the policy blocklist; sensible defaults for the rest."""
     for var in ["KB_WORKTREE_ROOT", "KB_PENDING_ROOT", "KB_PUSH_QUEUE_ROOT",
                 "KB_WRITE_BLOCK_TIERS", "KB_WRITE_BLOCK_PATHS", "KB_RATE_LIMIT_PER_HOUR",
+                "KB_GATE_CHECK_RATE_LIMIT_PER_HOUR",
                 "KB_PENDING_TIMEOUT_SEC", "KB_PENDING_QUEUE_CAP", "KB_WORKTREE_IDLE_SEC",
                 "KB_GIT_KEY_PATH"]:
         monkeypatch.delenv(var, raising=False)
@@ -143,6 +146,7 @@ def test_config_defaults_for_new_write_vars(monkeypatch, tmp_path) -> None:
     assert cfg.write_block_tiers == []
     assert cfg.write_block_paths == []
     assert cfg.rate_limit_per_hour == 100
+    assert cfg.gate_check_rate_limit_per_hour == 0
     assert cfg.pending_timeout_sec == 86400
     assert cfg.pending_queue_cap == 100
     assert cfg.worktree_idle_sec == 3600

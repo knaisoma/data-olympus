@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from starlette.requests import Request
 
     from data_olympus.models import HealthResponse
+    from data_olympus.rate_limit import SlidingWindowLimiter
     from data_olympus.server import ServerState
 
 
@@ -285,22 +286,33 @@ async def _read_json_capped(
         )
 
 
+_USE_WRITE_LIMITER: Any = object()
+
+
 def _rate_limited(
     state: ServerState, request: Request, principal: Principal,
+    *, limiter: SlidingWindowLimiter | None = _USE_WRITE_LIMITER,
 ) -> JSONResponse | None:
-    """Apply the shared sliding-window limiter to an enforcement-plane route.
+    """Apply a sliding-window limiter to an enforcement-plane route.
 
-    The consult / gate / cleanup-plan routes were previously unthrottled (item 6),
-    so an anonymous or authenticated caller could hammer the classifier and ledger
-    without bound. Reuse the same limiter the write routes use, keyed by
-    (remote_addr, principal name) so a per-principal quota applies. Returns a 429
-    JSONResponse when over quota, else None.
+    The consult / cleanup-plan routes were previously unthrottled (item 6), so an
+    anonymous or authenticated caller could hammer the classifier and ledger
+    without bound. They reuse the write limiter (``state.rate_limiter``), keyed by
+    (remote_addr, principal name). Returns a 429 JSONResponse when over quota, else
+    None.
 
-    When the limiter is absent (a read-only deployment with no write pipeline
-    configured) throttling is skipped: there is no shared limiter object to
-    consult and these routes are read-mostly there.
+    ``limiter`` overrides which limiter to consult. The high-frequency
+    /api/v1/gate/check route passes ``state.gate_rate_limiter`` (None by default),
+    so it is unthrottled unless an operator sets an explicit ceiling: it is a
+    mandatory once-per-tool-action probe, and any fixed quota shared across a
+    fleet (all clients collapse to one bucket behind ingress) self-DoSes with 429s.
+
+    When the resolved limiter is absent (a read-only deployment, or gate/check with
+    no ceiling configured) throttling is skipped.
     """
-    limiter = state.rate_limiter
+    # Distinguish "no limiter arg" (use the write limiter) from an explicit None
+    # (the gate-check limiter with no ceiling: throttling is genuinely off).
+    limiter = state.rate_limiter if limiter is _USE_WRITE_LIMITER else limiter
     if limiter is None:
         return None
     remote_addr = request.client.host if request.client else "unknown"
@@ -662,7 +674,12 @@ def register_routes(
             principal, denied = _authorize(request, registry)
             if denied is not None:
                 return denied
-            if (throttled := _rate_limited(state, request, principal)) is not None:
+            # gate/check uses its own limiter (unthrottled by default): it is the
+            # hook's once-per-tool-action probe, so it must not share the write /
+            # consult quota (that self-DoSes a fleet, see _rate_limited).
+            if (throttled := _rate_limited(
+                state, request, principal, limiter=state.gate_rate_limiter
+            )) is not None:
                 return throttled
             import time as _time
 
