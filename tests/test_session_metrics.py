@@ -347,3 +347,69 @@ async def test_reaper_no_manager_is_noop() -> None:
     tracker = SessionActivityTracker()
     assert await reap_idle_sessions(app=None, tracker=tracker, idle_after_sec=30) == 0
     assert await reap_idle_sessions(app=object(), tracker=tracker, idle_after_sec=30) == 0
+
+
+# ---------------------------------------------------------------------------
+# In-flight SSE keep-alive: a quiet-but-connected GET stream must not be reaped
+# ---------------------------------------------------------------------------
+
+
+class _CountingTracker(SessionActivityTracker):
+    """Counts touch() calls so we can assert re-stamping without timing math."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.touch_count = 0
+
+    def touch(self, session_id: str, *, now: float | None = None) -> None:
+        self.touch_count += 1
+        super().touch(session_id, now=now)
+
+
+@pytest.mark.asyncio
+async def test_middleware_restamps_in_flight_get_sse_stream() -> None:
+    """A long-lived GET /mcp SSE request is re-stamped every touch interval while
+    open, so the idle reaper never evicts a still-connected client. Once the
+    stream closes, re-stamping stops."""
+    import asyncio
+
+    released = asyncio.Event()
+
+    class _HoldingApp:
+        async def __call__(self, _scope, _receive, _send) -> None:
+            await released.wait()  # simulate a held-open SSE stream
+
+    tracker = _CountingTracker()
+    mw = SessionActivityMiddleware(_HoldingApp(), tracker, touch_interval_sec=0.02)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "headers": [(b"mcp-session-id", b"sse-1")],
+    }
+    task = asyncio.create_task(mw(scope, _noop_receive, _noop_send))
+    await asyncio.sleep(0.12)  # ~6 touch intervals
+
+    # Initial stamp plus several periodic re-stamps while the stream is open.
+    assert tracker.touch_count >= 3
+
+    released.set()
+    await task
+    settled = tracker.touch_count
+    await asyncio.sleep(0.06)
+    # No further stamps after the stream closed: the keep-alive task was cancelled.
+    assert tracker.touch_count == settled
+
+
+@pytest.mark.asyncio
+async def test_middleware_short_post_stamps_once_not_periodically() -> None:
+    """A short POST request finishes before the first tick, so it is stamped once
+    and does not spin up a keep-alive loop."""
+    tracker = _CountingTracker()
+    mw = SessionActivityMiddleware(_RecordingApp(), tracker, touch_interval_sec=0.02)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "headers": [(b"mcp-session-id", b"post-1")],
+    }
+    await mw(scope, _noop_receive, _noop_send)
+    assert tracker.touch_count == 1

@@ -45,6 +45,7 @@ these internals, discovery returns ``None`` and the count is reported as
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any, Protocol
@@ -195,20 +196,61 @@ class SessionActivityTracker:
 
 class SessionActivityMiddleware:
     """ASGI middleware that stamps :class:`SessionActivityTracker` on each request
-    carrying an ``mcp-session-id`` header. Pure pass-through otherwise; adds no
-    latency beyond a header scan."""
+    carrying an ``mcp-session-id`` header.
 
-    def __init__(self, app: ASGIApp, tracker: SessionActivityTracker) -> None:
+    The ``GET /mcp`` Server-Sent-Events stream is a *single* long-lived request
+    that emits no further ASGI events while the session is quiet. Stamping only
+    at request start would let the idle reaper evict a still-connected client
+    after the idle window (forcing a reconnect, the exact churn that piles up
+    transports server-side and leaks listeners in a persistent client like
+    ``opencode serve``). So for an in-flight GET stream this middleware re-stamps
+    the session every ``touch_interval_sec`` for as long as the stream stays open;
+    when the client disconnects the request completes, re-stamping stops, and only
+    then does the session go idle and become reap-eligible. Short GET/POST
+    requests finish before the first tick, so they pay only the initial stamp.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        tracker: SessionActivityTracker,
+        *,
+        touch_interval_sec: float = 30.0,
+    ) -> None:
         self.app = app
         self._tracker = tracker
+        self._touch_interval = touch_interval_sec
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope.get("type") == "http":
-            for key, value in scope.get("headers", []):
-                if key.lower() == _MCP_SESSION_ID_HEADER and value:
-                    self._tracker.touch(value.decode("latin-1"))
-                    break
-        await self.app(scope, receive, send)
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        session_id = ""
+        for key, value in scope.get("headers", []):
+            if key.lower() == _MCP_SESSION_ID_HEADER and value:
+                session_id = value.decode("latin-1")
+                break
+        if not session_id:
+            await self.app(scope, receive, send)
+            return
+        self._tracker.touch(session_id)
+        # Only the long-lived GET SSE stream needs keep-alive re-stamping.
+        if scope.get("method") != "GET":
+            await self.app(scope, receive, send)
+            return
+
+        async def _keep_active() -> None:
+            while True:
+                await asyncio.sleep(self._touch_interval)
+                self._tracker.touch(session_id)
+
+        task = asyncio.create_task(_keep_active())
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
 
 async def reap_idle_sessions(
