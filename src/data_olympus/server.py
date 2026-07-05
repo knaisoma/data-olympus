@@ -872,6 +872,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         confidence_threshold=config.confidence_threshold,
         rate_limit_per_hour=config.rate_limit_per_hour,
         rate_limit_per_ip_per_hour=config.rate_limit_per_ip_per_hour,
+        gate_check_rate_limit_per_hour=config.gate_check_rate_limit_per_hour,
         max_text_bytes=config.max_text_bytes,
         max_postimage_bytes=config.max_postimage_bytes,
         max_body_bytes=config.max_body_bytes,
