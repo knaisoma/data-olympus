@@ -10,6 +10,7 @@ import io
 import json
 import subprocess
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from data_olympus import setup_wizard as w
 
@@ -321,7 +322,7 @@ def test_install_enforcement_missing_script_skips(monkeypatch, tmp_path: Path):
 # --------------------------------------------------------------------------- #
 def test_latest_version_from_pypi():
     def fetch(url, timeout):  # noqa: ARG001
-        assert "pypi.org" in url
+        assert urlsplit(url).hostname == "pypi.org"
         return json.dumps({"info": {"version": "9.9.9"}}).encode()
 
     info = w.latest_version(fetcher=fetch)
@@ -331,7 +332,7 @@ def test_latest_version_from_pypi():
 
 def test_latest_version_falls_back_to_github():
     def fetch(url, timeout):  # noqa: ARG001
-        if "pypi.org" in url:
+        if urlsplit(url).hostname == "pypi.org":
             raise OSError("no pypi yet")
         return json.dumps({"tag_name": "v1.2.3"}).encode()
 
