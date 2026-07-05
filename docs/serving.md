@@ -537,6 +537,25 @@ Set `KB_TRUSTED_PROXIES` to the proxy address(es) (comma-separated) to fix this:
   and only the ingress can connect). Otherwise a direct client could forge the
   header.
 
+### The gate-check route (`KB_GATE_CHECK_RATE_LIMIT_PER_HOUR`)
+
+`POST /api/v1/gate/check` (and the `kb_gate_check` MCP tool) is the enforcement
+hook's freshness probe, called **once per gated tool action** by every agent. It
+therefore must not share the write/consult quota (`KB_RATE_LIMIT_PER_HOUR`): with
+several agents active, and all clients collapsing to one limiter bucket behind an
+ingress, a fixed hourly quota self-throttles the whole fleet with `429`s. So
+gate-check has its own ceiling:
+
+- **`KB_GATE_CHECK_RATE_LIMIT_PER_HOUR=0` (default)** — gate-check is **not**
+  rate-limited. It does only cheap classification plus a freshness lookup and no
+  writes, so this matches the read routes, which are also unthrottled.
+- **A positive value** — an explicit per-(address, principal) backstop just for
+  gate-check, independent of the write/consult limiter. Size it above your fleet's
+  real per-hour tool-call volume, not near it, or you reintroduce the self-DoS.
+
+The `consult` and `onboarding/cleanup-plan` routes remain throttled by
+`KB_RATE_LIMIT_PER_HOUR` (they write to the ledger or are CPU-heavy).
+
 ## Audit-log rotation (`KB_AUDIT_MAX_BYTES`)
 
 The JSONL audit log (`KB_AUDIT_LOG_PATH`, default `/state/audit/events.log`) grows

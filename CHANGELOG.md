@@ -12,6 +12,20 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gate/check` no longer self-DoSes multi-agent fleets with 429s.** The
+  enforcement hook calls `POST /api/v1/gate/check` (and `kb_gate_check`) once per
+  gated tool action for every agent, but it shared the write/consult quota
+  (`KB_RATE_LIMIT_PER_HOUR`, default 100). Behind an ingress with no auth, all
+  clients collapse to a single limiter bucket, so a few active agents exhausted
+  the hourly quota in minutes and everything after got `429 Too Many Requests`.
+  gate-check now has its own ceiling, `KB_GATE_CHECK_RATE_LIMIT_PER_HOUR`,
+  defaulting to `0` (unthrottled, consistent with the read routes) since it is a
+  mandatory per-action probe that does only cheap classification and no writes.
+  Set a positive value for an explicit backstop. `consult` and
+  `onboarding/cleanup-plan` stay throttled by `KB_RATE_LIMIT_PER_HOUR`.
+
 ## [0.3.1] - 2026-07-05
 
 ### Fixed

@@ -527,6 +527,76 @@ async def test_consult_is_rate_limited(throttled_app) -> None:
     assert r3.json()["error"] == "rate_limited"
 
 
+@pytest.mark.asyncio
+async def test_gate_check_not_rate_limited_by_default(throttled_app) -> None:
+    """gate/check must NOT share the 2/hour write/consult quota: it is the hook's
+    once-per-tool-action probe, so a fixed quota self-DoSes a fleet. With no gate
+    ceiling configured it is unthrottled even well past the base limit."""
+    transport = httpx.ASGITransport(app=throttled_app, raise_app_exceptions=False)
+    payload = {"workspace": "/w", "session_id": "s", "tool_name": "Bash",
+               "action_diff": ""}
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        codes = [
+            (await client.post("/api/v1/gate/check", json=payload)).status_code
+            for _ in range(8)
+        ]
+    assert 429 not in codes, codes
+
+
+@pytest.mark.asyncio
+async def test_consult_still_limited_while_gate_check_is_not(throttled_app) -> None:
+    """The two limiters are independent: unbounded gate/check traffic does not
+    consume the consult quota, and consult is still throttled."""
+    transport = httpx.ASGITransport(app=throttled_app, raise_app_exceptions=False)
+    gate = {"workspace": "/w", "session_id": "s", "tool_name": "Bash", "action_diff": ""}
+    consult = {"workspace": "/w", "source_session": "s"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        for _ in range(5):
+            await client.post("/api/v1/gate/check", json=gate)
+        r1 = await client.post("/api/v1/consult", json=consult)
+        r2 = await client.post("/api/v1/consult", json=consult)
+        r3 = await client.post("/api/v1/consult", json=consult)
+    assert r1.status_code != 429
+    assert r2.status_code != 429
+    assert r3.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_gate_check_rate_limited_when_ceiling_configured(
+    tmp_kb, tmp_index_path, tmp_path
+) -> None:
+    """An operator can still opt into a backstop: with a positive
+    KB_GATE_CHECK_RATE_LIMIT_PER_HOUR, gate/check throttles at that ceiling,
+    independent of the (here generous) write/consult limit."""
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=tmp_kb, check=True, env=env)
+    subprocess.run(["git", "-C", str(tmp_kb), "add", "-A"], check=True, env=env)
+    subprocess.run(["git", "-C", str(tmp_kb), "commit", "-m", "init"], check=True, env=env)
+    app = build_app(
+        kb_main_path=tmp_kb, kb_index_path=tmp_index_path,
+        sync_interval_sec=60, staleness_degraded_sec=600, bootstrap_now=True,
+        kb_remote_url="dummy",
+        worktree_root=str(tmp_path / "wts"),
+        pending_root=str(tmp_path / "pending"),
+        push_queue_root=str(tmp_path / "pq"),
+        write_block_tiers=[], write_block_paths=[],
+        rate_limit_per_hour=1000,
+        gate_check_rate_limit_per_hour=2,
+    ).http_app()
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    payload = {"workspace": "/w", "session_id": "s", "tool_name": "Bash",
+               "action_diff": ""}
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        r1 = await client.post("/api/v1/gate/check", json=payload)
+        r2 = await client.post("/api/v1/gate/check", json=payload)
+        r3 = await client.post("/api/v1/gate/check", json=payload)
+    assert r1.status_code != 429
+    assert r2.status_code != 429
+    assert r3.status_code == 429
+    assert r3.json()["error"] == "rate_limited"
+
+
 # ---------------------------------------------------------------------------
 # WP0b item 9: 400 on malformed numeric query params; 404 on unknown pending id.
 # ---------------------------------------------------------------------------

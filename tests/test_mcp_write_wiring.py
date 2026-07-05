@@ -77,14 +77,41 @@ async def test_mcp_consult_rate_limited(tmp_git_kb: Path, tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_mcp_gate_check_rate_limited(tmp_git_kb: Path, tmp_path: Path) -> None:
+async def test_mcp_gate_check_not_rate_limited_by_default(
+    tmp_git_kb: Path, tmp_path: Path,
+) -> None:
+    """kb_gate_check must NOT share the write/consult limiter: it is the hook's
+    per-tool-action probe. Even with the write quota exhausted (rate_limit=0) and
+    no gate ceiling configured, gate_check is unthrottled."""
     app = _app_with_pipeline(tmp_git_kb, tmp_path, rate_limit_per_hour=0)
     async with Client(app) as client:
-        res = await client.call_tool("kb_gate_check", {
-            "workspace": "example-project", "session_id": "s",
-            "tool_name": "Edit",
+        for _ in range(3):
+            res = await client.call_tool("kb_gate_check", {
+                "workspace": "example-project", "session_id": "s",
+                "tool_name": "Edit",
+            })
+            assert "rejected_rate_limited" not in str(res)
+
+
+@pytest.mark.asyncio
+async def test_mcp_gate_check_rate_limited_when_ceiling_set(
+    tmp_git_kb: Path, tmp_path: Path,
+) -> None:
+    """With an explicit KB_GATE_CHECK_RATE_LIMIT_PER_HOUR backstop, gate_check
+    throttles at that ceiling (here 1/hour), independent of the write limiter."""
+    app = _app_with_pipeline(
+        tmp_git_kb, tmp_path, rate_limit_per_hour=1000,
+        gate_check_rate_limit_per_hour=1,
+    )
+    async with Client(app) as client:
+        first = await client.call_tool("kb_gate_check", {
+            "workspace": "example-project", "session_id": "s", "tool_name": "Edit",
         })
-        assert "rejected_rate_limited" in str(res)
+        second = await client.call_tool("kb_gate_check", {
+            "workspace": "example-project", "session_id": "s", "tool_name": "Edit",
+        })
+        assert "rejected_rate_limited" not in str(first)
+        assert "rejected_rate_limited" in str(second)
 
 
 @pytest.mark.asyncio

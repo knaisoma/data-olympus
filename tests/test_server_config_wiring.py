@@ -34,6 +34,7 @@ def test_non_default_config_is_threaded_into_app(
     monkeypatch.setenv("KB_WRITE_BLOCK_TIERS", "T1,T2")
     monkeypatch.setenv("KB_WRITE_BLOCK_PATHS", "decisions/DEC-008-*.md")
     monkeypatch.setenv("KB_RATE_LIMIT_PER_HOUR", "42")
+    monkeypatch.setenv("KB_GATE_CHECK_RATE_LIMIT_PER_HOUR", "37")
     monkeypatch.setenv("KB_PENDING_TIMEOUT_SEC", "7200")
     monkeypatch.setenv("KB_PENDING_QUEUE_CAP", "25")
     monkeypatch.setenv("KB_WORKTREE_IDLE_SEC", "999")
@@ -50,6 +51,7 @@ def test_non_default_config_is_threaded_into_app(
     assert cfg.write_block_tiers == ["T1", "T2"]
     assert cfg.write_block_paths == ["decisions/DEC-008-*.md"]
     assert cfg.rate_limit_per_hour == 42
+    assert cfg.gate_check_rate_limit_per_hour == 37
     assert cfg.pending_timeout_sec == 7200
     assert cfg.pending_queue_cap == 25
     assert cfg.worktree_idle_sec == 999
@@ -65,6 +67,7 @@ def test_non_default_config_is_threaded_into_app(
 
     # All other non-default values reach state.config too.
     assert state.config.rate_limit_per_hour == 42
+    assert state.config.gate_check_rate_limit_per_hour == 37
     assert state.config.pending_timeout_sec == 7200
     assert state.config.pending_queue_cap == 25
     assert state.config.worktree_idle_sec == 999
@@ -107,6 +110,32 @@ def test_write_block_tiers_reach_blocklist(
 
     # confidence_threshold is threaded too.
     assert state.config.confidence_threshold == 0.7
+
+
+def test_gate_check_ceiling_reaches_gate_limiter_via_build_app_from_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_git_kb: Path
+) -> None:
+    """Regression: build_app_from_config must forward
+    KB_GATE_CHECK_RATE_LIMIT_PER_HOUR so a positive ceiling actually constructs
+    the separate gate limiter in production (it was dropped on the way to
+    build_app, silently ignoring the opt-in backstop)."""
+    monkeypatch.setenv("KB_MAIN_PATH", str(tmp_git_kb))
+    monkeypatch.setenv("KB_INDEX_PATH", str(tmp_path / "kb.db"))
+    monkeypatch.setenv("KB_REMOTE_URL", "git@github.com:example/repo.git")
+    monkeypatch.setenv("KB_GATE_CHECK_RATE_LIMIT_PER_HOUR", "5")
+    monkeypatch.setenv("KB_WORKTREE_ROOT", str(tmp_path / "worktrees"))
+    monkeypatch.setenv("KB_PENDING_ROOT", str(tmp_path / "pending"))
+    monkeypatch.setenv("KB_PUSH_QUEUE_ROOT", str(tmp_path / "push-queue"))
+
+    cfg = load_config()
+    assert cfg.gate_check_rate_limit_per_hour == 5
+    app = server.build_app_from_config(cfg, bootstrap_now=False)
+    state = app._dolympus_state  # type: ignore[attr-defined]
+
+    # The positive ceiling built a dedicated gate limiter, distinct from the
+    # write limiter (0 default would have left this None).
+    assert state.gate_rate_limiter is not None
+    assert state.gate_rate_limiter is not state.rate_limiter
 
 
 # ---------------------------------------------------------------------------

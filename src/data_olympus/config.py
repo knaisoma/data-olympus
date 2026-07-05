@@ -28,6 +28,14 @@ class Config:
     write_block_paths: list[str] = field(default_factory=list)
     rate_limit_per_hour: int = 100
     rate_limit_per_ip_per_hour: int = 0
+    # Separate ceiling for the high-frequency /api/v1/gate/check route (the
+    # enforcement hook's per-tool-action freshness probe). 0 (default) disables
+    # throttling for that route: it is a mandatory, once-per-tool-call, read-only
+    # probe, so any fixed hourly quota self-DoSes an active multi-agent fleet
+    # (behind ingress all clients collapse to one limiter bucket). Reads are
+    # already unthrottled; this keeps gate/check consistent with them. Set a
+    # positive value only if you want an explicit backstop.
+    gate_check_rate_limit_per_hour: int = 0
     max_text_bytes: int = 262144
     max_postimage_bytes: int = 1048576
     max_body_bytes: int = 2097152
@@ -155,6 +163,7 @@ def load_config() -> Config:
     write_block_paths = _split_csv(os.getenv("KB_WRITE_BLOCK_PATHS", ""))
     rate_limit_per_hour = int(os.getenv("KB_RATE_LIMIT_PER_HOUR", "100"))
     rate_limit_per_ip_per_hour = int(os.getenv("KB_RATE_LIMIT_PER_IP_PER_HOUR", "0"))
+    gate_check_rate_limit_per_hour = int(os.getenv("KB_GATE_CHECK_RATE_LIMIT_PER_HOUR", "0"))
     max_text_bytes = int(os.getenv("KB_MAX_TEXT_BYTES", "262144"))
     max_postimage_bytes = int(os.getenv("KB_MAX_POSTIMAGE_BYTES", "1048576"))
     max_body_bytes = int(os.getenv("KB_MAX_BODY_BYTES", "2097152"))
@@ -226,6 +235,7 @@ def load_config() -> Config:
         write_block_paths=write_block_paths,
         rate_limit_per_hour=rate_limit_per_hour,
         rate_limit_per_ip_per_hour=rate_limit_per_ip_per_hour,
+        gate_check_rate_limit_per_hour=gate_check_rate_limit_per_hour,
         max_text_bytes=max_text_bytes,
         max_postimage_bytes=max_postimage_bytes,
         max_body_bytes=max_body_bytes,
