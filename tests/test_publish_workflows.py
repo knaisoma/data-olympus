@@ -3,7 +3,8 @@
 Keeps the release wiring honest without needing a live GitHub Actions run:
 - the workflow YAML parses;
 - the reusable upload job is trusted-publishing + inert-until-setup shaped;
-- the normal release path (tag-release.yml) calls the reusable publish workflow;
+- the normal release path (tag-release.yml) publishes to PyPI inline (not via the
+  reusable workflow, which PyPI trusted publishing does not match through);
 - the PR dry-run does not upload.
 """
 
@@ -63,14 +64,30 @@ def test_publish_pr_dry_run_does_not_upload():
     assert "pull_request" in dry["if"]
 
 
-def test_tag_release_calls_publish_reusable():
+def test_tag_release_publishes_pypi_inline():
+    """The primary release path publishes to PyPI with the steps INLINE in
+    tag-release.yml, not through a reusable workflow. PyPI trusted publishing does
+    not reliably match a publisher when the upload runs inside a called reusable
+    workflow, so the entry workflow must be the publishing workflow."""
     doc = _load("tag-release.yml")
     pub = doc["jobs"]["publish-pypi"]
-    assert pub["uses"].endswith("publish-pypi-reusable.yml")
-    assert pub["with"]["upload"] is True
+    # Inline job: no `uses:` delegation to a reusable workflow.
+    assert "uses" not in pub
     assert pub["permissions"]["id-token"] == "write"
-    # It keys off the same decided tag as the image build.
-    assert pub["with"]["ref"] == "${{ needs.decide.outputs.tag }}"
+    assert pub["environment"]["name"] == "pypi"
+    # Checks out the same decided tag as the image build.
+    checkout = next(s for s in pub["steps"] if "actions/checkout" in str(s.get("uses", "")))
+    assert checkout["with"]["ref"] == "${{ needs.decide.outputs.tag }}"
+    publish = next(
+        s for s in pub["steps"] if "pypa/gh-action-pypi-publish" in str(s.get("uses", ""))
+    )
+    # Trusted publishing only (no token) + idempotent rerun.
+    assert "password" not in (publish.get("with") or {})
+    assert publish["with"]["skip-existing"] is True
+    # The publisher is configured now, so a real failure must be visible.
+    assert "continue-on-error" not in publish
+    # PyPI publish must not gate the GitHub Release (release needs only build-image).
+    assert "publish-pypi" not in doc["jobs"]["release"]["needs"]
 
 
 def test_publish_step_inert_until_setup():

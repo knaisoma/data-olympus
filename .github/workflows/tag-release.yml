@@ -69,22 +69,50 @@ jobs:
   # pushed with GITHUB_TOKEN, which does NOT trigger publish-pypi.yml's `on: push
   # tags`, so we call the reusable workflow here (exactly as build-image does).
   #
-  # INERT UNTIL OPERATOR SETUP: until the pypi.org Trusted Publisher exists, the
-  # upload STEP inside the reusable workflow no-ops on failure (that step carries
-  # continue-on-error, which is only valid on a step, not on a `uses:` job like
-  # this one). So this job still succeeds pre-setup and does not block the GitHub
-  # Release; once the publisher is configured the upload succeeds for real. See
-  # docs/releases/pypi-trusted-publishing.md.
+  # Publish sdist + wheel to PyPI via Trusted Publishing (OIDC, no token). The
+  # steps run INLINE here (not via a reusable workflow) on purpose: PyPI's OIDC
+  # exchange does not reliably match a publisher when the publishing step runs
+  # inside a called reusable workflow (the gh-action-pypi-publish action itself
+  # warns against reusable workflows). Running inline makes the entry workflow
+  # (tag-release.yml) the publishing workflow, matching the registered pypi.org
+  # Trusted Publisher (workflow=tag-release.yml, environment=pypi). Runs off the
+  # SAME decided tag as build-image. Does not gate the GitHub Release (which needs
+  # only build-image), so a PyPI hiccup surfaces as a failed job without blocking
+  # the tag/image/release. See docs/releases/pypi-trusted-publishing.md.
   publish-pypi:
     needs: decide
     if: needs.decide.outputs.tag != ''
-    uses: ./.github/workflows/publish-pypi-reusable.yml
-    with:
-      ref: ${{ needs.decide.outputs.tag }}
-      upload: true
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/data-olympus
     permissions:
       contents: read
+      # id-token: write mints the OIDC token gh-action-pypi-publish exchanges for
+      # a short-lived upload credential. No secret token exists.
       id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.decide.outputs.tag }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - name: Build sdist + wheel
+        run: uv build
+      - name: Verify metadata (twine check)
+        run: uvx twine check --strict dist/*
+      - name: Smoke-test the built wheel
+        run: |
+          uvx --from ./dist/*.whl data-olympus --help
+          uvx --from ./dist/*.whl data-olympus setup --check --no-version-check
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # skip-existing so a partial-failure rerun of an already-uploaded version
+        # is a no-op, not an error (mirrors the idempotent tag/image/release jobs).
+        # No continue-on-error: the publisher is configured, so a real upload
+        # failure must be visible rather than silently swallowed.
+        with:
+          skip-existing: true
 
   release:
     needs: [decide, build-image]
