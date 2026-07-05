@@ -38,6 +38,11 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
+# README.md, LICENSE, and NOTICE are referenced by pyproject.toml
+# (readme = "README.md", license-files = ["LICENSE", "NOTICE"]); the build
+# backend reads them when it builds the project in the sync below, so they must
+# be in the build context before this step (not just at wheel-publish time).
+COPY README.md LICENSE NOTICE ./
 COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
