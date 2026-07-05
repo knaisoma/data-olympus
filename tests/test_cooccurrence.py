@@ -75,7 +75,11 @@ def test_build_table_relates_cooccurring_terms() -> None:
         {"banana", "fruit", "yellow"},
         {"banana", "fruit", "smoothie"},
     ]
-    table = build_cooccurrence_table(docs, k=5, min_count=2, min_pmi=0.0)
+    # min_docs=2 here so the tiny unit corpus is not auto-disabled by the new
+    # corpus-size floor (finding (b)); this test exercises the pure PMI mechanics.
+    table = build_cooccurrence_table(
+        docs, k=5, min_count=2, min_pmi=0.0, min_docs=2
+    )
     assert "kubernetes" in table["helm"]
     assert "helm" in table["kubernetes"]
     # The unrelated cluster does not leak in.
@@ -91,14 +95,18 @@ def test_build_table_respects_top_k_bound() -> None:
     for _ in range(3):
         for p in partners:
             docs.append({"hub", p})
-    table = build_cooccurrence_table(docs, k=3, min_count=2, min_pmi=-10.0)
+    table = build_cooccurrence_table(
+        docs, k=3, min_count=2, min_pmi=-10.0, min_docs=2
+    )
     assert len(table["hub"]) <= 3
 
 
 def test_build_table_honours_min_count() -> None:
     # A pair co-occurring in only one doc is below min_count=2 and excluded.
     docs = [{"alpha", "beta"}, {"gamma", "delta"}, {"gamma", "delta"}]
-    table = build_cooccurrence_table(docs, k=5, min_count=2, min_pmi=-10.0)
+    table = build_cooccurrence_table(
+        docs, k=5, min_count=2, min_pmi=-10.0, min_docs=2
+    )
     assert "beta" not in table.get("alpha", [])
     assert "delta" in table.get("gamma", [])
 
@@ -210,8 +218,31 @@ def test_cooccurrence_build_params_from_env(
     monkeypatch.setenv("KB_COOCCURRENCE_K", "3")
     monkeypatch.setenv("KB_COOCCURRENCE_MIN_COUNT", "4")
     monkeypatch.setenv("KB_COOCCURRENCE_MIN_PMI", "1.5")
+    monkeypatch.setenv("KB_COOCCURRENCE_MIN_DOCS", "7")
+    monkeypatch.setenv("KB_COOCCURRENCE_MAX_DOC_TOKENS", "123")
     params = cooccurrence_build_params()
-    assert params == {"k": 3, "min_count": 4, "min_pmi": 1.5}
+    assert params == {
+        "k": 3, "min_count": 4, "min_pmi": 1.5,
+        "min_docs": 7, "max_doc_tokens": 123,
+    }
+
+
+def test_cooccurrence_build_params_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hardened defaults (finding (b)): min_count>=3, min_pmi>0, plus the
+    corpus floor and per-doc token cap."""
+    for var in (
+        "KB_COOCCURRENCE_K", "KB_COOCCURRENCE_MIN_COUNT",
+        "KB_COOCCURRENCE_MIN_PMI", "KB_COOCCURRENCE_MIN_DOCS",
+        "KB_COOCCURRENCE_MAX_DOC_TOKENS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    params = cooccurrence_build_params()
+    assert params["min_count"] >= 3
+    assert params["min_pmi"] > 0.0
+    assert params["min_docs"] >= 2
+    assert params["max_doc_tokens"] > 0
 
 
 # --- end-to-end through Index ------------------------------------------------
@@ -259,8 +290,12 @@ def _write_cooccurrence_corpus(kb: Path) -> None:
 
 
 def test_index_related_terms_populated_after_build(
-    tmp_path: Path, tmp_index_path: Path,
+    tmp_path: Path, tmp_index_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Lower the corpus floor so the tiny fixture corpus is not auto-disabled by
+    # the new min_docs default (finding (b)); the association mechanics are what
+    # this test exercises.
+    monkeypatch.setenv("KB_COOCCURRENCE_MIN_DOCS", "2")
     kb = tmp_path / "kb"
     kb.mkdir()
     _write_cooccurrence_corpus(kb)
@@ -271,8 +306,9 @@ def test_index_related_terms_populated_after_build(
 
 
 def test_cooccurrence_expansion_broadens_recall(
-    tmp_path: Path, tmp_index_path: Path,
+    tmp_path: Path, tmp_index_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("KB_COOCCURRENCE_MIN_DOCS", "2")
     kb = tmp_path / "kb"
     kb.mkdir()
     _write_cooccurrence_corpus(kb)
@@ -286,7 +322,9 @@ def test_cooccurrence_expansion_broadens_recall(
     )
 
     # With co-occurrence expansion: 'helm' expands to include 'kubernetes',
-    # reaching the kubernetes-only doc -- recall broadened.
+    # reaching the kubernetes-only doc via the PENALIZED backfill pass (finding
+    # (a)): the kubernetes-only doc appears, but only BELOW every primary 'helm'
+    # hit (asserted in test_search_pipeline).
     expanded = Index(tmp_index_path)
     expanded.query_expander = expanded.cooccurrence_expander()
     expanded_ids = {h.id for h in expanded.search("helm", limit=20)}
@@ -300,7 +338,7 @@ def test_cooccurrence_expansion_broadens_recall(
 
 
 def test_related_terms_table_rebuilt_atomically(
-    tmp_path: Path, tmp_index_path: Path,
+    tmp_path: Path, tmp_index_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The related_terms table swaps atomically with the rest of the index.
 
@@ -308,6 +346,7 @@ def test_related_terms_table_rebuilt_atomically(
     rebuild produces a new one; a fresh connection sees the new table. This
     mirrors the FTS atomic-swap guarantee for the co-occurrence table.
     """
+    monkeypatch.setenv("KB_COOCCURRENCE_MIN_DOCS", "2")
     kb = tmp_path / "kb"
     kb.mkdir()
     _write_cooccurrence_corpus(kb)

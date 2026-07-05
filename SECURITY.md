@@ -37,7 +37,7 @@ The single-writer write pipeline (propose, pending, resolve) is the primary atta
 - **Payload size caps.** `KB_MAX_TEXT_BYTES` (memory text, default 256 KiB), `KB_MAX_POSTIMAGE_BYTES` (edit/bootstrap file, default 1 MiB), and `KB_MAX_BODY_BYTES` (REST request body, default 2 MiB) reject oversized proposals before any disk write. The body cap is enforced by reading the request stream incrementally and returning `413` once the byte count is exceeded, so it bounds chunked or `Content-Length`-omitting clients, not just honest ones. Set to `0` to disable a given cap.
 - **Aggregate caps.** Onboarding bootstrap rejects requests over `KB_MAX_BOOTSTRAP_FILES` (default 50). The pending queue is bounded by `KB_PENDING_QUEUE_CAP` (default 100); enqueue past the cap is rejected rather than growing unbounded on disk.
 - **Confidence clamp.** Client-supplied `confidence` is advisory. Only a caller whose principal holds the `auto_commit` capability may auto-commit; everyone else has their proposals parked as pending regardless of the asserted confidence (see authentication below).
-- **Rate limiting.** A per-(remote_addr, agent_identity) sliding window (`KB_RATE_LIMIT_PER_HOUR`) plus an optional per-IP cap (`KB_RATE_LIMIT_PER_IP_PER_HOUR`, default disabled) bound write volume.
+- **Rate limiting.** A per-(remote_addr, agent_identity) sliding window (`KB_RATE_LIMIT_PER_HOUR`) plus an optional per-IP cap (`KB_RATE_LIMIT_PER_IP_PER_HOUR`, default disabled) bound write volume. Behind a proxy, set `KB_TRUSTED_PROXIES` so `remote_addr` is the real client IP (off by default; see the network-security section).
 - **Single writer.** The server runs a single writer with advisory locking and a durable push queue. Concurrent write races from multiple agent sessions are serialised rather than silently merged.
 
 ### Audit log
@@ -70,6 +70,8 @@ Authentication is resolved from the `Authorization: Bearer <token>` header again
 
   A principal with `propose` but not `auto_commit` may propose, but its proposals are always parked as pending (the confidence clamp).
 
+  **Breaking change in v0.3.0:** a `KB_AUTH_PRINCIPALS` entry that omits the `capabilities` field now defaults to least privilege (`{read, propose}`) instead of all capabilities; grant `resolve`, `auto_commit`, `bootstrap`, or `record_event` by listing them explicitly. This prevents an agent token from silently gaining self-approval (`resolve` + `auto_commit`).
+
 Tokens are compared with `hmac.compare_digest` (constant time).
 
 **Coverage is REST and MCP.** Unlike earlier releases where the token guarded REST routes only, an MCP-transport middleware enforces the same capabilities on the MCP write tools (`kb_propose_*`, `kb_resolve_pending`, `kb_bootstrap_project`, `kb_record_event`). The observability/enforcement tools (`kb_list_pending`, `kb_audit`, `kb_consult`, `kb_gate_check`, `kb_compliance`) likewise require an authenticated principal over MCP when auth is configured, matching the REST gating. A token-less MCP client can no longer call write or observability tools when auth is configured.
@@ -95,6 +97,14 @@ When neither `KB_AUTH_TOKEN` nor `KB_AUTH_PRINCIPALS` is set (the default), ever
 
 - Deploy on a trusted private network, or behind an authenticating reverse proxy (terminate TLS there).
 - NOT expose the server to untrusted networks.
+
+The default `kubectl apply -k deploy/k8s/` does NOT create the Ingress (it would publish the write routes to the LAN with auth unset by default); it is opt-in after `KB_AUTH_TOKEN` is set. The Docker Compose file binds `127.0.0.1:8080` so the local demo is not LAN-exposed. See `deploy/k8s/README.md`.
+
+**Proxy headers.** Behind a reverse proxy, set `KB_TRUSTED_PROXIES` to the proxy address(es) so the rate limiter sees the real client IP via `X-Forwarded-For`. It is **off by default** (X-Forwarded-For ignored), which prevents a direct client from spoofing its address to evade the per-IP cap. See `docs/serving.md`.
+
+## Container hardening
+
+The Kubernetes pod runs fully rootless: the `prepare-git` initContainer (deploy-key staging + first-boot clone) and the main container both run as uid 65534 with `runAsNonRoot: true`, all Linux capabilities dropped, `allowPrivilegeEscalation: false`, and a read-only root filesystem. The old root+`gosu` entrypoint phase has been removed. The base image is digest-pinned in `deploy/docker/Dockerfile`. Readiness targets `/readyz` (index loaded, independent of data staleness); `/api/v1/health` keeps its 503-on-degraded contract for the CLI `--no-stale` flag and should be **alerted on, not probed**. Operational runbook: `docs/operations.md`.
 
 ## License
 

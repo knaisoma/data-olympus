@@ -304,8 +304,12 @@ def make_hybrid_reranker(
             return (1.0 - weight) * good + weight * cos_component
 
         scored = [(blended(h), i, h) for i, h in enumerate(hits)]
-        # Sort by blended DESC; ties keep incoming order via the enumerate index.
-        scored.sort(key=lambda t: (-t[0], t[1]))
+        # Sort by rank_class FIRST (primaries before backfill), then blended DESC;
+        # ties keep incoming order via the enumerate index. The rank-class outer
+        # key means the cosine blend can re-order WITHIN a class but never lift a
+        # backfill (expansion/trigram) hit above a primary (finding (d)): the
+        # blend re-normalises scores, so a score-only floor would not hold.
+        scored.sort(key=lambda t: (t[2].rank_class, -t[0], t[1]))
         # Re-score onto the ascending-bm25 convention (lower == better) so a
         # downstream ascending sort agrees with this order: negate blended.
         return [replace(h, score=-b) for b, _i, h in scored]

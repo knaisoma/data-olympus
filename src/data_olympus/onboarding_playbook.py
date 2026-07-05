@@ -15,12 +15,21 @@ Ask only what imported files do not answer. Map answers to canonical files:
 """
 
 _CLEANUP = """\
-After bootstrap, call kb_cleanup_plan with the local doc files. Present the plan
-per file (default to the recommended action). For imported_duplicate items, apply
-the supplied thin-pointer text to the project repo with your own edit tool and
-leave the changes staged for the human to commit. Show partial_overlap items for
-manual review; leave unique files untouched. The server never edits the project
-repo.
+Before cleanup, wait for the bootstrap to converge. A committed bootstrap is not
+visible to the index until it is pushed and re-pulled, so poll kb_onboarding_status
+until it reports 'onboarded' (or watch kb_health advance past the bootstrap commit)
+BEFORE calling kb_cleanup_plan. Running cleanup against a not-yet-converged index
+classifies the just-bootstrapped files as unique and produces a wrong plan.
+
+Then call kb_cleanup_plan with the local doc files. Present the plan per file
+(default to the recommended action). For imported_duplicate items, apply the
+supplied thin-pointer text to the project repo with your own edit tool and leave
+the changes staged for the human to commit. Show partial_overlap items for manual
+review; leave unique files untouched. The server never edits the project repo.
+
+Do not re-run kb_bootstrap_project while a prior bootstrap for the same workspace
+is still converging: the server holds a short-lived in-flight guard and rejects a
+second call with rejected_already_in_progress until the window elapses.
 """
 
 _DISPATCH = """\
@@ -38,11 +47,15 @@ _PROJECT = """\
 # Onboarding project: {workspace}
 
 1. Confirm kb_onboarding_status(workspace={workspace!r}) is 'absent' or 'partial'.
+   'absent' bootstraps every canonical file; 'partial' completes an existing
+   project by committing ONLY the missing_files the status reports (an already
+   present file is never overwritten). If it is already 'onboarded', stop.
 2. Inventory local docs (README.md, AGENTS.md, CLAUDE.md, .rules/, docs/).
 {interview}
 3. Assemble imported files + interview answers and call kb_bootstrap_project
    (workspace={workspace!r}, workspace_remote_url={workspace_remote_url!r}). One
-   atomic commit on high confidence, else one pending bundle.
+   atomic commit on high confidence, else one pending bundle. On 'partial' you
+   may supply the full set; the server narrows it to the missing files.
 {cleanup}
 """
 
@@ -52,7 +65,9 @@ _COMPONENT = """\
 1. Read the parent project's AGENTS.md first (kb_get projects-{workspace}-AGENTS)
    to inherit its conventions and lessons; only ask for component-specific deltas.
 2. Confirm kb_onboarding_status(workspace={workspace!r}, component={component!r})
-   is 'absent' or 'partial'.
+   is 'absent' or 'partial'. 'partial' completes the component by committing ONLY
+   the missing_files reported; existing files are never overwritten. Stop if it is
+   already 'onboarded'.
 {interview}
 3. Call kb_bootstrap_project(workspace={workspace!r}, component={component!r},
    component_remote_url={component_remote_url!r}).

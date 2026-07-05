@@ -6,9 +6,10 @@ tier: T4
 title: dead-letter-queues-5
 ---
 
-# dead-letter-queues-5 (current)
+# dead-letter-queues-5
 
-This concept defines the current guidance for dead-letter-queues-5. When working with dead-letter-queues-5, follow the current rules below. The dead-letter-queues-5 approach affects reliability and developer ergonomics.
+This concept defines the governance for dead-letter-queues-5. When working with dead-letter-queues-5, follow the rules below. The dead-letter-queues-5 approach affects consistency, operability, boundary, guardrail.
 
 - Prefer the documented dead-letter-queues-5 pattern.
 - Record exceptions to the dead-letter-queues-5 rule.
+- Weigh the consistency and guardrail implications.

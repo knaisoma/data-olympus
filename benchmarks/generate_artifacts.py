@@ -20,6 +20,7 @@ Honesty labels:
 """
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).parent.parent
@@ -31,7 +32,7 @@ _INDEX_PATH = _REPO_ROOT / "benchmarks" / "bench.db"
 
 def main() -> None:
     from benchmarks.corpus_gen import generate_corpus
-    from benchmarks.methods.bm25 import Bm25Method
+    from benchmarks.methods.bm25 import Bm25Method, StatusAwareBm25Method
     from benchmarks.methods.data_olympus import DataOlympusMethod
     from benchmarks.methods.grep_read import GrepReadMethod
     from benchmarks.methods.whole_dump import WholeDumpMethod
@@ -39,6 +40,9 @@ def main() -> None:
     from benchmarks.run import run_benchmark, write_report
     from benchmarks.tokenizer import SimpleTokenizer
     from data_olympus.index import Index
+
+    if _CORPUS_DIR.exists():
+        shutil.rmtree(_CORPUS_DIR)  # start clean so stale docs never accumulate
 
     print("Generating corpus (n=250, seed=0) ...")
     manifest = generate_corpus(_CORPUS_DIR, n=250, seed=0)
@@ -60,6 +64,7 @@ def main() -> None:
         WholeDumpMethod(_CORPUS_DIR),
         GrepReadMethod(_CORPUS_DIR),
         Bm25Method(_CORPUS_DIR, k=5),
+        StatusAwareBm25Method(_CORPUS_DIR, k=5),
     ]
     report = run_benchmark(
         corpus_root=_CORPUS_DIR,

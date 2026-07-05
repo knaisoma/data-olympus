@@ -14,8 +14,13 @@ query with an empty ``gold_ids`` is skipped (unlabeled). See
 ``benchmarks/real_corpus_eval.md`` for a worked example and an honest reading of
 what the hybrid does and does not buy you.
 
-The ``embeddings`` extra (fastembed) is required; the first run fetches a small
-local ONNX model (cached thereafter). No network at query time.
+The ``embeddings`` extra (fastembed) is required for the hybrid comparison; the
+first run fetches a small local ONNX model (cached thereafter, no query-time
+network). Pass ``--lexical-only`` to skip the hybrid and measure just the
+shipping lexical stack — that path has NO optional dependency and is what CI runs
+against the committed ``example-bundle`` to produce a reproducible real-corpus
+number (``benchmarks/real_corpus/example_bundle_result.json``). ``--out PATH``
+writes the aggregate metrics as JSON (content-free) for committing.
 """
 from __future__ import annotations
 
@@ -40,6 +45,58 @@ def _build_expanders(index):  # noqa: ANN001 - Index, avoid import at module loa
     return compose_expanders(default_query_expander(), cooc, max_terms=DEFAULT_MAX_TERMS)
 
 
+def _run_lexical_only(corpus: Path, queries: list[dict], args) -> None:  # noqa: ANN001
+    """Lexical-stack-only eval. No embeddings dependency; emits committable JSON.
+
+    Reports recall@k, recall@2k, and MRR@k over the labeled queries for the
+    shipping lexical stack (FTS + synonym + co-occurrence expansion). This is the
+    reproducible real-corpus number: point it at the committed ``example-bundle``
+    and both corpus and queries live in the repo, so anyone can rerun it.
+    """
+    import tempfile
+
+    from data_olympus.index import Index
+
+    with tempfile.TemporaryDirectory() as tmp:
+        lex = Index(Path(tmp) / "lex.db")
+        n = lex.build(corpus, source_commit="real-corpus-eval").docs_indexed
+        lex.query_expander = _build_expanders(lex)
+        print(f"indexed {n} docs (lexical stack)")
+
+        k = args.k
+        rec_k: list[float] = []
+        rec_2k: list[float] = []
+        mrr_k: list[float] = []
+        for q in queries:
+            gold = set(q["gold_ids"])
+            ranked = [h.id for h in lex.search(q["text"], limit=2 * k)]
+            rec_k.append(recall_at_k(ranked, gold, k=k))
+            rec_2k.append(recall_at_k(ranked, gold, k=2 * k))
+            mrr_k.append(mrr(ranked[:k], gold))
+
+    result = {
+        "provenance": (
+            "lexical stack (FTS + synonym + co-occurrence expansion), embeddings "
+            "OFF; committed example-bundle corpus; queries are hand-authored "
+            "paraphrases that avoid each doc's distinctive title terms"
+        ),
+        "corpus": str(corpus),
+        "docs_indexed": n,
+        "labeled_queries": len(queries),
+        "k": k,
+        f"recall@{k}": round(statistics.mean(rec_k), 4),
+        f"recall@{2 * k}": round(statistics.mean(rec_2k), 4),
+        f"mrr@{k}": round(statistics.mean(mrr_k), 4),
+    }
+    print("\n== lexical stack on real (non-templated) corpus ==")
+    print(f"  recall@{k}:  {result[f'recall@{k}']:.3f}")
+    print(f"  recall@{2 * k}: {result[f'recall@{2 * k}']:.3f}")
+    print(f"  MRR@{k}:     {result[f'mrr@{k}']:.3f}")
+    if args.out:
+        Path(args.out).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        print(f"wrote {args.out}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--corpus", required=True, help="KB directory to index")
@@ -49,11 +106,15 @@ def main() -> None:
     ap.add_argument("--weight", type=float, default=0.35, help="cosine fraction of the blend")
     ap.add_argument("--dense-count", type=int, default=10)
     ap.add_argument("--min-cosine", type=float, default=0.5)
+    ap.add_argument(
+        "--lexical-only", action="store_true",
+        help="measure only the shipping lexical stack (no embeddings extra needed)",
+    )
+    ap.add_argument("--out", help="write aggregate metrics (content-free) to this JSON path")
     args = ap.parse_args()
 
     import tempfile
 
-    from data_olympus.embeddings import EmbeddingsConfig, build_embedder
     from data_olympus.index import Index
 
     corpus = Path(args.corpus)
@@ -62,6 +123,12 @@ def main() -> None:
     print(f"corpus={corpus} queries={len(raw)} (labeled={len(queries)}) k={args.k}")
     if not queries:
         sys.exit("no labeled queries found: every entry has empty/missing gold_ids")
+
+    if args.lexical_only:
+        _run_lexical_only(corpus, queries, args)
+        return
+
+    from data_olympus.embeddings import EmbeddingsConfig, build_embedder
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)

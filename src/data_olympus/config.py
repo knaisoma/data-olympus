@@ -1,10 +1,13 @@
 """Configuration loading from environment variables."""
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger("data_olympus.config")
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,10 +34,22 @@ class Config:
     max_bootstrap_files: int = 50
     pending_timeout_sec: int = 86400
     pending_queue_cap: int = 100
+    # Age (seconds) after which a crash-orphaned AUTO-COMMIT path lock is reclaimed
+    # by pending_gc_loop (KB_AUTO_COMMIT_LOCK_TTL_SEC). An auto-commit critical
+    # section is seconds long, so a lock older than this cannot have a live holder;
+    # the default of 600s (10 min) is a wide safety margin. Pending-proposal locks
+    # are NEVER reclaimed by this TTL (they live until resolve/expiry). Startup
+    # reclaims every auto-commit lock unconditionally (a fresh process holds none).
+    auto_commit_lock_ttl_sec: int = 600
     worktree_idle_sec: int = 3600
     git_key_path: str = "/tmp/git-key"
     audit_log_path: str = "/state/audit/events.log"
     audit_hmac_key: str = ""
+    # Size-based audit-log rotation threshold in bytes (KB_AUDIT_MAX_BYTES). 0
+    # (default) disables rotation: the log stays a single file (backward
+    # compatible). When set, a fresh append rotates the live file once it exceeds
+    # this size; the tamper-evident hash chain carries across the boundary.
+    audit_max_bytes: int = 0
     auth_token: str = ""
     auth_principals: list[dict[str, Any]] = field(default_factory=list)
     consult_ttl_sec: int = 300
@@ -57,15 +72,21 @@ class Config:
     # honours them without threading Config through.
     cooccurrence_enabled: bool = True
     cooccurrence_k: int = 5
-    cooccurrence_min_count: int = 2
-    cooccurrence_min_pmi: float = 0.0
+    cooccurrence_min_count: int = 3
+    cooccurrence_min_pmi: float = 0.1
+    # Corpus-size floor below which co-occurrence is auto-disabled, and per-doc
+    # unique-token cap on O(n^2) pair counting (finding (b), WP2b).
+    cooccurrence_min_docs: int = 50
+    cooccurrence_max_doc_tokens: int = 400
     # Trigram fuzzy-match fallback (issue #41). Default OFF so existing search
     # behaviour is unchanged. When on, a primary FTS query returning at or below
     # ``trigram_fallback_threshold`` hits is backfilled from the trigram index so
     # a typo or partial identifier still reaches its document; the backfill only
-    # ever appends after primary hits. Surfaced here for discoverability; the
-    # build always creates the trigram table (cost is one extra insert/doc), and
-    # Index.search reads these to gate the query-time fallback.
+    # ever appends after primary hits (as a RANK_CLASS_BACKFILL class). Surfaced
+    # here for discoverability. The trigram table is now created and populated
+    # ONLY when the fallback is enabled (KB_TRIGRAM_MODE=on) (finding (c), WP2b),
+    # so a default deployment pays no trigram build/size cost; Index.search reads
+    # these to gate the query-time fallback.
     trigram_fallback_enabled: bool = False
     trigram_fallback_threshold: int = 3
     # Optional local-embedding hybrid ranking (issue #42). Default OFF so the
@@ -79,6 +100,14 @@ class Config:
     embeddings_enabled: bool = False
     embeddings_weight: float = 0.35
     embeddings_model: str = "BAAI/bge-small-en-v1.5"
+    # Trusted reverse-proxy addresses for X-Forwarded-For handling
+    # (KB_TRUSTED_PROXIES, comma-separated). Empty (default) means uvicorn runs
+    # with proxy_headers OFF: X-Forwarded-For is ignored and the real remote_addr
+    # is the immediate peer, so a client cannot spoof its address to dodge the
+    # per-IP rate limiter. Set to the ingress/proxy IP(s) (or ``*`` to trust any
+    # peer, ONLY safe when nothing untrusted can reach the port directly) to make
+    # the rate limiter see the true client IP behind the proxy. See docs/serving.md.
+    trusted_proxies: list[str] = field(default_factory=list)
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -132,10 +161,22 @@ def load_config() -> Config:
     max_bootstrap_files = int(os.getenv("KB_MAX_BOOTSTRAP_FILES", "50"))
     pending_timeout_sec = int(os.getenv("KB_PENDING_TIMEOUT_SEC", "86400"))
     pending_queue_cap = int(os.getenv("KB_PENDING_QUEUE_CAP", "100"))
+    auto_commit_lock_ttl_sec = int(os.getenv("KB_AUTO_COMMIT_LOCK_TTL_SEC", "600"))
+    if auto_commit_lock_ttl_sec <= 0:
+        # A non-positive periodic TTL is unsafe: reclaim treats max_age_sec=0 as the
+        # unconditional (startup) sweep sentinel, so the running loop would reclaim
+        # FRESH auto-commit locks and could free a live one. Clamp to the default.
+        _log.warning(
+            "KB_AUTO_COMMIT_LOCK_TTL_SEC=%s is non-positive; clamping to 600s "
+            "(a non-positive periodic TTL would reclaim live auto-commit locks)",
+            auto_commit_lock_ttl_sec,
+        )
+        auto_commit_lock_ttl_sec = 600
     worktree_idle_sec = int(os.getenv("KB_WORKTREE_IDLE_SEC", "3600"))
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
     audit_log_path = os.getenv("KB_AUDIT_LOG_PATH", "/state/audit/events.log")
     audit_hmac_key = os.getenv("KB_AUDIT_HMAC_KEY", "")
+    audit_max_bytes = int(os.getenv("KB_AUDIT_MAX_BYTES", "0"))
     auth_token = os.getenv("KB_AUTH_TOKEN", "")
     from data_olympus.principals import parse_principals_env
     auth_principals = parse_principals_env(os.getenv("KB_AUTH_PRINCIPALS", ""))
@@ -169,6 +210,7 @@ def load_config() -> Config:
     )
     emb_enabled = _embeddings_enabled()
     emb_cfg = _embeddings_config()
+    trusted_proxies = _split_csv(os.getenv("KB_TRUSTED_PROXIES", ""))
     return Config(
         kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
         kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
@@ -190,10 +232,12 @@ def load_config() -> Config:
         max_bootstrap_files=max_bootstrap_files,
         pending_timeout_sec=pending_timeout_sec,
         pending_queue_cap=pending_queue_cap,
+        auto_commit_lock_ttl_sec=auto_commit_lock_ttl_sec,
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
         audit_log_path=audit_log_path,
         audit_hmac_key=audit_hmac_key,
+        audit_max_bytes=audit_max_bytes,
         auth_token=auth_token,
         auth_principals=auth_principals,
         consult_ttl_sec=consult_ttl_sec,
@@ -206,9 +250,12 @@ def load_config() -> Config:
         cooccurrence_k=int(cooc_params["k"]),
         cooccurrence_min_count=int(cooc_params["min_count"]),
         cooccurrence_min_pmi=float(cooc_params["min_pmi"]),
+        cooccurrence_min_docs=int(cooc_params["min_docs"]),
+        cooccurrence_max_doc_tokens=int(cooc_params["max_doc_tokens"]),
         trigram_fallback_enabled=trigram_enabled,
         trigram_fallback_threshold=trigram_threshold,
         embeddings_enabled=emb_enabled,
         embeddings_weight=emb_cfg.weight,
         embeddings_model=emb_cfg.model_name,
+        trusted_proxies=trusted_proxies,
     )

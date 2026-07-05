@@ -5,7 +5,7 @@ without instantiating a FastMCP server. The server module wires them in.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from data_olympus.health import snapshot
 from data_olympus.models import (
@@ -24,6 +24,24 @@ if TYPE_CHECKING:
     from data_olympus.index import Index
 
 
+class _CompactDumpable(Protocol):
+    def compact_dump(self) -> dict[str, object]: ...
+    def model_dump(self) -> dict[str, object]: ...
+
+
+def shape_response(resp: _CompactDumpable, *, verbose: bool) -> dict[str, object]:
+    """Serialize a read-tool response to the wire dict.
+
+    ``verbose=False`` (the default for every read tool) returns the token-compact
+    shape; ``verbose=True`` returns the full, byte-for-byte legacy JSON shape. The
+    ``verbose`` parameter threads from the MCP tool wrappers in ``server.py`` and
+    the REST handlers in ``rest_api.py`` through here into the per-model
+    ``compact_dump`` / ``model_dump`` methods, so MCP and REST stay consistent.
+    See issue #65.
+    """
+    return resp.model_dump() if verbose else resp.compact_dump()
+
+
 def kb_health_fn(
     *,
     idx: Index,
@@ -32,6 +50,7 @@ def kb_health_fn(
     last_git_push_at: float | None = None,
     pending_count: int = 0,
     push_queue_size: int = 0,
+    push_queue_frozen: int = 0,
     last_index_build_status: str = "ok",
     last_index_error: str | None = None,
     last_index_error_at: float | None = None,
@@ -51,6 +70,7 @@ def kb_health_fn(
         last_git_push_at=last_git_push_at,
         pending_count=pending_count,
         push_queue_size=push_queue_size,
+        push_queue_frozen=push_queue_frozen,
         last_index_build_status=last_index_build_status,
         last_index_error=last_index_error,
         last_index_error_at=last_index_error_at,
@@ -73,6 +93,7 @@ def kb_health_fn(
         db_size_bytes=state.db_size_bytes,
         pending_count=state.pending_count,
         push_queue_size=state.push_queue_size,
+        push_queue_frozen=state.push_queue_frozen,
         path_locks_held=path_locks_held,
         last_index_build_status=state.last_index_build_status,
         last_index_error=state.last_index_error,
@@ -84,6 +105,7 @@ def kb_health_fn(
         last_successful_refresh_at=state.last_successful_refresh_at,
         remote_head_sha=state.remote_head_sha,
         live_sessions=state.live_sessions,
+        malformed_frontmatter=state.malformed_frontmatter,
     )
 
 
@@ -111,13 +133,41 @@ def kb_search_fn(
     tier: str | None = None,
     category: str | None = None,
     status: str | None = None,
+    in_force: bool = False,
     doc_type: str | None = None,
+    abstain: bool = False,
 ) -> SearchResponse:
+    from data_olympus.search_gate import abstain_gate
+
+    # Clamp to 1..100. Clamping only the upper bound let a negative
+    # ``limit`` (e.g. -1) reach SQLite as ``LIMIT -1``, which SQLite treats as
+    # "no limit" and dumps the entire corpus in one request. Bound both ends.
     if limit > 100:
         limit = 100
-    hits = idx.search(
-        query, limit=limit, tier=tier, category=category, status=status, doc_type=doc_type
-    )
+    elif limit < 1:
+        limit = 1
+    search_kwargs: dict[str, object] = {
+        "tier": tier,
+        "category": category,
+        "status": status,
+        "in_force": in_force,
+        "doc_type": doc_type,
+    }
+    abstained = False
+    abstain_reason: str | None = None
+    if abstain:
+        # Single-sourced signal gate (search_gate.abstain_gate). ``None`` means
+        # the gate fired: return an explicit abstained response, not just zero
+        # hits, so a caller can tell "no governing rule" from "search found none".
+        gated = abstain_gate(idx, query, limit=limit, **search_kwargs)
+        if gated is None:
+            hits = []
+            abstained = True
+            abstain_reason = "no_signal_match"
+        else:
+            hits = gated
+    else:
+        hits = idx.search(query, limit=limit, **search_kwargs)  # type: ignore[arg-type]
     health = idx.health()
     return SearchResponse(
         query=query,
@@ -135,6 +185,8 @@ def kb_search_fn(
         ],
         source_commit=str(health["source_commit"]),
         total_returned=len(hits),
+        abstained=abstained,
+        abstain_reason=abstain_reason,
     )
 
 

@@ -3,13 +3,14 @@ id: BENCH-OLD-CONNECTION-POOLING-7
 type: standard
 status: superseded
 tier: T2
-title: connection-pooling-7 (old)
+title: connection-pooling-7
 superseded_by: BENCH-NEW-CONNECTION-POOLING-7
 ---
 
-# connection-pooling-7 (previous)
+# connection-pooling-7
 
-This concept defines the previous guidance for connection-pooling-7. When working with connection-pooling-7, follow the previous rules below. The connection-pooling-7 approach affects reliability and developer ergonomics.
+This concept defines the governance for connection-pooling-7. When working with connection-pooling-7, follow the rules below. The connection-pooling-7 approach affects resilience, deployment, latency, constraint.
 
 - Prefer the documented connection-pooling-7 pattern.
 - Record exceptions to the connection-pooling-7 rule.
+- Weigh the resilience and constraint implications.

@@ -14,6 +14,7 @@ yaml round-trip: write_governance_queries / load_governance_queries.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -76,6 +77,26 @@ def _negative_query(distractor: str) -> str:
     return f"What is the team standard for {distractor.replace('-', ' ')}?"
 
 
+def _fts_tokens(text: str) -> set[str]:
+    """Individual lowercase tokens as FTS would see them (split on non-alnum).
+
+    Trigger leakage must be checked at THIS granularity, not against whole
+    trigger strings: a multi-word trigger like "cursor pagination" contributes
+    the tokens "cursor" and "pagination" to the FTS index, so an uncovered query
+    containing the single word "pagination" would still match the gold doc's
+    applies_when column. Comparing only whole trigger strings misses that.
+    """
+    return {t for t in re.split(r"[^a-z0-9]+", text.lower()) if t}
+
+
+def _trigger_tokens(covered_terms: list[str]) -> set[str]:
+    """All FTS tokens contributed by a topic's trigger terms."""
+    toks: set[str] = set()
+    for term in covered_terms:
+        toks |= _fts_tokens(term)
+    return toks
+
+
 # ---------------------------------------------------------------------------
 # Public builder
 # ---------------------------------------------------------------------------
@@ -83,16 +104,25 @@ def _negative_query(distractor: str) -> str:
 def build_governance_queries(manifest: GovCorpusManifest) -> list[GovQuery]:
     """Build all four query strata from a GovCorpusManifest.
 
-    Integrity check: asserts that no paraphrase_uncovered query contains any
-    word that is itself a complete trigger string (the test also asserts this).
+    Integrity check (token-level): a ``paraphrase_uncovered`` query must share NO
+    FTS token with its own gold doc's trigger terms. This is stricter than the
+    earlier whole-string check, which let a multi-word trigger ("cursor
+    pagination") leak a single token ("pagination") into an "uncovered" query and
+    inflate the held-out recall. Queries that cannot be made token-disjoint are
+    skipped, so "held-out paraphrase" genuinely means the applies_when metadata
+    cannot help. The test asserts the same invariant.
     """
-    all_trigger_strings: set[str] = {
-        t.lower() for topic in manifest.topics for t in topic.covered_terms
+    # Trigger tokens per topic (own-doc), for the strict disjointness check.
+    trig_tokens_by_id: dict[str, set[str]] = {
+        topic.current_id: _trigger_tokens(topic.covered_terms)
+        for topic in manifest.topics
     }
 
     queries: list[GovQuery] = []
 
     for _i, topic in enumerate(manifest.topics):
+        own_trigger_tokens = trig_tokens_by_id[topic.current_id]
+
         # --- trigger_covered ---
         if topic.covered_terms:
             tq = _trigger_query(topic.covered_terms)
@@ -106,17 +136,11 @@ def build_governance_queries(manifest: GovCorpusManifest) -> list[GovQuery]:
         # --- paraphrase_uncovered ---
         for j, intent_phrase in enumerate(topic.uncovered_terms):
             uq = _uncovered_query(intent_phrase, j)
-            # Integrity: verify no word in the query is a complete trigger string.
-            query_words = set(uq.lower().split())
-            overlap = query_words & all_trigger_strings
-            if overlap:
-                # Fall back to a safer template that avoids the collision.
-                uq = f"Guidance needed for {intent_phrase} in our project."
-                query_words = set(uq.lower().split())
-                overlap = query_words & all_trigger_strings
-                if overlap:
-                    # Skip this particular phrase (can't build a clean query).
-                    continue
+            # Integrity: the query must share NO FTS token with its own gold
+            # doc's triggers. If the intent phrase itself carries a trigger
+            # token, no template can fix it, so skip the phrase entirely.
+            if _fts_tokens(uq) & own_trigger_tokens:
+                continue
             queries.append(GovQuery(
                 text=uq,
                 stratum="paraphrase_uncovered",

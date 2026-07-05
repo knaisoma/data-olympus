@@ -5,7 +5,11 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
     ports:
-      - "8080:8080"
+      # Bind to loopback only. The write + enforcement REST routes are open when
+      # KB_AUTH_TOKEN is unset (the compose default), so publishing on 0.0.0.0
+      # would expose them to the whole LAN. Loopback keeps the local demo private;
+      # change to "8080:8080" (or a host IP) only behind an authenticating proxy.
+      - "127.0.0.1:8080:8080"
     environment:
       KB_MAIN_PATH: /kb-main
       KB_INDEX_PATH: /index/kb.db

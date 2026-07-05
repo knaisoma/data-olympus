@@ -14,28 +14,106 @@ spec:
       labels:
         app.kubernetes.io/name: data-olympus-mcp
     spec:
+      # Pod runs entirely as the non-root nobody uid. fsGroup makes the mounted
+      # PVCs and the Secret group-owned by 65534 so the non-root process can write
+      # /state, /kb-main, etc. and read the deploy key. This lets the manifest pass
+      # the restricted PodSecurity standard (no root, no added caps).
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
         seccompProfile:
           type: RuntimeDefault
+      # initContainer (WP3a): the root+gosu entrypoint phase is gone. This
+      # non-root init step stages the deploy key onto the shared /state volume at
+      # 0400 (SSH refuses a group/world-readable key) and clones /kb-main on first
+      # boot. Running it as the same uid as the main container means no privilege
+      # transition anywhere in the pod.
+      initContainers:
+        - name: prepare-git
+          # Must be >= v0.3.0: the rootless deploy-key staging (/state/git-key) and
+          # the /readyz probe below only exist from that release. Keep in sync with
+          # the main container tag.
+          image: ghcr.io/knaisoma/data-olympus:v0.3.0  # replace with your registry/tag or digest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              # Stage the deploy key with private-key perms on the shared volume.
+              if [ -f /etc/git-key-mount ]; then
+                cp /etc/git-key-mount /state/git-key
+                chmod 0400 /state/git-key
+              fi
+              # Trust the git SSH host into a writable known_hosts on /state.
+              HOST="${KB_SSH_KEYSCAN_HOST:-github.com}"
+              ssh-keyscan -t ed25519,rsa "$HOST" > /state/known_hosts 2>/dev/null || true
+              chmod 0644 /state/known_hosts
+              # First-boot clone of /kb-main (idempotent; skipped when non-empty).
+              if [ -n "${KB_GIT_REMOTE_URL:-}" ] && [ -d /kb-main ]; then
+                real=$(find /kb-main -mindepth 1 -maxdepth 1 ! -name 'lost+found' -print -quit 2>/dev/null || true)
+                if [ -z "$real" ]; then
+                  echo "[init] /kb-main empty; cloning $KB_GIT_REMOTE_URL"
+                  GIT_SSH_COMMAND="ssh -i /state/git-key -o UserKnownHostsFile=/state/known_hosts -o StrictHostKeyChecking=yes" \
+                    git clone "$KB_GIT_REMOTE_URL" /kb-main \
+                    && echo "[init] bootstrap complete" \
+                    || echo "[init] WARNING: clone failed; pod starts degraded"
+                fi
+              fi
+          env:
+            - name: KB_GIT_REMOTE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: data-olympus-mcp
+                  key: KB_GIT_REMOTE_URL
+          envFrom:
+            - configMapRef:
+                name: data-olympus-mcp
+          volumeMounts:
+            - name: kb-main
+              mountPath: /kb-main
+            - name: kb-state
+              mountPath: /state
+            - name: tmp
+              mountPath: /tmp
+            - name: git-key
+              mountPath: /etc/git-key-mount
+              subPath: git-key
+              readOnly: true
       containers:
         - name: data-olympus-mcp
           # Reproducible default: pin an immutable released tag (or a digest).
           # For opt-in auto-update, switch to a mutable channel tag (e.g.
           # ghcr.io/knaisoma/data-olympus:stable) with imagePullPolicy: Always and
           # a scheduled `kubectl rollout restart` or an image-update controller.
-          image: ghcr.io/knaisoma/data-olympus:v0.1.1  # replace with your registry/tag or digest
+          # Must be >= v0.3.0: this manifest's /readyz probe and rootless
+          # /state/git-key entrypoint flow only exist from that release; an older
+          # image would stay NotReady and could not find the staged deploy key.
+          image: ghcr.io/knaisoma/data-olympus:v0.3.0  # replace with your registry/tag or digest
           imagePullPolicy: IfNotPresent
-          # The entrypoint starts as root to copy/chown the deploy key and bootstrap
-          # /kb-main, then drops to uid 65534 via gosu. So we cannot runAsNonRoot at
-          # the pod level, but we still drop all caps except those the entrypoint
-          # needs, forbid privilege escalation, and run a read-only root filesystem
-          # (writes go to the PVCs below and the /tmp emptyDir).
+          # Fully non-root: the deploy-key staging + first-boot clone moved to the
+          # non-root initContainer above, so the main container needs no root, no
+          # gosu, and no added capabilities. Drop ALL caps, forbid privilege
+          # escalation, read-only root FS (writes go to the PVCs and /tmp emptyDir).
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
             capabilities:
               drop: ["ALL"]
-              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]
             seccompProfile:
               type: RuntimeDefault
           ports:
@@ -66,13 +144,20 @@ spec:
               mountPath: /index
             - name: tmp
               mountPath: /tmp
-            - name: git-key
-              mountPath: /etc/git-key-mount
-              subPath: git-key
-              readOnly: true
+            # No git-key mount here: the initContainer staged the key to
+            # /state/git-key (0400) on the shared kb-state volume, which the
+            # entrypoint reads. Only the initContainer touches the raw Secret.
           readinessProbe:
+            # /readyz reports ready == process up AND index loaded, INDEPENDENT of
+            # data staleness. Previously this probed /api/v1/health, which returns
+            # 503 when the KB is stale (a >KB_STALENESS_DEGRADED_SEC git-remote
+            # outage): that ejected a perfectly serviceable pod from the Service
+            # and turned "reads are a bit old" into a hard 503 with zero endpoints.
+            # /api/v1/health keeps its 503-on-degraded contract for the CLI
+            # --no-stale flag; alert on it (not the probe) for staleness. See
+            # docs/operations.md and docs/serving.md.
             httpGet:
-              path: /api/v1/health
+              path: /readyz
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 10

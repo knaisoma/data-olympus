@@ -60,6 +60,16 @@ def _cmd_visualize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_setup(args: argparse.Namespace) -> int:
+    from data_olympus import setup_wizard
+    return setup_wizard.run(
+        argv_endpoint=args.endpoint,
+        check_only=args.check,
+        assume_yes=args.yes,
+        no_version_check=args.no_version_check,
+    )
+
+
 def _cmd_report(args: argparse.Namespace) -> int:
     from data_olympus.cli.report_cmd import resolve_default_workspace, run_report
     return run_report(
@@ -90,6 +100,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_viz.add_argument("--name", default=None, help="display name in the viewer header")
     p_viz.set_defaults(func=_cmd_visualize)
+    p_setup = sub.add_parser(
+        "setup", help="guided first-run/update: probe endpoint, wire agents, install hooks"
+    )
+    p_setup.add_argument(
+        "--endpoint", default=None,
+        help="server endpoint (default: $KB_ENDPOINT or http://localhost:8080)",
+    )
+    p_setup.add_argument(
+        "--check", action="store_true",
+        help="read-only doctor summary (also the update-check path); changes nothing",
+    )
+    p_setup.add_argument(
+        "-y", "--yes", action="store_true",
+        help="non-interactive: accept defaults (register detected agents, skip hook prompts)",
+    )
+    p_setup.add_argument(
+        "--no-version-check", action="store_true",
+        help="skip the PyPI/GitHub latest-version lookup (fully offline)",
+    )
+    p_setup.set_defaults(func=_cmd_setup)
     p_report = sub.add_parser("report", help="report governed changes lacking a consultation")
     p_report.add_argument("--workspace", default=None,
                           help="workspace label (default: main-worktree basename)")
@@ -105,6 +135,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("--emit-events", action="store_true",
                           help="record a gate_bypass audit event per unverified governed change")
     p_report.set_defaults(func=_cmd_report)
+    from data_olympus.cli.import_cmd import add_import_subparser
+    add_import_subparser(sub)
     return parser
 
 

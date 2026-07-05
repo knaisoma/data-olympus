@@ -39,6 +39,82 @@ async def test_rest_health_returns_200(http_app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_readyz_ready_when_index_built(http_app) -> None:
+    """/readyz is 200 when the index is loaded and the last build was ok."""
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/readyz")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ready"] is True
+    assert body["index_built_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_readyz_ready_even_when_health_degraded(tmp_kb: Path, tmp_path: Path) -> None:
+    """The readiness split: a stale KB makes /api/v1/health 503 (degraded) but
+    /readyz stays 200 because the last-good index still serves reads. This is the
+    whole point of pointing the k8s readiness probe at /readyz not /api/v1/health."""
+    app = build_app(
+        kb_main_path=tmp_kb,
+        kb_index_path=tmp_path / "idx.db",
+        sync_interval_sec=60,
+        staleness_degraded_sec=600,
+        bootstrap_now=True,
+    )
+    state = app._dolympus_state  # type: ignore[attr-defined]
+    # Force staleness: last pull was long ago -> health degraded.
+    import time as _t
+    state.last_git_pull_at = _t.time() - 10_000
+    http_app = app.http_app()
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        health = await client.get("/api/v1/health")
+        ready = await client.get("/readyz")
+    assert health.status_code == 503  # degraded (CLI --no-stale contract preserved)
+    assert health.json()["degraded"] is True
+    assert ready.status_code == 200  # but still ready to serve reads
+    assert ready.json()["ready"] is True
+
+
+@pytest.mark.asyncio
+async def test_readyz_not_ready_when_index_never_built(tmp_kb: Path, tmp_path: Path) -> None:
+    """No index built (cold start / never-successful build) -> /readyz 503."""
+    app = build_app(
+        kb_main_path=tmp_kb,
+        kb_index_path=tmp_path / "idx.db",
+        sync_interval_sec=60,
+        staleness_degraded_sec=600,
+        bootstrap_now=False,  # index never built
+    )
+    http_app = app.http_app()
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/readyz")
+    assert resp.status_code == 503
+    assert resp.json()["ready"] is False
+
+
+@pytest.mark.asyncio
+async def test_livez_always_200(http_app) -> None:
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/livez")
+    assert resp.status_code == 200
+    assert resp.json()["alive"] is True
+
+
+@pytest.mark.asyncio
+async def test_health_payload_includes_malformed_frontmatter(http_app) -> None:
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/health")
+    body = resp.json()
+    assert "malformed_frontmatter" in body
+    assert body["malformed_frontmatter"] == 0
+
+
+@pytest.mark.asyncio
 async def test_rest_outline_returns_200(http_app) -> None:
     transport = httpx.ASGITransport(app=http_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

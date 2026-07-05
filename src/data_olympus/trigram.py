@@ -26,8 +26,13 @@ holds:
 
 Ranking discipline: the trigram fallback is used ONLY as a backfill. The primary
 FTS hits keep their bm25 order and top positions; trigram-only hits are appended
-strictly after them. So an exact/primary match is never diluted or reordered by a
-fuzzy hit. See ``Index.search`` for the wiring.
+after them AND stamped with ``RANK_CLASS_BACKFILL``. That rank class is the outer
+sort key in every reranker (``sort(key=(rank_class, score))``), so a fuzzy hit is
+never reordered above an exact/primary hit even by a reranker that adds status
+deltas or re-normalises scores. A score-only "strictly worse" floor would NOT be
+enough (the status reranker's active-status boost or the hybrid blend's
+re-normalisation could lift it); the rank class is what makes the invariant true.
+See ``Index.search`` for the wiring.
 """
 from __future__ import annotations
 

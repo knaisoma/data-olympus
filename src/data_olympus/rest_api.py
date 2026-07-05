@@ -14,6 +14,7 @@ from data_olympus.principals import (
     CAP_PROPOSE,
     CAP_RECORD_EVENT,
     CAP_RESOLVE,
+    Principal,
     PrincipalRegistry,
 )
 from data_olympus.tools_read import (
@@ -23,6 +24,7 @@ from data_olympus.tools_read import (
     kb_list_fn,
     kb_outline_fn,
     kb_search_fn,
+    shape_response,
 )
 
 if TYPE_CHECKING:
@@ -30,7 +32,6 @@ if TYPE_CHECKING:
     from starlette.requests import Request
 
     from data_olympus.models import HealthResponse
-    from data_olympus.principals import Principal
     from data_olympus.server import ServerState
 
 
@@ -59,6 +60,8 @@ def _build_health(state: ServerState) -> HealthResponse:
         last_git_push_at=state.last_git_push_at,
         pending_count=state.pending_count,
         push_queue_size=state.push_queue_size,
+        push_queue_frozen=state.push_queue_frozen,
+        path_locks_held=state.pending.locks_held() if state.pending else 0,
         last_index_build_status=state.last_index_build_status,
         last_index_error=state.last_index_error,
         last_index_error_at=state.last_index_error_at,
@@ -79,6 +82,14 @@ def _degraded_response(health: HealthResponse) -> JSONResponse:
     body["degraded"] = True
     body["error"] = "degraded_index"
     return JSONResponse(body, status_code=503)
+
+
+def _query_bool(raw: str | None) -> bool:
+    """Parse a boolean query-string flag. True for 1/true/yes/on (case-insensitive);
+    everything else (incl. absent/empty) is False, so a missing flag defaults off."""
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _authorize(
@@ -156,6 +167,27 @@ def _parse_confidence(body: dict[str, Any]) -> tuple[float, JSONResponse | None]
         )
 
 
+def _parse_numeric_qp(
+    qp: Any, name: str, kind: type, *, default: Any = None,
+) -> tuple[Any, JSONResponse | None]:
+    """Coerce query param ``name`` to ``kind`` (float/int), returning a 400
+    JSONResponse instead of letting a non-numeric value raise ValueError -> HTTP
+    500 (item 9). The file's own 400-vs-500 rationale (see _missing_fields_response)
+    demands that malformed client input surface as an actionable 400, not an
+    opaque crash. A missing/empty param yields ``default``."""
+    raw = qp.get(name)
+    if raw is None or raw == "":
+        return default, None
+    try:
+        return kind(raw), None
+    except (TypeError, ValueError):
+        return default, JSONResponse(
+            {"error": "bad_request",
+             "message": f"query param '{name}' must be a {kind.__name__}"},
+            status_code=400,
+        )
+
+
 def _write_pipeline_ready(state: ServerState) -> JSONResponse | None:
     """Return a structured 503 when the write pipeline is disabled (the server
     runs read-only because ``KB_REMOTE_URL`` is unset), else None.
@@ -183,7 +215,38 @@ def _propose_status(status: str) -> int:
         return 413
     if status in ("rejected_rate_limited", "rejected_pending_queue_full"):
         return 429
+    if status in ("rejected_stale_base", "rejected_path_lock_busy",
+                  "rejected_already_in_progress"):
+        # Optimistic-concurrency / lock contention: the caller's base moved, a
+        # concurrent write holds the path, or a bootstrap for this workspace is
+        # already in progress. 409 Conflict.
+        return 409
+    if status == "rejected_path_locked":
+        # The target path is held by an advisory lock; retry after it clears.
+        # 423 Locked.
+        return 423
+    if status == "rejected_invalid_document":
+        # The postimage failed the content-validation gate. 422 Unprocessable.
+        return 422
     return 400
+
+
+def _resolve_status(status: str) -> int:
+    """Map a resolve response status to an HTTP status code (item 5, item 3/4)."""
+    if status == "committed":
+        return 200
+    if status == "rejected_edited_text_too_large":
+        return 413
+    if status == "already_resolved":
+        # Lost the double-resolve race: the id was already decided. 409 Conflict.
+        return 409
+    if status == "rejected_stale_base":
+        return 409
+    if status == "rejected_invalid_document":
+        return 422
+    if status in ("rejected", "rejected_symlink_escape"):
+        return 200
+    return 200
 
 
 async def _read_json_capped(
@@ -222,6 +285,34 @@ async def _read_json_capped(
         )
 
 
+def _rate_limited(
+    state: ServerState, request: Request, principal: Principal,
+) -> JSONResponse | None:
+    """Apply the shared sliding-window limiter to an enforcement-plane route.
+
+    The consult / gate / cleanup-plan routes were previously unthrottled (item 6),
+    so an anonymous or authenticated caller could hammer the classifier and ledger
+    without bound. Reuse the same limiter the write routes use, keyed by
+    (remote_addr, principal name) so a per-principal quota applies. Returns a 429
+    JSONResponse when over quota, else None.
+
+    When the limiter is absent (a read-only deployment with no write pipeline
+    configured) throttling is skipped: there is no shared limiter object to
+    consult and these routes are read-mostly there.
+    """
+    limiter = state.rate_limiter
+    if limiter is None:
+        return None
+    remote_addr = request.client.host if request.client else "unknown"
+    if not limiter.allow(remote_addr=remote_addr, agent_identity=principal.name):
+        return JSONResponse(
+            {"error": "rate_limited",
+             "message": "too many requests; retry later"},
+            status_code=429,
+        )
+    return None
+
+
 def register_routes(
     app: FastMCP,
     state: ServerState,
@@ -242,7 +333,7 @@ def register_routes(
     """
 
     @app.custom_route("/api/v1/health", methods=["GET"])
-    async def health(_request: Request) -> JSONResponse:
+    async def health(request: Request) -> JSONResponse:
         # Served INLINE, not via _offload(): the readiness probe must never queue
         # behind the shared anyio worker pool it exists to outlive. _build_health
         # reads the cached Index.health() snapshot (memory in steady state; the
@@ -251,16 +342,59 @@ def register_routes(
         resp = _build_health(state)
         # Degraded health responses MUST return 503 so the
         # CLI's --no-stale contract (exit 2 on HTTP 200 or 503 degraded) is meaningful.
+        # NOTE: /api/v1/health is DELIBERATELY not the k8s readiness probe target
+        # (that is /readyz). Data staleness (a >KB_STALENESS_DEGRADED_SEC git-remote
+        # outage) flips degraded here, and if this route drove readiness a stale-but-
+        # serviceable single pod would be ejected from the Service, turning "reads are
+        # a bit old" into a hard 503. Alert on this route's degraded flag instead
+        # (see docs/operations.md). The CLI --no-stale contract still depends on the
+        # 503-on-degraded behaviour, so it stays here.
         status = 503 if resp.degraded else 200
-        return JSONResponse(resp.model_dump(), status_code=status)
+        verbose = _query_bool(request.query_params.get("verbose"))
+        return JSONResponse(shape_response(resp, verbose=verbose), status_code=status)
+
+    @app.custom_route("/readyz", methods=["GET"])
+    async def readyz(_request: Request) -> JSONResponse:
+        # Kubernetes READINESS probe target. Ready == the process is up and the
+        # index is loaded and serviceable, INDEPENDENT of data staleness. This is
+        # the split from /api/v1/health: a git-remote outage makes the KB stale
+        # (health degraded -> 503) but the last-good index still answers reads
+        # perfectly, so readiness must stay 200 and keep the pod in the Service.
+        # We report NOT-ready only when reads genuinely cannot be served: no index
+        # built yet (cold start / never-successful build) or the last index build
+        # failed (a corrupt/duplicate-id rebuild left no swap-in). Served inline
+        # (like /api/v1/health) so the probe never queues behind the worker pool.
+        resp = _build_health(state)
+        ready = resp.index_built_at is not None and resp.last_index_build_status == "ok"
+        body = {
+            "ready": ready,
+            "index_built_at": resp.index_built_at,
+            "total_rules": resp.total_rules,
+            "last_index_build_status": resp.last_index_build_status,
+        }
+        if not ready:
+            body["error"] = "not_ready"
+        return JSONResponse(body, status_code=200 if ready else 503)
+
+    @app.custom_route("/livez", methods=["GET"])
+    async def livez(_request: Request) -> JSONResponse:
+        # Kubernetes LIVENESS probe target. Liveness answers "is the process
+        # responsive?" only: if this handler runs at all, the event loop is alive,
+        # so it is always 200. Deliberately independent of index/git/staleness
+        # state so a degraded-but-running pod is NOT killed and restarted (a
+        # restart cannot fix an upstream git-remote outage and only drops the
+        # last-good index). The existing tcpSocket liveness probe is equivalent;
+        # this HTTP variant is offered for operators who prefer an explicit route.
+        return JSONResponse({"alive": True}, status_code=200)
 
     @app.custom_route("/api/v1/outline", methods=["GET"])
-    async def outline(_request: Request) -> JSONResponse:
+    async def outline(request: Request) -> JSONResponse:
         h = await _offload(_build_health, state)
         if h.degraded:
             return _degraded_response(h)
+        verbose = _query_bool(request.query_params.get("verbose"))
         resp = await _offload(kb_outline_fn, idx=state.idx)
-        return JSONResponse(resp.model_dump())
+        return JSONResponse(shape_response(resp, verbose=verbose))
 
     @app.custom_route("/api/v1/search", methods=["GET"])
     async def search(request: Request) -> JSONResponse:
@@ -276,10 +410,14 @@ def register_routes(
             return JSONResponse({"error": "bad_limit"}, status_code=400)
         tier = request.query_params.get("tier") or None
         category = request.query_params.get("category") or None
+        in_force = _query_bool(request.query_params.get("in_force"))
+        abstain = _query_bool(request.query_params.get("abstain"))
+        verbose = _query_bool(request.query_params.get("verbose"))
         resp = await _offload(
-            kb_search_fn, idx=state.idx, query=q, limit=limit, tier=tier, category=category
+            kb_search_fn, idx=state.idx, query=q, limit=limit, tier=tier,
+            category=category, in_force=in_force, abstain=abstain,
         )
-        return JSONResponse(resp.model_dump())
+        return JSONResponse(shape_response(resp, verbose=verbose))
 
     @app.custom_route("/api/v1/get/{id}", methods=["GET"])
     async def get(request: Request) -> JSONResponse:
@@ -287,11 +425,12 @@ def register_routes(
         if h.degraded:
             return _degraded_response(h)
         id_ = request.path_params["id"]
+        verbose = _query_bool(request.query_params.get("verbose"))
         try:
             resp = await _offload(kb_get_fn, idx=state.idx, id=id_)
         except KbNotFoundError as e:
             return JSONResponse({"error": "not_found", "message": str(e)}, status_code=404)
-        return JSONResponse(resp.model_dump())
+        return JSONResponse(shape_response(resp, verbose=verbose))
 
     @app.custom_route("/api/v1/list", methods=["GET"])
     async def list_(request: Request) -> JSONResponse:
@@ -302,8 +441,9 @@ def register_routes(
         if not tier:
             return JSONResponse({"error": "missing_tier"}, status_code=400)
         category = request.query_params.get("category") or None
+        verbose = _query_bool(request.query_params.get("verbose"))
         resp = await _offload(kb_list_fn, idx=state.idx, tier=tier, category=category)
-        return JSONResponse(resp.model_dump())
+        return JSONResponse(shape_response(resp, verbose=verbose))
 
     if not read_only:
         # Write + enforcement-write REST surface. A read-only replica
@@ -345,6 +485,7 @@ def register_routes(
                 audit_log=state.audit_log,
                 can_auto_commit=principal.can_auto_commit,
                 max_text_bytes=state.config.max_text_bytes,
+                serializer=state.write_serializer, idx=state.idx,
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)
@@ -392,6 +533,7 @@ def register_routes(
                 audit_log=state.audit_log,
                 can_auto_commit=principal.can_auto_commit,
                 max_postimage_bytes=state.config.max_postimage_bytes,
+                serializer=state.write_serializer, idx=state.idx,
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)
@@ -404,24 +546,40 @@ def register_routes(
             if (off := _write_pipeline_ready(state)) is not None:
                 return off
             pid = request.path_params["pending_id"]
-            body = await request.json()
+            body, big = await _read_json_capped(request, state.config.max_body_bytes)
+            if big is not None:
+                return big
             if (bad := _missing_fields_response(body, ["decision"])) is not None:
                 return bad
             assert state.worktrees is not None
             assert state.push_queue is not None
             assert state.pending is not None
+            from data_olympus.pending import PendingNotFoundError
             from data_olympus.tools_write import kb_resolve_pending_fn
-            resp = await _offload(
-                kb_resolve_pending_fn,
-                pending_id=pid, decision=body["decision"],
-                edited_text=body.get("edited_text"),
-                worktrees=state.worktrees, push_queue=state.push_queue,
-                pending=state.pending,
-                source_session=body.get("source_session", "operator"),
-                agent_identity=body.get("agent_identity", "operator"),
-                audit_log=state.audit_log,
-            )
-            return JSONResponse(resp.model_dump())
+            try:
+                resp = await _offload(
+                    kb_resolve_pending_fn,
+                    pending_id=pid, decision=body["decision"],
+                    edited_text=body.get("edited_text"),
+                    worktrees=state.worktrees, push_queue=state.push_queue,
+                    pending=state.pending,
+                    source_session=body.get("source_session", "operator"),
+                    agent_identity=body.get("agent_identity", "operator"),
+                    audit_log=state.audit_log,
+                    max_postimage_bytes=state.config.max_postimage_bytes,
+                    serializer=state.write_serializer, idx=state.idx,
+                )
+            except PendingNotFoundError:
+                # Unknown or already-resolved/expired pending_id: a client-side
+                # mistake, not a server fault. 404, not the opaque 500 the raw
+                # FileNotFoundError produced (item 9).
+                return JSONResponse(
+                    {"error": "not_found",
+                     "message": f"no pending proposal with id '{pid}'"},
+                    status_code=404,
+                )
+            status = _resolve_status(resp.status)
+            return JSONResponse(resp.model_dump(), status_code=status)
 
         @app.custom_route("/api/v1/pending", methods=["GET"])
         async def list_pending(request: Request) -> JSONResponse:
@@ -445,10 +603,14 @@ def register_routes(
                 return JSONResponse({"events": [], "returned": 0, "limit_hit": False})
             from data_olympus.tools_audit import kb_audit_fn
             qp = request.query_params
-            since = float(qp["since"]) if qp.get("since") else None
+            since, bad = _parse_numeric_qp(qp, "since", float)
+            if bad is not None:
+                return bad
             agent = qp.get("agent")
             status_filter = qp.get("status")
-            limit = int(qp.get("limit", "100"))
+            limit, bad = _parse_numeric_qp(qp, "limit", int, default=100)
+            if bad is not None:
+                return bad
             resp = await _offload(kb_audit_fn, audit_log=state.audit_log, since=since,
                                   agent=agent, status=status_filter, limit=limit)
             return JSONResponse(resp.model_dump())
@@ -465,13 +627,17 @@ def register_routes(
 
         @app.custom_route("/api/v1/consult", methods=["POST"])
         async def consult(request: Request) -> JSONResponse:
-            _principal, denied = _authorize(request, registry)
+            principal, denied = _authorize(request, registry)
             if denied is not None:
                 return denied
+            if (throttled := _rate_limited(state, request, principal)) is not None:
+                return throttled
             import time as _time
 
             from data_olympus.tools_enforce import kb_consult_fn
-            body = await request.json()
+            body, big = await _read_json_capped(request, state.config.max_body_bytes)
+            if big is not None:
+                return big
             if (bad := _missing_fields_response(
                 body, ["workspace", "source_session"],
             )) is not None:
@@ -484,18 +650,26 @@ def register_routes(
                 agent_identity=body.get("agent_identity", "unknown"),
                 ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
                 audit_log=state.audit_log,
+                # Optional: installers mark prompt-hook auto-consults so they are
+                # audited but never clear the gate. Omitted -> explicit (old
+                # clients are real agent calls).
+                trigger=body.get("trigger", "explicit"),
             )
             return JSONResponse(resp.model_dump())
 
         @app.custom_route("/api/v1/gate/check", methods=["POST"])
         async def gate_check(request: Request) -> JSONResponse:
-            _principal, denied = _authorize(request, registry)
+            principal, denied = _authorize(request, registry)
             if denied is not None:
                 return denied
+            if (throttled := _rate_limited(state, request, principal)) is not None:
+                return throttled
             import time as _time
 
             from data_olympus.tools_enforce import kb_gate_check_fn
-            body = await request.json()
+            body, big = await _read_json_capped(request, state.config.max_body_bytes)
+            if big is not None:
+                return big
             if (bad := _missing_fields_response(
                 body, ["workspace", "session_id"],
             )) is not None:
@@ -523,7 +697,9 @@ def register_routes(
                 return JSONResponse({"counts": {}, "by_agent": {}})
             from data_olympus.tools_enforce import kb_compliance_fn
             qp = request.query_params
-            since = float(qp["since"]) if qp.get("since") else None
+            since, bad = _parse_numeric_qp(qp, "since", float)
+            if bad is not None:
+                return bad
             agent = qp.get("agent")
             resp = await _offload(
                 kb_compliance_fn, audit_log=state.audit_log, since=since, agent=agent)
@@ -538,7 +714,9 @@ def register_routes(
                 return JSONResponse({"recorded": False}, status_code=503)
             import time as _time
 
-            body = await request.json()
+            body, big = await _read_json_capped(request, state.config.max_body_bytes)
+            if big is not None:
+                return big
             if (bad := _missing_fields_response(body, ["event_type", "workspace"])) is not None:
                 return bad
             from data_olympus.tools_enforce import kb_record_event_fn
@@ -614,6 +792,7 @@ def register_routes(
                 can_auto_commit=principal.can_auto_commit,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 max_files=state.config.max_bootstrap_files,
+                serializer=state.write_serializer,
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)
@@ -637,6 +816,14 @@ def register_routes(
 
     @app.custom_route("/api/v1/onboarding/cleanup-plan", methods=["POST"])
     async def onboarding_cleanup_plan(request: Request) -> JSONResponse:
+        # Was anonymous-allowed even with auth configured, and unthrottled (item 6).
+        # Close it to anonymous callers when auth is on (no-auth deployments still
+        # resolve LOCAL_TRUSTED and pass) and apply the shared limiter.
+        principal, denied = _authorize(request, registry)
+        if denied is not None:
+            return denied
+        if (throttled := _rate_limited(state, request, principal)) is not None:
+            return throttled
         body, big = await _read_json_capped(request, state.config.max_body_bytes)
         if big is not None:
             return big

@@ -5,6 +5,17 @@ and scores them at query time. Uses whitespace-lowercased terms throughout.
 Represents a classic keyword-retrieval baseline without dense embeddings.
 
 BM25 parameters: k1=1.5, b=0.75 (standard Robertson et al. defaults).
+
+Two variants ship:
+- ``Bm25Method``: plain BM25 over every doc, status-blind (the classic keyword
+  baseline). It has NO notion of lifecycle, so it can and does rank a superseded
+  doc first on lifecycle queries.
+- ``StatusAwareBm25Method``: identical BM25 ranker, but it reads each doc's
+  ``status`` frontmatter and drops superseded/deprecated docs before indexing.
+  This isolates "the win comes from having governance metadata (status)" from
+  "the engine is a better ranker": it is a keyword baseline that *also* has the
+  metadata, so any residual data-olympus advantage over it is not attributable
+  to the status filter alone.
 """
 from __future__ import annotations
 
@@ -18,6 +29,12 @@ from data_olympus.markdown_parse import parse_file
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from data_olympus.markdown_parse import ParsedDoc
+
+# Status values excluded by the status-aware baseline (mirrors the engine's
+# out-of-force classes: a superseded or deprecated doc must not be served).
+_OUT_OF_FORCE_STATUSES = frozenset({"superseded", "deprecated"})
 
 _CHUNK_SIZE = 512
 _CHUNK_OVERLAP = 64
@@ -34,6 +51,7 @@ class Bm25Method:
     """Retrieval method using BM25 over chunked corpus (no external deps)."""
 
     name = "bm25"
+    ranks = True  # bm25 score order is a real ranking signal
 
     def __init__(self, root: Path, k: int = 5) -> None:
         self._k = k
@@ -44,6 +62,8 @@ class Bm25Method:
         for md in sorted(root.rglob("*.md")):
             doc = parse_file(md)
             if not doc.id:
+                continue
+            if not self._include_doc(doc):
                 continue
             body = md.read_text(encoding="utf-8")
             for chunk in chunk_text(body, size=_CHUNK_SIZE, overlap=_CHUNK_OVERLAP):
@@ -59,6 +79,10 @@ class Bm25Method:
         self._avgdl = (
             sum(c[3] for c in self._chunks) / self._n if self._n else 1.0
         )
+
+    def _include_doc(self, doc: ParsedDoc) -> bool:  # noqa: ARG002
+        """Whether to index ``doc``. Base class indexes everything (status-blind)."""
+        return True
 
     def _score(self, query_terms: list[str], tf: dict[str, int], chunk_len: int) -> float:
         score = 0.0
@@ -88,3 +112,22 @@ class Bm25Method:
             ranked_ids=ranked,
             retrieved_ids=set(ranked),
         )
+
+
+class StatusAwareBm25Method(Bm25Method):
+    """BM25 that reads ``status`` frontmatter and skips out-of-force docs.
+
+    Same ranker as :class:`Bm25Method`; the only difference is that superseded /
+    deprecated docs are dropped before indexing. This is the metadata-aware
+    keyword baseline: it isolates the value of *having* governance status from
+    the value of the retrieval engine. A superseded doc it never indexed can
+    never be ranked, so its lifecycle staleness rate should be 0.000 like
+    data-olympus, but it still lacks the outline/snippet payload shaping and the
+    in-force filter's compositional behaviour on the FTS surface.
+    """
+
+    name = "bm25-status-aware"
+    ranks = True
+
+    def _include_doc(self, doc: ParsedDoc) -> bool:
+        return doc.status.strip().lower() not in _OUT_OF_FORCE_STATUSES

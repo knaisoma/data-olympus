@@ -7,6 +7,11 @@ title: Secrets Handling
 description: Universal rules for handling credentials, API keys, and other secrets across all Acme projects.
 tags: [security, secrets, credentials]
 timestamp: 2026-06-24
+applies_when:
+  - "reading a .env file"
+  - "committing a credential or API key"
+  - "logging a request or response body"
+  - "writing a script that calls a secrets manager"
 ---
 # Purpose
 

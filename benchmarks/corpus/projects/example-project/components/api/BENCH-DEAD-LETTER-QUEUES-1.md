@@ -6,9 +6,10 @@ tier: T4
 title: dead-letter-queues-1
 ---
 
-# dead-letter-queues-1 (current)
+# dead-letter-queues-1
 
-This concept defines the current guidance for dead-letter-queues-1. When working with dead-letter-queues-1, follow the current rules below. The dead-letter-queues-1 approach affects reliability and developer ergonomics.
+This concept defines the governance for dead-letter-queues-1. When working with dead-letter-queues-1, follow the rules below. The dead-letter-queues-1 approach affects configuration, constraint, monitoring, review.
 
 - Prefer the documented dead-letter-queues-1 pattern.
 - Record exceptions to the dead-letter-queues-1 rule.
+- Weigh the configuration and review implications.

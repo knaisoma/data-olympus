@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import os
 from typing import TYPE_CHECKING
 
 from data_olympus.models import (
@@ -13,15 +14,31 @@ from data_olympus.models import (
     RenameCandidateModel,
 )
 from data_olympus.onboarding import compute_status
+from data_olympus.onboarding_inflight import BootstrapInFlight
 
 if TYPE_CHECKING:
     from data_olympus.audit_log import AuditLog
     from data_olympus.auth import PathBlocklist
     from data_olympus.index import Index
+    from data_olympus.onboarding import OnboardingStatus
     from data_olympus.pending import PendingQueue
     from data_olympus.push_queue import PushQueue
     from data_olympus.rate_limit import SlidingWindowLimiter
     from data_olympus.worktrees import WorktreeRegistry
+    from data_olympus.write_gate import WriteSerializer
+
+
+def _pending_root(pending: PendingQueue) -> str:
+    """The pending queue's on-disk root, via its public ``root`` property.
+
+    (The Wave-1 write-pipeline package added ``PendingQueue.root`` so this no
+    longer reaches into the private ``_root``.) Falls back to KB_PENDING_ROOT
+    (the same env config.py reads) if the accessor is somehow unavailable, so the
+    in-flight guard still lands on the state volume rather than crashing."""
+    root = getattr(pending, "root", None)
+    if isinstance(root, str):
+        return root
+    return os.getenv("KB_PENDING_ROOT", "/state/pending")
 
 
 def kb_onboarding_status_fn(
@@ -78,23 +95,156 @@ def kb_bootstrap_project_fn(
     can_auto_commit: bool = True,
     max_postimage_bytes: int = 0,
     max_files: int = 0,
+    in_flight: BootstrapInFlight | None = None,
+    serializer: WriteSerializer | None = None,
 ) -> BootstrapResponse:
-    """Bootstrap a new workspace/component. Only callable when status=absent.
+    """Bootstrap a new workspace/component. Callable when status is ``absent`` or
+    ``partial``.
+
+    On ``absent`` all supplied files are written. On ``partial`` (some but not all
+    canonical files present) the request is narrowed to only the ``missing_files``
+    the status reports, so an in-progress onboarding can be completed without ever
+    overwriting a file already committed (item 1).
 
     Atomic outcome: ONE commit (high-conf) or ONE pending bundle (low-conf).
+
+    A committed bootstrap is not visible to ``compute_status`` until the push
+    queue drains and the index is rebuilt. To stop a second bootstrap
+    double-committing during that convergence window, an in-flight marker is
+    claimed once the request is admitted and held across a committed outcome
+    (item 2); the marker self-expires so a crash cannot wedge the workspace.
     """
-    # Server-side re-check that status is absent.
+    # Server-side re-check that status is absent OR partial. `partial` is a valid
+    # entry point: it means the workspace exists in the KB but is missing some
+    # canonical file(s), and this bootstrap completes it (item 1).
     s = compute_status(
         workspace=workspace, component=component,
         workspace_remote_url=workspace_remote_url,
         component_remote_url=component_remote_url,
         idx=idx,
     )
-    if s.state != "absent":
+    if s.state not in ("absent", "partial"):
         return BootstrapResponse(
             status="rejected_already_onboarded",
             rejected_paths=[],
         )
+
+    # Lazily materialize the in-flight guard on the same durable state volume as
+    # the pending queue, unless the caller injected one (tests). Both entry points
+    # (MCP tool, REST route) run in one process and share one PendingQueue, so a
+    # filesystem marker beside the pending root is a process-wide guard without
+    # threading a new argument through the server.py / rest_api.py wiring. The
+    # pending root is read via the public ``PendingQueue.root`` property (added by
+    # the Wave-1 write-pipeline package) through ``_pending_root``.
+    if in_flight is None:
+        in_flight = BootstrapInFlight(
+            os.path.join(os.path.dirname(_pending_root(pending)), "bootstrap-inflight"),
+        )
+    # Claim the slot for this workspace/component. A live claim (a bootstrap
+    # already in the convergence window) rejects this one as in-progress and
+    # closes the double-bootstrap race the absent-recheck cannot (item 2).
+    if not in_flight.claim(workspace, component):
+        return BootstrapResponse(
+            status="rejected_already_in_progress",
+            rejected_paths=[f["target_path"] for f in files],
+        )
+    # From here on, any outcome that did NOT commit must release the claim so a
+    # legitimate retry is not blocked for the full TTL. Only a committed outcome
+    # holds the claim across the convergence window. A pre-commit exception (git
+    # write / commit / push-queue enqueue failure) must also release, otherwise a
+    # crash mid-bootstrap would wedge the workspace as `already_in_progress` until
+    # the TTL even though nothing committed (codex Concern). The try/finally guards
+    # both the raised and the returned non-committed paths.
+    committed = False
+    try:
+        resp = _bootstrap_admitted(
+            idx=idx,
+            status_obj=s,
+            workspace=workspace, component=component,
+            workspace_remote_url=workspace_remote_url,
+            component_remote_url=component_remote_url,
+            files=files, source_session=source_session,
+            agent_identity=agent_identity, confidence=confidence,
+            confidence_threshold=confidence_threshold,
+            worktrees=worktrees, push_queue=push_queue, pending=pending,
+            rate_limiter=rate_limiter, blocklist=blocklist,
+            remote_addr=remote_addr, can_auto_commit=can_auto_commit,
+            max_postimage_bytes=max_postimage_bytes, max_files=max_files,
+            serializer=serializer,
+        )
+        committed = resp.status == "committed"
+        return resp
+    finally:
+        if not committed:
+            in_flight.release(workspace, component)
+
+
+def _bootstrap_admitted(
+    *,
+    idx: Index,
+    status_obj: OnboardingStatus,
+    workspace: str,
+    component: str | None,
+    workspace_remote_url: str | None,
+    component_remote_url: str | None,
+    files: list[dict[str, str]],
+    source_session: str,
+    agent_identity: str,
+    confidence: float,
+    confidence_threshold: float,
+    worktrees: WorktreeRegistry,
+    push_queue: PushQueue,
+    pending: PendingQueue,
+    rate_limiter: SlidingWindowLimiter,
+    blocklist: PathBlocklist,
+    remote_addr: str,
+    can_auto_commit: bool,
+    max_postimage_bytes: int,
+    max_files: int,
+    serializer: WriteSerializer | None = None,
+) -> BootstrapResponse:
+    """Body of a bootstrap that passed the state re-check and won the in-flight
+    claim. Split out so the outer function owns the claim/release lifecycle and
+    this body owns validation, injection, and the commit/pending outcome.
+
+    On ``partial`` state, ``files`` is narrowed to only those whose canonical
+    basename is one of ``status_obj.missing_files`` so an existing committed file
+    is never overwritten (item 1)."""
+    from data_olympus.auth import (
+        is_writable_path,
+        normalize_target_path,
+    )
+    from data_olympus.index import _classify_by_path
+
+    # Partial state: keep only the files that fill a reported gap for THIS exact
+    # workspace/component. Match on the full canonical path, not the basename: a
+    # basename-only check ("AGENTS.md" in missing) would also admit
+    # `projects/other/AGENTS.md` or `projects/{ws}/components/{c}/AGENTS.md`,
+    # letting the onboarding endpoint overwrite a file in a different project or
+    # component (codex Blocker). missing_files holds bare canonical filenames; the
+    # allowed set is exactly those filenames under this workspace/component root.
+    if status_obj.state == "partial":
+        base = (
+            f"projects/{workspace}/components/{component}/"
+            if component
+            else f"projects/{workspace}/"
+        )
+        allowed = {base + name for name in status_obj.missing_files}
+        kept: list[dict[str, str]] = []
+        for f in files:
+            canonical = normalize_target_path(f["target_path"])
+            if canonical in allowed:
+                kept.append(f)
+        if not kept:
+            # No supplied file fills a gap for this exact target (every file is
+            # already present, or targets a different project/component): nothing
+            # to do here. Report the completed state truthfully rather than
+            # committing an empty change or writing outside the intended gap.
+            return BootstrapResponse(
+                status="rejected_already_onboarded",
+                rejected_paths=[f["target_path"] for f in files],
+            )
+        files = kept
 
     # Aggregate file-count cap: one request must not enqueue/write an unbounded
     # number of (individually capped) files. Aggregate byte size is bounded by the
@@ -106,49 +256,65 @@ def kb_bootstrap_project_fn(
         )
 
     # For onboarding v1: simplified atomic-commit path.
-    # Validate every file via is_writable_path + blocklist before any side effects.
-    from data_olympus.auth import is_writable_path
-    from data_olympus.index import _classify_by_path
+    # Validate every file via normalize_target_path + blocklist before any side
+    # effects, and REWRITE each file's target_path to the canonical form so that
+    # classification, blocklist, pending enqueue, safe_join, and ``git add`` all
+    # operate on the same value that passed validation (item 4). Without this a
+    # backslash path like ``decisions\\x.md`` validated as ``decisions/x.md`` yet
+    # committed a literal root-level backslash file outside every indexed prefix.
     rejected: list[str] = []
-    oversized: list[str] = []
+    canonical_files: list[dict[str, str]] = []
     for f in files:
-        if not is_writable_path(f["target_path"]):
+        canonical = normalize_target_path(f["target_path"])
+        if canonical is None or not is_writable_path(canonical):
             rejected.append(f["target_path"])
             continue
-        target_tier, _ = _classify_by_path(f["target_path"])
-        if blocklist.blocks(f["target_path"], target_tier):
+        target_tier, _ = _classify_by_path(canonical)
+        if blocklist.blocks(canonical, target_tier):
             rejected.append(f["target_path"])
             continue
-        if (max_postimage_bytes > 0
-                and len(f["postimage"].encode("utf-8")) > max_postimage_bytes):
-            oversized.append(f["target_path"])
+        canonical_files.append({**f, "target_path": canonical})
     if rejected:
         return BootstrapResponse(
             status="rejected_path_not_indexable_or_blocked",
             rejected_paths=rejected,
         )
+    files = canonical_files
+
+    if not rate_limiter.allow(remote_addr=remote_addr, agent_identity=agent_identity):
+        return BootstrapResponse(status="rejected_rate_limited")
+
+    # Inject git_remote_url into README/AGENTS front-matter BEFORE the size cap, so
+    # the cap counts exactly the bytes that land in git (item 3). Checking the cap
+    # before injection let an injected postimage exceed the cap yet still commit.
+    if workspace_remote_url:
+        files = _inject_remote_url(files, workspace_remote_url, target_filename="README.md")
+    if component_remote_url:
+        files = _inject_remote_url(files, component_remote_url, target_filename="AGENTS.md")
+
+    # Payload size cap on the FINAL (post-injection) postimage of every file.
+    oversized = [
+        f["target_path"] for f in files
+        if max_postimage_bytes > 0
+        and len(f["postimage"].encode("utf-8")) > max_postimage_bytes
+    ]
     if oversized:
         return BootstrapResponse(
             status="rejected_payload_too_large",
             rejected_paths=oversized,
         )
 
-    if not rate_limiter.allow(remote_addr=remote_addr, agent_identity=agent_identity):
-        return BootstrapResponse(status="rejected_rate_limited")
-
-    # Inject git_remote_url into README/AGENTS front-matter if provided.
-    if workspace_remote_url:
-        files = _inject_remote_url(files, workspace_remote_url, target_filename="README.md")
-    if component_remote_url:
-        files = _inject_remote_url(files, component_remote_url, target_filename="AGENTS.md")
-
     if confidence < confidence_threshold or not can_auto_commit:
         # Low confidence (or caller not authorized to auto-commit): enqueue ALL
-        # files as a single pending bundle.
-        # For onboarding v1, we enqueue them one-by-one (the pending queue
-        # supports per-file entries; resolving "all" is the operator's choice).
-        # Future: native bundle support in PendingQueue.
+        # files as a single pending bundle. The pending queue stores per-file
+        # entries; every entry of one bootstrap shares a `bundle_id` in its meta
+        # so the operator (and a future bundle-aware resolve UX) can treat them as
+        # a unit. Bundle-aware resolve itself is out of scope here; the id is the
+        # seam (item 3).
+        import uuid
+
         from data_olympus.pending import PathLockBusyError, PendingQueueFullError
+        bundle_id = uuid.uuid4().hex
         # Atomicity: a bootstrap is one bundle. Reject up front if the whole
         # bundle would not fit, so we never leave a partial set of pending entries.
         if pending.would_exceed(len(files)):
@@ -156,7 +322,16 @@ def kb_bootstrap_project_fn(
                 status="rejected_pending_queue_full",
                 rejected_paths=[f["target_path"] for f in files],
             )
-        pending_ids = []
+        pending_ids: list[str] = []
+
+        def _rollback() -> None:
+            # Roll back every entry this bundle already enqueued so a failed
+            # bootstrap leaves zero orphan pending entries or held path locks
+            # (reject() releases the lock and removes the entry).
+            for pid in pending_ids:
+                with contextlib.suppress(Exception):
+                    pending.reject(pid)
+
         for f in files:
             try:
                 pid = pending.enqueue(
@@ -168,18 +343,26 @@ def kb_bootstrap_project_fn(
                           "source_session": source_session,
                           "confidence": confidence,
                           "bootstrap": True,
+                          "bundle_id": bundle_id,
                           "workspace": workspace,
                           "component": component},
                 )
                 pending_ids.append(pid)
             except PathLockBusyError:
-                pass  # already pending; skip
+                # A path in this bundle is already locked by another pending
+                # entry, so the bundle cannot be enqueued whole. Treat this like
+                # the queue-full race: roll the whole bundle back and reject it,
+                # rather than silently returning only the subset that fit (item 3).
+                # Partial enqueue is not a valid onboarding outcome.
+                _rollback()
+                return BootstrapResponse(
+                    status="rejected_path_locked",
+                    rejected_paths=[f["target_path"] for f in files],
+                )
             except PendingQueueFullError:
                 # Lost a capacity race after the pre-check: roll back this bundle's
                 # enqueued entries so the bootstrap stays all-or-nothing.
-                for pid in pending_ids:
-                    with contextlib.suppress(Exception):
-                        pending.reject(pid)
+                _rollback()
                 return BootstrapResponse(
                     status="rejected_pending_queue_full",
                     rejected_paths=[f["target_path"] for f in files],
@@ -187,72 +370,103 @@ def kb_bootstrap_project_fn(
         return BootstrapResponse(
             status="pending_confirmation",
             pending_id=pending_ids[0] if pending_ids else None,
-            operator_prompt=f"Bootstrap of {workspace} pending; run `kb pending` to see entries.",
+            operator_prompt=(
+                f"Bootstrap of {workspace} pending ({len(pending_ids)} files, "
+                f"bundle {bundle_id}); run `kb pending` to see entries."
+            ),
         )
 
-    # High confidence: one atomic commit with all files.
-    import os
-    import subprocess
-
-    from data_olympus.audit_trailers import build_commit_message
-    from data_olympus.auth import safe_join_under_root
-    wt = worktrees.get_or_create(source_session=source_session, agent_identity=agent_identity)
-    for f in files:
-        # Shared symlink-escape containment guard (see safe_join_under_root).
-        full_path = safe_join_under_root(wt.path, f["target_path"])
-        if full_path is None:
-            return BootstrapResponse(status="rejected_symlink_escape",
-                                     rejected_paths=[f["target_path"]])
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        with open(full_path, "w", encoding="utf-8") as out:
-            out.write(f["postimage"])
-        subprocess.run(["git", "-C", wt.path, "add", f["target_path"]], check=True)
+    # High confidence: one atomic commit with all files, through the SHARED
+    # serialized/validated write path (Codex Blocker 2). This gives bootstrap the
+    # same integrity guarantees as memory/edit/resolve: process-wide write lock,
+    # per-path advisory locks (shared with the pending queue), the
+    # content-validation gate on every postimage, and reset-on-failure so a
+    # partial bundle never leaks into the next commit.
+    from data_olympus.pending import PathLockBusyError
+    from data_olympus.tools_write import (
+        _DEFAULT_SERIALIZER,
+        _WriteRejected,
+        commit_multifile_in_worktree,
+    )
     subject = (f"bootstrap: workspace={workspace}, component={component or ''}, "
                f"{len(files)} files")
-    msg = build_commit_message(
-        subject=subject,
-        source_session=source_session, agent_identity=agent_identity,
-        confidence_original=confidence, operator_confirmed=False,
-        proposal_type="edit",
-        target_tier="T4" if component else "T3",
-        target_path=f"projects/{workspace}/" + (f"components/{component}/" if component else ""),
-    )
-    subprocess.run(["git", "-C", wt.path, "commit", "-m", msg], check=True)
-    sha = subprocess.check_output(["git", "-C", wt.path, "rev-parse", "HEAD"], text=True).strip()
-    push_queue.enqueue(sha=sha, worktree_path=wt.path,
-                       meta={"source_session": source_session,
-                             "agent_identity": agent_identity, "bootstrap": True})
-    return BootstrapResponse(status="committed", commit_sha=sha, push_state="queued")
+    tier = "T4" if component else "T3"
+    path_for_msg = (f"projects/{workspace}/"
+                    + (f"components/{component}/" if component else ""))
+    try:
+        sha, push_state = commit_multifile_in_worktree(
+            worktrees=worktrees, push_queue=push_queue, pending=pending,
+            serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
+            source_session=source_session, agent_identity=agent_identity,
+            files=files, subject=subject, target_tier=tier,
+            target_path_for_msg=path_for_msg, confidence=confidence,
+            push_meta={"source_session": source_session,
+                       "agent_identity": agent_identity, "bootstrap": True},
+        )
+    except _WriteRejected as rej:
+        resp = rej.response
+        return BootstrapResponse(status=resp.status,
+                                 rejected_paths=[resp.target_path or ""])
+    except PathLockBusyError as busy:
+        return BootstrapResponse(status="rejected_path_lock_busy",
+                                 rejected_paths=[str(busy)])
+    return BootstrapResponse(status="committed", commit_sha=sha,
+                             push_state=push_state)
 
 
 def _inject_remote_url(
     files: list[dict[str, str]], url: str, *, target_filename: str,
 ) -> list[dict[str, str]]:
-    """Ensure the front-matter of the target file contains git_remote_url: <url>."""
+    """Ensure the front-matter of the target file contains git_remote_url: <url>.
+
+    The URL is set as a structured YAML value and the frontmatter is re-emitted
+    with ``yaml.safe_dump`` (item 3). Previously the raw ``git_remote_url: {url}``
+    string was spliced into the document, so a ``url`` containing a newline could
+    forge additional top-level frontmatter keys (e.g. ``id`` / ``status``). Safe
+    dumping quotes/escapes any structure-breaking value so it survives only as the
+    intended scalar.
+    """
+    import yaml
     out = []
     for f in files:
-        if f["target_path"].endswith("/" + target_filename):
-            postimage = f["postimage"]
-            if f"git_remote_url: {url}" not in postimage:
-                # Insert into front matter if present, else prepend.
-                if postimage.startswith("---\n"):
-                    # Insert before closing --- on the first front-matter block.
-                    fm_end = postimage.find("\n---\n", 4)
-                    if fm_end > 0:
-                        new_postimage = (
-                            postimage[:fm_end] +
-                            f"\ngit_remote_url: {url}" +
-                            postimage[fm_end:]
-                        )
-                    else:
-                        new_postimage = postimage
-                else:
-                    new_postimage = (
-                        f"---\ngit_remote_url: {url}\n---\n\n" + postimage
-                    )
-                out.append({**f, "postimage": new_postimage})
-                continue
-        out.append(f)
+        if not f["target_path"].endswith("/" + target_filename):
+            out.append(f)
+            continue
+        postimage = f["postimage"]
+        if postimage.startswith("---\n"):
+            fm_end = postimage.find("\n---\n", 4)
+            if fm_end > 0:
+                fm_text = postimage[4:fm_end]
+                rest = postimage[fm_end + len("\n---\n"):]
+                try:
+                    fm = yaml.safe_load(fm_text) or {}
+                except yaml.YAMLError:
+                    fm = None
+                if not isinstance(fm, dict):
+                    # Unparseable or non-mapping frontmatter: leave the file
+                    # untouched rather than clobber caller data with a rebuilt
+                    # block (codex round-2 Concern: silent metadata loss). The
+                    # injection is skipped, matching the no-closing-fence case.
+                    out.append(f)
+                    continue
+                if fm.get("git_remote_url") == url:
+                    out.append(f)
+                    continue
+                fm["git_remote_url"] = url
+                dumped = yaml.safe_dump(
+                    fm, sort_keys=False, default_flow_style=False,
+                    allow_unicode=True,
+                )
+                new_postimage = "---\n" + dumped + "---\n" + rest
+            else:
+                # Malformed frontmatter (no closing fence): leave untouched.
+                new_postimage = postimage
+        else:
+            new_postimage = "---\n" + yaml.safe_dump(
+                {"git_remote_url": url}, default_flow_style=False,
+                allow_unicode=True,
+            ) + "---\n\n" + postimage
+        out.append({**f, "postimage": new_postimage})
     return out
 
 

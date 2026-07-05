@@ -1,14 +1,35 @@
 [project]
 name = "data-olympus"
-version = "0.2.0"
+version = "0.3.0"
 description = "Governance-grade knowledge-base format (OKF-compatible) plus CLI and single-writer MCP server"
+readme = "README.md"
 requires-python = ">=3.13"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "knaisoma" }]
+keywords = ["knowledge-base", "mcp", "okf", "governance", "rag", "agents"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
 dependencies = [
     "pyyaml>=6.0",
     "fastmcp>=3.2.0,<4",
     "pydantic>=2.9",
 ]
+
+[project.urls]
+Homepage = "https://github.com/knaisoma/data-olympus"
+Repository = "https://github.com/knaisoma/data-olympus"
+Issues = "https://github.com/knaisoma/data-olympus/issues"
+Changelog = "https://github.com/knaisoma/data-olympus/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 # Optional local-embedding hybrid ranking (issue #42). NOT a core dependency:
@@ -48,6 +69,33 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/data_olympus"]
+
+# Ship the bin/ enforcement machinery (kb-enforce-hook dispatcher, the
+# _kb_enforce.py provider registry, and the OpenCode gate plugin) INSIDE the
+# wheel at data_olympus/_bin/. The `data-olympus setup` wizard resolves this
+# packaged path to install per-agent enforcement hooks for a pip/uvx install
+# where no repo checkout exists. `setup_wizard.bin_root()` prefers this path and
+# falls back to the repo bin/ for editable dev installs.
+[tool.hatch.build.targets.wheel.force-include]
+"bin/kb" = "data_olympus/_bin/kb"
+"bin/kb-enforce-hook" = "data_olympus/_bin/kb-enforce-hook"
+"bin/_kb_enforce.py" = "data_olympus/_bin/_kb_enforce.py"
+"bin/_kb_fallback.py" = "data_olympus/_bin/_kb_fallback.py"
+"bin/_kb_detect_workspace.sh" = "data_olympus/_bin/_kb_detect_workspace.sh"
+"bin/opencode/data-olympus-gate.ts" = "data_olympus/_bin/opencode/data-olympus-gate.ts"
+
+# The sdist must carry bin/ so `uv build` from a clean checkout can produce the
+# wheel above. hatchling includes tracked files by default; make it explicit.
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/data_olympus",
+    "bin",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "SPEC.md",
+    "CHANGELOG.md",
+]
 
 [tool.ruff]
 line-length = 100

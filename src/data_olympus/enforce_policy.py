@@ -99,12 +99,29 @@ class IntentClassifier:
         return ClassifyResult(is_governed_decision=bool(signals), signals=signals)
 
 
+# Consultation trigger provenance. "explicit" is a deliberate agent call to
+# kb_consult (the MCP tool default, and any old client that sends no trigger).
+# "prompt_hook" is an installer-driven UserPromptSubmit/BeforeAgent auto-consult:
+# recorded for audit/compliance but NOT sufficient to clear the gate, because it
+# fires on every user turn and would otherwise keep the ledger perpetually fresh.
+EXPLICIT_TRIGGER = "explicit"
+PROMPT_HOOK_TRIGGER = "prompt_hook"
+
+
 @dataclass
 class LedgerEntry:
-    """A recorded consultation for a (session, workspace) pair."""
+    """A recorded consultation for a (session, workspace) pair.
+
+    ``consulted_at`` is the last touch of ANY trigger (used for retention/TTL of
+    the row itself and audit). ``explicit_at`` is the last EXPLICIT consult, or
+    None if only prompt-hook auto-consults have been recorded. The gate clears on
+    ``explicit_at`` freshness so a prompt-hook auto-consult (which fires every
+    turn) can never satisfy the gate, while an explicit consult is not silently
+    downgraded by a later prompt-hook consult on the same (session, workspace)."""
 
     consulted_at: float
     rule_ids: list[str]
+    explicit_at: float | None = None
 
 
 log = logging.getLogger("data_olympus")
@@ -160,9 +177,16 @@ class ConsultationLedger:
                 rows = json.load(f)
             for row in rows:
                 key = (row["session_id"], row["workspace"])
+                # Back-compat: a ledger persisted before the trigger split has no
+                # explicit_at. Treat those legacy rows as explicit (they were all
+                # gate-clearing under the old policy), so a server upgrade does not
+                # spuriously re-block a session that already consulted.
+                consulted_at = float(row["consulted_at"])
+                explicit_at = row.get("explicit_at", consulted_at)
                 self._entries[key] = LedgerEntry(
-                    consulted_at=float(row["consulted_at"]),
+                    consulted_at=consulted_at,
                     rule_ids=list(row.get("rule_ids", [])),
+                    explicit_at=None if explicit_at is None else float(explicit_at),
                 )
         except Exception as exc:  # noqa: BLE001 - corrupt file -> empty, never crash
             log.warning("consultation ledger at %s unreadable, starting empty: %s",
@@ -174,7 +198,8 @@ class ConsultationLedger:
             return
         rows = [
             {"session_id": s, "workspace": w,
-             "consulted_at": e.consulted_at, "rule_ids": e.rule_ids}
+             "consulted_at": e.consulted_at, "rule_ids": e.rule_ids,
+             "explicit_at": e.explicit_at}
             for (s, w), e in self._entries.items()
         ]
         d = os.path.dirname(self._path) or "."
@@ -215,23 +240,57 @@ class ConsultationLedger:
             self._entries = dict(newest)
 
     def record(
-        self, *, session_id: str, workspace: str, rule_ids: list[str], now: float
+        self,
+        *,
+        session_id: str,
+        workspace: str,
+        rule_ids: list[str],
+        now: float,
+        trigger: str = EXPLICIT_TRIGGER,
     ) -> None:
+        """Record a consultation. ``trigger`` is EXPLICIT_TRIGGER (a deliberate
+        agent consult that clears the gate) or PROMPT_HOOK_TRIGGER (an installer
+        auto-consult that is audited but never clears the gate).
+
+        A prompt-hook record refreshes ``consulted_at`` (row liveness/audit) but
+        carries forward any existing ``explicit_at`` so it cannot downgrade a
+        still-fresh explicit consult into a non-clearing one."""
         with self._lock:
+            prior = self._entries.get((session_id, workspace))
+            if trigger == EXPLICIT_TRIGGER:
+                explicit_at: float | None = now
+            else:
+                explicit_at = prior.explicit_at if prior is not None else None
             self._entries[(session_id, workspace)] = LedgerEntry(
-                consulted_at=now, rule_ids=list(rule_ids)
+                consulted_at=now, rule_ids=list(rule_ids), explicit_at=explicit_at
             )
             self._evict(now)
             self._save()
 
     def is_fresh(
-        self, *, session_id: str, workspace: str, now: float, ttl_sec: float
+        self,
+        *,
+        session_id: str,
+        workspace: str,
+        now: float,
+        ttl_sec: float,
+        require_explicit: bool = True,
     ) -> bool:
+        """True when a fresh consult is on record for (session, workspace).
+
+        With ``require_explicit`` (the gate's default) only an explicit consult
+        within ``ttl_sec`` counts: a prompt-hook auto-consult never clears the
+        gate. With ``require_explicit=False`` any consult (explicit or prompt
+        hook) within the TTL counts (used where the mere fact of a recent consult,
+        not its provenance, matters)."""
         with self._lock:
             entry = self._entries.get((session_id, workspace))
         if entry is None:
             return False
-        return (now - entry.consulted_at) <= ttl_sec
+        ts = entry.explicit_at if require_explicit else entry.consulted_at
+        if ts is None:
+            return False
+        return (now - ts) <= ttl_sec
 
     def get(self, *, session_id: str, workspace: str) -> LedgerEntry | None:
         with self._lock:

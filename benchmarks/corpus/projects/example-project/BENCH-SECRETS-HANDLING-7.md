@@ -6,9 +6,10 @@ tier: T3
 title: secrets-handling-7
 ---
 
-# secrets-handling-7 (current)
+# secrets-handling-7
 
-This concept defines the current guidance for secrets-handling-7. When working with secrets-handling-7, follow the current rules below. The secrets-handling-7 approach affects reliability and developer ergonomics.
+This concept defines the governance for secrets-handling-7. When working with secrets-handling-7, follow the rules below. The secrets-handling-7 approach affects scalability, resilience, alerting, deployment.
 
 - Prefer the documented secrets-handling-7 pattern.
 - Record exceptions to the secrets-handling-7 rule.
+- Weigh the scalability and deployment implications.

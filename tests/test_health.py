@@ -95,6 +95,69 @@ def test_health_response_includes_path_locks_held(tmp_kb, tmp_index_path):
     assert resp.path_locks_held == 2
 
 
+def test_snapshot_surfaces_malformed_frontmatter(tmp_kb, tmp_path):
+    """malformed_frontmatter from Index.health() is threaded onto the snapshot and
+    does NOT flip degraded (it is a warning signal)."""
+    idx = Index(tmp_path / "idx.db")
+    idx.build(tmp_kb, source_commit="x")
+    state = snapshot(idx=idx, last_git_pull_at=time.time(), staleness_degraded_sec=600)
+    # Clean corpus: zero malformed, healthy.
+    assert state.malformed_frontmatter == 0
+    assert state.degraded is False
+
+
+def test_malformed_frontmatter_does_not_flip_degraded(tmp_path, monkeypatch):
+    """Even with a non-zero malformed count, degraded stays driven by staleness /
+    build status only."""
+    idx = Index(tmp_path / "idx.db")
+
+    def fake_health() -> dict[str, object]:
+        return {
+            "source_commit": "c", "index_built_at": 1.0, "total_docs": 5,
+            "db_size_bytes": 100, "malformed_frontmatter": 3,
+        }
+
+    monkeypatch.setattr(idx, "health", fake_health)
+    state = snapshot(idx=idx, last_git_pull_at=time.time(), staleness_degraded_sec=600)
+    assert state.malformed_frontmatter == 3
+    assert state.degraded is False
+
+
+def test_health_response_surfaces_malformed_frontmatter(tmp_kb, tmp_index_path):
+    from data_olympus.index import Index
+    from data_olympus.tools_read import kb_health_fn
+
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    resp = kb_health_fn(idx=idx, last_git_pull_at=None, staleness_degraded_sec=600)
+    assert resp.malformed_frontmatter == 0
+
+
+def test_snapshot_threads_push_queue_frozen(tmp_kb, tmp_path):
+    idx = Index(tmp_path / "idx.db")
+    idx.build(tmp_kb, source_commit="x")
+    state = snapshot(
+        idx=idx, last_git_pull_at=time.time(), staleness_degraded_sec=600,
+        push_queue_size=5, push_queue_frozen=2,
+    )
+    assert state.push_queue_size == 5
+    assert state.push_queue_frozen == 2
+
+
+def test_health_response_includes_push_queue_frozen(tmp_kb, tmp_index_path):
+    from data_olympus.index import Index
+    from data_olympus.tools_read import kb_health_fn
+
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    resp = kb_health_fn(
+        idx=idx, last_git_pull_at=None, staleness_degraded_sec=600,
+        push_queue_size=3, push_queue_frozen=1,
+    )
+    assert resp.push_queue_size == 3
+    assert resp.push_queue_frozen == 1
+
+
 def test_health_response_surfaces_live_sessions(tmp_kb, tmp_index_path):
     """live_sessions defaults to None (unobservable) and is threaded when set."""
     from data_olympus.index import Index
@@ -132,6 +195,56 @@ def test_server_state_live_session_count(tmp_kb, tmp_index_path):
 
     state.session_count_provider = boom
     assert state.live_session_count() is None
+
+
+def test_server_state_health_counts_are_live(tmp_kb, tmp_index_path, tmp_path):
+    """ServerState.pending_count / push_queue_size / push_queue_frozen read the
+    live queues rather than a static attribute that drifts to zero. This is the
+    core WP0d fix: the old static ints were initialised to 0 and never updated."""
+    from data_olympus.git_ops import GitOps
+    from data_olympus.index import Index
+    from data_olympus.push_queue import PushQueue
+    from data_olympus.server import ServerState
+
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    cfg = _config_stub()
+    pq = PushQueue(queue_root=str(tmp_path / "pq"))
+    state = ServerState(idx=idx, git=GitOps(tmp_kb), config=cfg, push_queue=pq)
+
+    # No queue wired for pending => 0; push queue empty => 0.
+    assert state.pending_count == 0
+    assert state.push_queue_size == 0
+    assert state.push_queue_frozen == 0
+
+    # Enqueue real entries; the live property must reflect them immediately.
+    pq.enqueue(sha="a", worktree_path="/x", meta={})
+    pq.enqueue(sha="b", worktree_path="/y", meta={})
+    assert state.push_queue_size == 2
+
+    # Freeze one and assert push_queue_frozen tracks it.
+    def failing_push(wt: str) -> None:
+        if wt == "/y":
+            raise RuntimeError("boom")
+
+    pq.drain(push_fn=failing_push, max_attempts=1)
+    assert state.push_queue_size == 1  # "/x" pushed + removed
+    assert state.push_queue_frozen == 1
+
+
+def test_server_state_counts_zero_without_queues(tmp_kb, tmp_index_path):
+    """No push/pending queue wired (read-only replica / tests) => counts are 0,
+    never a crash."""
+    from data_olympus.git_ops import GitOps
+    from data_olympus.index import Index
+    from data_olympus.server import ServerState
+
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="x")
+    state = ServerState(idx=idx, git=GitOps(tmp_kb), config=_config_stub())
+    assert state.pending_count == 0
+    assert state.push_queue_size == 0
+    assert state.push_queue_frozen == 0
 
 
 def _config_stub():

@@ -6,9 +6,10 @@ tier: T1
 title: error-budgets
 ---
 
-# error-budgets (current)
+# error-budgets
 
-This concept defines the current guidance for error-budgets. When working with error-budgets, follow the current rules below. The error-budgets approach affects reliability and developer ergonomics.
+This concept defines the governance for error-budgets. When working with error-budgets, follow the rules below. The error-budgets approach affects boundary, rationale, configuration, tradeoff.
 
 - Prefer the documented error-budgets pattern.
 - Record exceptions to the error-budgets rule.
+- Weigh the boundary and tradeoff implications.

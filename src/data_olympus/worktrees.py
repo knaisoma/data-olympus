@@ -40,6 +40,13 @@ class WorktreeRegistry:
         self._root = worktree_root
         os.makedirs(self._root, exist_ok=True)
 
+    @property
+    def git(self) -> GitOps:
+        """The GitOps handle for the main repo backing this registry. The write
+        path uses it to refresh a session worktree's base onto origin/main (git
+        subcommands accept ``-C <worktree>``, so one handle serves any worktree)."""
+        return self._git
+
     def get_or_create(
         self,
         *,
@@ -89,18 +96,52 @@ class WorktreeRegistry:
             if self._has_unpushed_commits(wt_path):
                 continue
             self._git.worktree_remove(wt_path, force=True)
+            # CRITICAL: also delete the kb-session branch. get_or_create() uses
+            # `worktree add -b kb-session/<safe_id>`, which FAILS if the branch
+            # already exists. Removing the worktree alone leaves the branch
+            # behind, so a returning session would hit a fatal "branch already
+            # exists" error on its next write. Deleting the branch here keeps a
+            # GC'd session able to write again. `entry` is the safe_id (the
+            # worktree dir name), which is exactly the branch suffix.
+            self._git.delete_branch(f"kb-session/{entry}")
             os.unlink(meta_path)
             removed.append(wt_path)
         return removed
 
     def _has_unpushed_commits(self, wt_path: str) -> bool:
+        """True if the worktree has commits not reachable from origin/main, i.e.
+        it is unsafe to GC. Fail closed: if we cannot *prove* every commit is
+        pushed, return True and defer.
+
+        The one exception is a repo with no ``origin`` remote at all (a local-only
+        / read-only demo): there is nothing to push to, so ``git rev-list ...
+        origin/main`` would legitimately fail with an unknown-ref error. In that
+        case there is no unpushed state to protect and GC may proceed."""
         import subprocess
         try:
             result = subprocess.run(
                 ["git", "-C", wt_path, "rev-list", "HEAD", "--not", "origin/main"],
                 check=False, capture_output=True, text=True, timeout=10,
             )
-            return bool(result.stdout.strip())
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            # If we can't tell, defer the GC.
+            # Can't tell -> defer the GC (fail closed).
             return True
+        if result.returncode != 0:
+            # rev-list failed. This is either a missing/corrupt origin/main ref
+            # or a repo with no origin. If there is genuinely no origin remote,
+            # there is nothing to push and GC is safe; otherwise (origin exists
+            # but the ref could not be resolved) we cannot prove commits are
+            # pushed, so we fail closed and defer.
+            try:
+                remotes = subprocess.run(
+                    ["git", "-C", wt_path, "remote"],
+                    check=False, capture_output=True, text=True, timeout=10,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                return True
+            # origin exists but rev-list still failed => cannot prove pushed =>
+            # defer (True). No origin => nothing to push => safe (False).
+            return "origin" in {
+                line.strip() for line in remotes.stdout.splitlines() if line.strip()
+            }
+        return bool(result.stdout.strip())

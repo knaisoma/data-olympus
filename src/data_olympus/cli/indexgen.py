@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from data_olympus.format import Document
+from data_olympus.format.validate import RESERVED as _RESERVED
 
-_RESERVED = {"index.md", "log.md"}
 _SKIP = {".git", "__pycache__", ".venv", ".pytest_cache", ".ruff_cache", "node_modules"}
 
 

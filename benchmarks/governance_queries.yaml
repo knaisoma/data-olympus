@@ -80,35 +80,36 @@
 - text: I am using secrets manager and vault
   stratum: trigger_covered
   gold_ids:
-  - GOV_SECRETS_HANDLING
-  current_id: GOV_SECRETS_HANDLING
+  - GOV_NEW_SECRETS_HANDLING
+  current_id: GOV_NEW_SECRETS_HANDLING
   stale_id: ''
 - text: How should I handle store passwords?
   stratum: paraphrase_uncovered
   gold_ids:
-  - GOV_SECRETS_HANDLING
-  current_id: GOV_SECRETS_HANDLING
+  - GOV_NEW_SECRETS_HANDLING
+  current_id: GOV_NEW_SECRETS_HANDLING
   stale_id: ''
 - text: What is the approved approach for keep api keys safe?
   stratum: paraphrase_uncovered
   gold_ids:
-  - GOV_SECRETS_HANDLING
-  current_id: GOV_SECRETS_HANDLING
+  - GOV_NEW_SECRETS_HANDLING
+  current_id: GOV_NEW_SECRETS_HANDLING
   stale_id: ''
 - text: Looking for guidance on protect sensitive config.
   stratum: paraphrase_uncovered
   gold_ids:
-  - GOV_SECRETS_HANDLING
-  current_id: GOV_SECRETS_HANDLING
+  - GOV_NEW_SECRETS_HANDLING
+  current_id: GOV_NEW_SECRETS_HANDLING
   stale_id: ''
+- text: What is the current governing rule for secrets-handling?
+  stratum: supersession
+  gold_ids:
+  - GOV_NEW_SECRETS_HANDLING
+  - GOV_OLD_SECRETS_HANDLING
+  current_id: GOV_NEW_SECRETS_HANDLING
+  stale_id: GOV_OLD_SECRETS_HANDLING
 - text: I am using flyway and alembic
   stratum: trigger_covered
-  gold_ids:
-  - GOV_DATABASE_MIGRATIONS
-  current_id: GOV_DATABASE_MIGRATIONS
-  stale_id: ''
-- text: How should I handle change the database schema?
-  stratum: paraphrase_uncovered
   gold_ids:
   - GOV_DATABASE_MIGRATIONS
   current_id: GOV_DATABASE_MIGRATIONS
@@ -231,27 +232,28 @@
 - text: I am using canary deploy and traffic split
   stratum: trigger_covered
   gold_ids:
-  - GOV_CANARY_ROLLOUTS
-  current_id: GOV_CANARY_ROLLOUTS
+  - GOV_NEW_CANARY_ROLLOUTS
+  current_id: GOV_NEW_CANARY_ROLLOUTS
   stale_id: ''
 - text: How should I handle release to a small group first?
   stratum: paraphrase_uncovered
   gold_ids:
-  - GOV_CANARY_ROLLOUTS
-  current_id: GOV_CANARY_ROLLOUTS
-  stale_id: ''
-- text: What is the approved approach for gradual rollout?
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_CANARY_ROLLOUTS
-  current_id: GOV_CANARY_ROLLOUTS
+  - GOV_NEW_CANARY_ROLLOUTS
+  current_id: GOV_NEW_CANARY_ROLLOUTS
   stale_id: ''
 - text: Looking for guidance on test in production.
   stratum: paraphrase_uncovered
   gold_ids:
-  - GOV_CANARY_ROLLOUTS
-  current_id: GOV_CANARY_ROLLOUTS
+  - GOV_NEW_CANARY_ROLLOUTS
+  current_id: GOV_NEW_CANARY_ROLLOUTS
   stale_id: ''
+- text: What is the current governing rule for canary-rollouts?
+  stratum: supersession
+  gold_ids:
+  - GOV_NEW_CANARY_ROLLOUTS
+  - GOV_OLD_CANARY_ROLLOUTS
+  current_id: GOV_NEW_CANARY_ROLLOUTS
+  stale_id: GOV_OLD_CANARY_ROLLOUTS
 - text: I am using circuit breaker and half-open state
   stratum: trigger_covered
   gold_ids:
@@ -349,17 +351,346 @@
   - GOV_IDEMPOTENCY
   current_id: GOV_IDEMPOTENCY
   stale_id: ''
-- text: What is the approved approach for safe to retry?
-  stratum: paraphrase_uncovered
-  gold_ids:
-  - GOV_IDEMPOTENCY
-  current_id: GOV_IDEMPOTENCY
-  stale_id: ''
 - text: Looking for guidance on send twice.
   stratum: paraphrase_uncovered
   gold_ids:
   - GOV_IDEMPOTENCY
   current_id: GOV_IDEMPOTENCY
+  stale_id: ''
+- text: I am using token bucket and leaky bucket
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_NEW_RATE_LIMITING
+  current_id: GOV_NEW_RATE_LIMITING
+  stale_id: ''
+- text: How should I handle throttle callers?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_RATE_LIMITING
+  current_id: GOV_NEW_RATE_LIMITING
+  stale_id: ''
+- text: What is the approved approach for cap requests per second?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_RATE_LIMITING
+  current_id: GOV_NEW_RATE_LIMITING
+  stale_id: ''
+- text: Looking for guidance on protect the api.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_RATE_LIMITING
+  current_id: GOV_NEW_RATE_LIMITING
+  stale_id: ''
+- text: What is the current governing rule for rate-limiting?
+  stratum: supersession
+  gold_ids:
+  - GOV_NEW_RATE_LIMITING
+  - GOV_OLD_RATE_LIMITING
+  current_id: GOV_NEW_RATE_LIMITING
+  stale_id: GOV_OLD_RATE_LIMITING
+- text: I am using pgbouncer and pool size
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_CONNECTION_POOLING
+  current_id: GOV_CONNECTION_POOLING
+  stale_id: ''
+- text: I am using launchdarkly and flag toggle
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_FEATURE_FLAGS
+  current_id: GOV_FEATURE_FLAGS
+  stale_id: ''
+- text: How should I handle turn a feature on and off?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_FEATURE_FLAGS
+  current_id: GOV_FEATURE_FLAGS
+  stale_id: ''
+- text: What is the approved approach for dark launch?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_FEATURE_FLAGS
+  current_id: GOV_FEATURE_FLAGS
+  stale_id: ''
+- text: I am using cursor pagination and offset limit
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_NEW_PAGINATION
+  current_id: GOV_NEW_PAGINATION
+  stale_id: ''
+- text: How should I handle return results in pages?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_PAGINATION
+  current_id: GOV_NEW_PAGINATION
+  stale_id: ''
+- text: What is the approved approach for paginate a large list?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_PAGINATION
+  current_id: GOV_NEW_PAGINATION
+  stale_id: ''
+- text: What is the current governing rule for pagination?
+  stratum: supersession
+  gold_ids:
+  - GOV_NEW_PAGINATION
+  - GOV_OLD_PAGINATION
+  current_id: GOV_NEW_PAGINATION
+  stale_id: GOV_OLD_PAGINATION
+- text: I am using cache-aside and write-through
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_CACHING_STRATEGY
+  current_id: GOV_CACHING_STRATEGY
+  stale_id: ''
+- text: How should I handle store computed results?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_CACHING_STRATEGY
+  current_id: GOV_CACHING_STRATEGY
+  stale_id: ''
+- text: What is the approved approach for avoid recomputation?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_CACHING_STRATEGY
+  current_id: GOV_CACHING_STRATEGY
+  stale_id: ''
+- text: Looking for guidance on speed up reads.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_CACHING_STRATEGY
+  current_id: GOV_CACHING_STRATEGY
+  stale_id: ''
+- text: I am using exponential backoff and jitter
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_RETRY_POLICY
+  current_id: GOV_RETRY_POLICY
+  stale_id: ''
+- text: How should I handle reattempt failed calls?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_RETRY_POLICY
+  current_id: GOV_RETRY_POLICY
+  stale_id: ''
+- text: What is the approved approach for handle transient errors?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_RETRY_POLICY
+  current_id: GOV_RETRY_POLICY
+  stale_id: ''
+- text: Looking for guidance on flaky dependency.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_RETRY_POLICY
+  current_id: GOV_RETRY_POLICY
+  stale_id: ''
+- text: I am using avro schema and backward compatible
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_NEW_SCHEMA_EVOLUTION
+  current_id: GOV_NEW_SCHEMA_EVOLUTION
+  stale_id: ''
+- text: How should I handle change a data contract?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_SCHEMA_EVOLUTION
+  current_id: GOV_NEW_SCHEMA_EVOLUTION
+  stale_id: ''
+- text: Looking for guidance on evolve the payload.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_SCHEMA_EVOLUTION
+  current_id: GOV_NEW_SCHEMA_EVOLUTION
+  stale_id: ''
+- text: What is the current governing rule for schema-evolution?
+  stratum: supersession
+  gold_ids:
+  - GOV_NEW_SCHEMA_EVOLUTION
+  - GOV_OLD_SCHEMA_EVOLUTION
+  current_id: GOV_NEW_SCHEMA_EVOLUTION
+  stale_id: GOV_OLD_SCHEMA_EVOLUTION
+- text: I am using dlq and poison message
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_DEAD_LETTER_QUEUES
+  current_id: GOV_DEAD_LETTER_QUEUES
+  stale_id: ''
+- text: How should I handle capture unprocessable messages?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_DEAD_LETTER_QUEUES
+  current_id: GOV_DEAD_LETTER_QUEUES
+  stale_id: ''
+- text: What is the approved approach for handle failed events?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_DEAD_LETTER_QUEUES
+  current_id: GOV_DEAD_LETTER_QUEUES
+  stale_id: ''
+- text: Looking for guidance on quarantine bad data.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_DEAD_LETTER_QUEUES
+  current_id: GOV_DEAD_LETTER_QUEUES
+  stale_id: ''
+- text: I am using opentelemetry and trace context
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_TRACING
+  current_id: GOV_TRACING
+  stale_id: ''
+- text: How should I handle follow a request across services?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_TRACING
+  current_id: GOV_TRACING
+  stale_id: ''
+- text: Looking for guidance on correlation id.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_TRACING
+  current_id: GOV_TRACING
+  stale_id: ''
+- text: I am using configmap and env overlay
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_NEW_CONFIG_MANAGEMENT
+  current_id: GOV_NEW_CONFIG_MANAGEMENT
+  stale_id: ''
+- text: How should I handle change settings without redeploy?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_CONFIG_MANAGEMENT
+  current_id: GOV_NEW_CONFIG_MANAGEMENT
+  stale_id: ''
+- text: What is the current governing rule for config-management?
+  stratum: supersession
+  gold_ids:
+  - GOV_NEW_CONFIG_MANAGEMENT
+  - GOV_OLD_CONFIG_MANAGEMENT
+  current_id: GOV_NEW_CONFIG_MANAGEMENT
+  stale_id: GOV_OLD_CONFIG_MANAGEMENT
+- text: I am using bounded queue and reactive streams
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_BACKPRESSURE
+  current_id: GOV_BACKPRESSURE
+  stale_id: ''
+- text: How should I handle slow down producers?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_BACKPRESSURE
+  current_id: GOV_BACKPRESSURE
+  stale_id: ''
+- text: What is the approved approach for overwhelmed consumer?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_BACKPRESSURE
+  current_id: GOV_BACKPRESSURE
+  stale_id: ''
+- text: Looking for guidance on prevent memory blowup.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_BACKPRESSURE
+  current_id: GOV_BACKPRESSURE
+  stale_id: ''
+- text: I am using blue green and traffic cutover
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_BLUE_GREEN_DEPLOYS
+  current_id: GOV_BLUE_GREEN_DEPLOYS
+  stale_id: ''
+- text: How should I handle zero downtime release?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_BLUE_GREEN_DEPLOYS
+  current_id: GOV_BLUE_GREEN_DEPLOYS
+  stale_id: ''
+- text: What is the approved approach for switch between environments?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_BLUE_GREEN_DEPLOYS
+  current_id: GOV_BLUE_GREEN_DEPLOYS
+  stale_id: ''
+- text: Looking for guidance on safe deploy.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_BLUE_GREEN_DEPLOYS
+  current_id: GOV_BLUE_GREEN_DEPLOYS
+  stale_id: ''
+- text: I am using saga pattern and compensating transaction
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_NEW_SAGA_ORCHESTRATION
+  current_id: GOV_NEW_SAGA_ORCHESTRATION
+  stale_id: ''
+- text: What is the approved approach for roll back across services?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_SAGA_ORCHESTRATION
+  current_id: GOV_NEW_SAGA_ORCHESTRATION
+  stale_id: ''
+- text: Looking for guidance on multi step workflow.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_NEW_SAGA_ORCHESTRATION
+  current_id: GOV_NEW_SAGA_ORCHESTRATION
+  stale_id: ''
+- text: What is the current governing rule for saga-orchestration?
+  stratum: supersession
+  gold_ids:
+  - GOV_NEW_SAGA_ORCHESTRATION
+  - GOV_OLD_SAGA_ORCHESTRATION
+  current_id: GOV_NEW_SAGA_ORCHESTRATION
+  stale_id: GOV_OLD_SAGA_ORCHESTRATION
+- text: I am using url versioning and accept header version
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_API_VERSIONING
+  current_id: GOV_API_VERSIONING
+  stale_id: ''
+- text: How should I handle evolve a public api?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_API_VERSIONING
+  current_id: GOV_API_VERSIONING
+  stale_id: ''
+- text: What is the approved approach for breaking change to endpoint?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_API_VERSIONING
+  current_id: GOV_API_VERSIONING
+  stale_id: ''
+- text: Looking for guidance on support old clients.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_API_VERSIONING
+  current_id: GOV_API_VERSIONING
+  stale_id: ''
+- text: I am using audit trail and tamper evident log
+  stratum: trigger_covered
+  gold_ids:
+  - GOV_AUDIT_LOGGING
+  current_id: GOV_AUDIT_LOGGING
+  stale_id: ''
+- text: How should I handle record sensitive actions?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_AUDIT_LOGGING
+  current_id: GOV_AUDIT_LOGGING
+  stale_id: ''
+- text: What is the approved approach for compliance logging?
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_AUDIT_LOGGING
+  current_id: GOV_AUDIT_LOGGING
+  stale_id: ''
+- text: Looking for guidance on track access.
+  stratum: paraphrase_uncovered
+  gold_ids:
+  - GOV_AUDIT_LOGGING
+  current_id: GOV_AUDIT_LOGGING
   stale_id: ''
 - text: What is the team standard for microservice naming?
   stratum: negative
@@ -382,6 +713,136 @@
   current_id: ''
   stale_id: ''
 - text: What is the team standard for team offsite planning?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for desk seating plan?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for coffee machine rota?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for slack emoji etiquette?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for meeting room booking?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for parking allocation?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for onboarding buddy pairing?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for lunch vendor rotation?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for conference travel budget?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for swag order process?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for birthday celebration policy?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for standup time preference?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for keyboard brand preference?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for monitor arm selection?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for office plant care?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for whiteboard marker restocking?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for friday demo signup?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for book club selection?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for hackathon team formation?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for mentorship matching?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for internal newsletter cadence?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for wiki gardening schedule?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for photo wall curation?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for team mascot naming?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for retro format choice?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for pto calendar color?
+  stratum: negative
+  gold_ids: []
+  current_id: ''
+  stale_id: ''
+- text: What is the team standard for chair ergonomics survey?
   stratum: negative
   gold_ids: []
   current_id: ''

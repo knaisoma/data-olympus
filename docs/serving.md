@@ -23,6 +23,21 @@ each run their own stdio MCP process against the same git working tree, they
 race each other's worktrees and lock state. Streamable HTTP eliminates that
 race.
 
+## Core configuration reference
+
+A few server-wide settings, beyond the feature-specific env vars documented in
+their own sections below (search ranking, synonyms, embeddings, co-occurrence,
+trigram, auth, audit rotation):
+
+- `KB_HTTP_PORT`: TCP port the MCP HTTP server binds (default `8080`).
+- `KB_CONFIDENCE_THRESHOLD`: the auto-commit confidence cutoff, in `[0, 1]`
+  (default `0.85`). A proposal at or above it from a principal holding
+  `auto_commit` is committed; below it (or from a principal without that
+  capability) it is parked as pending. An out-of-range value fails startup loudly.
+- `KB_PENDING_TIMEOUT_SEC`: age after which an unresolved pending proposal is
+  auto-expired by the pending GC loop (default `86400`, i.e. 24h). Each expiry
+  emits an audit event.
+
 ## Read-only mirrors may scale horizontally
 
 Set `KB_READ_ONLY=true` to run an instance as a read-only replica. In this mode
@@ -61,6 +76,171 @@ reports `degraded: true` only when the index has not been rebuilt within
 
 For a local read-only demo with no remote, set `KB_REMOTE_URL=""`. The server
 stays healthy as long as the index builds successfully on startup.
+
+## Health, readiness, and liveness (three distinct signals)
+
+The server exposes three endpoints that answer three different questions. They
+are deliberately split so a data-freshness problem does not eject a pod that can
+still serve reads:
+
+| Endpoint | Question | 200 when | 503 when |
+|---|---|---|---|
+| `GET /api/v1/health` | Is the data fresh? | index built, fresh, last build ok | **degraded**: staleness > `KB_STALENESS_DEGRADED_SEC`, no successful pull, empty index, or last build failed |
+| `GET /readyz` | Can this pod serve reads now? | process up **and** index loaded **and** last build ok | no index built yet, or the last index build failed |
+| `GET /livez` | Is the process responsive? | always (if the handler runs, the loop is alive) | never |
+
+Key point: **`/readyz` is independent of data staleness.** A git-remote outage
+makes the KB stale (so `/api/v1/health` returns 503 with `degraded: true`), but
+the last-good index still answers reads perfectly, so `/readyz` stays 200 and the
+pod stays in the Service. The Kubernetes **readiness probe targets `/readyz`**
+(see `deploy/k8s/statefulset.yaml`); if it targeted `/api/v1/health` a stale
+single-replica pod would be ejected from the Service and a "reads are a bit old"
+condition would become a hard 503 with zero endpoints.
+
+`/api/v1/health` keeps its 503-on-degraded contract because the `bin/kb` CLI
+`--no-stale` flag relies on it (exit 2 when the endpoint reports `degraded: true`,
+whether over HTTP 200 or 503). **Alert on `/api/v1/health` degraded** (and on the
+`last_git_fetch_status` / `staleness_seconds` fields it carries) rather than
+wiring it to a probe. The liveness probe is a `tcpSocket` check by default; the
+HTTP `/livez` route is offered for operators who prefer an explicit route. See
+`docs/operations.md` for the full alerting and recovery model.
+
+The health payload also carries `malformed_frontmatter`: the count of docs whose
+front-matter was present but malformed at the last index build. A non-zero value
+means a doc silently lost its governance metadata (`type`/`status`/`tier`), so it
+will not be governed or filtered correctly. It is a **warning** signal and does
+**not** flip `degraded` (that would 503 every read for an authoring mistake);
+alert on `malformed_frontmatter > 0` separately.
+
+## Write serialization and integrity gates
+
+Every write (`kb_propose_memory`, `kb_propose_edit`, `kb_resolve_pending`, and
+onboarding bootstrap — which commits its whole file bundle through the same
+serialized/validated multi-file path) goes through one serialized critical
+section so concurrent writes cannot corrupt each other:
+
+- A **process-wide write serializer** wraps the write → `git add` → commit →
+  enqueue sequence, so one thread's commit can never sweep another thread's staged
+  file. Write volume is rate-limited, so a single global mutex is cheap.
+- A **per-path advisory lock**, shared between the auto-commit path and the
+  pending queue, prevents two writes to the same file from racing and prevents an
+  auto-commit from landing on a path with a pending proposal in flight (whose
+  later approval would clobber it). A write blocked by the lock returns
+  `rejected_path_lock_busy`. An orphaned lock (a crash between lock acquisition
+  and the pending entry write) is reclaimed by the pending GC loop.
+- A **content-validation gate** runs on the postimage before commit. It rejects
+  `rejected_invalid_document` when the frontmatter is malformed YAML, a
+  `type`/`status`/`tier` enum value is out of vocabulary, or the `id` is a
+  forged/duplicate of one already used by a different path (which would break
+  every subsequent index rebuild — one bad write, persistent degraded state). The
+  response `reason` carries the machine-readable errors.
+- **Compare-and-swap (optimistic concurrency).** When a caller supplies a base
+  marker (`base_commit` naming a specific commit, `base_blob_sha`, or
+  `target_file_hash`) on `kb_propose_edit` (or it is carried on the pending entry
+  into `kb_resolve_pending`), the server refreshes the session worktree's base
+  onto `origin/main` and compares the marker against the current target content. A
+  mismatch returns `rejected_stale_base` and nothing is committed. If the base
+  cannot be refreshed at all (the remote is unreachable, or the rebase conflicts)
+  while an enforceable marker was supplied, the write is also rejected
+  `rejected_stale_base` rather than committed against a possibly-stale base — the
+  marker cannot be verified, and the push-path rebase recovery is not an
+  equivalent safety net (a compatible rebase would still publish the stale write).
+  A bare `base_commit` of `HEAD` is advisory (no per-file expectation), and when
+  no marker is supplied the pre-0.3.0 behavior is preserved (a refresh failure is
+  non-fatal; the push path's non-FF recovery publishes the commit).
+- Ordering of side effects: the commit message and all gates are evaluated
+  BEFORE the file is written and `git add`-ed, and on any failure after the add
+  the worktree is hard-reset, so a rejected write never leaves a staged leftover
+  for the session's next commit to sweep in.
+
+## Push queue and write-path visibility
+
+Committed writes are published to `origin/main` through a durable push queue: a
+commit that returns "committed" has a queue entry on disk, and a background loop
+drains the queue with retry. Health surfaces the queue state so a stuck write
+path is diagnosable:
+
+- `push_queue_size` is the live count of queued (not-yet-pushed) entries.
+- `pending_count` is the live count of pending (awaiting-approval) entries.
+- `push_queue_frozen` is the count of entries that hit the retry cap and were
+  **frozen**.
+
+Both counts are computed at health-report time from the queues themselves, so
+they cannot drift.
+
+### Non-fast-forward push recovery
+
+When a second overlapping session moves `origin/main` between a session's commit
+and its push, the push is rejected **non-fast-forward**. The push loop classifies
+this distinctly from a network failure: it fetches `origin/main`, rebases the
+session branch onto it, and retries the push once. Most non-FF cases (the two
+sessions touched different files) publish cleanly on the retry.
+
+If the rebase **conflicts** (the two sessions edited the same lines
+incompatibly), the commit cannot be auto-published. Instead of retrying forever,
+the push loop **demotes** the commit to a pending entry for operator resolution:
+the postimage is re-proposed as a pending edit (visible via `kb_list_pending`),
+the queue entry is removed, and a `push_conflict_demoted` audit event is recorded.
+The operator resolves the pending entry (approving re-applies it on the current
+base, subject to the CAS/validation gates) to publish the change.
+
+Pure **contention** (the retry push is itself non-FF because `origin/main` moved
+again mid-rebase) is retried in-line for a bounded number of passes; if it never
+wins the race it is demoted the same way rather than counted toward the freeze
+cap, so persistent contention never becomes a silently-frozen queue item.
+
+### Startup recovery
+
+A crash in the narrow window between `git commit` and the push-queue enqueue
+would otherwise orphan a commit on a session worktree branch that nothing pushes.
+On boot the server scans every session worktree and re-enqueues any commit
+reachable from its `HEAD` but not from `origin/main`. Entries already in the
+queue are left untouched, so recovery never double-enqueues. The recovery result
+is logged (`startup push recovery re-enqueued N orphaned commit(s)` or `no
+orphaned commits found`).
+
+### Frozen entries and how to unfreeze
+
+After `max_attempts` consecutive push failures a queue entry is **frozen**: the
+retry loop stops retrying it (retrying a permanently failing push every interval
+only spams the remote and hides the problem). The freeze is logged once at WARN
+with the sha, worktree, and last error, and the entry is counted in
+`push_queue_frozen`. **A nonzero `push_queue_frozen` means writes are stuck and
+need operator attention.** Non-fast-forward pushes against a moved `origin/main`
+are now recovered automatically (see *Non-fast-forward push recovery* above), so
+a frozen entry now signals a persistent failure the rebase path could not
+handle — typically an authentication, network, or remote-side rejection.
+
+To unfreeze, an operator resolves the underlying push failure, then clears the
+entry file directly on the push-queue volume (`KB_PUSH_QUEUE_ROOT`, default
+`/state/push-queue`):
+
+- **Requeue** (retry from scratch): delete the `"frozen": true` and reset
+  `"attempts"` to `0` in the entry's JSON file (or delete and let startup
+  recovery re-enqueue it), then the retry loop picks it up again on its next
+  pass.
+- **Drop** (abandon the write): delete the entry's `<sha>.json` file. The commit
+  stays on its session worktree branch but is never published.
+
+There is no unfreeze API in this release; the file-level procedure above is the
+supported path.
+
+## Per-session worktree GC
+
+Each writing session gets its own git worktree (and a `kb-session/<safe_id>`
+branch) so in-flight edits are isolated. A background GC task, running every 5
+minutes, removes worktrees idle beyond `KB_WORKTREE_IDLE_SEC` (default 3600s) so
+KB checkouts do not accumulate one-per-session forever.
+
+GC is conservative and coupled to the push queue:
+
+- A worktree with commits **not yet reachable from `origin/main`** is deferred
+  (never removed) until the push queue drains those commits; the next GC pass
+  cleans it up once they land upstream.
+- When a worktree is removed, its `kb-session/<safe_id>` branch is deleted in the
+  same step. This matters because a returning session recreates its worktree with
+  `git worktree add -b kb-session/<safe_id>`, which would fail if the branch
+  still existed. Deleting the branch keeps a GC'd session able to write again.
 
 ## Streamable-http session lifecycle and reaping
 
@@ -139,6 +319,41 @@ Override the map at deploy time, with no code change:
 
   Example: `KB_STATUS_WEIGHTS='{"active": -1.0, "approved": -1.0, "superseded":
   2.0, "draft": 1.0}'`.
+
+## `in_force`: hard in-force filter
+
+`kb_search` accepts an `in_force: bool = False` parameter (MCP tool and
+`GET /api/v1/search?in_force=true`). When set, results are HARD-filtered to the
+in-force status class (`active`, `accepted`, `approved`) BEFORE ranking, so a
+`superseded`, `deprecated`, `draft`, or `proposed` doc is excluded entirely
+rather than merely soft-downranked by the status rerank above.
+
+Use it when you want only guidance that currently applies and a demoted-but-
+present retired doc is not acceptable. It differs from the status rerank: the
+rerank always keeps every hit and only reorders; `in_force` drops out-of-force
+hits. The in-force class is defined once (`format.validate.IN_FORCE_STATUSES`)
+and shared by both the rerank boosts and this filter.
+
+`in_force` composes with the single-status `status` filter: passing both
+requires a doc match `status` AND be in-force (so `status=superseded` with
+`in_force=true` yields nothing). The filter also applies to the dense
+(embedding) candidate source, so a hybrid deployment never leaks an out-of-force
+doc through the semantic path.
+
+## `abstain`: signal-gated abstention
+
+`kb_search` accepts an `abstain: bool = False` parameter (MCP tool and
+`GET /api/v1/search?abstain=true`). When set, the query is first run restricted
+to the discriminating columns (`title`, `tags`, `applies_when`). If it matches
+none of them, the query is treated as out-of-scope and the search returns NO
+hits with `abstained: true` and `abstain_reason: "no_signal_match"`, instead of
+surfacing a weak match on generic body prose. A query with a real signal
+retrieves normally over all columns (recall is preserved).
+
+The response distinguishes a deliberate abstention from an ordinary empty
+result: a normal search that simply finds nothing returns `abstained: false`.
+The gate logic is single-sourced in `data_olympus.search_gate`; the benchmark
+ablation imports it rather than reimplementing it.
 
 ## Taxonomy and writable paths
 
@@ -240,6 +455,46 @@ small KB); storage adds `dim x 4` bytes per document in `doc_vectors` (~1.5 KB
 per doc for the 384-dim default). Query-time cost is one query embedding plus a
 cosine over the (bounded) candidate pool.
 
+## Corpus co-occurrence query expansion
+
+A build-time pass mines the corpus for term pairs that co-occur far more often
+than chance (positive pointwise mutual information) and stores the top related
+terms per term. At query time the expander adds those related terms so a query
+reaches documents that use a different-but-associated vocabulary, without a
+hand-curated synonym map. This is **ON by default** and adds no query-time
+network call. It auto-disables on a corpus below the doc floor (too little
+signal), and the O(n^2) pair counting is bounded per document.
+
+Tune it with:
+
+- `KB_COOCCURRENCE_MODE`: `off` disables it (both the build-time table and the
+  query-time expansion); any other value (including unset) leaves it **on**.
+- `KB_COOCCURRENCE_K`: max related terms kept per term (default `5`).
+- `KB_COOCCURRENCE_MIN_COUNT`: minimum raw co-occurrence count for a pair to
+  qualify (default `3`).
+- `KB_COOCCURRENCE_MIN_PMI`: minimum PMI for a pair to qualify (default `0.1`).
+- `KB_COOCCURRENCE_MIN_DOCS`: corpus-size floor below which co-occurrence is
+  auto-disabled (default `50`).
+- `KB_COOCCURRENCE_MAX_DOC_TOKENS`: per-document unique-token cap on the pair
+  counting, bounding the O(n^2) work on large docs (default `400`).
+
+## Trigram fuzzy-match fallback
+
+For typos and partial identifiers, an optional trigram index backfills results
+when the primary FTS query returns few hits. This is **OFF by default** so the
+default deployment pays no trigram build or storage cost; when off, the trigram
+table is neither created nor populated. When on, a primary query returning at or
+below the threshold is backfilled from the trigram index, and the backfill only
+ever appends after the primary hits (never reorders them).
+
+Tune it with:
+
+- `KB_TRIGRAM_MODE`: `on` (case-insensitive) enables it; any other value
+  (including unset) leaves it off.
+- `KB_TRIGRAM_FALLBACK_THRESHOLD`: primary-hit count at or below which the
+  fallback fires (default `3`). A malformed or negative value falls back to the
+  default.
+
 ## Authentication and network security
 
 The server supports optional bearer-token authentication with a per-principal
@@ -261,6 +516,67 @@ reverse proxy (terminate TLS there). See `SECURITY.md` for the full threat model
 the route/capability table, payload limits, the tamper-evident audit log, and the
 git sync-failure health fields.
 
+### Proxy headers and the rate limiter (`KB_TRUSTED_PROXIES`)
+
+The rate limiter keys on the client remote address (plus principal). Behind an
+ingress or reverse proxy, uvicorn by default sees the **proxy's** address as the
+peer, so every client collapses into one `remote_addr` and the per-IP cap
+(`KB_RATE_LIMIT_PER_IP_PER_HOUR`) throttles all clients as if they were one.
+
+Set `KB_TRUSTED_PROXIES` to the proxy address(es) (comma-separated) to fix this:
+
+- **Unset (default)** — uvicorn runs with `proxy_headers` **off**. `X-Forwarded-For`
+  is ignored and `remote_addr` is the immediate peer. This is the safe default: a
+  direct client cannot spoof its address to dodge the limiter.
+- **Set to the proxy IP(s)** — uvicorn enables `proxy_headers` and restricts
+  `forwarded_allow_ips` to those addresses, so it rewrites `remote_addr` from
+  `X-Forwarded-For` **only** when the immediate peer is a trusted proxy. The
+  limiter then sees the true client IP.
+- **`*`** — trust `X-Forwarded-For` from any peer. Only safe when nothing
+  untrusted can reach the port directly (e.g. the port is bound to the pod network
+  and only the ingress can connect). Otherwise a direct client could forge the
+  header.
+
+## Audit-log rotation (`KB_AUDIT_MAX_BYTES`)
+
+The JSONL audit log (`KB_AUDIT_LOG_PATH`, default `/state/audit/events.log`) grows
+without bound by default. Set `KB_AUDIT_MAX_BYTES` to a byte threshold to enable
+size-based rotation: when the live file passes the threshold, the next append
+first renames it to `events-<UTC-timestamp>.log` and starts a fresh live file.
+
+- **Chain continuity.** The tamper-evident hash chain carries **across** the
+  rotation boundary: the first event of the new file links to the last hash of the
+  rotated file, so `GET /api/v1/audit/verify` (and the `kb audit`/`verify` logic)
+  validates the whole history, rotated segments included, in chronological order.
+  A break at the boundary is caught like any other.
+- **Backward compatible.** With `KB_AUDIT_MAX_BYTES` unset (0), nothing rotates:
+  the log stays a single file exactly as before, and an existing single-file log
+  still verifies unchanged when opened by a rotation-aware build.
+- **Reads.** `kb audit` reads the live file by default (cheap, most-recent-first).
+  A `--since` query also walks rotated segments so history that has rotated out of
+  the live file is still visible; the reverse scan is bounded so a large archive
+  cannot turn one query into an unbounded read.
+
+Manual `mv`-based rotation (documented in the operator runbook) no longer breaks
+the chain when the process keeps running, because the in-memory last-hash carries
+forward; but prefer `KB_AUDIT_MAX_BYTES` so rotation is automatic and the boundary
+link is always written. See `docs/operations.md` for backup/verify procedures.
+
+## Git commit identity
+
+Every write commits to the KB repo, so git needs an author/committer identity.
+The shipped Docker image sets a default (`data-olympus-mcp <data-olympus-mcp@localhost>`)
+in `deploy/docker/entrypoint.sh` so the artifact can commit out of the box; the
+server's `main()` also fills unset `GIT_*` variables as a belt-and-suspenders for
+non-Docker runs. Override the identity with:
+
+- `KB_GIT_AUTHOR_NAME` — commit author/committer name (default `data-olympus-mcp`).
+- `KB_GIT_AUTHOR_EMAIL` — commit author/committer email (default
+  `data-olympus-mcp@localhost`).
+
+A pre-existing `GIT_AUTHOR_*`/`GIT_COMMITTER_*` value or a real `git config`
+identity is never overwritten.
+
 ## Running locally
 
 See `docs/quickstart.md` for the verified local-run procedure using
@@ -281,6 +597,20 @@ sops exec-file deploy/k8s/secret.sops.yaml 'kubectl apply -f {}'
 The `deploy/k8s/secret.template.yaml` file shows the expected secret shape.
 Fill in your git remote URL and deploy key, then encrypt with SOPS before
 committing. Never commit the unencrypted secret.
+
+The default `kubectl apply -k deploy/k8s/` deliberately does **not** create the
+Ingress: it publishes all routes (including the unauthenticated-by-default write
+routes) to the LAN. The Ingress is opt-in and enabled only after you set
+`KB_AUTH_TOKEN`; see `deploy/k8s/README.md` for the enablement steps.
+
+The pod is fully rootless: both the `prepare-git` initContainer (which stages the
+deploy key and does the first-boot `/kb-main` clone) and the main container run as
+uid 65534 with `runAsNonRoot: true`, all capabilities dropped, and a read-only
+root filesystem, so the manifest passes the **restricted** Pod Security Standard.
+The base image is digest-pinned in `deploy/docker/Dockerfile`; the git SSH host is
+build-arg + runtime-env configurable (`KB_SSH_KEYSCAN_HOST`) for non-GitHub
+remotes. Operational procedures (backup, upgrade, recovery playbooks) live in
+`docs/operations.md`.
 
 ## Running with Docker Compose
 

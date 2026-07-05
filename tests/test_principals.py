@@ -62,10 +62,56 @@ def test_per_agent_principal_capabilities() -> None:
     assert resolver.has(CAP_AUTO_COMMIT)
 
 
+def test_principal_omitting_capabilities_defaults_to_least_privilege() -> None:
+    """item 5: a KB_AUTH_PRINCIPALS entry with no explicit capabilities gets
+    read+propose ONLY, never resolve/auto_commit. Otherwise an agent could
+    approve its own proposals."""
+    from data_olympus.principals import (
+        CAP_BOOTSTRAP,
+        CAP_READ,
+        DEFAULT_PRINCIPAL_CAPABILITIES,
+    )
+    reg = PrincipalRegistry(
+        auth_token=TOKEN,
+        principals=[{"name": "agent", "token": "atok"}],  # no "capabilities" key
+    )
+    p = reg.resolve("Bearer atok")
+    assert p.name == "agent"
+    assert p.capabilities == DEFAULT_PRINCIPAL_CAPABILITIES
+    assert p.has(CAP_READ)
+    assert p.has(CAP_PROPOSE)
+    # The dangerous capabilities must NOT be granted by default.
+    assert not p.has(CAP_RESOLVE)
+    assert not p.has(CAP_AUTO_COMMIT)
+    assert not p.has(CAP_BOOTSTRAP)
+    assert not p.can_auto_commit
+
+
+def test_operator_token_still_gets_all_capabilities() -> None:
+    """The back-compat single KB_AUTH_TOKEN operator keeps full capabilities;
+    the least-privilege default applies only to KB_AUTH_PRINCIPALS entries."""
+    reg = PrincipalRegistry(auth_token=TOKEN)
+    p = reg.resolve(f"Bearer {TOKEN}")
+    assert p.capabilities == ALL_CAPABILITIES
+    assert p.has(CAP_RESOLVE)
+    assert p.can_auto_commit
+
+
 def test_principal_without_token_is_skipped() -> None:
     reg = PrincipalRegistry(principals=[{"name": "x", "capabilities": ["read"]}])
     # No token => no usable principal => auth not configured.
     assert reg.auth_configured is False
+
+
+def test_cleanup_plan_is_auth_required() -> None:
+    """item 6: the MCP enforcement plane must gate kb_cleanup_plan behind auth when
+    configured, matching the REST /onboarding/cleanup-plan gating. The middleware
+    (server.py) consults AUTH_REQUIRED_TOOLS, so membership here is the mechanism."""
+    from data_olympus.principals import AUTH_REQUIRED_TOOLS
+    assert "kb_cleanup_plan" in AUTH_REQUIRED_TOOLS
+    # And the pre-existing enforcement tools stay gated.
+    assert "kb_consult" in AUTH_REQUIRED_TOOLS
+    assert "kb_gate_check" in AUTH_REQUIRED_TOOLS
 
 
 def test_parse_principals_env_tolerates_garbage() -> None:

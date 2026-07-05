@@ -5,11 +5,11 @@ problem we kept hitting with coding agents, what data-olympus does differently, 
 it relates to Google's Open Knowledge Format, and where our benchmarks say it is
 strong and where it is not. The rest of this README is the technical reference.
 
-data-olympus is a governance-grade knowledge-base format and server for agent workforces. It is an OKF-compatible profile (a conformant extension of the [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)) with governance extensions (stable `id`, controlled `type`/`status`/`tier` fields, `supersedes` chains) plus a single-writer MCP server and a CLI. The result is a git-native, version-controlled document graph of engineering standards, architectural decisions, and project knowledge that agents and humans can read, search, and extend without any proprietary service.
+data-olympus is a governance-grade knowledge-base format and server for agent workforces. It is designed to be readable by [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) (OKF) consumers: it inherits OKF's directory structure, frontmatter conventions, reserved filenames, and link model, then layers governance extensions on top (stable `id`, controlled `type`/`status`/`tier` fields, `supersedes` chains) plus a single-writer MCP server and a CLI. Formal conformance testing against the OKF reference tooling is not yet in place (tracked in [issue #82](https://github.com/knaisoma/data-olympus/issues/82)). The result is a git-native, version-controlled document graph of engineering standards, architectural decisions, and project knowledge that agents and humans can read, search, and extend without any proprietary service.
 
 It governs *decisions*, not code. When an agent is about to make a choice (a library, a pattern, a migration), data-olympus surfaces the established standard or decision that should govern that choice. It is deliberately **not** a code-search, reference-finding, or "where is X used" tool: LSP, grep, and Sourcegraph already do that well. The retrieval task it targets is coding-intent to governing-rule, and it helps where current model interaction during vibe-coding is weakest: keeping the model aligned to patterns the team has already established as correct.
 
-**Status: pre-release (v0.1).**
+**Status: pre-1.0 beta. Latest release: v0.3.0.**
 
 ## Why
 
@@ -18,9 +18,11 @@ It governs *decisions*, not code. When an agent is about to make a choice (a lib
 - **Agent and human readable.** Plain markdown with YAML frontmatter. No SDK required to read or author a document.
 - **Governed multi-agent writes.** The single-writer MCP pipeline (advisory locks, per-session worktrees, durable push queue) prevents concurrent write races without requiring distributed locking infrastructure.
 - **Queryable by status, tier, and type.** Filter by `status: accepted`, `tier: T1`, or `type: decision` without post-processing. The `supersedes` chain makes it possible to trace decision history across the graph.
-- **OKF-compatible.** Any OKF consumer can read a data-olympus bundle. Any OKF-produced bundle can be governed by data-olympus tools.
+- **Designed to be OKF-readable.** Built on OKF's directory structure, frontmatter conventions, reserved filenames, and link model; formal conformance testing against OKF reference tooling is tracked in [issue #82](https://github.com/knaisoma/data-olympus/issues/82), not yet implemented.
 
 ## Quickstart
+
+Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 # Install
@@ -40,9 +42,12 @@ See `docs/quickstart.md` for the full local-run walkthrough, including curl and 
 - [`SPEC.md`](SPEC.md): format specification (bundle layout, frontmatter schema, serving contracts).
 - [`docs/quickstart.md`](docs/quickstart.md): verified local-run procedure.
 - [`docs/adoption.md`](docs/adoption.md): bring-your-own-KB guide (author, lint, index, serve, wire an agent).
-- [`docs/serving.md`](docs/serving.md): single-replica serving model, read-only replicas, git pull loop.
+- [`docs/serving.md`](docs/serving.md): single-replica serving model, read-only replicas, git pull loop, health/readiness/liveness split, proxy headers, audit-log rotation.
+- [`docs/operations.md`](docs/operations.md): production runbook — backup, upgrade, recovery playbooks (degraded/fetch-failed, history rewrite, frozen/demoted push entries, orphaned locks), and the health/alerting model.
 - [`docs/comparison.md`](docs/comparison.md): how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 - [`docs/enforcement.md`](docs/enforcement.md): turning the KB into a mandatory consultation gate (hooks, `kb enforce`).
+- [`benchmarks/README.md`](benchmarks/README.md): retrieval benchmark methodology and how to reproduce the numbers in `docs/comparison.md`.
+- [`SECURITY.md`](SECURITY.md): supported versions and how to report a vulnerability.
 
 ## License
 

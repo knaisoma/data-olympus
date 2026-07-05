@@ -12,7 +12,13 @@ Design notes:
   member points at every other member, so expansion is bidirectional.
 - Lookup is case-insensitive, but original query terms keep their casing (FTS5
   matching is case-insensitive anyway). Synonyms are appended after the original
-  terms so BM25 still favours the terms the user actually typed.
+  terms; ``Index.search`` splits the appended (expansion) terms out and matches
+  them in a SEPARATE penalized backfill pass that can only place expansion-only
+  hits BELOW the worst primary hit (finding (a); see ``Index._expansion_backfill``).
+  FTS5 bm25 has no positional preference, so ordering alone would NOT down-weight
+  a synonym: a doc matching only a derived term would otherwise get full idf
+  weight and could outrank a doc matching the user's actual term. The two-pass
+  split is what makes "expansion is down-weighted" genuinely true.
 - Expansion is bounded (``max_terms``) and de-duplicated to avoid runaway MATCH
   expressions. Original terms are never dropped by the cap.
 - Configuration follows the ``config.py`` env pattern: ``KB_SYNONYMS`` overrides

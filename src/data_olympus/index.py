@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 import sqlite3
 import subprocess
@@ -32,7 +33,8 @@ from data_olympus.embeddings import (
     make_hybrid_reranker,
     serialize_vector,
 )
-from data_olympus.markdown_parse import parse_file
+from data_olympus.format.validate import IN_FORCE_STATUSES
+from data_olympus.markdown_parse import ParsedDoc, parse_text_checked
 from data_olympus.trigram import (
     DEFAULT_FALLBACK_THRESHOLD as DEFAULT_TRIGRAM_FALLBACK_THRESHOLD,
 )
@@ -76,7 +78,15 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
-""" + RELATED_TERMS_SCHEMA + TRIGRAM_FTS_SCHEMA + EMBEDDINGS_SCHEMA
+""" + RELATED_TERMS_SCHEMA + EMBEDDINGS_SCHEMA
+
+# The trigram secondary index (issue #41) is a SECOND full copy of every indexed
+# column tokenized into 3-char substrings: roughly a 2-3x index-size / build-time
+# tax. Finding (c): it was created and populated UNCONDITIONALLY even when the
+# trigram fallback is off, so every deployment paid that tax for a feature it was
+# not using. It is now created and populated only when the fallback is enabled
+# for THIS index (``self.trigram_fallback``), appended to the schema at build
+# time rather than baked into the base constant.
 
 # Informational only; recorded in the meta table for observability. Rebuild
 # is guaranteed by bootstrap_now=True calling Index.build() unconditionally
@@ -85,6 +95,25 @@ CREATE TABLE IF NOT EXISTS meta (
 # v7 adds the fts_trigram fuzzy-match table (issue #41).
 # v8 adds the doc_vectors table (issue #42, populated only when embeddings on).
 _SCHEMA_VERSION = "8"
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _ParsedFile:
+    """One file read + parsed once during build (finding (i)).
+
+    Carries everything the build needs so a file is neither re-read nor re-parsed:
+    the relative path, the resolved doc id, the ParsedDoc, the raw text (stored as
+    ``content_markdown``), and whether its front matter was present but malformed
+    (finding (j)).
+    """
+
+    rel: Path
+    doc_id: str
+    doc: ParsedDoc
+    raw_text: str
+    malformed_frontmatter: bool
 
 
 # fts column order (excluding the UNINDEXED id at position 0).
@@ -129,12 +158,11 @@ DEFAULT_DENSE_MIN_COSINE = 0.5
 # casefolded before lookup), so mixed-case frontmatter (e.g. ``Active``) is not
 # silently treated as neutral. Keep the keys here lowercase.
 _DEFAULT_STATUS_WEIGHTS: dict[str, float] = {
-    # In-force: the guidance that currently applies. Boost. ``approved`` is the
-    # in-force status the target KB uses for accepted decisions, alongside the
-    # spec's ``accepted``; both carry the same boost.
-    "active": -1.0,
-    "accepted": -1.0,
-    "approved": -1.0,
+    # In-force: the guidance that currently applies. Boost. The in-force class
+    # (active/accepted/approved, incl. the target KB's ``approved``) is defined
+    # once in format.validate.IN_FORCE_STATUSES and expanded here so the soft
+    # rerank and the hard ``in_force`` filter share a single source of truth.
+    **{s: -1.0 for s in sorted(IN_FORCE_STATUSES)},
     # Retired or superseded: kept for history, must not outrank its replacement.
     "superseded": 2.0,
     "deprecated": 2.0,
@@ -143,6 +171,12 @@ _DEFAULT_STATUS_WEIGHTS: dict[str, float] = {
     "draft": 1.0,
     "proposed": 1.0,
 }
+
+# Deterministic, sorted materialisation of the in-force class for use as SQL
+# ``IN (...)`` parameters by search(in_force=True) and dense_candidates. Sorted
+# so the generated SQL/params are stable across runs. Derived from the single
+# source (format.validate.IN_FORCE_STATUSES); do not hand-list statuses here.
+_IN_FORCE_STATUS_LIST: tuple[str, ...] = tuple(sorted(IN_FORCE_STATUSES))
 
 # Generic, deployment-neutral default taxonomy. A deployment with a different
 # directory layout supplies its own table at runtime via KB_TAXONOMY_PATH (a
@@ -262,9 +296,27 @@ def _classify_by_path(
     return "meta", "meta"
 
 
+# Rank classes. A hit's rank class is the OUTER, score-independent sort key: a
+# larger class always sorts after a smaller one, no matter what a reranker does
+# to the score. PRIMARY hits (the user's own terms) always outrank BACKFILL hits
+# (expansion synonyms, co-occurrence, trigram fuzzy matches). This is what makes
+# the "backfill hits are never reordered above primaries" invariant genuinely
+# TRUE (finding (d)): the status/hybrid rerankers ADD deltas to and RE-NORMALISE
+# the score, so a score-only "strictly worse" floor could be lifted above a
+# primary by an active-status boost; a separate rank-class key cannot.
+RANK_CLASS_PRIMARY = 0
+RANK_CLASS_BACKFILL = 1
+
+
 @dataclass(frozen=True, slots=True)
 class SearchHit:
-    """One FTS hit."""
+    """One FTS hit.
+
+    ``rank_class`` (see RANK_CLASS_*) is the outer sort key: a hit from a
+    backfill pass (expansion/trigram) carries RANK_CLASS_BACKFILL so it can never
+    be reordered above a RANK_CLASS_PRIMARY hit, independent of any score
+    arithmetic a reranker applies. Rerankers sort by ``(rank_class, score)``.
+    """
 
     id: str
     path: str
@@ -273,6 +325,7 @@ class SearchHit:
     score: float
     status: str = ""
     doc_type: str = ""
+    rank_class: int = RANK_CLASS_PRIMARY
 
 
 def make_status_reranker(
@@ -312,7 +365,10 @@ def make_status_reranker(
             replace(h, score=h.score + table.get(h.status.casefold(), 0.0))
             for h in hits
         ]
-        adjusted.sort(key=lambda h: h.score)
+        # Sort by rank_class FIRST (primaries before backfill), then adjusted
+        # score. A backfill hit's active-status boost can move it earlier WITHIN
+        # its class but never above a primary (finding (d)).
+        adjusted.sort(key=lambda h: (h.rank_class, h.score))
         return adjusted
 
     return reranker
@@ -412,7 +468,9 @@ class Index:
         # backfilled from the secondary trigram-tokenized table so a typo or a
         # partial identifier still reaches its document. Off by default so the
         # base behaviour is unchanged; the server sets these from config. Trigram
-        # hits are only ever APPENDED after primary hits, never reordering them.
+        # hits are APPENDED after primary hits and stamped RANK_CLASS_BACKFILL,
+        # which is the outer sort key in every reranker, so they are never
+        # reordered above a primary hit (finding (d)).
         self.trigram_fallback = trigram_fallback
         self.trigram_fallback_threshold = (
             trigram_fallback_threshold
@@ -442,6 +500,41 @@ class Index:
         # Test/observability counter: how many times the DB was actually read
         # (cache misses). Not part of the public contract.
         self._health_uncached_calls = 0
+        # Per-build id->vector matrix cache (finding (g)). The hybrid reranker
+        # asked get_vector() once PER candidate hit, and each call opened a fresh
+        # SQLite connection; dense_candidates re-read + deserialized the whole
+        # doc_vectors table on every query. Both now share a single in-memory
+        # matrix loaded once per build. The cache is keyed by the db file's
+        # (size, mtime_ns) so the atomic os.replace() swap in build() transparently
+        # invalidates it (the new inode has a different mtime), with no explicit
+        # invalidation call needed even for a rebuild by a DIFFERENT Index object.
+        # Guarded by a lock because query reads run concurrently in the threadpool.
+        self._vector_lock = threading.Lock()
+        self._vector_cache: tuple[
+            tuple[int, int], dict[str, builtins.list[float]]
+        ] | None = None
+        # Test/observability counter: how many times the vector matrix was
+        # actually loaded from the DB (cache misses). Not part of the public
+        # contract; asserted by the batch-fetch test to prove one load per build.
+        self._vector_loads = 0
+        # Health-visible count of docs whose front-matter block was present but
+        # malformed at the last build, so their status/supersedes were silently
+        # dropped (finding (j)). Updated by build(); surfaced via health() and the
+        # ``malformed_frontmatter_count`` property. Exposing it on the Index (with
+        # a WARN log per doc) is the minimal, non-invasive plumbing; wiring it into
+        # the /health degraded signal is a tracked follow-up.
+        self._malformed_frontmatter_count = 0
+
+    @property
+    def malformed_frontmatter_count(self) -> int:
+        """Docs with a present-but-malformed front-matter block at last build (j).
+
+        A YAML typo in a doc's front matter makes the parser fall back to "no
+        front matter", silently dropping its ``status`` / ``supersedes`` and
+        disabling that doc's staleness protection. This counter (also logged at
+        WARN per doc during build) makes the condition observable.
+        """
+        return self._malformed_frontmatter_count
 
     def _resolve_embedder(self) -> Embedder | None:
         """Return the embedder to use, loading it from the threaded config once.
@@ -468,7 +561,12 @@ class Index:
 
     @staticmethod
     def _git_last_modified(kb_root: Path, rel: Path) -> tuple[str, str]:
-        """Return (iso_timestamp, source). source is 'git' or 'mtime'."""
+        """Return (iso_timestamp, source). source is 'git' or 'mtime'.
+
+        Per-file git query. Retained for callers that need a single file's
+        timestamp; the index build uses :func:`_git_last_modified_map` to fetch
+        every file's last-commit time in ONE ``git log`` pass (finding (i)).
+        """
         try:
             result = subprocess.run(
                 ["git", "-C", str(kb_root), "log", "-1", "--format=%cI", "--", str(rel)],
@@ -482,6 +580,85 @@ class Index:
         mtime = (kb_root / rel).stat().st_mtime
         return datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC).isoformat(), "mtime"
 
+    # Sentinel prefixing each commit's timestamp record in the batched git log,
+    # so the parser distinguishes a timestamp header from a changed-path record. A
+    # control char that cannot appear in a git path keeps the split unambiguous.
+    _GIT_LOG_MARK = "\x01"
+
+    @classmethod
+    def _git_last_modified_map(cls, kb_root: Path) -> dict[str, str]:
+        """Map every tracked path to its last-commit ISO timestamp in ONE pass (i).
+
+        Runs a single ``git log -z --name-only`` over the whole history and
+        records, for each path, the FIRST (most recent, since git log is
+        newest-first) commit timestamp that touched it. Replaces the previous
+        one-subprocess-per-file loop (N git invocations -> 1). Returns an empty
+        map when the directory is not a git repo or git is unavailable; the build
+        then falls back to filesystem mtime per file exactly as before, so the
+        ``source`` recorded per doc ('git' vs 'mtime') is unchanged.
+
+        Exactness (reviewer concern): the output is NUL-delimited (``-z``) and
+        ``core.quotePath=false`` disables git's octal-quoting of non-ASCII paths,
+        so a path with spaces, unicode, or other special characters round-trips
+        byte-for-byte and is NOT lost to the mtime fallback. Each record is either
+        ``<MARK><iso>`` (a commit header) or a changed path; the first path of a
+        commit carries a leading ``\\n`` (git's format-block-to-name-list
+        separator) which is stripped, but the path body is otherwise untouched (no
+        ``.strip()``, so trailing/leading whitespace in a filename survives). Paths
+        are relative to ``kb_root`` with forward slashes, matching ``str(rel)``.
+        Renames are not requested (no ``-M``), so paths are literal.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(kb_root), "-c", "core.quotePath=false", "log",
+                 "-z", f"--format={cls._GIT_LOG_MARK}%cI", "--name-only", "HEAD"],
+                capture_output=True, text=True, check=False, timeout=30,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return {}
+        if result.returncode != 0 or not result.stdout:
+            return {}
+        out: dict[str, str] = {}
+        current_iso = ""
+        for record in result.stdout.split("\x00"):
+            if not record:
+                continue
+            if record.startswith(cls._GIT_LOG_MARK):
+                # Commit header: MARK + iso. ISO-8601 timestamps carry no
+                # surrounding whitespace, so stripping the iso is safe/exact.
+                current_iso = record[len(cls._GIT_LOG_MARK):].strip()
+                continue
+            # A changed-path record. The first path of a commit is prefixed with a
+            # single '\n' (git's separator between the format block and the name
+            # list); remove exactly that, but do NOT strip the path body so a
+            # filename with leading/trailing whitespace round-trips exactly.
+            path = record[1:] if record.startswith("\n") else record
+            # git log is newest-first, so the first time we see a path is its most
+            # recent commit; keep that and ignore older ones.
+            if path and current_iso and path not in out:
+                out[path] = current_iso
+        return out
+
+    @staticmethod
+    def _resolve_last_modified(
+        kb_root: Path, rel: Path, git_mtimes: dict[str, str],
+    ) -> tuple[str, str]:
+        """Return (iso_timestamp, source) for ``rel`` using the batched git map (i).
+
+        A hit in ``git_mtimes`` (the single ``git log`` pass) yields ('git', iso),
+        byte-for-byte the same value the per-file ``git log`` produced. A miss
+        (untracked file, or not a git repo at all) falls back to filesystem mtime,
+        exactly as the per-file path did, so the recorded ``source`` is unchanged.
+        """
+        iso = git_mtimes.get(str(rel))
+        if iso:
+            return iso, "git"
+        mtime = (kb_root / rel).stat().st_mtime
+        return (
+            datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC).isoformat(),
+            "mtime",
+        )
+
     def build(self, kb_root: Path, *, source_commit: str) -> IndexBuildResult:
         """Walk kb_root for .md files and (re)build the FTS index using atomic swap."""
         if not kb_root.is_dir():
@@ -494,27 +671,49 @@ class Index:
         if tmp_path.exists():
             tmp_path.unlink()  # stale tmp from previous failed build
 
-        # First pass: collect (id, path) without writing, so we can detect duplicates
-        # before mutating anything.
+        # Single pass over the corpus (finding (i)): read + parse each file EXACTLY
+        # ONCE and reuse the result for duplicate detection, the docs/fts inserts,
+        # and (via the raw text) the stored content_markdown. The previous build
+        # read/parsed each file three times (a first-pass parse, a second-pass
+        # parse, and a separate content read). Each ``_ParsedFile`` carries the
+        # raw text, the ParsedDoc, and the malformed-frontmatter flag (finding
+        # (j)).
+        parsed: list[_ParsedFile] = []
         seen: dict[str, list[str]] = {}
-        files_to_index: list[Path] = []
         for md in sorted(kb_root.rglob("*.md")):
             rel = md.relative_to(kb_root)
             if _is_excluded(rel):
                 continue
-            doc = parse_file(md)
+            raw_text = md.read_text(encoding="utf-8")
+            doc, malformed = parse_text_checked(md, raw_text)
             doc_id = doc.id or _derive_id_from_path(rel)
             seen.setdefault(doc_id, []).append(str(rel))
-            files_to_index.append(md)
+            parsed.append(
+                _ParsedFile(
+                    rel=rel, doc_id=doc_id, doc=doc,
+                    raw_text=raw_text, malformed_frontmatter=malformed,
+                )
+            )
         conflicts = {id_: paths for id_, paths in seen.items() if len(paths) > 1}
         if conflicts:
             raise DuplicateIdError(conflicts)
+        # One git pass for every file's last-commit time (finding (i)); empty when
+        # not a git repo, in which case each file falls back to mtime below.
+        git_mtimes = self._git_last_modified_map(kb_root)
 
         # Build the new index into the tmp file
         conn = sqlite3.connect(tmp_path)
         conn.row_factory = sqlite3.Row
         try:
-            conn.executescript(_SCHEMA)
+            # Finding (c): the trigram table is created only when the trigram
+            # fallback is enabled for this index. With it off the schema (and the
+            # per-doc insert below) skip it, so a default deployment no longer
+            # pays the 2-3x index-size / build-time cost of a second tokenized
+            # copy of the corpus.
+            schema = _SCHEMA
+            if self.trigram_fallback:
+                schema = schema + TRIGRAM_FTS_SCHEMA
+            conn.executescript(schema)
             count = 0
             path_rules = _load_path_rules()
             # Per-document token sets for the co-occurrence table (issue #40).
@@ -536,17 +735,32 @@ class Index:
             embed_inputs: list[tuple[str, str]] = []
             if build_embeddings:
                 embedder = self._resolve_embedder()
-            for md in files_to_index:
-                rel = md.relative_to(kb_root)
-                doc = parse_file(md)
-                doc_id = doc.id or _derive_id_from_path(rel)
+            # Count of docs whose front-matter block was present but malformed, so
+            # status/supersedes were silently dropped (finding (j)). Surfaced on
+            # the Index and logged at WARN so a YAML typo that disables a doc's
+            # staleness protection is visible rather than silent.
+            malformed_frontmatter = 0
+            for pf in parsed:
+                rel = pf.rel
+                doc = pf.doc
+                doc_id = pf.doc_id
+                if pf.malformed_frontmatter:
+                    malformed_frontmatter += 1
+                    logger.warning(
+                        "malformed front matter in %s: front-matter block present "
+                        "but not valid YAML; status/supersedes/other fields were "
+                        "dropped (staleness protection disabled for this doc)",
+                        rel,
+                    )
                 path_tier, path_category = _classify_by_path(str(rel), path_rules)
                 final_tier = doc.tier or path_tier
                 final_category = doc.category or path_category
                 tags_str = " ".join(doc.tags)
                 applies_when_str = " ".join(doc.applies_when)
-                last_modified, lm_source = self._git_last_modified(kb_root, rel)
-                content_markdown = md.read_text(encoding="utf-8")
+                last_modified, lm_source = self._resolve_last_modified(
+                    kb_root, rel, git_mtimes,
+                )
+                content_markdown = pf.raw_text
                 conn.execute(
                     "INSERT INTO docs (id, path, tier, category, status, type, "
                     "applies_when, description, title, tags, "
@@ -563,23 +777,40 @@ class Index:
                 )
                 # Secondary trigram index (issue #41), built into the SAME tmp DB
                 # so it is swapped atomically with the primary fts table below.
-                # A query never sees a half-built trigram table.
-                conn.execute(
-                    "INSERT INTO fts_trigram "
-                    "(id, title, tags, applies_when, description, body) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (doc_id, doc.title, tags_str, applies_when_str, doc.description, doc.body),
-                )
+                # A query never sees a half-built trigram table. Only populated
+                # when the trigram fallback is enabled for this index (finding
+                # (c)); the table itself was created above only in that case.
+                if self.trigram_fallback:
+                    conn.execute(
+                        "INSERT INTO fts_trigram "
+                        "(id, title, tags, applies_when, description, body) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (doc_id, doc.title, tags_str, applies_when_str,
+                         doc.description, doc.body),
+                    )
                 if build_cooccurrence:
                     doc_token_sets.append(
                         tokenize_doc(doc.title, tags_str, doc.description, doc.body)
                     )
                 if build_embeddings:
-                    # Embed title + description + body: the retrievable semantic
-                    # content of the doc. Bounded to keep a huge doc from blowing
-                    # the model's context; the head carries the topical signal.
+                    # Embed title + applies_when + tags + description + body: the
+                    # retrievable semantic content PLUS the curated intent
+                    # vocabulary (finding (f)). applies_when and tags are exactly
+                    # the hand-authored phrases a paraphrase query embeds near
+                    # ("when do I ...", topic labels), so excluding them left the
+                    # dense channel blind to the intent signal it most needs.
+                    # Bounded to keep a huge doc from blowing the model's context;
+                    # the head carries the topical signal.
                     embed_text = "\n".join(
-                        p for p in (doc.title, doc.description, doc.body) if p
+                        p
+                        for p in (
+                            doc.title,
+                            applies_when_str,
+                            tags_str,
+                            doc.description,
+                            doc.body,
+                        )
+                        if p
                     )[:_EMBED_TEXT_MAX_CHARS]
                     embed_inputs.append((doc_id, embed_text))
                 count += 1
@@ -605,6 +836,8 @@ class Index:
                     k=int(params["k"]),
                     min_count=int(params["min_count"]),
                     min_pmi=float(params["min_pmi"]),
+                    min_docs=int(params["min_docs"]),
+                    max_doc_tokens=int(params["max_doc_tokens"]),
                 )
                 write_cooccurrence_table(conn, table)
             now = time.time()
@@ -623,6 +856,14 @@ class Index:
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
                 (_SCHEMA_VERSION,),
+            )
+            # Malformed-frontmatter count (finding (j)): persisted in meta so
+            # health() surfaces it without an extra scan and it survives a process
+            # restart that reads the swapped index.
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) "
+                "VALUES ('malformed_frontmatter', ?)",
+                (str(malformed_frontmatter),),
             )
             # Integrity check before swap
             check = conn.execute("PRAGMA integrity_check").fetchone()
@@ -645,6 +886,9 @@ class Index:
         # Atomic swap: the previous index file (if any) is replaced. Open fds on the
         # old inode keep reading from it until they close.
         os.replace(tmp_path, self._db_path)
+        # Publish the malformed-frontmatter count for the in-process health view
+        # (finding (j)); the persisted meta row covers a fresh process.
+        self._malformed_frontmatter_count = malformed_frontmatter
         # Invalidate the health cache so the next health() reflects the rebuild
         # immediately rather than serving the pre-swap commit for up to the TTL.
         with self._health_lock:
@@ -659,6 +903,7 @@ class Index:
         tier: str | None = None,
         category: str | None = None,
         status: str | None = None,
+        in_force: bool = False,
         doc_type: str | None = None,
         columns: list[str] | None = None,
         column_weights: tuple[float, ...] | None = None,
@@ -677,75 +922,82 @@ class Index:
         matches all. `column_weights` overrides bm25 weights (one per declared
         fts column incl. the UNINDEXED id at index 0); default boosts
         title/applies_when, deprioritizes body.
+
+        `status` filters to a single exact status. `in_force` is a HARD
+        pre-ranking filter restricting results to the in-force status class
+        (format.validate.IN_FORCE_STATUSES: active/accepted/approved), so a
+        superseded/deprecated doc is EXCLUDED before ranking rather than merely
+        soft-downranked by the status reranker. The two compose: passing both a
+        single `status` and `in_force=True` requires the doc match `status` AND
+        be in-force (an empty result if `status` is not itself in-force). The
+        filter is applied to both the FTS candidate pool and the dense
+        (embedding) candidate source so neither leaks an out-of-force doc.
         """
         # Stage 1 (expand-query): term extraction + optional expansion hook.
-        terms = query.split()
-        if not terms:
+        # The user's ACTUAL terms (post-split, pre-expansion) drive the PRIMARY
+        # match; any expansion terms are matched separately and can only backfill
+        # BELOW the worst primary hit (see stage 2b'). FTS5 bm25 gives an
+        # expansion synonym full idf weight in an OR-MATCH, so folding expansion
+        # terms into the primary MATCH would let a doc matching only a derived
+        # term outrank a doc matching the term the user typed. Splitting the
+        # passes makes the "expansion is down-weighted" contract actually true.
+        primary_terms = query.split()
+        if not primary_terms:
             return []
+        expansion_terms: list[str] = []
         if self.query_expander is not None:
-            terms = list(self.query_expander(terms))
-            if not terms:
+            expanded = list(self.query_expander(primary_terms))
+            if not expanded:
                 return []
-        match_query = self._build_match_expr(terms, columns)
+            # The expander keeps the originals first (order-stable), then appends
+            # derived terms. Everything not in the original set is an expansion
+            # term matched only in the penalized backfill pass.
+            primary_lower = {t.lower() for t in primary_terms}
+            seen_exp: set[str] = set()
+            for t in expanded:
+                low = t.lower()
+                if low in primary_lower or low in seen_exp:
+                    continue
+                seen_exp.add(low)
+                expansion_terms.append(t)
         weights = column_weights if column_weights is not None else _DEFAULT_BM25_WEIGHTS
-        bm25_expr = "bm25(fts, " + ", ".join(repr(float(w)) for w in weights) + ")"
+        # Over-fetch a wider candidate pool when a reranker will reorder the
+        # hits (see stage 3); never fewer than `limit`. Computed once and used to
+        # bound both the primary pool and the backfill passes.
+        candidate_limit = limit
+        if self.reranker is not None:
+            candidate_limit = max(
+                limit,
+                min(
+                    max(limit * _RERANK_OVERFETCH_FACTOR, _RERANK_MIN_POOL),
+                    _RERANK_MAX_POOL,
+                ),
+            )
         conn = self._connect()
         try:
-            where = ["fts MATCH ?"]
-            params: list[object] = [match_query]
-            if tier:
-                where.append("docs.tier = ?")
-                params.append(tier)
-            if category:
-                where.append("docs.category = ?")
-                params.append(category)
-            if status:
-                where.append("docs.status = ?")
-                params.append(status)
-            if doc_type:
-                where.append("docs.type = ?")
-                params.append(doc_type)
-            # Over-fetch a wider candidate pool when a reranker will reorder the
-            # hits (see stage 3); never fewer than `limit`.
-            candidate_limit = limit
-            if self.reranker is not None:
-                candidate_limit = max(
-                    limit,
-                    min(
-                        max(limit * _RERANK_OVERFETCH_FACTOR, _RERANK_MIN_POOL),
-                        _RERANK_MAX_POOL,
-                    ),
+            base_where, base_params = self._facet_filters(
+                tier=tier, category=category, status=status,
+                in_force=in_force, doc_type=doc_type,
+            )
+            # Stage 2 (match): PRIMARY pool from the user's own terms only.
+            hits = self._fts_match(
+                conn, primary_terms, columns=columns, weights=weights,
+                base_where=base_where, base_params=base_params,
+                candidate_limit=candidate_limit,
+            )
+            # Stage 2b' (penalized expansion backfill, finding (a)): match the
+            # expansion terms separately and append ONLY docs not already found
+            # by the primary pass, each scored strictly worse than the worst
+            # primary hit. So an expansion-only hit can never outrank a doc that
+            # matched a term the user actually typed, even after the reranker
+            # re-sorts by score. This is the same rank-class backfill discipline
+            # the trigram fallback uses.
+            if expansion_terms:
+                hits = self._expansion_backfill(
+                    conn, expansion_terms, primary_hits=hits, columns=columns,
+                    weights=weights, base_where=base_where,
+                    base_params=base_params, candidate_limit=candidate_limit,
                 )
-            params.append(candidate_limit)
-            sql = f"""
-                SELECT
-                    fts.id AS id,
-                    docs.path AS path,
-                    COALESCE(docs.title, '') AS title,
-                    COALESCE(docs.status, '') AS status,
-                    COALESCE(docs.type, '') AS doc_type,
-                    snippet(fts, 5, '[', ']', '...', 16) AS snippet,
-                    {bm25_expr} AS score
-                FROM fts
-                JOIN docs ON docs.id = fts.id
-                WHERE {' AND '.join(where)}
-                ORDER BY score
-                LIMIT ?
-            """
-            # Stage 2 (match): rows come back BM25-ordered from SQLite.
-            rows = conn.execute(sql, params).fetchall()
-            hits = [
-                SearchHit(
-                    id=r["id"],
-                    path=r["path"],
-                    title=r["title"],
-                    snippet=r["snippet"],
-                    score=float(r["score"]),
-                    status=r["status"],
-                    doc_type=r["doc_type"],
-                )
-                for r in rows
-            ]
             # Stage 2b (fuzzy fallback, issue #41): only when enabled AND the
             # primary query returned few/no hits. Trigram hits are APPENDED after
             # the primary hits and given scores strictly worse than any primary
@@ -760,8 +1012,8 @@ class Index:
                     conn,
                     query,
                     primary_hits=hits,
-                    base_where=where[1:],
-                    base_params=params[1:-1],
+                    base_where=base_where,
+                    base_params=base_params,
                     candidate_limit=candidate_limit,
                 )
         finally:
@@ -784,13 +1036,18 @@ class Index:
                 tier=tier,
                 category=category,
                 status=status,
+                in_force=in_force,
                 doc_type=doc_type,
             )
-        # Stage 3 (re-rank): optional hook reorders/rescores (default identity),
-        # then truncate the (possibly wider / prepended) pool back to `limit`.
+        # Stage 3 (re-rank): optional hook reorders/rescores (default identity).
         if self.reranker is not None:
-            hits = list(self.reranker(query, hits))[:limit]
-        return hits
+            hits = list(self.reranker(query, hits))
+        # Truncate to the caller's ``limit`` UNCONDITIONALLY (finding (h)). The
+        # dense union and the backfill passes can push the pool past ``limit``,
+        # and that truncation must happen whether or not a reranker is installed:
+        # doing it only inside the reranker branch let search() return more than
+        # ``limit`` hits when embeddings were configured but no reranker was set.
+        return hits[:limit]
 
     def _union_dense_candidates(
         self,
@@ -801,6 +1058,7 @@ class Index:
         tier: str | None,
         category: str | None,
         status: str | None,
+        in_force: bool,
         doc_type: str | None,
     ) -> builtins.list[SearchHit]:
         """Union dense (cosine) candidates into the FTS pool (reviewer concern 1).
@@ -820,6 +1078,7 @@ class Index:
             tier=tier,
             category=category,
             status=status,
+            in_force=in_force,
             doc_type=doc_type,
         )
         if not dense:
@@ -832,6 +1091,142 @@ class Index:
             replace(h, score=floor) for h in dense if h.id not in seen
         ]
         return [*fts_hits, *appended]
+
+    def _facet_filters(
+        self,
+        *,
+        tier: str | None,
+        category: str | None,
+        status: str | None,
+        in_force: bool,
+        doc_type: str | None,
+    ) -> tuple[list[str], list[object]]:
+        """Build the shared docs.* facet WHERE fragments (no MATCH clause).
+
+        Returns (where_fragments, params) covering tier/category/status/in_force/
+        doc_type. The MATCH clause is prepended per-pass by the caller so the
+        primary, expansion-backfill, trigram, and dense passes all apply the same
+        facet filters from a single source.
+        """
+        where: list[str] = []
+        params: list[object] = []
+        if tier:
+            where.append("docs.tier = ?")
+            params.append(tier)
+        if category:
+            where.append("docs.category = ?")
+            params.append(category)
+        if status:
+            where.append("docs.status = ?")
+            params.append(status)
+        if in_force:
+            placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
+            where.append(f"docs.status IN ({placeholders})")
+            params.extend(_IN_FORCE_STATUS_LIST)
+        if doc_type:
+            where.append("docs.type = ?")
+            params.append(doc_type)
+        return where, params
+
+    def _fts_match(
+        self,
+        conn: sqlite3.Connection,
+        terms: list[str],
+        *,
+        columns: list[str] | None,
+        weights: tuple[float, ...],
+        base_where: list[str],
+        base_params: list[object],
+        candidate_limit: int,
+    ) -> list[SearchHit]:
+        """Run one bm25-ordered FTS MATCH over ``terms`` and return the hits.
+
+        The single primary-pool query, factored out so the primary pass and the
+        penalized expansion-backfill pass share exactly one code path. Rows come
+        back bm25-ordered (ascending; lower is better). Applies the shared facet
+        filters (``base_where`` / ``base_params``).
+        """
+        match_query = self._build_match_expr(terms, columns)
+        bm25_expr = "bm25(fts, " + ", ".join(repr(float(w)) for w in weights) + ")"
+        where = ["fts MATCH ?", *base_where]
+        params: list[object] = [match_query, *base_params, candidate_limit]
+        sql = f"""
+            SELECT
+                fts.id AS id,
+                docs.path AS path,
+                COALESCE(docs.title, '') AS title,
+                COALESCE(docs.status, '') AS status,
+                COALESCE(docs.type, '') AS doc_type,
+                snippet(fts, 5, '[', ']', '...', 16) AS snippet,
+                {bm25_expr} AS score
+            FROM fts
+            JOIN docs ON docs.id = fts.id
+            WHERE {' AND '.join(where)}
+            ORDER BY score
+            LIMIT ?
+        """
+        rows = conn.execute(sql, params).fetchall()
+        return [
+            SearchHit(
+                id=r["id"],
+                path=r["path"],
+                title=r["title"],
+                snippet=r["snippet"],
+                score=float(r["score"]),
+                status=r["status"],
+                doc_type=r["doc_type"],
+            )
+            for r in rows
+        ]
+
+    def _expansion_backfill(
+        self,
+        conn: sqlite3.Connection,
+        expansion_terms: list[str],
+        *,
+        primary_hits: list[SearchHit],
+        columns: list[str] | None,
+        weights: tuple[float, ...],
+        base_where: list[str],
+        base_params: list[object],
+        candidate_limit: int,
+    ) -> list[SearchHit]:
+        """Backfill expansion-term matches strictly below the primary hits (a).
+
+        Runs a second FTS MATCH over the expansion terms only, drops any doc
+        already returned by the primary pass, and appends the rest with scores
+        strictly worse (larger, since bm25 is ordered ascending) than the worst
+        primary hit. So a doc that matches ONLY a synonym / co-occurrence term can
+        never outrank a doc that matched a term the user actually typed, even
+        after the reranker re-sorts by score. This is the same rank-class discipline
+        the trigram backfill uses. The expansion pass preserves its own internal
+        bm25 order via a monotonically increasing offset.
+        """
+        expanded_hits = self._fts_match(
+            conn, expansion_terms, columns=columns, weights=weights,
+            base_where=base_where, base_params=base_params,
+            candidate_limit=candidate_limit,
+        )
+        if not expanded_hits:
+            return primary_hits
+        seen_ids = {h.id for h in primary_hits}
+        # Worst (largest) primary score; bm25 scores are <= 0, so 0.0 is a safe
+        # finite floor when there are no primary hits.
+        worst_primary = max((h.score for h in primary_hits), default=0.0)
+        appended: list[SearchHit] = []
+        offset = 1.0
+        for h in expanded_hits:
+            if h.id in seen_ids:
+                continue
+            seen_ids.add(h.id)
+            appended.append(
+                replace(
+                    h, score=worst_primary + offset,
+                    rank_class=RANK_CLASS_BACKFILL,
+                )
+            )
+            offset += 1.0
+        return [*primary_hits, *appended]
 
     def _build_match_expr(self, terms: list[str], columns: list[str] | None) -> str:
         """Match stage: build the FTS5 MATCH expression from query terms.
@@ -864,13 +1259,15 @@ class Index:
 
         Runs the trigram (substring) MATCH built from the query's own trigrams,
         excluding ids already returned by the primary query, and appends the
-        results AFTER the primary hits. Each appended hit is given a score
-        strictly worse (larger, since bm25 is ordered ascending) than any primary
-        hit, so a downstream reranker that re-sorts by score cannot lift a fuzzy
-        hit above an exact/primary one. The same tier/category/status/doc_type
-        filters (``base_where`` / ``base_params``) are applied. A query with no
-        trigram (shorter than 3 chars) no-ops and the primary hits are returned
-        unchanged.
+        results AFTER the primary hits. Each appended hit carries
+        ``rank_class=RANK_CLASS_BACKFILL`` AND a score strictly worse (larger,
+        since bm25 is ordered ascending) than any primary hit. The rank_class is
+        the OUTER sort key in every reranker, so a fuzzy hit can never be lifted
+        above an exact/primary one even by a reranker that ADDS status deltas or
+        RE-NORMALISES scores (finding (d)); the worse score just orders the fuzzy
+        hits among themselves. The same tier/category/status/doc_type filters
+        (``base_where`` / ``base_params``) are applied. A query with no trigram
+        (shorter than 3 chars) no-ops and the primary hits are returned unchanged.
         """
         trigram_expr = build_trigram_match_expr(query)
         if trigram_expr is None:
@@ -916,6 +1313,7 @@ class Index:
                     score=worst_primary + offset,
                     status=r["status"],
                     doc_type=r["doc_type"],
+                    rank_class=RANK_CLASS_BACKFILL,
                 )
             )
             offset += 1.0
@@ -948,10 +1346,10 @@ class Index:
         """Return a ``query_expander`` backed by this index's related-terms table.
 
         The expander appends, for each query term, up to ``k`` co-occurring terms
-        (down-weighted by appending after the originals), bounded overall by
-        ``max_terms``. Bound to ``self.related_terms`` so it always reads the
-        currently-swapped index. Compose it AFTER the synonym expander via
-        ``cooccurrence.compose_expanders``.
+        (down-weighted by search()'s separate penalized backfill pass, not by
+        appended position), bounded overall by ``max_terms``. Bound to
+        ``self.related_terms`` so it always reads the currently-swapped index.
+        Compose it AFTER the synonym expander via ``cooccurrence.compose_expanders``.
         """
         return make_cooccurrence_expander(
             lambda term, kk: self.related_terms(term, limit=kk),
@@ -959,31 +1357,56 @@ class Index:
             max_terms=max_terms,
         )
 
+    def _load_vectors(self) -> dict[str, builtins.list[float]]:
+        """Return the id->vector matrix for the current build, loaded once (g).
+
+        Batch-fetches and deserializes the whole ``doc_vectors`` table in ONE
+        query and caches it, keyed by the db file's (size, mtime_ns). The atomic
+        ``os.replace`` swap in build() gives the new file a different mtime, so a
+        rebuild (even by a different Index object) transparently invalidates the
+        cache with no explicit call. Replaces the old per-hit ``get_vector`` SQL
+        (one connection per candidate) and the per-query full-table re-read in
+        ``dense_candidates``. Returns an empty dict when the db or the table is
+        absent (index predates schema v8) or the feature is off.
+        """
+        if not self._db_path.exists():
+            return {}
+        try:
+            st = self._db_path.stat()
+            key = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            return {}
+        with self._vector_lock:
+            cached = self._vector_cache
+            if cached is not None and cached[0] == key:
+                return cached[1]
+        # Cache miss: load the whole table once, outside the lock (a concurrent
+        # miss is harmless; both compute the same matrix from the same file).
+        conn = self._connect()
+        try:
+            rows = conn.execute("SELECT id, vector FROM doc_vectors").fetchall()
+        except sqlite3.OperationalError:
+            # Table absent (index predates schema v8); no vectors.
+            rows = []
+        finally:
+            conn.close()
+        matrix = {r["id"]: deserialize_vector(r["vector"]) for r in rows}
+        self._vector_loads += 1
+        with self._vector_lock:
+            self._vector_cache = (key, matrix)
+        return matrix
+
     def get_vector(self, id: str) -> builtins.list[float] | None:
         """Return the stored embedding vector for ``id``, or None (issue #42).
 
-        Reads the ``doc_vectors`` table populated at build time only when the
-        embeddings feature was enabled. A build that predates the table, a doc
-        with no vector, or the feature being off all yield None (the hybrid
+        Backed by the per-build id->vector matrix (finding (g)): the matrix is
+        loaded from ``doc_vectors`` ONCE per build and cached, so the hybrid
+        reranker's per-candidate ``get_vector`` calls are memory-only lookups
+        instead of one SQLite connection each. A build that predates the table, a
+        doc with no vector, or the feature being off all yield None (the hybrid
         reranker treats a missing vector as a neutral cosine, never a drop).
-        Opens a per-call connection so it always reads the atomically-swapped
-        current index.
         """
-        if not self._db_path.exists():
-            return None
-        conn = self._connect()
-        try:
-            row = conn.execute(
-                "SELECT vector FROM doc_vectors WHERE id = ?", (id,)
-            ).fetchone()
-        except sqlite3.OperationalError:
-            # Table absent (index predates the schema); degrade to no vector.
-            return None
-        finally:
-            conn.close()
-        if row is None:
-            return None
-        return deserialize_vector(row["vector"])
+        return self._load_vectors().get(id)
 
     def dense_candidates(
         self,
@@ -994,6 +1417,7 @@ class Index:
         tier: str | None = None,
         category: str | None = None,
         status: str | None = None,
+        in_force: bool = False,
         doc_type: str | None = None,
     ) -> builtins.list[SearchHit]:
         """Return up to ``limit`` docs most similar to ``query`` by cosine (issue #42).
@@ -1011,6 +1435,11 @@ class Index:
         be embedded, or the index predates the ``doc_vectors`` table. Each hit
         carries its cosine in ``score`` (higher = better here); search() re-scores
         dense-only hits onto the bm25 convention before the blend.
+
+        Perf (finding (g)): the vectors come from the per-build id->vector matrix
+        (loaded once, cached) instead of re-reading and re-deserializing the whole
+        ``doc_vectors`` table on every query. Only the facet-eligible doc metadata
+        is queried here; the vector lookup is an in-memory dict hit.
         """
         embedder = self._resolve_embedder()
         if embedder is None or limit <= 0 or not self._db_path.exists():
@@ -1018,7 +1447,12 @@ class Index:
         qvec = embedder.embed_one(query) if query.strip() else None
         if not qvec:
             return []
-        where = ["dv.vector IS NOT NULL"]
+        matrix = self._load_vectors()
+        if not matrix:
+            return []
+        # Fetch only the facet-eligible doc metadata (no vector blob); the vector
+        # is pulled from the cached matrix by id.
+        where = ["dv.id IS NOT NULL"]
         params: list[object] = []
         if tier:
             where.append("docs.tier = ?")
@@ -1029,13 +1463,16 @@ class Index:
         if status:
             where.append("docs.status = ?")
             params.append(status)
+        if in_force:
+            placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
+            where.append(f"docs.status IN ({placeholders})")
+            params.extend(_IN_FORCE_STATUS_LIST)
         if doc_type:
             where.append("docs.type = ?")
             params.append(doc_type)
         sql = f"""
             SELECT
                 dv.id AS id,
-                dv.vector AS vector,
                 docs.path AS path,
                 COALESCE(docs.title, '') AS title,
                 COALESCE(docs.status, '') AS status,
@@ -1055,8 +1492,8 @@ class Index:
             conn.close()
         scored: list[tuple[float, SearchHit]] = []
         for r in rows:
-            dvec = deserialize_vector(r["vector"])
-            if len(dvec) != len(qvec):
+            dvec = matrix.get(r["id"])
+            if dvec is None or len(dvec) != len(qvec):
                 continue
             sim = cosine(qvec, dvec)
             if sim < min_cosine:
@@ -1137,6 +1574,23 @@ class Index:
             applies_when=applies_when,
             description=row["description"] or "",
         )
+
+    def id_to_path_map(self) -> dict[str, str]:
+        """Return ``{doc_id: path}`` for every indexed document.
+
+        Used by the write-path validation gate to detect a forged/duplicate id
+        (an id already used by a DIFFERENT path corrupts the next rebuild). This
+        includes reserved files (index.md/log.md), which the indexer still assigns
+        an id (explicit or path-derived), so a reserved file carrying a colliding
+        id is caught too."""
+        conn = self._connect()
+        try:
+            rows = conn.execute("SELECT id, path FROM docs").fetchall()
+        except sqlite3.Error:
+            return {}
+        finally:
+            conn.close()
+        return {row["id"]: row["path"] for row in rows}
 
     def ids_with_exact_tag(self, tag: str) -> set[str]:
         """Return the ids of docs carrying ``tag`` as an EXACT (whole) tag.
@@ -1243,6 +1697,10 @@ class Index:
             "index_built_at": float(meta["built_at"]) if "built_at" in meta else None,
             "total_docs": int(meta.get("total_docs", "0")),
             "db_size_bytes": self._db_path.stat().st_size,
+            # Finding (j): present-but-malformed front-matter count from the last
+            # build. Read from the persisted meta row so a fresh process (that did
+            # not run build() itself) still sees it.
+            "malformed_frontmatter": int(meta.get("malformed_frontmatter", "0")),
         }
 
     def list_by_prefix(

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from data_olympus.enforce_policy import EXPLICIT_TRIGGER, PROMPT_HOOK_TRIGGER
 from data_olympus.models import (
     ComplianceResponse,
     ConsultResponse,
@@ -24,6 +25,21 @@ ENFORCE_EVENT_TYPES = (
     "consult", "gate_allow", "gate_block", "gate_bypass", "gate_degraded",
 )
 
+# Accepted consult triggers; anything else is coerced to explicit (fail-safe:
+# an unknown trigger is treated as a real agent consult, never silently dropped
+# to a non-clearing prompt-hook consult).
+_TRIGGERS = (EXPLICIT_TRIGGER, PROMPT_HOOK_TRIGGER)
+
+
+def _deny_instruction(*, workspace: str, session_id: str) -> str:
+    """The copy-pasteable remediation an agent must run to clear the gate. Echoes
+    the exact workspace key and session id (the one parameter an agent cannot
+    guess) so the fix does not require the agent to invent either value."""
+    return (
+        f"Call kb_consult(workspace='{workspace}', source_session='{session_id}', "
+        f"intent='<what you are doing>') then retry."
+    )
+
 
 def kb_consult_fn(
     *,
@@ -38,9 +54,17 @@ def kb_consult_fn(
     now: float,
     audit_log: AuditLog | None = None,
     limit: int = 5,
+    trigger: str = EXPLICIT_TRIGGER,
 ) -> ConsultResponse:
     """Classify the intent, retrieve governing rules when governed, and record a
-    consultation in the ledger keyed by (source_session, workspace)."""
+    consultation in the ledger keyed by (source_session, workspace).
+
+    ``trigger`` distinguishes a deliberate agent consult (EXPLICIT_TRIGGER, the
+    default, which clears the gate) from an installer prompt-hook auto-consult
+    (PROMPT_HOOK_TRIGGER, recorded for audit/compliance but never gate-clearing).
+    Old clients that omit the field are treated as explicit, since a bare consult
+    call is always a real agent action."""
+    trigger = trigger if trigger in _TRIGGERS else EXPLICIT_TRIGGER
     result = classifier.classify(intent=intent)
     rules = []
     rule_ids: list[str] = []
@@ -49,13 +73,14 @@ def kb_consult_fn(
         rules = list(search.hits)
         rule_ids = [h.id for h in search.hits]
     ledger.record(
-        session_id=source_session, workspace=workspace, rule_ids=rule_ids, now=now
+        session_id=source_session, workspace=workspace, rule_ids=rule_ids, now=now,
+        trigger=trigger,
     )
     if audit_log is not None:
         audit_log.append({
             "ts": now, "event_type": "consult", "status": "recorded",
             "agent_identity": agent_identity, "source_session": source_session,
-            "target_path": workspace,
+            "target_path": workspace, "trigger": trigger,
             "reason": ",".join(result.signals) if result.signals else "",
         })
     return ConsultResponse(
@@ -81,9 +106,17 @@ def kb_gate_check_fn(
     a fresh consultation on record for (session_id, workspace)."""
     result = classifier.classify(action_path=action_path, action_diff=action_diff)
     if not result.is_governed_decision:
-        return GateCheckResponse(verdict="allow", reason="action not governed")
+        return GateCheckResponse(
+            verdict="allow", reason="action not governed",
+            session_id=session_id, workspace=workspace,
+        )
+    # Gate policy: only a fresh EXPLICIT consult clears the gate. A prompt-hook
+    # auto-consult is recorded (audit/compliance) but never satisfies this check,
+    # so the gate means "the agent explicitly consulted", not "an HTTP call
+    # happened this session".
     fresh = ledger.is_fresh(
-        session_id=session_id, workspace=workspace, now=now, ttl_sec=ttl_sec
+        session_id=session_id, workspace=workspace, now=now, ttl_sec=ttl_sec,
+        require_explicit=True,
     )
     if fresh:
         if audit_log is not None:
@@ -93,7 +126,8 @@ def kb_gate_check_fn(
                 "reason": ",".join(result.signals),
             })
         return GateCheckResponse(
-            verdict="allow", reason="fresh consultation on record"
+            verdict="allow", reason="fresh explicit consultation on record",
+            session_id=session_id, workspace=workspace,
         )
     if audit_log is not None:
         audit_log.append({
@@ -103,7 +137,11 @@ def kb_gate_check_fn(
         })
     return GateCheckResponse(
         verdict="consult_required",
-        reason="governed action without a fresh consultation; call kb_consult first",
+        reason=(
+            "governed action without a fresh explicit consultation. "
+            + _deny_instruction(workspace=workspace, session_id=session_id)
+        ),
+        session_id=session_id, workspace=workspace,
     )
 
 
@@ -117,7 +155,13 @@ def kb_compliance_fn(
     counts. Ignores non-enforcement audit events."""
     counts: dict[str, int] = {}
     by_agent: dict[str, dict[str, int]] = {}
-    for ev in audit_log.iter_filtered(since=since, agent=agent):
+    # A ``since`` window may reach into rotated segments; include them so the
+    # aggregate is complete over the requested window (the ``since`` floor bounds
+    # the scan). Without ``since`` the aggregate is over the live file only,
+    # matching the pre-rotation behaviour.
+    for ev in audit_log.iter_filtered(
+        since=since, agent=agent, include_rotated=since is not None,
+    ):
         et = ev.get("event_type", "")
         if et not in ENFORCE_EVENT_TYPES:
             continue

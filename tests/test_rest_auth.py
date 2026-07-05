@@ -400,3 +400,162 @@ async def test_open_app_write_routes_no_header_not_401(open_app, route, payload)
     assert resp.status_code != 401, (
         f"Expected open (non-401) on {route} without auth_token, got {resp.status_code}"
     )
+
+
+# ---------------------------------------------------------------------------
+# WP0b item 6: enforcement-plane auth (consult / gate / cleanup-plan) closed to
+# anonymous when auth is configured; open when it is not.
+# ---------------------------------------------------------------------------
+
+_ENFORCE_ROUTES = [
+    ("/api/v1/consult", {"workspace": "/w", "source_session": "s"}),
+    ("/api/v1/gate/check", {"workspace": "/w", "session_id": "s"}),
+    ("/api/v1/onboarding/cleanup-plan", {"workspace": "/w", "local_files": []}),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route,payload", _ENFORCE_ROUTES)
+async def test_enforcement_routes_require_auth_when_configured(
+    authed_app, route, payload,
+) -> None:
+    transport = httpx.ASGITransport(app=authed_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(route, json=payload)
+    assert resp.status_code == 401, (
+        f"Expected 401 (anonymous) on {route} with auth configured, "
+        f"got {resp.status_code}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route,payload", _ENFORCE_ROUTES)
+async def test_enforcement_routes_open_without_auth(open_app, route, payload) -> None:
+    """No-auth deployments keep the enforcement plane anonymous (unchanged)."""
+    transport = httpx.ASGITransport(app=open_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(route, json=payload)
+    assert resp.status_code != 401, (
+        f"Expected open (non-401) on {route} without auth_token, got {resp.status_code}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# WP0b item 1: request body caps on resolve / consult / gate / audit-event.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tiny_body_app(tmp_kb, tmp_index_path, tmp_path):
+    """App with a very small body cap so oversize POSTs trip the 413 path."""
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=tmp_kb, check=True, env=env)
+    subprocess.run(["git", "-C", str(tmp_kb), "add", "-A"], check=True, env=env)
+    subprocess.run(["git", "-C", str(tmp_kb), "commit", "-m", "init"], check=True, env=env)
+    app = build_app(
+        kb_main_path=tmp_kb, kb_index_path=tmp_index_path,
+        sync_interval_sec=60, staleness_degraded_sec=600, bootstrap_now=True,
+        kb_remote_url="dummy",
+        worktree_root=str(tmp_path / "wts"),
+        pending_root=str(tmp_path / "pending"),
+        push_queue_root=str(tmp_path / "pq"),
+        write_block_tiers=[], write_block_paths=[],
+        max_body_bytes=200,
+    )
+    return app.http_app()
+
+
+_CAPPED_BODY_ROUTES = [
+    "/api/v1/resolve/deadbeefdeadbeefdeadbeefdeadbeef",
+    "/api/v1/consult",
+    "/api/v1/gate/check",
+    "/api/v1/audit/event",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", _CAPPED_BODY_ROUTES)
+async def test_oversize_body_returns_413(tiny_body_app, route) -> None:
+    """A body over the cap returns 413 on every previously-uncapped route."""
+    transport = httpx.ASGITransport(app=tiny_body_app, raise_app_exceptions=False)
+    big = {"filler": "x" * 5000, "workspace": "/w", "source_session": "s",
+           "session_id": "s", "decision": "approve", "event_type": "e"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(route, json=big)
+    assert resp.status_code == 413, f"{route} -> {resp.status_code}"
+    assert resp.json()["error"] == "payload_too_large"
+
+
+# ---------------------------------------------------------------------------
+# WP0b item 6: rate limiting on the enforcement plane.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def throttled_app(tmp_kb, tmp_index_path, tmp_path):
+    """No-auth app with a rate limit of 2/hour to exercise the 429 path."""
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=tmp_kb, check=True, env=env)
+    subprocess.run(["git", "-C", str(tmp_kb), "add", "-A"], check=True, env=env)
+    subprocess.run(["git", "-C", str(tmp_kb), "commit", "-m", "init"], check=True, env=env)
+    app = build_app(
+        kb_main_path=tmp_kb, kb_index_path=tmp_index_path,
+        sync_interval_sec=60, staleness_degraded_sec=600, bootstrap_now=True,
+        kb_remote_url="dummy",
+        worktree_root=str(tmp_path / "wts"),
+        pending_root=str(tmp_path / "pending"),
+        push_queue_root=str(tmp_path / "pq"),
+        write_block_tiers=[], write_block_paths=[],
+        rate_limit_per_hour=2,
+    )
+    return app.http_app()
+
+
+@pytest.mark.asyncio
+async def test_consult_is_rate_limited(throttled_app) -> None:
+    transport = httpx.ASGITransport(app=throttled_app, raise_app_exceptions=False)
+    payload = {"workspace": "/w", "source_session": "s"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        r1 = await client.post("/api/v1/consult", json=payload)
+        r2 = await client.post("/api/v1/consult", json=payload)
+        r3 = await client.post("/api/v1/consult", json=payload)
+    assert r1.status_code != 429
+    assert r2.status_code != 429
+    assert r3.status_code == 429
+    assert r3.json()["error"] == "rate_limited"
+
+
+# ---------------------------------------------------------------------------
+# WP0b item 9: 400 on malformed numeric query params; 404 on unknown pending id.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_audit_bad_since_returns_400(open_app) -> None:
+    transport = httpx.ASGITransport(app=open_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/audit?since=notanumber")
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "bad_request"
+
+
+@pytest.mark.asyncio
+async def test_audit_bad_limit_returns_400(open_app) -> None:
+    transport = httpx.ASGITransport(app=open_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/audit?limit=abc")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_resolve_unknown_pending_id_returns_404(open_app) -> None:
+    transport = httpx.ASGITransport(app=open_app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/resolve/deadbeefdeadbeefdeadbeefdeadbeef",
+            json={"decision": "approve"},
+        )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "not_found"

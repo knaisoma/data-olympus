@@ -6,9 +6,10 @@ tier: T2
 title: backpressure-7
 ---
 
-# backpressure-7 (current)
+# backpressure-7
 
-This concept defines the current guidance for backpressure-7. When working with backpressure-7, follow the current rules below. The backpressure-7 approach affects reliability and developer ergonomics.
+This concept defines the governance for backpressure-7. When working with backpressure-7, follow the rules below. The backpressure-7 approach affects monitoring, invariant, alerting, dependency.
 
 - Prefer the documented backpressure-7 pattern.
 - Record exceptions to the backpressure-7 rule.
+- Weigh the monitoring and dependency implications.

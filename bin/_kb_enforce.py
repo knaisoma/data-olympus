@@ -50,6 +50,54 @@ def _doctor_endpoint() -> tuple[bool, str]:
     return ok, f"endpoint {endpoint} reachable={ok}"
 
 
+def _hook_bin_in_worktree(hook_bin: str) -> bool:
+    """True when the dispatcher path resolves inside a git worktree checkout
+    (a `.worktrees/` or `.claude/worktrees/` segment). An install performed from
+    such a checkout dangles after the worktree is pruned and then silently fails
+    open, so doctor warns about it."""
+    parts = Path(hook_bin).resolve().parts
+    if ".worktrees" in parts:
+        return True
+    # `.claude/worktrees/<...>`: a `.claude` segment immediately followed by
+    # `worktrees`.
+    return any(
+        parts[i] == ".claude" and parts[i + 1] == "worktrees"
+        for i in range(len(parts) - 1)
+    )
+
+
+def _doctor_hook_bin() -> tuple[bool, list[str]]:
+    """Verify the installed hook dispatcher exists and is executable, and warn
+    when it resolves inside a worktree. Returns (ok, messages)."""
+    msgs: list[str] = []
+    exists = os.path.isfile(HOOK_BIN)
+    executable = exists and os.access(HOOK_BIN, os.X_OK)
+    if not exists:
+        msgs.append(f"hook command MISSING at {HOOK_BIN}")
+    elif not executable:
+        msgs.append(f"hook command present but NOT executable at {HOOK_BIN}")
+    else:
+        msgs.append(f"hook command present and executable at {HOOK_BIN}")
+    if _hook_bin_in_worktree(HOOK_BIN):
+        msgs.append(
+            f"WARNING: hook command resolves inside a worktree ({HOOK_BIN}); this "
+            "install will dangle and silently fail open once the worktree is "
+            "pruned. Re-run `kb enforce install` from the main checkout."
+        )
+    return executable, msgs
+
+
+def _managed_versions_in_hooks(data: dict) -> set:
+    """The set of managed-marker versions present in a JSON hooks map."""
+    return {
+        h[MARKER]
+        for blocks in data.get("hooks", {}).values()
+        for block in blocks
+        for h in block.get("hooks", [])
+        if MARKER in h
+    }
+
+
 class HookFileProvider:
     """A provider that writes MARKER-tagged hook entries into a JSON hooks map
     inside a target file (the map lives under the top-level 'hooks' key).
@@ -137,13 +185,7 @@ class HookFileProvider:
 
     def status(self, target: Path) -> int:
         data = _load_json(target)
-        versions = {
-            h[MARKER]
-            for blocks in data.get("hooks", {}).values()
-            for block in blocks
-            for h in block.get("hooks", [])
-            if MARKER in h
-        }
+        versions = _managed_versions_in_hooks(data)
         if not versions:
             print(f"{self.name}: not installed")
             return 0
@@ -151,10 +193,36 @@ class HookFileProvider:
         print(f"{self.name}: installed, tier={self.tier}, versions={sorted(versions)}{stale}")
         return 0
 
-    def doctor(self, _target: Path) -> int:
-        ok, msg = _doctor_endpoint()
-        print(f"doctor [{self.name}]: {msg}")
-        return 0 if ok else 1
+    def doctor(self, target: Path) -> int:
+        """Doctor now checks three things beyond endpoint reachability:
+        the managed marker/version is present in the LIVE settings file, the hook
+        dispatcher exists and is executable, and the dispatcher is not installed
+        from a worktree (which dangles after pruning and fails open)."""
+        ok_ep, msg_ep = _doctor_endpoint()
+        print(f"doctor [{self.name}]: {msg_ep}")
+
+        data = _load_json(target)
+        versions = _managed_versions_in_hooks(data)
+        if not versions:
+            print(f"doctor [{self.name}]: managed hook NOT installed in {target}")
+            ok_marker = False
+        elif SHIM_VERSION not in versions:
+            print(f"doctor [{self.name}]: managed hook in {target} is STALE "
+                  f"(found {sorted(versions)}, want {SHIM_VERSION}); run "
+                  "`kb enforce install`")
+            ok_marker = False
+        else:
+            print(f"doctor [{self.name}]: managed hook v{SHIM_VERSION} present in {target}")
+            ok_marker = True
+
+        ok_bin, bin_msgs = _doctor_hook_bin()
+        for m in bin_msgs:
+            print(f"doctor [{self.name}]: {m}")
+
+        # A worktree-installed hook is a real problem even if the file is currently
+        # present and executable, so fail doctor on it.
+        ok_worktree = not _hook_bin_in_worktree(HOOK_BIN)
+        return 0 if (ok_ep and ok_marker and ok_bin and ok_worktree) else 1
 
 
 def _claude_provider() -> HookFileProvider:
@@ -164,7 +232,10 @@ def _claude_provider() -> HookFileProvider:
         events=[
             ("SessionStart", "session-start", None),
             ("UserPromptSubmit", "user-prompt", None),
-            ("PreToolUse", "pre-tool", "Edit|Write|MultiEdit|NotebookEdit|Bash"),
+            # Anchored: the matcher is a regex, so an un-anchored alternation
+            # substring-matches unrelated tools (e.g. "Bash" matches "BashOutput",
+            # "Edit" matches "NotebookEditOther"). ^(...)$ gates exactly these.
+            ("PreToolUse", "pre-tool", "^(Edit|Write|MultiEdit|NotebookEdit|Bash)$"),
             ("Stop", "stop", None),
         ],
         dialect="claude",
@@ -186,7 +257,9 @@ def _codex_provider() -> HookFileProvider:
         events=[
             ("SessionStart", "session-start", None),
             ("UserPromptSubmit", "user-prompt", None),
-            ("PreToolUse", "pre-tool", "Edit|Write|MultiEdit|Bash"),
+            # Anchored (see the claude provider): keep the alternation exact so
+            # "Bash" does not also gate "BashOutput".
+            ("PreToolUse", "pre-tool", "^(Edit|Write|MultiEdit|Bash)$"),
             ("Stop", "stop", None),
         ],
         dialect="claude",  # Codex shares Claude's exit-2 deny contract
@@ -201,7 +274,8 @@ def _gemini_provider() -> HookFileProvider:
         events=[
             ("SessionStart", "session-start", None),
             ("BeforeAgent", "user-prompt", None),  # BeforeAgent carries `prompt`
-            ("BeforeTool", "pre-tool", "write_file|replace|run_shell_command"),
+            # Anchored to avoid substring matches against other Gemini tools.
+            ("BeforeTool", "pre-tool", "^(write_file|replace|run_shell_command)$"),
             ("Stop", "stop", None),
         ],
         dialect="gemini",
@@ -254,10 +328,22 @@ class OpenCodeProvider:
         print(f"opencode: installed, tier=hard, versions=['{ver}']{stale}")
         return 0
 
-    def doctor(self, _target: Path) -> int:
-        ok, msg = _doctor_endpoint()
+    def doctor(self, target: Path) -> int:
+        ok_ep, msg = _doctor_endpoint()
         print(f"doctor [opencode]: {msg}")
-        return 0 if ok else 1
+        dest = target / PLUGIN_NAME
+        installed = dest.exists() and "data-olympus-enforce (managed)" in dest.read_text()
+        if installed:
+            print(f"doctor [opencode]: managed plugin present at {dest}")
+        else:
+            print(f"doctor [opencode]: managed plugin NOT installed at {dest}")
+        # The plugin source lives beside this installer; warn if it (and so the
+        # install source) resolves inside a worktree.
+        ok_worktree = not _hook_bin_in_worktree(str(PLUGIN_SRC))
+        if not ok_worktree:
+            print(f"doctor [opencode]: WARNING: plugin source resolves inside a "
+                  f"worktree ({PLUGIN_SRC}); re-install from the main checkout.")
+        return 0 if (ok_ep and installed and ok_worktree) else 1
 
 
 IBEGIN = "<!-- >>> data-olympus enforce (managed) >>> -->"

@@ -44,7 +44,12 @@ from data_olympus.push_queue import PushQueue
 from data_olympus.query_expansion import default_query_expander
 from data_olympus.rate_limit import SlidingWindowLimiter
 from data_olympus.search_shortcut import make_id_tag_reranker
-from data_olympus.tools_read import kb_health_fn, kb_outline_fn, kb_search_fn
+from data_olympus.tools_read import (
+    kb_health_fn,
+    kb_outline_fn,
+    kb_search_fn,
+    shape_response,
+)
 from data_olympus.worktrees import WorktreeRegistry
 
 log = logging.getLogger("data_olympus")
@@ -134,8 +139,6 @@ class ServerState:
         self.last_git_fetch_at: float | None = None
         self.last_successful_refresh_at: float | None = None
         self.remote_head_sha: str | None = None
-        self.pending_count: int = 0
-        self.push_queue_size: int = 0
         self.last_index_build_status: str = "ok"
         self.last_index_error: str | None = None
         self.last_index_error_at: float | None = None
@@ -146,12 +149,56 @@ class ServerState:
         self.rate_limiter: SlidingWindowLimiter | None = rate_limiter
         self.blocklist: PathBlocklist | None = blocklist
         self.audit_log: AuditLog | None = audit_log
+        # Process-wide write serializer (scope item 1): one instance shared by
+        # every write path so the write -> add -> commit -> enqueue critical
+        # section never interleaves across the REST threadpool and the MCP
+        # off-loop tool executor.
+        from data_olympus.write_gate import WriteSerializer
+        self.write_serializer = WriteSerializer()
         self.classifier: IntentClassifier = classifier or IntentClassifier()
         self.ledger: ConsultationLedger = ledger or ConsultationLedger()
         # Set at serve time (main) to observe the live streamable-http session
         # count. None until then / in tests, so health reports live_sessions=None
         # rather than a misleading 0. See session_metrics.
         self.session_count_provider: Callable[[], int | None] | None = None
+
+    @property
+    def pending_count(self) -> int:
+        """Live count of entries in the pending queue. Computed on read so it can
+        never drift from the queue's actual contents (the previous static
+        attribute was initialised to 0 and never updated, so health reported 0
+        forever). 0 when the pending queue is not initialised (read-only replica
+        / tests)."""
+        if self.pending is None:
+            return 0
+        try:
+            return self.pending.size()
+        except Exception:  # pragma: no cover - defensive; health must not crash
+            return 0
+
+    @property
+    def push_queue_size(self) -> int:
+        """Live count of entries in the push queue (see pending_count for why
+        this is computed rather than stored). 0 when the push queue is not
+        initialised."""
+        if self.push_queue is None:
+            return 0
+        try:
+            return self.push_queue.size()
+        except Exception:  # pragma: no cover - defensive; health must not crash
+            return 0
+
+    @property
+    def push_queue_frozen(self) -> int:
+        """Live count of frozen push-queue entries (hit max_attempts, skipped by
+        the retry loop). A nonzero value means writes are stuck and need
+        operator intervention. 0 when the push queue is not initialised."""
+        if self.push_queue is None:
+            return 0
+        try:
+            return self.push_queue.frozen_count()
+        except Exception:  # pragma: no cover - defensive; health must not crash
+            return 0
 
     def record_pull(self, ts: float) -> None:
         self.last_git_pull_at = ts
@@ -196,6 +243,7 @@ def build_app(
     auth_token: str = "",
     auth_principals: list[dict[str, Any]] | None = None,
     audit_hmac_key: str = "",
+    audit_max_bytes: int = 0,
     ledger_path: str | None = None,
     session_idle_timeout_sec: int = 1800,
     session_reap_interval_sec: int = 60,
@@ -242,6 +290,7 @@ def build_app(
         auth_token=auth_token,
         auth_principals=auth_principals or [],
         audit_hmac_key=audit_hmac_key,
+        audit_max_bytes=audit_max_bytes,
         session_idle_timeout_sec=session_idle_timeout_sec,
         session_reap_interval_sec=session_reap_interval_sec,
         status_weights=status_weights,
@@ -358,6 +407,7 @@ def build_app(
         audit_log = AuditLog(
             log_path=audit_log_path or config.audit_log_path,
             hmac_key=config.audit_hmac_key,
+            max_bytes=config.audit_max_bytes,
         )
         state.audit_log = audit_log
 
@@ -369,9 +419,14 @@ def build_app(
     app: FastMCP = FastMCP(name="data-olympus-mcp")
 
     @app.tool()
-    def kb_health() -> dict[str, object]:
+    def kb_health(verbose: bool = False) -> dict[str, object]:
         """Return service health: kb_commit, index_built_at, staleness, degraded flag,
-        and write-side state (pending_count, push_queue_size, last_index_*)."""
+        and write-side state (pending_count, push_queue_size, last_index_*).
+
+        verbose: False (default) returns a token-compact shape that keeps the core
+        snapshot and OMITS diagnostic fields that are null/empty (e.g.
+        last_index_error, remote_head_sha when unset). verbose=True returns every
+        field including the nulls."""
         resp = kb_health_fn(
             idx=state.idx,
             last_git_pull_at=state.last_git_pull_at,
@@ -379,6 +434,7 @@ def build_app(
             last_git_push_at=state.last_git_push_at,
             pending_count=state.pending_count,
             push_queue_size=state.push_queue_size,
+            push_queue_frozen=state.push_queue_frozen,
             last_index_build_status=state.last_index_build_status,
             last_index_error=state.last_index_error,
             last_index_error_at=state.last_index_error_at,
@@ -391,13 +447,16 @@ def build_app(
             remote_head_sha=state.remote_head_sha,
             live_sessions=state.live_session_count(),
         )
-        return resp.model_dump()
+        return shape_response(resp, verbose=verbose)
 
     @app.tool()
-    def kb_outline() -> dict[str, object]:
-        """Return the tree of tiers and categories with doc counts."""
+    def kb_outline(verbose: bool = False) -> dict[str, object]:
+        """Return the tree of tiers and categories with doc counts.
+
+        verbose: kb_outline is already lean, so compact and full modes return the
+        same shape; the parameter exists for interface consistency."""
         resp = kb_outline_fn(idx=state.idx)
-        return resp.model_dump()
+        return shape_response(resp, verbose=verbose)
 
     @app.tool()
     def kb_search(
@@ -406,36 +465,69 @@ def build_app(
         tier: str | None = None,
         category: str | None = None,
         status: str | None = None,
+        in_force: bool = False,
         doc_type: str | None = None,
+        abstain: bool = False,
+        verbose: bool = False,
     ) -> dict[str, object]:
         """Full-text search across the KB.
 
         Optional tier/category/status/type filters (status e.g. 'active',
         doc_type e.g. 'decision'). Returns ranked hits with snippets.
+
+        in_force: when true, HARD-filter to the in-force status class
+        (active/accepted/approved) before ranking, EXCLUDING superseded and
+        deprecated docs rather than only soft-downranking them. Composes with an
+        explicit `status` (both must hold). Use this when you want only guidance
+        that currently applies.
+
+        abstain: when true, apply the signal gate. If the query matches no
+        discriminating column (title/tags/applies_when) it is treated as
+        out-of-scope and the search returns NO hits with `abstained: true` and an
+        `abstain_reason`, instead of surfacing a weak keyword match. A query with
+        a real signal retrieves normally. Distinguish `abstained: true` (no
+        governing rule) from an ordinary empty result (`abstained: false`).
+
+        verbose: False (default) returns a token-compact shape. Each hit is
+        {id, title, snippet} plus `status` only when a hit is NOT in-force
+        (superseded/deprecated) and `type` when set; the `query` echo, per-hit
+        `path`, and `score` are dropped (fetch a hit's full metadata with
+        kb_get(id); array order conveys rank). verbose=True restores the full
+        legacy shape with query, path, score, status, and type on every hit.
         """
         resp = kb_search_fn(
             idx=state.idx, query=query, limit=limit, tier=tier, category=category,
-            status=status, doc_type=doc_type,
+            status=status, in_force=in_force, doc_type=doc_type, abstain=abstain,
         )
-        return resp.model_dump()
+        return shape_response(resp, verbose=verbose)
 
     @app.tool()
-    def kb_get(id: str) -> dict[str, object]:
+    def kb_get(id: str, verbose: bool = False) -> dict[str, object]:
         """Retrieve a document by id (STD-U-001, ADR-002, T-NNN, etc.).
-        Returns full content markdown plus metadata."""
+        Returns the full content markdown plus metadata.
+
+        verbose: False (default) returns the full `content_markdown` body (kb_get
+        exists to read the doc) with a trimmed envelope: `path`,
+        `git_remote_url`, and `last_modified_source` are dropped and empty
+        status/type/applies_when/description are omitted; `source_commit` and
+        `last_modified` provenance are kept. verbose=True returns the full legacy
+        envelope with every field."""
         from data_olympus.tools_read import KbNotFoundError, kb_get_fn
         try:
             resp = kb_get_fn(idx=state.idx, id=id)
         except KbNotFoundError as e:
             return {"error": "not_found", "message": str(e)}
-        return resp.model_dump()
+        return shape_response(resp, verbose=verbose)
 
     @app.tool()
-    def kb_list(tier: str, category: str | None = None) -> dict[str, object]:
-        """List doc ids in the given tier (and optional category), ordered by id."""
+    def kb_list(tier: str, category: str | None = None, verbose: bool = False) -> dict[str, object]:
+        """List doc ids in the given tier (and optional category), ordered by id.
+
+        verbose: False (default) drops per-entry `path` (fetch via kb_get(id)) and
+        omits a null category. verbose=True restores the full shape with paths."""
         from data_olympus.tools_read import kb_list_fn
         resp = kb_list_fn(idx=state.idx, tier=tier, category=category)
-        return resp.model_dump()
+        return shape_response(resp, verbose=verbose)
 
     @app.tool()
     def kb_onboarding_status(
@@ -453,6 +545,25 @@ def build_app(
         )
         return resp.model_dump()
 
+    def _mcp_rate_limited() -> dict[str, object] | None:
+        """Apply the shared sliding-window limiter to an MCP enforcement-plane tool
+        (WP0b item (b)).
+
+        The REST consult / gate-check / cleanup-plan routes throttle via
+        ``_rate_limited``; the MCP tool paths did not, so an agent could hammer the
+        classifier/ledger unbounded. Key on the resolved principal (there is no
+        per-request remote addr on the MCP transport, so the limiter's per-agent
+        quota is the meaningful dimension). Returns a rejection dict when over
+        quota, else None. Skipped when no limiter is wired (read-only deploy)."""
+        limiter = state.rate_limiter
+        if limiter is None:
+            return None
+        principal_name = _current_principal.get().name
+        if not limiter.allow(remote_addr="mcp", agent_identity=principal_name):
+            return {"status": "rejected_rate_limited",
+                    "error": "too many requests; retry later"}
+        return None
+
     @app.tool()
     def kb_cleanup_plan(
         workspace: str, local_files: list[dict[str, str]],
@@ -461,6 +572,8 @@ def build_app(
         """Read-only. Classify local project-repo docs against KB content for this
         workspace/component and return thin-pointer replacements for duplicates.
         The agent applies confirmed edits locally; the server writes nothing."""
+        if (throttled := _mcp_rate_limited()) is not None:
+            return throttled
         from data_olympus.tools_onboarding import CleanupInputError, kb_cleanup_plan_fn
         try:
             resp = kb_cleanup_plan_fn(
@@ -502,6 +615,7 @@ def build_app(
                 audit_log=state.audit_log,
                 can_auto_commit=_current_principal.get().can_auto_commit,
                 max_text_bytes=state.config.max_text_bytes,
+                serializer=state.write_serializer, idx=state.idx,
             )
             return resp.model_dump()
 
@@ -534,6 +648,7 @@ def build_app(
                 audit_log=state.audit_log,
                 can_auto_commit=_current_principal.get().can_auto_commit,
                 max_postimage_bytes=state.config.max_postimage_bytes,
+                serializer=state.write_serializer, idx=state.idx,
             )
             return resp.model_dump()
 
@@ -556,6 +671,11 @@ def build_app(
                 pending=state.pending,
                 source_session=source_session, agent_identity=agent_identity,
                 audit_log=state.audit_log,
+                # WP0b item (a): the REST resolve path caps edited_text at
+                # KB_MAX_POSTIMAGE_BYTES; the MCP path was uncapped. Wire the same
+                # cap here so the two surfaces match.
+                max_postimage_bytes=state.config.max_postimage_bytes,
+                serializer=state.write_serializer, idx=state.idx,
             )
             return resp.model_dump()
 
@@ -588,8 +708,9 @@ def build_app(
             workspace_remote_url: str | None = None,
             component_remote_url: str | None = None,
         ) -> dict[str, object]:
-            """Bootstrap a new workspace/component. Only valid when status=absent.
-            High confidence commits atomically; low confidence enqueues pending."""
+            """Bootstrap a new workspace/component. Only valid when status=absent
+            or partial. High confidence commits atomically; low confidence
+            enqueues pending."""
             if state.worktrees is None or state.push_queue is None or state.pending is None:
                 return {"status": "write_pipeline_disabled"}
             assert state.worktrees is not None
@@ -613,16 +734,21 @@ def build_app(
                 can_auto_commit=_current_principal.get().can_auto_commit,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 max_files=state.config.max_bootstrap_files,
+                serializer=state.write_serializer,
             )
             return resp.model_dump()
 
         @app.tool()
         def kb_consult(
             workspace: str, intent: str, source_session: str,
-            agent_identity: str,
+            agent_identity: str, trigger: str = "explicit",
         ) -> dict[str, object]:
             """Record a consultation for (source_session, workspace) and return the
-            governing rules for the intent. Call before code/architectural work."""
+            governing rules for the intent. Call before code/architectural work.
+            trigger is 'explicit' (default: a deliberate consult, clears the gate)
+            or 'prompt_hook' (an installer auto-consult: audited, never clears)."""
+            if (throttled := _mcp_rate_limited()) is not None:
+                return throttled
             import time as _time
 
             from data_olympus.tools_enforce import kb_consult_fn
@@ -631,7 +757,7 @@ def build_app(
                 workspace=workspace, intent=intent, source_session=source_session,
                 agent_identity=agent_identity,
                 ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
-                audit_log=state.audit_log,
+                audit_log=state.audit_log, trigger=trigger,
             )
             return resp.model_dump()
 
@@ -642,6 +768,8 @@ def build_app(
         ) -> dict[str, object]:
             """Return a verdict (allow | consult_required) for a pending code action.
             Governed actions require a fresh consultation on record."""
+            if (throttled := _mcp_rate_limited()) is not None:
+                return throttled
             import time as _time
 
             from data_olympus.tools_enforce import kb_gate_check_fn
@@ -735,6 +863,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         auth_token=config.auth_token,
         auth_principals=list(config.auth_principals),
         audit_hmac_key=config.audit_hmac_key,
+        audit_max_bytes=config.audit_max_bytes,
         ledger_path=config.ledger_path,
         session_idle_timeout_sec=config.session_idle_timeout_sec,
         session_reap_interval_sec=config.session_reap_interval_sec,
@@ -744,6 +873,48 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         embeddings_weight=config.embeddings_weight,
         embeddings_model=config.embeddings_model,
     )
+
+
+def _uvicorn_proxy_kwargs(trusted_proxies: list[str]) -> dict[str, Any]:
+    """Build the uvicorn proxy-header kwargs from the trusted-proxy list.
+
+    Empty list -> ``{"proxy_headers": False}``: X-Forwarded-For is ignored and
+    ``request.client.host`` is the immediate peer, so a client cannot spoof its
+    address to evade the per-IP rate limiter. This is the safe default.
+
+    Non-empty -> enable ``proxy_headers`` and set ``forwarded_allow_ips`` to the
+    trusted set so uvicorn rewrites ``remote_addr`` from XFF ONLY when the peer is
+    one of those proxies. ``["*"]`` trusts any peer (only safe when nothing
+    untrusted can reach the port directly). uvicorn expects a comma-separated
+    string for ``forwarded_allow_ips``."""
+    if not trusted_proxies:
+        return {"proxy_headers": False}
+    return {
+        "proxy_headers": True,
+        "forwarded_allow_ips": ",".join(trusted_proxies),
+    }
+
+
+def _ensure_git_identity() -> None:
+    """Give git a default author/committer identity when none is configured
+    (scope item 10).
+
+    The Docker entrypoint exports these, but a bare ``main()`` (local run, a
+    minimal container, a k8s image that predates the entrypoint change) may not.
+    Without an identity every ``git commit`` on the write path fails with "Please
+    tell me who you are". We set env defaults (overridable by
+    KB_GIT_AUTHOR_NAME / KB_GIT_AUTHOR_EMAIL, or by a pre-existing GIT_* value or
+    a real git config) so the shipped artifact commits out of the box. Only fills
+    unset vars, so a real operator identity is never clobbered."""
+    import os as _os
+
+    name = _os.environ.get("KB_GIT_AUTHOR_NAME", "data-olympus-mcp")
+    email = _os.environ.get("KB_GIT_AUTHOR_EMAIL", "data-olympus-mcp@localhost")
+    for var, value in (
+        ("GIT_AUTHOR_NAME", name), ("GIT_AUTHOR_EMAIL", email),
+        ("GIT_COMMITTER_NAME", name), ("GIT_COMMITTER_EMAIL", email),
+    ):
+        _os.environ.setdefault(var, value)
 
 
 def main() -> None:
@@ -767,6 +938,7 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
+    _ensure_git_identity()
     config = load_config()
     app = build_app_from_config(config, bootstrap_now=True)
     # The state lives inside build_app's closure; expose via app attribute for the lifespan task
@@ -805,8 +977,54 @@ def main() -> None:
             git_pull_loop,
             pending_gc_loop,
             push_retry_loop,
+            worktree_gc_loop,
         )
         from data_olympus.session_metrics import session_reaper_loop
+
+        # Startup recovery: a crash between `git commit` and `push_queue.enqueue`
+        # (tools_write) leaves a committed-but-unqueued orphan on a session
+        # worktree branch that no loop would ever push. Before the push-retry
+        # loop starts, scan every session worktree and re-enqueue any commit
+        # reachable from its HEAD but not from origin/main. init_recovery skips
+        # shas already queued, so this cannot double-enqueue.
+        if state.push_queue is not None and state.worktrees is not None:
+            try:
+                before = state.push_queue.size()
+                state.push_queue.init_recovery(
+                    worktree_root=config.worktree_root,
+                    list_unpushed_shas=state.git.list_unpushed_shas,
+                )
+                recovered = state.push_queue.size() - before
+                if recovered > 0:
+                    log.warning(
+                        "startup push recovery re-enqueued %d orphaned "
+                        "commit(s) from session worktrees under %s",
+                        recovered, config.worktree_root,
+                    )
+                else:
+                    log.info("startup push recovery: no orphaned commits found")
+            except Exception:
+                log.exception("startup push recovery failed (continuing)")
+
+        # Startup lock recovery: a hard kill while an auto-commit held a per-path
+        # lock leaves it on the /state volume with no in-process holder to release
+        # it, wedging that path (rejected_path_lock_busy) until manual cleanup. A
+        # fresh process provably holds no auto-commit lock, so reclaim every
+        # auto-commit lock unconditionally (max_age_sec=0). Pending-proposal locks
+        # are untouched: they legitimately outlive a restart.
+        if state.pending is not None:
+            try:
+                reclaimed = state.pending.reclaim_stale_auto_commit_locks(
+                    max_age_sec=0,
+                )
+                if reclaimed > 0:
+                    log.warning(
+                        "startup reclaimed %d stale auto-commit path lock(s)",
+                        reclaimed,
+                    )
+            except Exception:
+                log.exception("startup auto-commit lock reclaim failed (continuing)")
+
         tasks = [
             asyncio.create_task(
                 git_pull_loop(state, config.sync_interval_sec),
@@ -819,8 +1037,22 @@ def main() -> None:
                     push_queue=state.push_queue,
                     git=state.git,
                     interval_sec=30,
+                    # Non-FF recovery (scope item 2): a rebase conflict demotes the
+                    # commit to a pending entry via these; without them the loop
+                    # falls back to counting the conflict as a retryable failure.
+                    pending=state.pending,
+                    audit_log=state.audit_log,
                 ),
                 name="push_retry_loop",
+            ))
+        if state.worktrees is not None:
+            tasks.append(asyncio.create_task(
+                worktree_gc_loop(
+                    worktrees=state.worktrees,
+                    idle_sec=config.worktree_idle_sec,
+                    interval_sec=300,
+                ),
+                name="worktree_gc_loop",
             ))
         if state.pending is not None:
             tasks.append(asyncio.create_task(
@@ -828,6 +1060,17 @@ def main() -> None:
                     pending=state.pending,
                     timeout_sec=config.pending_timeout_sec,
                     interval_sec=300,
+                    # Crash-orphaned auto-commit path locks older than this are
+                    # reclaimed each pass so a hard kill mid-commit does not wedge
+                    # the path with rejected_path_lock_busy forever.
+                    auto_commit_lock_ttl_sec=config.auto_commit_lock_ttl_sec,
+                    # The reclaim runs under the SAME write serializer that
+                    # path_lock acquire/release runs under, so a stale holder that
+                    # resumes cannot free+let-a-successor-acquire the path mid-scan.
+                    write_serializer=state.write_serializer,
+                    # Scope item 7: emit an audit event on each expiry instead of
+                    # silently rejecting >24h entries.
+                    audit_log=state.audit_log,
                 ),
                 name="pending_gc_loop",
             ))
@@ -841,9 +1084,19 @@ def main() -> None:
                 ),
                 name="session_reaper_loop",
             ))
+        # Proxy-header handling (WP3a item 3). By default uvicorn ignores
+        # X-Forwarded-For, so behind an ingress every client collapses to the
+        # proxy's address and the per-IP rate limiter throttles all clients as
+        # one. When KB_TRUSTED_PROXIES is set we enable proxy_headers and restrict
+        # forwarded_allow_ips to those proxies, so uvicorn rewrites remote_addr
+        # from XFF ONLY when the immediate peer is trusted (a direct client cannot
+        # then spoof its IP). Empty (default) keeps proxy_headers OFF: safe by
+        # default, no spoofing surface.
+        uvicorn_kwargs = _uvicorn_proxy_kwargs(config.trusted_proxies)
         server = uvicorn.Server(
             uvicorn.Config(
-                http_app, host="0.0.0.0", port=config.http_port, log_level="info"
+                http_app, host="0.0.0.0", port=config.http_port, log_level="info",
+                **uvicorn_kwargs,
             )
         )
         try:

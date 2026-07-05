@@ -6,9 +6,10 @@ tier: meta
 title: auth-tokens
 ---
 
-# auth-tokens (current)
+# auth-tokens
 
-This concept defines the current guidance for auth-tokens. When working with auth-tokens, follow the current rules below. The auth-tokens approach affects reliability and developer ergonomics.
+This concept defines the governance for auth-tokens. When working with auth-tokens, follow the rules below. The auth-tokens approach affects tradeoff, rationale, review, reliability.
 
 - Prefer the documented auth-tokens pattern.
 - Record exceptions to the auth-tokens rule.
+- Weigh the tradeoff and reliability implications.

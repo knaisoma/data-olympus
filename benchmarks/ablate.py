@@ -5,7 +5,11 @@ Ablates five configurations over a governance corpus + query set:
 - fts+description:        Index.search with columns=[title, tags, description, body]
 - fts+applies_when:       Index.search with all columns (production default)
 - fts+applies_when+abstain: signal gate (abstain when no discriminating-column match)
-- bm25-baseline:          Bm25Method (no index metadata at all)
+- bm25-baseline:          Bm25Method — raw-file BM25 over body + frontmatter text,
+                          with NO structured metadata filtering (it sees the
+                          applies_when/status text as words, but cannot filter or
+                          column-weight on them; this isolates structured metadata
+                          use, not metadata text visibility)
 
 For each config, computes per-stratum:
 - recall@k (fraction of queries where gold is in top-k)
@@ -27,6 +31,7 @@ from typing import TYPE_CHECKING
 
 from benchmarks.methods.base import RetrievalResult
 from benchmarks.metrics import (
+    bootstrap_mean_ci,
     false_positive_rate,
     governance_miss_rate,
     recall_at_k,
@@ -79,11 +84,17 @@ _BM25_LABEL = "bm25-baseline"
 
 @dataclass
 class AblationRow:
-    """Aggregated metrics for one (config, stratum) cell."""
+    """Aggregated metrics for one (config, stratum) cell.
+
+    ``recall_ci`` is the (lo, hi) 95% bootstrap CI for ``recall`` (deterministic,
+    seeded). It quantifies the sampling uncertainty of the per-stratum recall so
+    a reader can tell a real gap from noise given the stratum size.
+    """
 
     config: str
     stratum: str
     recall: float
+    recall_ci: tuple[float, float]
     mrr: float
     miss_rate: float
     false_positive_rate: float  # only meaningful for negative stratum
@@ -103,13 +114,6 @@ class AblationReport:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-# Discriminating columns for the abstention gate. Deliberately EXCLUDES
-# `description`: its prose carries common words ("governance rules for ...") that
-# out-of-scope queries also contain, which would defeat the gate. Title, tags,
-# and applies_when are terse and specific, so matching one signals real intent.
-_SIGNAL_COLUMNS = ["title", "tags", "applies_when"]
-
-
 def _fts_retrieve(
     query: str,
     idx: Index,
@@ -118,20 +122,24 @@ def _fts_retrieve(
 ) -> RetrievalResult:
     """Call Index.search and return a RetrievalResult.
 
-    Recognises a special `_abstain` kwarg: when set, the query must match at
-    least one discriminating column (title/tags/applies_when/description). If it
-    matches none (e.g. an out-of-scope query that only hits generic body prose),
-    the method abstains (returns an empty result) instead of surfacing a rule.
-    Otherwise it retrieves normally over all columns, preserving recall.
+    Recognises a special `_abstain` kwarg: when set, the production abstention
+    gate (data_olympus.search_gate) is applied. If the query matches no
+    discriminating column (title/tags/applies_when), the method abstains
+    (returns an empty result) instead of surfacing a rule. Otherwise it retrieves
+    normally over all columns, preserving recall. The gate logic is single-sourced
+    in src; this harness imports it rather than keeping its own copy.
     """
+    from data_olympus.search_gate import abstain_gate
+
     kwargs = dict(search_kwargs)
     abstain = bool(kwargs.pop("_abstain", False))
     if abstain:
-        signal_hits = idx.search(query, limit=k, columns=_SIGNAL_COLUMNS)
-        if not signal_hits:
+        gated = abstain_gate(idx, query, limit=k)
+        if gated is None:
             return RetrievalResult(payload_text="", ranked_ids=[], retrieved_ids=set())
-        kwargs = {}  # signal present: retrieve normally over all columns
-    hits = idx.search(query, limit=k, **kwargs)  # type: ignore[arg-type]
+        hits = gated
+    else:
+        hits = idx.search(query, limit=k, **kwargs)  # type: ignore[arg-type]
     ranked = [h.id for h in hits]
     payload = "\n".join(f"{h.title}: {h.snippet}" for h in hits)
     if hits:
@@ -225,10 +233,13 @@ def _aggregate_stratum(
     else:
         fp_rate = 0.0
 
+    recall_ci = bootstrap_mean_ci(recall_vals)
+
     return AblationRow(
         config=config_label,
         stratum=stratum,
         recall=statistics.mean(recall_vals) if recall_vals else 0.0,
+        recall_ci=(recall_ci.lo, recall_ci.hi),
         mrr=statistics.mean(mrr_vals) if mrr_vals else 0.0,
         miss_rate=miss,
         false_positive_rate=fp_rate,
@@ -318,16 +329,19 @@ def write_ablation(report: AblationReport, out_dir: Path) -> None:
     lines: list[str] = [
         "# Governance Retrieval Ablation",
         "",
-        f"k={report.k}. Four configs: fts-no-metadata, fts+description, "
-        "fts+applies_when (production), bm25-baseline.",
+        f"k={report.k}. Configs: {', '.join(configs)}.",
+        "",
+        "Recall@k carries a 95% bootstrap CI (deterministic, seeded; see "
+        "`metrics.bootstrap_mean_ci`) so a reader can tell a real gap from "
+        "sampling noise at each stratum size.",
         "",
         "## Per-config x per-stratum metrics",
         "",
     ]
 
     # Table header
-    hdr = "| Config | Stratum | Recall@k | MRR | Miss Rate | FP Rate | Tokens | N |"
-    sep = "|--------|---------|----------|-----|-----------|---------|--------|---|"
+    hdr = "| Config | Stratum | Recall@k [95% CI] | MRR | Miss Rate | FP Rate | Tokens | N |"
+    sep = "|--------|---------|-------------------|-----|-----------|---------|--------|---|"
     lines += [hdr, sep]
 
     for config in configs:
@@ -338,8 +352,9 @@ def write_ablation(report: AblationReport, out_dir: Path) -> None:
             )
             if row is None:
                 continue
+            ci = f"[{row.recall_ci[0]:.3f}, {row.recall_ci[1]:.3f}]"
             lines.append(
-                f"| {row.config} | {row.stratum} | {row.recall:.3f} | "
+                f"| {row.config} | {row.stratum} | {row.recall:.3f} {ci} | "
                 f"{row.mrr:.3f} | {row.miss_rate:.3f} | "
                 f"{row.false_positive_rate:.3f} | {row.mean_tokens:.1f} | {row.n} |"
             )

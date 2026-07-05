@@ -1,7 +1,11 @@
 """Tests for the structural rule (always applies) + policy blocklist (configurable)."""
 from __future__ import annotations
 
-from data_olympus.auth import PathBlocklist, is_writable_path
+from data_olympus.auth import (
+    PathBlocklist,
+    is_writable_path,
+    normalize_target_path,
+)
 
 # ---- Structural rule (Codex blocker 2 fix: path traversal rejected) ----
 
@@ -53,6 +57,49 @@ def test_structural_rule_rejects_empty_input() -> None:
 
 def test_structural_rule_rejects_empty_segment_from_double_slash() -> None:
     assert is_writable_path("projects//foo.md") is False
+
+
+# ---- Canonical path handling (item 4: backslash bypass + control chars) ----
+
+
+def test_normalize_folds_backslashes_to_canonical() -> None:
+    # A backslash path validates as its forward-slash canonical form...
+    assert normalize_target_path("decisions\\x.md") == "decisions/x.md"
+    assert is_writable_path("decisions\\x.md") is True
+
+
+def test_normalize_returns_canonical_not_raw() -> None:
+    # ...and the canonical form is what callers must use downstream, so it never
+    # carries a literal backslash that would land a root-level file on Linux.
+    canonical = normalize_target_path("decisions\\sub\\x.md")
+    assert canonical == "decisions/sub/x.md"
+    assert "\\" not in canonical
+
+
+def test_normalize_rejects_newline_control_char() -> None:
+    # A newline in a path is never legitimate and would smuggle YAML/audit content.
+    assert normalize_target_path("decisions/x\n.md") is None
+    assert is_writable_path("decisions/x\n.md") is False
+
+
+def test_normalize_rejects_carriage_return_and_tab() -> None:
+    assert normalize_target_path("decisions/x\r.md") is None
+    assert normalize_target_path("decisions/x\t.md") is None
+
+
+def test_normalize_rejects_nul_via_control_range() -> None:
+    assert normalize_target_path("decisions/x\x00.md") is None
+
+
+def test_normalize_rejects_backslash_traversal() -> None:
+    # Backslash-encoded traversal folds to '..' segments and is rejected.
+    assert normalize_target_path("projects\\..\\..\\memory\\x.md") is None
+    assert is_writable_path("projects\\..\\..\\memory\\x.md") is False
+
+
+def test_normalize_rejects_backslash_into_excluded_dir() -> None:
+    assert normalize_target_path("tools\\foo.md") is None
+    assert is_writable_path("tools\\foo.md") is False
 
 
 # ---- Policy blocklist (empty by default; configurable) ----
