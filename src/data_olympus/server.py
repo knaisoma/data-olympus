@@ -993,7 +993,9 @@ def main() -> None:
     _idle = config.session_idle_timeout_sec
     _touch_interval = float(config.session_touch_interval_sec)
     if _idle > 0:
-        _touch_interval = max(1.0, min(_touch_interval, _idle / 3))
+        # Always strictly below the idle window (>= 3 touches per window) even for
+        # a tiny idle value; a small positive floor avoids a zero/negative sleep.
+        _touch_interval = max(0.1, min(_touch_interval, _idle / 3))
     http_app = app.http_app(
         transport="streamable-http",
         middleware=[
