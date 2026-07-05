@@ -65,8 +65,15 @@ class Config:
     # Streamable-http session reaping: terminate transports idle beyond this many
     # seconds to bound _server_instances (see session_metrics). 0 disables the
     # reaper (observability-only). The scan runs every session_reap_interval_sec.
-    session_idle_timeout_sec: int = 1800
+    # An in-flight GET SSE stream is kept non-idle by the activity middleware, so
+    # this window only clears sessions whose stream has actually closed (an
+    # abandoned handshake); 5 minutes keeps those from piling up.
+    session_idle_timeout_sec: int = 300
     session_reap_interval_sec: int = 60
+    # How often the activity middleware re-stamps a session while its GET SSE
+    # stream is open, so a quiet-but-connected client is never reaped. Clamped
+    # below session_idle_timeout_sec at wiring time.
+    session_touch_interval_sec: int = 30
     # Optional override for the status-aware reranker's status->weight map
     # (issue #37). None means "use the Index built-in default map". A negative
     # weight boosts an in-force status, a positive one penalizes a retired one.
@@ -191,8 +198,9 @@ def load_config() -> Config:
     auth_principals = parse_principals_env(os.getenv("KB_AUTH_PRINCIPALS", ""))
     consult_ttl_sec = int(os.getenv("KB_CONSULT_TTL_SEC", "300"))
     ledger_path = os.getenv("KB_LEDGER_PATH", "/state/ledger.json")
-    session_idle_timeout_sec = int(os.getenv("KB_SESSION_IDLE_TIMEOUT_SEC", "1800"))
+    session_idle_timeout_sec = int(os.getenv("KB_SESSION_IDLE_TIMEOUT_SEC", "300"))
     session_reap_interval_sec = int(os.getenv("KB_SESSION_REAP_INTERVAL_SEC", "60"))
+    session_touch_interval_sec = int(os.getenv("KB_SESSION_TOUCH_INTERVAL_SEC", "30"))
     status_weights = _load_status_weights(os.getenv("KB_STATUS_WEIGHTS", ""))
     read_only = _env_bool(os.getenv("KB_READ_ONLY", ""))
     from data_olympus.cooccurrence import (
@@ -254,6 +262,7 @@ def load_config() -> Config:
         ledger_path=ledger_path,
         session_idle_timeout_sec=session_idle_timeout_sec,
         session_reap_interval_sec=session_reap_interval_sec,
+        session_touch_interval_sec=session_touch_interval_sec,
         status_weights=status_weights,
         read_only=read_only,
         cooccurrence_enabled=cooc_enabled,

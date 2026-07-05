@@ -12,6 +12,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP streamable-HTTP session churn under long-lived clients.** A persistent
+  client (notably `opencode serve`) that holds the `GET /mcp` SSE stream open was
+  being forced to reconnect on a cycle, piling up abandoned transports on the
+  server and leaking event listeners on the client until it degraded. Two causes
+  addressed:
+  - The activity middleware now keeps a session non-idle for as long as its SSE
+    stream is actually open (re-stamping every `KB_SESSION_TOUCH_INTERVAL_SEC`,
+    default 30s, clamped to a third of the idle window), so the reaper evicts a
+    session only after its stream has genuinely closed. With that safety in
+    place, the idle-reap default (`KB_SESSION_IDLE_TIMEOUT_SEC`) drops from 1800s
+    to 300s, so an abandoned handshake is cleared in minutes instead of half an
+    hour.
+  - The shipped ingress manifest (`deploy/k8s/ingress.yaml`) now sets a long
+    `proxy-read-timeout`/`proxy-send-timeout` and disables buffering, so a proxy
+    with a short default idle timeout (nginx: 60s) no longer closes the SSE
+    stream and triggers the reconnect loop. See `docs/serving.md`.
+
 ## [0.3.2] - 2026-07-05
 
 ### Fixed

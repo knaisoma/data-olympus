@@ -40,6 +40,7 @@ def test_non_default_config_is_threaded_into_app(
     monkeypatch.setenv("KB_WORKTREE_IDLE_SEC", "999")
     monkeypatch.setenv("KB_SESSION_IDLE_TIMEOUT_SEC", "900")
     monkeypatch.setenv("KB_SESSION_REAP_INTERVAL_SEC", "45")
+    monkeypatch.setenv("KB_SESSION_TOUCH_INTERVAL_SEC", "17")
     monkeypatch.setenv("KB_GIT_KEY_PATH", "/tmp/test-key")
     # No KB_REMOTE_URL: write-pipeline objects are None when no remote is set.
     # We still get the config values threaded into state.config.
@@ -57,6 +58,7 @@ def test_non_default_config_is_threaded_into_app(
     assert cfg.worktree_idle_sec == 999
     assert cfg.session_idle_timeout_sec == 900
     assert cfg.session_reap_interval_sec == 45
+    assert cfg.session_touch_interval_sec == 17
     assert cfg.git_key_path == "/tmp/test-key"
 
     app = server.build_app_from_config(cfg, bootstrap_now=False)
@@ -72,6 +74,7 @@ def test_non_default_config_is_threaded_into_app(
     assert state.config.pending_queue_cap == 25
     assert state.config.worktree_idle_sec == 999
     assert state.config.session_idle_timeout_sec == 900
+    assert state.config.session_touch_interval_sec == 17
     assert state.config.session_reap_interval_sec == 45
     assert state.config.git_key_path == "/tmp/test-key"
     assert state.config.write_block_tiers == ["T1", "T2"]

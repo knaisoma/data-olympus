@@ -251,8 +251,9 @@ def build_app(
     audit_hmac_key: str = "",
     audit_max_bytes: int = 0,
     ledger_path: str | None = None,
-    session_idle_timeout_sec: int = 1800,
+    session_idle_timeout_sec: int = 300,
     session_reap_interval_sec: int = 60,
+    session_touch_interval_sec: int = 30,
     status_weights: dict[str, float] | None = None,
     read_only: bool = False,
     embeddings_enabled: bool = False,
@@ -300,6 +301,7 @@ def build_app(
         audit_max_bytes=audit_max_bytes,
         session_idle_timeout_sec=session_idle_timeout_sec,
         session_reap_interval_sec=session_reap_interval_sec,
+        session_touch_interval_sec=session_touch_interval_sec,
         status_weights=status_weights,
         read_only=read_only,
         embeddings_enabled=embeddings_enabled,
@@ -888,6 +890,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         ledger_path=config.ledger_path,
         session_idle_timeout_sec=config.session_idle_timeout_sec,
         session_reap_interval_sec=config.session_reap_interval_sec,
+        session_touch_interval_sec=config.session_touch_interval_sec,
         status_weights=config.status_weights,
         read_only=config.read_only,
         embeddings_enabled=config.embeddings_enabled,
@@ -983,9 +986,25 @@ def main() -> None:
     )
 
     tracker = SessionActivityTracker()
+    # Re-stamp an in-flight SSE session at least 3x per idle window, so a
+    # quiet-but-connected client is never reaped even if an operator sets a short
+    # idle timeout. Falls back to the configured interval when the idle window is
+    # generous.
+    _idle = config.session_idle_timeout_sec
+    _touch_interval = float(config.session_touch_interval_sec)
+    if _idle > 0:
+        # Always strictly below the idle window (>= 3 touches per window) even for
+        # a tiny idle value; a small positive floor avoids a zero/negative sleep.
+        _touch_interval = max(0.1, min(_touch_interval, _idle / 3))
     http_app = app.http_app(
         transport="streamable-http",
-        middleware=[StarletteMiddleware(SessionActivityMiddleware, tracker=tracker)],
+        middleware=[
+            StarletteMiddleware(
+                SessionActivityMiddleware,
+                tracker=tracker,
+                touch_interval_sec=_touch_interval,
+            )
+        ],
     )
     # Health surfaces the live session count; the manager is only reachable once
     # the lifespan has started, so this returns None before then (never raises).

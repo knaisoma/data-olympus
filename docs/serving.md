@@ -23,6 +23,27 @@ each run their own stdio MCP process against the same git working tree, they
 race each other's worktrees and lock state. Streamable HTTP eliminates that
 race.
 
+### The long-lived SSE stream (proxy and session tuning)
+
+Each MCP client holds a long-lived `GET /mcp` Server-Sent-Events stream to
+receive server-to-client messages. Two things must be configured so that stream
+does not churn:
+
+- **Ingress/proxy read timeout.** A proxy that closes the idle stream (nginx's
+  default is 60s) forces the client to reconnect on that cadence. Each reconnect
+  creates a new transport server-side and, in a persistent client like
+  `opencode serve`, leaks event listeners. Set a long read timeout and disable
+  response buffering on the `/mcp` path (see `deploy/k8s/ingress.yaml` for the
+  nginx annotations).
+- **Session reaping.** FastMCP does not reap the transport a client leaves behind
+  when it disconnects without sending `DELETE`. The server runs its own reaper
+  (`session_metrics`): the activity middleware keeps a session non-idle for as
+  long as its SSE stream is open, and `KB_SESSION_IDLE_TIMEOUT_SEC` (default
+  `300`) terminates a session only after its stream has actually closed.
+  `KB_SESSION_TOUCH_INTERVAL_SEC` (default `30`, clamped to a third of the idle
+  window) sets how often an in-flight stream is re-stamped. `kb_health` /
+  `/api/v1/health` and a periodic log surface the live session count.
+
 ## Core configuration reference
 
 A few server-wide settings, beyond the feature-specific env vars documented in

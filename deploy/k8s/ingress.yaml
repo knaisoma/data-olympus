@@ -13,7 +13,17 @@ kind: Ingress
 metadata:
   name: data-olympus-mcp
   namespace: data-olympus
-  # annotations:
+  annotations:
+    # The MCP streamable-HTTP transport holds a long-lived Server-Sent-Events
+    # stream (GET /mcp). An ingress/proxy whose read timeout is short (nginx's
+    # default is 60s) closes that idle stream, forcing clients to reconnect on
+    # that cadence; a persistent client like `opencode serve` then piles up
+    # transports server-side and leaks listeners client-side. Give the stream a
+    # long read timeout and disable response buffering so SSE events are flushed
+    # immediately. Adjust the annotation prefix for your ingress controller.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
   #   cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   # tls:
