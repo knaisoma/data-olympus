@@ -81,7 +81,21 @@ class IntentClassifier:
         action_diff: str = "",
     ) -> ClassifyResult:
         signals: list[str] = []
-        text = f"{intent} {action_diff}".lower()
+        # Free-text keyword signals always scan `intent` (a short, deliberate
+        # statement of what the agent is about to do - kb_consult's argument -
+        # so a keyword there is a real signal). They scan `action_diff` too,
+        # but ONLY when there is no `action_path`: `action_diff` is arbitrary
+        # write/command CONTENT up to 4000 chars (Write.content, Edit.new_string,
+        # Bash.command, OpenCode patch text), and when a concrete action_path is
+        # already given, path-glob matching below is the intended signal for
+        # that action - layering the free-text net on top blocked benign writes
+        # to ungoverned files that merely discussed a keyword as a topic (a
+        # scratch file quoting "RLS"/"auth" from a security standard). Bash
+        # commands and OpenCode's `patch` tool carry no action_path at all
+        # (their action_diff IS the only content available), so the free-text
+        # net still applies there - dropping it entirely would silently lose
+        # the only governed-decision signal for those two tool shapes.
+        text = intent.lower() if action_path else f"{intent} {action_diff}".lower()
         for kw, rx in self._keyword_res:
             if rx.search(text):
                 signals.append(f"keyword:{kw}")
