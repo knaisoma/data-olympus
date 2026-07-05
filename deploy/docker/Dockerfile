@@ -38,11 +38,16 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-# README.md, LICENSE, and NOTICE are referenced by pyproject.toml
-# (readme = "README.md", license-files = ["LICENSE", "NOTICE"]); the build
-# backend reads them when it builds the project in the sync below, so they must
-# be in the build context before this step (not just at wheel-publish time).
+# The project build (the `uv sync` below, which builds + installs the wheel via
+# hatchling) needs everything pyproject.toml references at build time:
+#   - readme = "README.md" and license-files = ["LICENSE", "NOTICE"];
+#   - [tool.hatch.build.targets.wheel] packages = src/data_olympus;
+#   - [tool.hatch.build.targets.wheel.force-include] the bin/ enforcement
+#     machinery shipped inside the wheel at data_olympus/_bin/.
+# All of these must be in the build context before the sync, not just at
+# wheel-publish time.
 COPY README.md LICENSE NOTICE ./
+COPY bin/ ./bin/
 COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
