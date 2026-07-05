@@ -52,7 +52,12 @@ spec:
             - |
               set -e
               # Stage the deploy key with private-key perms on the shared volume.
+              # /state is a PVC, so on a pod RESTART /state/git-key already exists
+              # at 0400 (unwritable) and a plain cp over it fails under `set -e`,
+              # wedging the pod in Init:Error. rm -f first (the /state dir is
+              # writable to the runtime uid via fsGroup) so the copy is repeatable.
               if [ -f /etc/git-key-mount ]; then
+                rm -f /state/git-key
                 cp /etc/git-key-mount /state/git-key
                 chmod 0400 /state/git-key
               fi

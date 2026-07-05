@@ -12,6 +12,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`prepare-git` initContainer is now idempotent across pod restarts.** It staged
+  the deploy key with `cp /etc/git-key-mount /state/git-key` then `chmod 0400`.
+  Because `/state` is a PVC, on any pod restart the `0400` (unwritable) key already
+  exists and the plain `cp` fails under `set -e`, leaving the pod stuck in
+  `Init:Error`. The manifest now `rm -f`s the staged key before copying (the
+  `/state` dir is writable to uid 65534 via `fsGroup`). Only the first boot was
+  ever exercised before; a `kubectl rollout restart` or any pod recreation hit it.
+
 ## [0.3.0] - 2026-07-03
 
 ### Added
