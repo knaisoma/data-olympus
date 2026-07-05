@@ -417,6 +417,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Release delivery for 0.3.0.** Two release-pipeline bugs surfaced on the first
+  0.3.0 run and are fixed so the tag, image, and PyPI package publish together: the
+  Docker image build now copies `README.md`, `LICENSE`, and `NOTICE` (referenced by
+  `pyproject.toml`) into the build context before the project-installing `uv sync`;
+  and the PyPI publish runs inline in `tag-release.yml` rather than through a
+  reusable workflow, which PyPI trusted publishing does not reliably match through.
 - **Stale auto-commit path locks are reclaimed.** A hard kill while an auto-commit
   held a per-path advisory lock left the lock on the `/state` volume with no
   in-process holder to release it, wedging that path (`rejected_path_lock_busy`)
