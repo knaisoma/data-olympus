@@ -15,6 +15,7 @@ from data_olympus.auth import (
     PathBlocklist,
     is_writable_path,
     normalize_target_path,
+    path_rejection_reason,
     safe_join_under_root,
 )
 from data_olympus.format.frontmatter import parse_frontmatter
@@ -486,11 +487,12 @@ def kb_propose_memory_fn(
 
     # 1. Structural rule (cheap).
     if not is_writable_path(target_path):
+        reason = path_rejection_reason(target_path)
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_not_indexable",
-                                   "reason": "not_md_or_excluded"})
+                                   "reason": reason})
         return ProposeResponse(
             status="rejected_path_not_indexable",
-            reason="not_md_or_excluded",
+            reason=reason,
             target_path=target_path,
         )
 
@@ -657,9 +659,15 @@ def kb_propose_edit_fn(
     }
     canonical = normalize_target_path(target_path)
     if canonical is None or not is_writable_path(canonical):
-        _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_not_indexable"})
+        # audit_base["reason"] otherwise carries the caller's edit rationale;
+        # for this terminal rejection (nothing is written) it is overwritten
+        # with the machine rejection cause instead, since that is what an
+        # operator reading the audit log needs to see here.
+        rejection_reason = path_rejection_reason(target_path)
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_not_indexable",
+                                   "reason": rejection_reason})
         return ProposeResponse(status="rejected_path_not_indexable",
-                               reason="traversal_or_excluded",
+                               reason=rejection_reason,
                                target_path=target_path)
     # From here on operate ONLY on the canonical path: classification, blocklist,
     # the pending record, the filesystem join, and ``git add`` must all agree with

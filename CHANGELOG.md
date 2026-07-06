@@ -12,6 +12,34 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-07-06
+
+### Fixed
+
+- **Ambiguous rejection reason for writes outside the deployment's indexed
+  prefixes.** `kb_propose_edit` (and `kb_propose_memory`) rejected a
+  well-formed, non-malicious path outside `KB_INDEXED_PREFIXES` with the same
+  opaque reason string (`traversal_or_excluded` / `not_md_or_excluded`) used
+  for an actual traversal or control-character attempt. A syntactically fine
+  path outside the configured prefixes is an ordinary deployment-configuration
+  fact, not a structural or security rejection - conflating the two sent an
+  operator hunting for a nonexistent traversal bug during a company-knowledge
+  KB audit session (`operator/laptop.md`, readable and indexed for search,
+  came back rejected on write with no indication it was simply outside the
+  deployment's writable-prefix allowlist). `rejected_path_not_indexable`
+  responses (and audit events) now carry a specific reason:
+  `structurally_invalid` (empty/control-chars/absolute/traversal/excluded
+  segment), `not_markdown`, or `not_in_indexed_prefixes`.
+- Investigated the same session's second report (a `rejected_stale_base`
+  resolve appearing to "leak" its path lock) and confirmed it is **not a
+  bug**: `restore_resolve` deliberately keeps the path lock held after a
+  gate rejection so the operator's still-pending proposal can't be clobbered
+  by a concurrent write to the same path (documented behavior, hardened
+  across multiple rounds of review). `reject`ing the stale entry (which does
+  release the lock) and re-proposing fresh, exactly what that session did, is
+  the correct and only intended recovery for a pending entry with a
+  permanently-wrong base marker - there was nothing to fix.
+
 ## [0.3.4] - 2026-07-05
 
 ### Fixed

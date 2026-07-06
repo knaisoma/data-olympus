@@ -95,6 +95,32 @@ def is_writable_path(target_path: str) -> bool:
     return any(canonical.startswith(p) for p in indexed_prefixes())
 
 
+def path_rejection_reason(raw_target_path: str) -> str:
+    """Why a path fails :func:`is_writable_path`, for a caller that already knows
+    it does. Three distinct causes were previously collapsed into one opaque
+    reason string (``not_md_or_excluded`` / ``traversal_or_excluded``), which
+    reads identically whether the path was a malicious traversal attempt or a
+    perfectly legitimate path outside the deployment's configured
+    ``KB_INDEXED_PREFIXES`` - the latter is an ordinary, expected outcome for any
+    deployment whose repo layout has top-level directories beyond the generic
+    default (see ``indexed_prefixes()``), not a security event, and conflating
+    the two sent at least one operator hunting for a traversal bug that was
+    actually a missing ``KB_INDEXED_PREFIXES`` entry.
+
+    Returns one of: ``structurally_invalid`` (empty/control-chars/absolute/
+    traversal/excluded-segment - :func:`normalize_target_path` rejected it),
+    ``not_markdown``, or ``not_in_indexed_prefixes`` (a syntactically fine path
+    outside every configured prefix - a deployment-configuration gap, not a
+    structural or security rejection).
+    """
+    canonical = normalize_target_path(raw_target_path)
+    if canonical is None:
+        return "structurally_invalid"
+    if not canonical.endswith(".md"):
+        return "not_markdown"
+    return "not_in_indexed_prefixes"
+
+
 def safe_join_under_root(root: str, target_path: str) -> str | None:
     """Join ``target_path`` under ``root`` and return the absolute path only when
     it resolves to exactly that lexical location inside ``root``; else return None.
