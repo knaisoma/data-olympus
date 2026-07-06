@@ -5,6 +5,7 @@ from data_olympus.auth import (
     PathBlocklist,
     is_writable_path,
     normalize_target_path,
+    path_rejection_reason,
 )
 
 # ---- Structural rule (Codex blocker 2 fix: path traversal rejected) ----
@@ -36,6 +37,35 @@ def test_structural_rule_rejects_structurally_excluded_dir() -> None:
 
 def test_structural_rule_rejects_traversal_double_dot() -> None:
     assert is_writable_path("projects/foo/../../memory/x.md") is False
+
+
+# ---- path_rejection_reason: distinguish WHY a path was rejected. Previously a
+# single opaque reason ("not_md_or_excluded" / "traversal_or_excluded") covered
+# both a malicious traversal attempt and a perfectly ordinary path that is just
+# outside this deployment's KB_INDEXED_PREFIXES - the latter is a deployment
+# config gap, not a structural/security rejection, and conflating them misled an
+# operator into diagnosing a nonexistent traversal bug. ----
+
+
+def test_rejection_reason_for_legitimate_path_outside_indexed_prefixes() -> None:
+    # "operator/" is syntactically fine (no traversal, valid .md) but is not one
+    # of the DEFAULT_INDEXED_PREFIXES - a deployment-configuration gap.
+    assert path_rejection_reason("operator/laptop.md") == "not_in_indexed_prefixes"
+
+
+def test_rejection_reason_for_non_markdown() -> None:
+    assert path_rejection_reason("universal/foundation/STD-U-001.txt") == "not_markdown"
+
+
+def test_rejection_reason_for_traversal() -> None:
+    assert (
+        path_rejection_reason("projects/foo/../../memory/x.md")
+        == "structurally_invalid"
+    )
+
+
+def test_rejection_reason_for_absolute_path() -> None:
+    assert path_rejection_reason("/etc/passwd.md") == "structurally_invalid"
 
 
 def test_structural_rule_rejects_absolute_path() -> None:
