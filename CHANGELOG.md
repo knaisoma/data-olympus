@@ -12,6 +12,37 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-05
+
+### Fixed
+
+- **Enforcement gate false-positives on prose that merely mentions a governed
+  keyword, for tool calls with a known file path.** `IntentClassifier.classify`
+  scanned `action_diff` (the raw Write/Edit content or Bash command text, up
+  to 4000 chars) for free-text keywords like `auth`, `rls`, `tenant`, `secret`
+  in addition to `intent`, for every tool call. A scratch write whose text
+  simply discussed one of those words as a topic - not an actual governed
+  action - tripped the pre-tool gate regardless of the real (ungoverned)
+  write target, and a fresh `kb_consult` call did not clear it because the
+  consult's own classification (`intent`-only) and the gate's classification
+  (`intent + action_diff`) disagreed on whether the action was governed.
+  Keyword matching on `action_diff` now only applies when the tool call
+  carries no `action_path` (Bash commands and OpenCode's `patch`, whose
+  content is the only signal available); when an `action_path` is present
+  (Write/Edit/MultiEdit), classification uses the path globs and dependency
+  command patterns, unchanged, so this keeps full detection for real governed
+  edits (a patch touching `package.json`) without flagging unrelated prose in
+  files the path globs don't consider governed. Found via a company-knowledge
+  KB audit session that reproduced it live (a scratch `.txt` file containing
+  "RLS tenant boundaries auth trust model" was blocked with no governed path
+  or command in sight); independently reviewed via `codex exec` before
+  release.
+  - The audit's other finding (CX1: the pre-tool gate and the pre-commit
+    `report --staged` gate resolving two different workspace keys) was
+    already fixed in v0.2.0 (#64, worktree-invariant workspace key); no
+    further change needed. It was still visible in that audit only because
+    it predated the deployed kn-dev redeploy.
+
 ## [0.3.3] - 2026-07-05
 
 ### Fixed
