@@ -7,15 +7,13 @@ runtime-only serving-envelope fields that never touch frontmatter, which are
 experimental candidates tracked against open OKF discussions, and how each
 maps to OKF baseline compatibility. It exists so an adjacent OKF implementer
 (or a data-olympus operator) can compare field names and semantics without
-reading the codebase, and so nobody — including us — overclaims formal OKF
+reading the codebase, and so nobody (including us) overclaims formal OKF
 conformance before [issue #82](https://github.com/knaisoma/data-olympus/issues/82)
 lands an executable test against OKF reference tooling.
 
 **This is a profile document, not a new specification.** `SPEC.md` remains the
 authoritative source; where this document restates a rule, `SPEC.md` wins on
-conflict. Where this document describes something still landing in v0.4.0
-(marked explicitly below), treat it as a design description, not a shipped
-guarantee, until the corresponding PR merges.
+conflict.
 
 ---
 
@@ -59,13 +57,13 @@ lifecycle pass), and part of the current `SPEC.md` (version 0.2). "Stable"
 here means the field name and semantics are not expected to change shape; it
 does not mean the field is required in every bundle unless stated, and two
 fields (`applies_when`, `owner`) are stable documented conventions with no
-lint coverage — the table's lint column is authoritative per field.
+lint coverage; the table's lint column is authoritative per field.
 
 | Field | Required? | Lint severity if violated | Notes |
 |---|---|---|---|
 | `id` | Yes | error (missing) | Stable symbolic identifier, decoupled from path (`SPEC.md` section 4.2). |
 | `type` | Yes | error (missing or not in `{decision, memory, project, reference, standard, workflow}`) | Controlled vocabulary, `format.validate.TYPES`. |
-| `status` | Yes | error (missing or not in `{draft, active, deprecated, superseded, proposed, accepted, rejected}`) | `format.validate.STATUSES`; lint-required since the `0.1` draft. What v0.4.0 added (issue #114) is write-path enforcement for new documents — see the note below. |
+| `status` | Yes | error (missing or not in `{draft, active, deprecated, superseded, proposed, accepted, rejected}`) | `format.validate.STATUSES`; lint-required since the `0.1` draft. What v0.4.0 added (issue #114) is write-path enforcement for new documents; see the note below. |
 | `tier` | Yes | error (missing or not in `{T1, T2, T3, T4, meta}`) | `format.validate.TIERS`. |
 | `applies_when` | Recommended | none today (see caveat below) | Highest-weight indexed field for `kb_search`; feeds the abstention gate. Not yet in `kb lint`'s checked field set. |
 | `supersedes` | Optional | error on malformed shape/self-reference/cycle; warning on dangling/asymmetric/path-shaped target | Scalar ID or list of IDs, normalized to a list (issue #110). |
@@ -77,7 +75,7 @@ lint coverage — the table's lint column is authoritative per field.
 
 `status` is listed as a **required** field in `SPEC.md` section 4.2 today, and
 `format.validate.REQUIRED = ("id", "type", "status", "tier")` has always
-enforced it as a lint **error** when absent — this is not new in v0.4.0.
+enforced it as a lint **error** when absent; this is not new in v0.4.0.
 
 What v0.4.0 adds (per [issue #114](https://github.com/knaisoma/data-olympus/issues/114),
 merged in PR #128) is **write-path** enforcement plus a staged migration
@@ -85,7 +83,7 @@ story, not a change of required-field semantics:
 
 - **New documents:** `kb_propose_edit` now rejects a postimage that creates a
   NEW document without `status` (`rejected_invalid_document`, reason
-  `missing_status` — `write_gate.validate_postimage` step 2b). Previously the
+  `missing_status`, `write_gate.validate_postimage` step 2b). Previously the
   write path was more permissive than `kb lint`: the enum check only fired
   when `status` was present and invalid, so a brand-new status-less document
   slipped through.
@@ -104,7 +102,7 @@ story, not a change of required-field semantics:
   `kb_search`/`kb_get`, but are never in force (absent status is not in
   `IN_FORCE_STATUSES`) and never surfaced by `kb_consult`. See
   `docs/operations.md` section 5.1 for the operator runbook.
-- **No `SPEC.md` version bump:** `SPEC.md` section 10 explains why — `status`
+- **No `SPEC.md` version bump:** `SPEC.md` section 10 explains why: `status`
   has been required (and a lint error when absent) since the `0.1` draft, so
   this is a reference-implementation enforcement-timing change, not a format
   change.
@@ -118,7 +116,7 @@ section 4.2). It is the single highest-weight indexed field in `kb_search`
 and it feeds the abstention gate: a query must match `title`, `tags`, or
 `applies_when` before retrieval proceeds. A non-list value is silently parsed
 as empty (matching `tags`' parsing), but unlike `tags`, `kb lint` does not
-currently warn on a missing or malformed `applies_when` — `SPEC.md` section 9
+currently warn on a missing or malformed `applies_when`, per `SPEC.md` section 9
 states this explicitly as the one recommended field with no lint coverage
 today.
 
@@ -130,7 +128,7 @@ across two slices (both merged to `release/0.4.0` as of this document):
 - **Slice 1** (parse + cross-file lint): flat frontmatter fields, normalized
   to a canonical shape at parse time (`format/lint.py`'s
   `_normalize_multi_ref` / `_normalize_single_ref`). Targets must be stable
-  concept IDs, never paths — `_path_shaped` warns on a `/` or `.md`-suffixed
+  concept IDs, never paths; `_path_shaped` warns on a `/` or `.md`-suffixed
   value. Cross-file checks run over an in-memory ID map built from the
   discovered file list (`_cross_file_lifecycle_findings`): malformed shape,
   self-supersession, and supersession cycles are errors; dangling targets,
@@ -140,12 +138,12 @@ across two slices (both merged to `release/0.4.0` as of this document):
 - **Slice 2** (executable retrieval policy): the indexer materializes both
   fields into an `edges` table. An `in_force=true` query additionally excludes
   any document that is the *target* of a `supersedes` edge whose *source*
-  document is itself in force — the "in-force-source guard"
+  document is itself in force (the "in-force-source guard")
   (`format.validate.graph_excluded_ids_sql`, `is_in_force`). A mutually
   supersessive cycle is not special-cased: every in-force member independently
   satisfies the exclusion rule. `kb_get` always resolves regardless of
   graph-exclusion status and returns the union of a document's own
-  `superseded_by` claim and any reverse `supersedes` edge naming it — one
+  `superseded_by` claim and any reverse `supersedes` edge naming it; one
   consistent computed shape (`GetResponse.superseded_by`). `contradicts` never
   filters or ranks anywhere in the retrieval path; it is annotation surfaced
   on both docs so an agent reconciles or escalates rather than silently
@@ -154,8 +152,8 @@ across two slices (both merged to `release/0.4.0` as of this document):
 This decision directly answers OKF issue #148's typed-relationships thread:
 data-olympus keeps the flat scalar/list shape (rather than adopting a nested
 `relationships:` block) until OKF settles one, precisely because the important
-property — the edge is *executable retrieval policy*, not just navigation
-metadata — does not require a nested shape. See section 4 below for the
+property (the edge is *executable retrieval policy*, not just navigation
+metadata) does not require a nested shape. See section 4 below for the
 conditional migration path if OKF #148 standardizes something else.
 
 ### `validity`: freshness metadata with hard expiry semantics
@@ -174,7 +172,7 @@ merged to `release/0.4.0`. An optional nested object, concept-level only:
 All dates normalize to ISO `YYYY-MM-DD` at index/lint time
 (`normalize_validity_date`). `kb lint` treats a malformed `validity` value (an
 unparsable date, or `validity` present but not a mapping) as **absent** (fail
-open) while still emitting a warning — `_validity_findings` in `validate.py`.
+open) while still emitting a warning (`_validity_findings` in `validate.py`).
 `timestamp` (the existing recommended content-change field) is explicitly
 *not* a staleness signal: `SPEC.md` section 4.2 states tooling MUST NOT derive
 expiry or freshness from `timestamp` or a file's `last_modified`.
@@ -197,12 +195,12 @@ additive and orthogonal, visible only in served MCP/REST responses.
 | `pending_actions` | `HealthResponse.pending_actions`, `ConsultResponse.pending_actions` | Maintenance-ledger CTA (issue #113): short `{kind, message, count}` items an agent should surface to the operator and act on only with confirmation. Omitted entirely (not an empty list) when the corpus is clean. |
 
 Every row above is shipped and present in `src/data_olympus/models.py` at the
-code state this document describes. One further envelope addition — a
-per-session recap (N committed, M pending) surfaced through the existing
-`pending_actions` envelope so a governed-lane demotion is never silent — is
-part of [issue #112](https://github.com/knaisoma/data-olympus/issues/112),
-**shipping in 0.4.0** but not yet merged; see the #112 note below for why it
-is not tabled here.
+code state this document describes. One further envelope addition, the
+per-session recap (N committed, M demoted to pending) surfaced through the
+same `pending_actions` envelope and through the `kb_session_recap` tool so a
+governed-lane demotion is never silent, shipped with
+[issue #112](https://github.com/knaisoma/data-olympus/issues/112); see the
+#112 note below.
 
 `kb_consult`'s retrieval is hard-filtered to the in-force class (`SPEC.md`
 section 8): the rules it returns are restricted to `IN_FORCE_STATUSES`, within
@@ -222,21 +220,17 @@ same scan that covers `reason`). `source_session` and `reason` were already
 persisted in pending meta and are now returned by `kb_list_pending`
 (`PendingEntry.source_session`, `PendingEntry.reason`).
 
-**Note on issue #112 (governed-lane protection, shipping in 0.4.0, not yet
-merged).** Per the issue design: a non-operator-confirmed write may not set or
-change `status` into the in-force class, and any agent-proposed edit targeting
-an already in-force document is always demoted to pending regardless of
-confidence. To be explicit about the code state this document describes:
-neither mechanism exists at HEAD yet — a high-confidence agent edit still
-auto-commits (`operator_confirmed=False` in `tools_write.py`'s commit path)
-and the write gate's status vocabulary (`write_gate._WRITE_STATUSES`) accepts
-in-force values (`active`, `accepted`, `approved`) on any write, so today an
-unreviewed write CAN claim in-force status. #112 closes exactly that gap.
-Neither mechanism adds a new frontmatter field — the design describes a
-per-write notice plus the per-session recap mentioned above, surfaced through
-the existing `pending_actions` envelope, so no new row belongs in the field
-tables until the recap's exact shape lands. This subsection is intentionally
-small: expect a follow-up doc-consistency pass once #112 merges.
+**Note on issue #112 (governed-lane protection, shipped).** A
+non-operator-confirmed write may not set or change `status` into the in-force
+class, and any agent-proposed edit targeting an already in-force document is
+demoted to a pending entry regardless of confidence (machine-readable
+`demotion_reason`; target lookups fail closed when the index cannot verify the
+target). An advisory injection-pattern scan annotates pending entries for the
+reviewer and never blocks or demotes by itself. The whole mechanism is on by
+default and can be disabled with `KB_GOVERNED_LANE_PROTECTION=off`. Neither
+mechanism adds a frontmatter field: the runtime surface is the per-write
+demotion notice, the `kb_session_recap` tool and `kb session-recap` CLI, and
+the recap item in the `pending_actions` envelope described above.
 
 ---
 
@@ -263,15 +257,15 @@ where data-olympus currently stands on each axis.
   this thread (see the issue #108 context links) is that lifecycle/validity
   ("is this claim currently allowed to govern behavior") is a first-class
   sibling axis to reliability/confidence ("how much do we believe this
-  claim"), not a field that should be folded into one object — the two
+  claim"), not a field that should be folded into one object; the two
   questions have different failure modes and a document can be simultaneously
   low-confidence and in-force, or high-confidence and retired.
-- **`authority_state` / `allowed_use` enum — explicitly REJECTED.** The
+- **`authority_state` / `allowed_use` enum: explicitly REJECTED.** The
   issue #109 decision considered and rejected adding a parallel
   authority/allowed-use vocabulary derived from `status`. Reasoning: a
   second, derived vocabulary that must track `status` forever is exactly the
   "two fields that can only agree or disagree" failure mode that also rules
-  out `allowed_use` as a standalone field — it can drift from its source of
+  out `allowed_use` as a standalone field: it can drift from its source of
   truth with no structural guarantee. The decision fixed the real gaps
   (`kb_consult` in-force filtering, memory stamping, the mandatory-`status`
   direction in #114, computed `in_force`) at the root instead of adding a
@@ -280,11 +274,10 @@ where data-olympus currently stands on each axis.
   rejected for the same not-worth-a-parallel-field reasoning. The
   authority-forgery risk that motivated the original ask was explicitly split
   out of the #109 slice and assigned to governed-lane protection ([issue
-  #112](https://github.com/knaisoma/data-olympus/issues/112), shipping in
-  0.4.0 but not merged at the code state this document describes — see the
-  #112 note in section 3 for what HEAD currently allows). The direction is a
-  write-path control that prevents an unreviewed write from minting in-force
-  status, rather than a frontmatter field describing the risk after the fact.
+  #112](https://github.com/knaisoma/data-olympus/issues/112), shipped in
+  0.4.0; see the #112 note in section 3). It is a write-path control that
+  prevents an unreviewed write from minting in-force status, rather than a
+  frontmatter field describing the risk after the fact.
 
 ---
 
@@ -299,24 +292,24 @@ OKF consumer choke on this" and "what does data-olympus tooling do with it".
 
 | Field | OKF-baseline readable? | Lint status | Consumer behavior |
 |---|---|---|---|
-| `id` | yes (unknown key) | error if missing | Stable cross-reference target, decoupled from path. Conformance requires an authored `id`; for a non-conformant doc with none, the reference index derives an effective id from the path (`index._derive_id_from_path`) so the doc stays addressable — a fallback for broken input, not a sanctioned authoring mode. |
-| `type` | partially — OKF defines the key, not the vocabulary | error if missing/invalid | Controlled vocabulary layered on OKF's minimal `type` field. |
+| `id` | yes (unknown key) | error if missing | Stable cross-reference target, decoupled from path. Conformance requires an authored `id`; for a non-conformant doc with none, the reference index derives an effective id from the path (`index._derive_id_from_path`) so the doc stays addressable (a fallback for broken input, not a sanctioned authoring mode). |
+| `type` | partially (OKF defines the key, not the vocabulary) | error if missing/invalid | Controlled vocabulary layered on OKF's minimal `type` field. |
 | `status` | yes (unknown key) | error if missing/invalid | Drives `IN_FORCE_STATUSES` class membership; absence is the #114 migration hazard. |
 | `tier` | yes (unknown key) | error if missing/invalid | Scope classification; not evaluated by retrieval logic itself. |
-| `title` | yes — OKF recommends it | warning if missing | Boosted in `kb_search` alongside `applies_when`; part of the abstention gate's discriminating column set. |
-| `description` | yes — OKF recommends it | warning if missing | Indexed below `title`/`applies_when`; deliberately excluded from the abstention gate. |
+| `title` | yes (OKF recommends it) | warning if missing | Boosted in `kb_search` alongside `applies_when`; part of the abstention gate's discriminating column set. |
+| `description` | yes (OKF recommends it) | warning if missing | Indexed below `title`/`applies_when`; deliberately excluded from the abstention gate. |
 | `applies_when` | yes (unknown key) | none (documented, not lint-checked) | Highest-weight `kb_search` field; feeds the abstention gate. |
-| `tags` | partially — OKF recommends the key | warning if missing; warning if present and not a list | Faceted search; part of the abstention gate's discriminating column set. |
-| `timestamp` | yes — OKF recommends it | warning if missing | Content-change metadata; MUST NOT be read as freshness. |
+| `tags` | partially (OKF recommends the key) | warning if missing; warning if present and not a list | Faceted search; part of the abstention gate's discriminating column set. |
+| `timestamp` | yes (OKF recommends it) | warning if missing | Content-change metadata; MUST NOT be read as freshness. |
 | `supersedes` | yes (unknown key) | error (shape/self/cycle), warning (dangling/asymmetric/path-shaped) | Extracted into the `edges` table; source of the in-force-source graph-exclusion guard. |
 | `superseded_by` | yes (unknown key) | error (shape/self), warning (dangling/asymmetric/path-shaped/in-force) | Same edges table; surfaced on `kb_get`/compact hits (deviation-only). |
 | `contradicts` | yes (unknown key) | error (shape), warning (dangling/path-shaped/in-force pair) | Annotation only; never filters or ranks. |
 | `owner` | yes (unknown key) | none | Documented convention; no tooling reads it. |
 | `validity` (and sub-fields) | yes (unknown key) | warning only (malformed value, `recheck_by` past, `valid_until` past while in-force) | Drives `in_force` and default-search exclusion for expiry; `recheck_by` drives `freshness: stale` only. |
-| `in_force` (runtime) | n/a — never in frontmatter | n/a | Serving-envelope only; MUST NOT be treated as bundle content. |
-| `freshness` (runtime) | n/a — never in frontmatter | n/a | Serving-envelope only. |
-| `contradicted_by` (runtime) | n/a — never in frontmatter | n/a | Serving-envelope only; `kb_get` (verbose always, compact when non-empty). |
-| `pending_actions` (runtime) | n/a — never in frontmatter | n/a | Serving-envelope only; `kb_health`/`kb_consult`. |
+| `in_force` (runtime) | n/a (never in frontmatter) | n/a | Serving-envelope only; MUST NOT be treated as bundle content. |
+| `freshness` (runtime) | n/a (never in frontmatter) | n/a | Serving-envelope only. |
+| `contradicted_by` (runtime) | n/a (never in frontmatter) | n/a | Serving-envelope only; `kb_get` (verbose always, compact when non-empty). |
+| `pending_actions` (runtime) | n/a (never in frontmatter) | n/a | Serving-envelope only; `kb_health`/`kb_consult`. |
 
 ---
 
@@ -350,7 +343,7 @@ and does not duplicate that comparison's structure.
   policy; its closest analog is the write-path's structural rule set (path
   prefix allow-list, `KB_WRITE_BLOCK_TIERS`/`KB_WRITE_BLOCK_PATHS`), which
   governs what may be *written into* a bundle rather than what may be
-  synthesized *out of* one — a different axis, not a competing implementation
+  synthesized *out of* one: a different axis, not a competing implementation
   of the same one.
 - **[`dynamicfeed/signed-okf`](https://github.com/dynamicfeed/signed-okf)**
   adds a tamper-evident, Ed25519-signed manifest (`okf.manifest.json`) over an
@@ -359,7 +352,7 @@ and does not duplicate that comparison's structure.
   This is a provenance/integrity concern, orthogonal to the governance
   extensions in this document: data-olympus's write-path integrity guarantees
   come from git history and the single-writer MCP pipeline's commit
-  provenance (agent identity, session, evidence — section 3 above), not from
+  provenance (agent identity, session, evidence; section 3 above), not from
   cryptographic signing of the bundle at rest. The two are compatible in
   principle (a data-olympus bundle could be signed with `signed-okf` tooling
   as an additional, external layer) but nothing in data-olympus verifies or
@@ -368,9 +361,9 @@ and does not duplicate that comparison's structure.
   Supermemory) are covered in depth in
   [`docs/comparison.md`](comparison.md#agent-memory--knowledge-layers-cognee-zepgraphiti-and-peers).
   The short version for this document's purposes: none of them expose an
-  OKF-readable frontmatter schema or a lint-checked lifecycle vocabulary —
+  OKF-readable frontmatter schema or a lint-checked lifecycle vocabulary,
   they are self-mutating semantic memory, not curated, reviewed, versioned
-  knowledge — so they are not directly comparable on the field-by-field axis
+  knowledge, so they are not directly comparable on the field-by-field axis
   this document covers.
 
 ---
