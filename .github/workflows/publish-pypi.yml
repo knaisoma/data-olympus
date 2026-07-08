@@ -48,6 +48,16 @@ jobs:
       upload: false
     permissions:
       contents: read
+      # id-token: write is NOT used on this path (upload=false skips the only
+      # job with an OIDC step) but must be granted anyway: GitHub validates a
+      # called workflow's job-level permission requests against the caller's
+      # grant statically at startup, BEFORE `if:` conditions are evaluated, so
+      # omitting it startup-fails every pull_request run. Exposure is bounded:
+      # the reusable `build` job runs with contents: read only, the `upload`
+      # job (the only OIDC consumer) is gated off by `if: inputs.upload`, and
+      # a real PyPI exchange additionally requires the `pypi` environment
+      # (deployment policy: main + v* tags) and a matching Trusted Publisher.
+      id-token: write
 
   release:
     if: github.event_name == 'push' && github.ref_type == 'tag'
