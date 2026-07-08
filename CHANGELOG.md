@@ -244,6 +244,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   accepted custom pattern executes through the `regex` engine (a new runtime
   dependency) with a hard 1-second match timeout so a catastrophic pattern
   cannot hang the single-writer write path.
+- **OKF profile document (issue #108).** `docs/okf-profile.md`: a field-by-
+  field reference distinguishing stable governance extensions (`id`, `type`,
+  `status`, `tier`, `applies_when`, `supersedes`/`superseded_by`/`contradicts`,
+  `validity`) from runtime-only serving envelope fields (`in_force`,
+  `freshness`, `contradicted_by`, `pending_actions`) and from experimental
+  candidates tracked against open OKF ecosystem discussions (structured
+  `relationships:`, version-keyed validity, a confidence/reliability axis).
+  Documents the issue #109 decision to reject an `authority_state`/
+  `allowed_use` enum, and a short factual comparison against `inkxel/throughline`,
+  `inkxel/dotKnowledge`, and `dynamicfeed/signed-okf`. Cross-linked from
+  `README.md`, `WHY.md`, and `SPEC.md` section 11. Documentation only; no
+  behavior change.
 
 ### Changed
 

@@ -161,7 +161,9 @@ authoring. That is a genuine strength if your goal is broad coverage quickly. Ou
 goal is the opposite end of the same spectrum: curated, reviewed knowledge where
 accuracy and governance matter more than breadth. The two approaches compose
 well: a bundle the OKF producer fills can be imported and normalized into our
-profile, and then governed.
+profile, and then governed. See [`docs/okf-profile.md`](docs/okf-profile.md)
+for the field-by-field breakdown of exactly which governance extensions this
+profile adds and how each maps to OKF baseline compatibility.
 
 ## What the benchmark says
 
