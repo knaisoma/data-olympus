@@ -234,8 +234,8 @@ def test_scaffold_spec_version_tracks_current_format() -> None:
         r"^\*\*Version:\*\*\s+(\S+)$", (root / "SPEC.md").read_text(), re.MULTILINE
     )
     assert spec_header is not None
-    assert SPEC_VERSION == spec_header.group(1)
+    assert spec_header.group(1) == SPEC_VERSION
     bundle_index = (root / "example-bundle" / "index.md").read_text()
     m = re.search(r'^spec_version:\s*"([^"]+)"', bundle_index, re.MULTILINE)
     assert m is not None
-    assert SPEC_VERSION == m.group(1)
+    assert m.group(1) == SPEC_VERSION
