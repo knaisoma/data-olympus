@@ -441,11 +441,15 @@ already gave it, made explicit for the graph rule since that rule is scoped to
 
 A `graph_excluded_docs` health counter (in `kb_health` / `/api/v1/health`,
 alongside `malformed_frontmatter` and `malformed_validity`) reports the count
-of documents currently excluded by this rule, computed at index-build time
-from the same SQL definition the retrieval-time filter uses
-(`format.validate.graph_excluded_ids_sql`), so the counter can never drift
-from the filter it reports on. It is a WARNING signal only and does not flip
-`degraded`.
+of documents currently excluded by this rule. It is evaluated LIVE at
+health-read time against the current date, from the same SQL definition the
+retrieval-time filter uses (`format.validate.graph_excluded_ids_sql`), so
+the counter can never drift from the filter it reports on -- including
+across a date boundary where an in-force source's validity window opens or
+closes between index rebuilds (retrieval evaluates the window per query, so
+a counter frozen at build time would keep reporting a stale value). The
+short health cache (`health_ttl_sec`, default 5s) bounds its staleness. It
+is a WARNING signal only and does not flip `degraded`.
 
 ### Retirement is explainable
 

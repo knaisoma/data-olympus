@@ -80,12 +80,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     closes the same gap for status/graph exclusion.
   - New `graph_excluded_docs` health counter (`kb_health` / `/api/v1/health`,
     alongside `malformed_frontmatter` / `malformed_validity`): the count of
-    documents currently excluded by this rule, computed at index-build time
-    from the same SQL definition (`format.validate.graph_excluded_ids_sql`)
-    the retrieval-time filter uses, so the counter can never drift from the
-    filter it reports on. `Index.build()` gains an optional `today` parameter
-    (defaults to the real wall clock) so the counter is deterministically
-    testable.
+    documents currently excluded by this rule, evaluated LIVE at health-read
+    time against the current date from the same SQL definition
+    (`format.validate.graph_excluded_ids_sql`) the retrieval-time filter
+    uses, so the counter can never drift from the filter it reports on, even
+    across a date boundary where an in-force source's validity window opens
+    or closes between index rebuilds. Exposed on the Index as
+    `graph_excluded_count(today=...)` (injectable date for deterministic
+    tests; health reads the real wall clock, bounded by the short health
+    cache).
   - **Retirement is explainable.** `kb_get` (regardless of in-force/graph-
     exclusion status, same as it already ignores expiry) gains
     `superseded_by`: the sorted UNION of the document's own frontmatter

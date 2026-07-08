@@ -188,9 +188,12 @@ def graph_excluded_ids_sql(status_placeholders: str) -> str:
     This is the SINGLE definition of the graph-exclusion rule, consulted by
     both the retrieval-time filter (wrapped in ``docs.id NOT IN (...)`` by
     ``Index._facet_filters``) and the ``graph_excluded_docs`` health counter
-    (wrapped in ``SELECT COUNT(DISTINCT target_id) FROM (...)`` at build time),
-    so the counter can never drift from the filter it reports on. This module
-    has no schema dependency of its own; it only builds SQL text against the
+    (wrapped in ``SELECT COUNT(DISTINCT target_id) FROM (...)`` by
+    ``Index.graph_excluded_count``, evaluated LIVE at health-read time: the
+    in-force-source guard is wall-clock-relative, so a counter frozen at
+    build time would drift from per-query retrieval whenever a source's
+    validity window opens or closes between rebuilds). This module has no
+    schema dependency of its own; it only builds SQL text against the
     caller's ``edges``/``docs`` table names.
 
     The subquery JOINs ``edges`` to ``docs`` on BOTH the source and target id

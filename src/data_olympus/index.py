@@ -701,12 +701,6 @@ class Index:
         # malformed at the last build (issue #107). Updated by build(); surfaced
         # via health() and the ``malformed_validity_count`` property.
         self._malformed_validity_count = 0
-        # Health-visible count of docs excluded from in-force retrieval by the
-        # supersession-graph rule at the last build (issue #110 slice 2).
-        # Updated by build(); surfaced via health() and the
-        # ``graph_excluded_docs_count`` property, same pattern as the two
-        # malformed-* counters above.
-        self._graph_excluded_docs_count = 0
 
     @property
     def malformed_frontmatter_count(self) -> int:
@@ -729,16 +723,40 @@ class Index:
         """
         return self._malformed_validity_count
 
-    @property
-    def graph_excluded_docs_count(self) -> int:
-        """Docs excluded from in-force retrieval by the supersession-graph rule
-        at the last build (issue #110 slice 2): the TARGET of a `supersedes`
-        edge whose SOURCE is itself in-force. Computed and persisted at build
-        time from the same SQL definition the retrieval-time filter uses
+    def graph_excluded_count(self, *, today: str | None = None) -> int:
+        """Count of docs CURRENTLY excluded from in-force retrieval by the
+        supersession-graph rule (issue #110 slice 2): the TARGET of a
+        `supersedes` edge whose SOURCE is itself in-force.
+
+        Computed LIVE against ``today`` (default: the real wall clock via
+        :func:`today_iso`; injectable for deterministic tests) from the same
+        SQL definition the retrieval-time filter uses
         (:func:`data_olympus.format.validate.graph_excluded_ids_sql`), so the
-        counter can never drift from the filter it reports on.
+        counter can never drift from the filter it reports on. Live (not
+        build-time) evaluation matters because the in-force-source guard is
+        wall-clock-relative: a source whose validity window opens or closes
+        between rebuilds changes retrieval behavior per query, and a counter
+        frozen at build time would keep reporting the stale value (codex
+        review blocker). Returns 0 when the index file or the ``edges`` table
+        does not exist (an index predating schema v9).
         """
-        return self._graph_excluded_docs_count
+        if not self._db_path.exists():
+            return 0
+        resolved_today = today if today is not None else today_iso()
+        placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT target_id) FROM "
+                f"({graph_excluded_ids_sql(placeholders)})",
+                [*_IN_FORCE_STATUS_LIST, resolved_today, resolved_today],
+            ).fetchone()
+        except sqlite3.OperationalError:
+            # edges table absent (index predates schema v9): nothing excluded.
+            return 0
+        finally:
+            conn.close()
+        return int(row[0]) if row else 0
 
     def _resolve_embedder(self) -> Embedder | None:
         """Return the embedder to use, loading it from the threaded config once.
@@ -863,17 +881,8 @@ class Index:
             "mtime",
         )
 
-    def build(
-        self, kb_root: Path, *, source_commit: str, today: str | None = None,
-    ) -> IndexBuildResult:
-        """Walk kb_root for .md files and (re)build the FTS index using atomic swap.
-
-        ``today`` (ISO ``YYYY-MM-DD``) drives the ``graph_excluded_docs`` health
-        counter (issue #110 slice 2), the only build-time computation that is
-        wall-clock-relative (an in-force source's validity window); it defaults
-        to :func:`today_iso` (the real wall clock) but is injectable so tests
-        get a deterministic count without depending on the actual calendar day.
-        """
+    def build(self, kb_root: Path, *, source_commit: str) -> IndexBuildResult:
+        """Walk kb_root for .md files and (re)build the FTS index using atomic swap."""
         if not kb_root.is_dir():
             raise NotADirectoryError(f"KB root not a directory: {kb_root}")
 
@@ -1075,22 +1084,6 @@ class Index:
                     "VALUES (?, ?, ?)",
                     sorted(edge_rows),
                 )
-            # graph_excluded_docs (issue #110 slice 2): the count of DISTINCT
-            # docs excluded from in-force retrieval by the supersession-graph
-            # rule, computed from the SAME SQL definition the retrieval-time
-            # filter uses (graph_excluded_ids_sql) so the counter can never
-            # drift from the filter it reports on. A mutually-supersessive
-            # in-force cycle is NOT special-cased here either: both members
-            # independently satisfy the rule, so both are counted (see
-            # tests/test_graph_exclusion.py).
-            resolved_today = today if today is not None else today_iso()
-            status_placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
-            graph_excluded_row = conn.execute(
-                "SELECT COUNT(DISTINCT target_id) FROM "
-                f"({graph_excluded_ids_sql(status_placeholders)})",
-                [*_IN_FORCE_STATUS_LIST, resolved_today, resolved_today],
-            ).fetchone()
-            graph_excluded_docs = int(graph_excluded_row[0]) if graph_excluded_row else 0
             # Embedding vectors (issue #42): one batched embed of all docs, then
             # persist into the tmp DB. Kept inside the build so vectors are part
             # of the same atomic swap and a query never sees a half-built table.
@@ -1148,13 +1141,6 @@ class Index:
                 "VALUES ('malformed_validity', ?)",
                 (str(malformed_validity),),
             )
-            # graph_excluded_docs (issue #110 slice 2): same persisted-meta
-            # rationale as the two malformed-* counters above.
-            conn.execute(
-                "INSERT OR REPLACE INTO meta (key, value) "
-                "VALUES ('graph_excluded_docs', ?)",
-                (str(graph_excluded_docs),),
-            )
             # Integrity check before swap
             check = conn.execute("PRAGMA integrity_check").fetchone()
             if check[0] != "ok":
@@ -1180,7 +1166,6 @@ class Index:
         # (finding (j)); the persisted meta row covers a fresh process.
         self._malformed_frontmatter_count = malformed_frontmatter
         self._malformed_validity_count = malformed_validity
-        self._graph_excluded_docs_count = graph_excluded_docs
         # Invalidate the health cache so the next health() reflects the rebuild
         # immediately rather than serving the pre-swap commit for up to the TTL.
         with self._health_lock:
@@ -1488,10 +1473,11 @@ class Index:
         excludes any doc that is the TARGET of a `supersedes` edge whose
         SOURCE is itself in-force (:func:`graph_excluded_ids_sql` from
         format.validate is the single source of this rule, shared with the
-        `graph_excluded_docs` health counter computed at build time). This is
-        scoped to ``in_force`` only, exactly like the ``upcoming`` half of the
-        validity window above: a graph-excluded doc stays visible in a plain
-        (non-``in_force``) search, same as an upcoming doc does.
+        live `graph_excluded_docs` health counter, see
+        :meth:`graph_excluded_count`). This is scoped to ``in_force`` only,
+        exactly like the ``upcoming`` half of the validity window above: a
+        graph-excluded doc stays visible in a plain (non-``in_force``) search,
+        same as an upcoming doc does.
         """
         where: list[str] = []
         params: list[object] = []
@@ -2144,9 +2130,15 @@ class Index:
             # Issue #107: present-but-malformed ``validity`` block count, same
             # persisted-meta rationale as malformed_frontmatter above.
             "malformed_validity": int(meta.get("malformed_validity", "0")),
-            # Issue #110 slice 2: docs excluded from in-force retrieval by the
-            # supersession-graph rule, same persisted-meta rationale as above.
-            "graph_excluded_docs": int(meta.get("graph_excluded_docs", "0")),
+            # Issue #110 slice 2: docs CURRENTLY excluded from in-force
+            # retrieval by the supersession-graph rule. Computed LIVE (not
+            # from a persisted build-time meta row) because the in-force-
+            # source guard is wall-clock-relative: a source's validity window
+            # opening/closing between rebuilds changes retrieval per query,
+            # and a frozen counter would drift from the filter it reports on
+            # (codex review blocker). The health cache bounds staleness to
+            # ``health_ttl_sec`` (default 5s).
+            "graph_excluded_docs": self.graph_excluded_count(),
         }
 
     def list_by_prefix(
