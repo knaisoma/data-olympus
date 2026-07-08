@@ -485,6 +485,8 @@ def build_app(
         in_force: bool = False,
         doc_type: str | None = None,
         abstain: bool = False,
+        include_expired: bool = False,
+        validity_state: str | None = None,
         verbose: bool = False,
     ) -> dict[str, object]:
         """Full-text search across the KB.
@@ -493,10 +495,22 @@ def build_app(
         doc_type e.g. 'decision'). Returns ranked hits with snippets.
 
         in_force: when true, HARD-filter to the in-force status class
-        (active/accepted/approved) before ranking, EXCLUDING superseded and
-        deprecated docs rather than only soft-downranking them. Composes with an
+        (active/accepted/approved) AND the validity window (not expired, not
+        upcoming) before ranking, EXCLUDING superseded/deprecated/expired/
+        upcoming docs rather than only soft-downranking them. Composes with an
         explicit `status` (both must hold). Use this when you want only guidance
         that currently applies.
+
+        A doc past its `valid_until` date is EXCLUDED from every default search
+        result (not just `in_force=True`): an expired doc has no named successor
+        to outrank it, so left visible it could be the top hit and would govern.
+        Set `include_expired=true` to see it anyway; it then carries
+        `freshness: "expired"`. A doc with a future `valid_from` ("upcoming")
+        stays visible in default search, flagged `freshness: "upcoming"`; only
+        `in_force=true` excludes it. `validity_state` is an audit-query facet:
+        one of `"expired"`, `"stale"`, or `"expiring_within:N"` (N days) to list
+        docs by validity condition; filtering for `"expired"` implies including
+        them regardless of `include_expired`.
 
         abstain: when true, apply the signal gate. If the query matches no
         discriminating column (title/tags/applies_when) it is treated as
@@ -507,14 +521,17 @@ def build_app(
 
         verbose: False (default) returns a token-compact shape. Each hit is
         {id, title, snippet} plus `status` only when a hit is NOT in-force
-        (superseded/deprecated) and `type` when set; the `query` echo, per-hit
+        (superseded/deprecated), `type` when set, and `freshness` only when a
+        hit deviates (`stale`/`expired`/`upcoming`); the `query` echo, per-hit
         `path`, and `score` are dropped (fetch a hit's full metadata with
         kb_get(id); array order conveys rank). verbose=True restores the full
-        legacy shape with query, path, score, status, and type on every hit.
+        legacy shape with query, path, score, status, type, and freshness on
+        every hit.
         """
         resp = kb_search_fn(
             idx=state.idx, query=query, limit=limit, tier=tier, category=category,
             status=status, in_force=in_force, doc_type=doc_type, abstain=abstain,
+            include_expired=include_expired, validity_state=validity_state,
         )
         return shape_response(resp, verbose=verbose)
 
@@ -523,12 +540,16 @@ def build_app(
         """Retrieve a document by id (STD-U-001, ADR-002, T-NNN, etc.).
         Returns the full content markdown plus metadata.
 
+        Always resolves regardless of expiry (ids never dangle): an expired
+        document is still returned, with its full `validity` object and a
+        computed `freshness` indicator (`stale`/`expired`/`upcoming`).
+
         verbose: False (default) returns the full `content_markdown` body (kb_get
         exists to read the doc) with a trimmed envelope: `path`,
         `git_remote_url`, and `last_modified_source` are dropped and empty
-        status/type/applies_when/description are omitted; `source_commit` and
-        `last_modified` provenance are kept. verbose=True returns the full legacy
-        envelope with every field."""
+        status/type/applies_when/description/validity/freshness are omitted;
+        `source_commit` and `last_modified` provenance are kept. verbose=True
+        returns the full legacy envelope with every field."""
         from data_olympus.tools_read import KbNotFoundError, kb_get_fn
         try:
             resp = kb_get_fn(idx=state.idx, id=id)

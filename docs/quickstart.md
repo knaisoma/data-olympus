@@ -136,7 +136,9 @@ to see `"status": "active"` spelled out on every hit.
 
 **`in_force=true`** is a hard filter, not a rerank: it excludes every
 not-currently-governing status (`superseded`, `deprecated`, `draft`,
-`proposed`, `rejected`) from the result set entirely, before ranking.
+`proposed`, `rejected`) from the result set entirely, before ranking — and,
+for docs carrying a `validity` frontmatter block, any doc outside its
+validity window (past `valid_until`, or before a future `valid_from`).
 
 ```bash
 curl -fsS "http://localhost:8080/api/v1/search?q=commit%20format&limit=5&in_force=true"
@@ -146,6 +148,12 @@ curl -fsS "http://localhost:8080/api/v1/search?q=commit%20format&limit=5&in_forc
 guidance currently in force (for example, before writing a commit message)
 gets a result set that can never surface retired governance, rather than
 relying on the rerank to have pushed it down far enough.
+
+Note that a doc past its `validity.valid_until` is excluded from DEFAULT
+search results too, not just from `in_force=true` queries; pass
+`include_expired=true` to see it, or fetch it directly with `kb_get` (which
+always resolves by id). See [`docs/serving.md`](serving.md) and SPEC.md
+section 4.2 for the full validity semantics.
 
 ## 5. Query with the kb CLI
 

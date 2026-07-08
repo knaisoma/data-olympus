@@ -425,11 +425,22 @@ def register_routes(
         category = request.query_params.get("category") or None
         in_force = _query_bool(request.query_params.get("in_force"))
         abstain = _query_bool(request.query_params.get("abstain"))
+        include_expired = _query_bool(request.query_params.get("include_expired"))
+        validity_state = request.query_params.get("validity_state") or None
         verbose = _query_bool(request.query_params.get("verbose"))
-        resp = await _offload(
-            kb_search_fn, idx=state.idx, query=q, limit=limit, tier=tier,
-            category=category, in_force=in_force, abstain=abstain,
-        )
+        try:
+            resp = await _offload(
+                kb_search_fn, idx=state.idx, query=q, limit=limit, tier=tier,
+                category=category, in_force=in_force, abstain=abstain,
+                include_expired=include_expired, validity_state=validity_state,
+            )
+        except ValueError as e:
+            # A malformed validity_state (e.g. 'bogus' or 'expiring_within:abc')
+            # is a client error: surface an actionable 400, not an opaque 500
+            # (same rationale as _missing_fields_response).
+            return JSONResponse(
+                {"error": "bad_request", "message": str(e)}, status_code=400,
+            )
         return JSONResponse(shape_response(resp, verbose=verbose))
 
     @app.custom_route("/api/v1/get/{id}", methods=["GET"])

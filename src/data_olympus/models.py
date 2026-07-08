@@ -50,6 +50,9 @@ class HealthResponse(BaseModel):
     # A non-zero value means a doc silently lost its governance metadata. WARNING
     # signal only: it does NOT flip ``degraded`` (alert on it separately).
     malformed_frontmatter: int = 0
+    # Docs with a present-but-malformed ``validity`` block at the last index
+    # build (issue #107). Same WARNING-only rationale as malformed_frontmatter.
+    malformed_validity: int = 0
 
     # Health fields always present in compact mode even when falsy, because a
     # consumer branches on them (bin/kb and the REST 503 path read ``degraded``;
@@ -129,6 +132,12 @@ class SearchHitModel(BaseModel):
     score: float
     status: str = ""
     type: str = ""
+    # validity/freshness (issue #107): deviation-only indicator, one of
+    # "stale" | "expired" | "upcoming", "" when fresh/absent. "expired" only
+    # ever appears when the hit was explicitly included (include_expired=True
+    # or the validity_state facet); default kb_search never returns an
+    # expired doc at all.
+    freshness: str = ""
 
     def compact_dump(self) -> dict[str, object]:
         """Token-lean hit shape (issue #65).
@@ -141,7 +150,9 @@ class SearchHitModel(BaseModel):
             to an agent. Array order already conveys rank.
         Emits ``status`` only when it deviates from the in-force default (i.e. a
         superseded/deprecated/rejected hit an agent must NOT treat as current),
-        and ``type`` only when present. ``verbose=True`` restores the full shape.
+        ``type`` only when present, and ``freshness`` only when non-empty
+        (issue #107: a fresh/absent-validity hit omits it entirely).
+        ``verbose=True`` restores the full shape.
         """
         snippet = self.snippet
         if len(snippet) > COMPACT_SNIPPET_CHARS:
@@ -151,6 +162,8 @@ class SearchHitModel(BaseModel):
             d["status"] = self.status
         if self.type:
             d["type"] = self.type
+        if self.freshness:
+            d["freshness"] = self.freshness
         return d
 
 
@@ -215,6 +228,14 @@ class GetResponse(BaseModel):
     last_modified_source: str
     source_commit: str
     git_remote_url: str | None = None
+    # validity/freshness (issue #107). kb_get ALWAYS resolves regardless of
+    # expiry (ids never dangle), so ``validity`` carries the full object (None
+    # when the doc has no validity metadata at all) and ``freshness`` is the
+    # same deviation-only indicator as SearchHitModel's, computed against the
+    # request's ``today`` -- INCLUDING "expired", which a search hit only ever
+    # shows when explicitly included.
+    validity: dict[str, str] | None = None
+    freshness: str = ""
 
     def compact_dump(self) -> dict[str, object]:
         """Token-lean kb_get response (issue #65).
@@ -226,8 +247,9 @@ class GetResponse(BaseModel):
         envelope fields: ``path`` (recoverable with ``kb_get(id, verbose=True)``),
         ``git_remote_url`` (null for most docs), and ``last_modified_source`` (a
         provenance *label* like ``git``/``mtime-fallback``, not the timestamp).
-        Omits empty ``status`` / ``type`` / ``applies_when`` / ``description``.
-        ``verbose=True`` restores the full shape.
+        Omits empty ``status`` / ``type`` / ``applies_when`` / ``description`` /
+        ``validity`` / ``freshness`` (issue #107: a doc with no validity
+        metadata omits both entirely). ``verbose=True`` restores the full shape.
         """
         d: dict[str, object] = {
             "id": self.id,
@@ -247,6 +269,10 @@ class GetResponse(BaseModel):
         d["content_markdown"] = self.content_markdown
         d["last_modified"] = self.last_modified
         d["source_commit"] = self.source_commit
+        if self.validity:
+            d["validity"] = dict(self.validity)
+        if self.freshness:
+            d["freshness"] = self.freshness
         return d
 
 

@@ -390,22 +390,53 @@ Override the map at deploy time, with no code change:
 ## `in_force`: hard in-force filter
 
 `kb_search` accepts an `in_force: bool = False` parameter (MCP tool and
-`GET /api/v1/search?in_force=true`). When set, results are HARD-filtered to the
-in-force status class (`active`, `accepted`, `approved`) BEFORE ranking, so a
-`superseded`, `deprecated`, `draft`, or `proposed` doc is excluded entirely
-rather than merely soft-downranked by the status rerank above.
+`GET /api/v1/search?in_force=true`). When set, results are HARD-filtered
+BEFORE ranking to docs that are currently in force: the in-force status class
+(`active`, `accepted`, `approved`) AND the validity window
+(`validity.valid_from` not in the future, `validity.valid_until` not in the
+past; both boundary days inclusive). So a `superseded`, `deprecated`,
+`draft`, `proposed`, expired, or upcoming doc is excluded entirely rather
+than merely soft-downranked by the status rerank above.
 
 Use it when you want only guidance that currently applies and a demoted-but-
 present retired doc is not acceptable. It differs from the status rerank: the
 rerank always keeps every hit and only reorders; `in_force` drops out-of-force
-hits. The in-force class is defined once (`format.validate.IN_FORCE_STATUSES`)
-and shared by both the rerank boosts and this filter.
+hits. The in-force predicate is defined once
+(`format.validate.IN_FORCE_STATUSES` for the status class,
+`format.validate.is_in_force` for the combined status-AND-window predicate)
+and shared by the rerank boosts and this filter.
 
 `in_force` composes with the single-status `status` filter: passing both
 requires a doc match `status` AND be in-force (so `status=superseded` with
 `in_force=true` yields nothing). The filter also applies to the dense
 (embedding) candidate source, so a hybrid deployment never leaks an out-of-force
 doc through the semantic path.
+
+## Validity: expired docs leave default results
+
+Independent of `in_force`, a doc past its `validity.valid_until` date is
+excluded from EVERY default `kb_search` result (SPEC.md section 4.2): an
+expired doc has no named successor to outrank it, so left visible it could be
+the top hit and would govern. Three related `kb_search` parameters (MCP tool
+and `GET /api/v1/search`):
+
+- `include_expired: bool = false` restores expired docs to the result set;
+  each carries `freshness: "expired"` in its hit.
+- `validity_state` is an audit facet: `"expired"`, `"stale"` (past
+  `recheck_by`), or `"expiring_within:N"` (docs whose `valid_until` falls
+  within N days). Filtering for `"expired"` implies including expired docs. A
+  malformed value is rejected (HTTP 400 on REST).
+- Compact hits carry a deviation-only `freshness` field
+  (`stale`/`expired`/`upcoming`), omitted when fresh or when the doc has no
+  `validity` block. A doc with a future `valid_from` stays in default results
+  flagged `upcoming`; only `in_force=true` excludes it. A stale doc (past
+  `recheck_by`) stays in force and visible.
+
+`kb_get` by id always resolves regardless of expiry, returning the full
+`validity` object plus the computed `freshness` indicator. `kb_consult`
+reuses the default search path and therefore never returns an expired doc.
+The `data-olympus validity-report` CLI subcommand lists expired and
+soon-to-expire docs from a bundle directory.
 
 ## `abstain`: signal-gated abstention
 

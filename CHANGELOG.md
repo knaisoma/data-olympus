@@ -14,6 +14,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Validity/freshness frontmatter metadata with hard expiry semantics**
+  (issue #107, format `0.2`). Concept documents may now declare an optional
+  nested `validity` object: `valid_from`, `valid_until`, `last_verified`,
+  `recheck_by` (ISO date or datetime, normalized to a date at index/lint
+  time), and free-text `verification_source`. Indexed as columns on the
+  docs table (schema version bumped 9 -> 10, on top of the lifecycle-edges
+  bump below). See SPEC.md section 4.2.
+
 - **`data-olympus init <dir>` bundle scaffold command** (issue #66). Creates a
   new knowledge bundle: the tier directories (`--tiers`, default `universal,
   tech-stacks,projects,decisions,workflows,tooling`), a root `index.md`
@@ -83,6 +91,42 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   accepted custom pattern executes through the `regex` engine (a new runtime
   dependency) with a hard 1-second match timeout so a catastrophic pattern
   cannot hang the single-writer write path.
+
+### Changed
+
+- **BEHAVIOR CHANGE: a document past its `validity.valid_until` now leaves
+  the DEFAULT `kb_search` result set**, not just `in_force=true` queries.
+  Previously there was no `validity` concept at all, so nothing was ever
+  excluded on this basis; a bundle that starts dating its documents will see
+  expired ones silently drop out of ordinary search results (they are still
+  reachable via `kb_get(id)`, `include_expired=true`, or the new
+  `validity_state=expired` audit facet). Rationale: unlike a superseded
+  document, an expired one has no named successor to outrank it, so left
+  visible it could surface as the top hit and incorrectly govern.
+  - A document with a future `valid_from` ("upcoming") is NOT excluded by
+    default search, only by `in_force=true`; it is flagged
+    `freshness: "upcoming"`.
+  - A document past `recheck_by` ("stale") stays in force and visible;
+    it is flagged `freshness: "stale"` (advisory only).
+  - `kb_search` gains `include_expired` (default `false`) and a
+    `validity_state` facet (`"expired"`, `"stale"`,
+    `"expiring_within:N"`) for audit queries. `kb_get` by id always resolves
+    regardless of expiry, returning the full `validity` object plus a
+    computed `freshness` indicator. `kb_consult` never returns an expired
+    document (it reuses the default search path).
+  - Compact search hits gain a deviation-only `freshness` field
+    (`stale`/`expired`/`upcoming`), omitted when fresh or absent.
+  - `kb lint` gains three new WARNING-only findings (never errors, since
+    they are wall-clock-relative): `recheck_by` in the past; `valid_until`
+    in the past while `status` is in the in-force class; a malformed
+    `validity` value (treated as absent for indexing/search, fail open).
+  - `kb_health` / `data-olympus report` gain a `malformed_validity` counter
+    mirroring the existing `malformed_frontmatter` one.
+  - New `data-olympus validity-report` CLI subcommand lists expired and
+    soon-to-expire documents by scanning a bundle directory directly.
+  - `timestamp` is unaffected and remains content-change metadata only;
+    SPEC.md now explicitly forbids deriving staleness from `timestamp` or
+    `last_modified`.
 
 ### Fixed
 
