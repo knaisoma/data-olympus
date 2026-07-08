@@ -682,7 +682,7 @@ def register_routes(
                 # clients are real agent calls).
                 trigger=body.get("trigger", "explicit"),
             )
-            return JSONResponse(resp.model_dump())
+            return JSONResponse(resp.model_dump(exclude_none=True))
 
         @app.custom_route("/api/v1/gate/check", methods=["POST"])
         async def gate_check(request: Request) -> JSONResponse:

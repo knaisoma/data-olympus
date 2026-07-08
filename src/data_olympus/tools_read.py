@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 from data_olympus.health import snapshot
+from data_olympus.maintenance import pending_actions_for
 from data_olympus.models import (
     CategoryCount,
     GetResponse,
@@ -107,6 +108,7 @@ def kb_health_fn(
         live_sessions=state.live_sessions,
         malformed_frontmatter=state.malformed_frontmatter,
         malformed_validity=state.malformed_validity,
+        pending_actions=pending_actions_for(getattr(idx, "maintenance_state", None)),
     )
 
 

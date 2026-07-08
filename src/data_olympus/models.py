@@ -53,6 +53,11 @@ class HealthResponse(BaseModel):
     # Docs with a present-but-malformed ``validity`` block at the last index
     # build (issue #107). Same WARNING-only rationale as malformed_frontmatter.
     malformed_validity: int = 0
+    # Maintenance-ledger CTA (issue #113): short structured items
+    # ({kind, message, count}) an agent should surface to the operator and act
+    # on only with operator confirmation. None (field omitted in compact mode)
+    # when the computed maintenance state is clean -- token discipline.
+    pending_actions: list[dict[str, object]] | None = None
 
     # Health fields always present in compact mode even when falsy, because a
     # consumer branches on them (bin/kb and the REST 503 path read ``degraded``;
@@ -487,6 +492,11 @@ class ConsultResponse(BaseModel):
     rules: list[SearchHitModel] = []
     consulted_at: float
     ttl_seconds: int
+    # Maintenance-ledger CTA (issue #113). See HealthResponse.pending_actions;
+    # omitted (None) when the computed maintenance state is clean. Callers
+    # serialize this response with ``exclude_none=True`` so a clean state
+    # drops the field entirely rather than emitting a null.
+    pending_actions: list[dict[str, object]] | None = None
 
 
 class GateCheckResponse(BaseModel):

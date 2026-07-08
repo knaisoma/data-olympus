@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from data_olympus.enforce_policy import EXPLICIT_TRIGGER, PROMPT_HOOK_TRIGGER
+from data_olympus.maintenance import pending_actions_for
 from data_olympus.models import (
     ComplianceResponse,
     ConsultResponse,
@@ -71,7 +72,15 @@ def kb_consult_fn(
     memory-inbox document as a governing rule. Previously this ran an
     unfiltered search, so e.g. a server-rendered agent memory (before it is
     reviewed) or a superseded decision could be handed back as "the" rule for
-    an intent."""
+    an intent.
+
+    The response's ``pending_actions`` (issue #113) surfaces open maintenance
+    items (missing ``status`` fields, recently-expired/expiring-soon docs)
+    ONLY when the computed corpus state is dirty; it is omitted entirely on a
+    clean corpus. When present, surface it to the operator and act on it only
+    with operator confirmation -- do not silently start remediating the
+    corpus.
+    """
     trigger = trigger if trigger in _TRIGGERS else EXPLICIT_TRIGGER
     result = classifier.classify(intent=intent)
     rules = []
@@ -94,6 +103,7 @@ def kb_consult_fn(
     return ConsultResponse(
         is_governed_decision=result.is_governed_decision,
         rules=rules, consulted_at=now, ttl_seconds=int(ttl_sec),
+        pending_actions=pending_actions_for(getattr(idx, "maintenance_state", None)),
     )
 
 

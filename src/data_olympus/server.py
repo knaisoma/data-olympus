@@ -259,6 +259,9 @@ def build_app(
     embeddings_enabled: bool = False,
     embeddings_weight: float = 0.35,
     embeddings_model: str = "BAAI/bge-small-en-v1.5",
+    maintenance_ledger_path: str = "tooling/maintenance-ledger.md",
+    maintenance_recently_expired_days: int = 30,
+    maintenance_expiring_soon_days: int = 30,
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
 
@@ -307,6 +310,9 @@ def build_app(
         embeddings_enabled=embeddings_enabled,
         embeddings_weight=embeddings_weight,
         embeddings_model=embeddings_model,
+        maintenance_ledger_path=maintenance_ledger_path,
+        maintenance_recently_expired_days=maintenance_recently_expired_days,
+        maintenance_expiring_soon_days=maintenance_expiring_soon_days,
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
@@ -343,6 +349,9 @@ def build_app(
         trigram_fallback_threshold=config.trigram_fallback_threshold,
         embeddings=emb_config,
         embedder=embedder,
+        maintenance_ledger_path=config.maintenance_ledger_path,
+        maintenance_recently_expired_days=config.maintenance_recently_expired_days,
+        maintenance_expiring_soon_days=config.maintenance_expiring_soon_days,
     )
     synonym_expander = default_query_expander()
     cooc_expander = idx.cooccurrence_expander() if cooccurrence_enabled() else None
@@ -443,7 +452,12 @@ def build_app(
         verbose: False (default) returns a token-compact shape that keeps the core
         snapshot and OMITS diagnostic fields that are null/empty (e.g.
         last_index_error, remote_head_sha when unset). verbose=True returns every
-        field including the nulls."""
+        field including the nulls.
+
+        pending_actions, when present, lists open maintenance items (missing
+        `status` fields, recently-expired/expiring-soon docs) computed at the
+        last index build; it is omitted when the corpus is clean. Surface it
+        to the operator and act on it only with operator confirmation."""
         resp = kb_health_fn(
             idx=state.idx,
             last_git_pull_at=state.last_git_pull_at,
@@ -828,7 +842,12 @@ def build_app(
             approved, within its validity window, and never a memory-inbox
             doc): an unreviewed proposed memory, a retired/superseded decision,
             an expired doc, or a legacy/forged inbox file is never returned as
-            a governing rule."""
+            a governing rule.
+
+            pending_actions, when present, lists open maintenance items (missing
+            `status` fields, recently-expired/expiring-soon docs); omitted when
+            the corpus is clean. Surface it to the operator and act on it only
+            with operator confirmation."""
             if (throttled := _mcp_rate_limited()) is not None:
                 return throttled
             import time as _time
@@ -841,7 +860,7 @@ def build_app(
                 ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
                 audit_log=state.audit_log, trigger=trigger,
             )
-            return resp.model_dump()
+            return resp.model_dump(exclude_none=True)
 
         @app.tool()
         def kb_gate_check(
@@ -956,6 +975,9 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         embeddings_enabled=config.embeddings_enabled,
         embeddings_weight=config.embeddings_weight,
         embeddings_model=config.embeddings_model,
+        maintenance_ledger_path=config.maintenance_ledger_path,
+        maintenance_recently_expired_days=config.maintenance_recently_expired_days,
+        maintenance_expiring_soon_days=config.maintenance_expiring_soon_days,
     )
 
 
