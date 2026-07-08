@@ -14,6 +14,46 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Provenance surfacing + consult hardening (issue #109).** Revised decision:
+  no `authority_state`/`allowed_use` enum (rejected as a parallel vocabulary
+  that could drift from `status`); the real gaps are fixed at the root
+  instead:
+  - **Memory stamping.** Server-rendered memory files (`kb_propose_memory`)
+    now carry `type: memory` and `status: proposed` in frontmatter (neither
+    was stamped before), so the EXISTING status filter, status rerank, and
+    compact deviation-only status emission all apply to an agent-written
+    memory with zero new code paths. Promotion out of `proposed` happens at
+    operator review time, not here.
+  - **Memory-inbox in-force floor.** A document under the memory-inbox prefix
+    (`KB_MEMORY_INBOX_PREFIX`, default `memory/inbox/`) is now NEVER in force,
+    regardless of claimed status — covers both a legacy inbox file and forged
+    frontmatter on an agent-written memory. Implemented as a new `is_inbox`
+    column derived once at index-build time
+    (`format.validate.is_inbox_path`/`memory_inbox_prefix`, the single source
+    also consulted by the write path) and composed into the existing
+    single-sourced `is_in_force` predicate and SQL fragments (`index.py`
+    schema version bumped 10 -> 11), not a forked predicate.
+  - **Computed `in_force: bool`** on verbose `kb_get` and verbose `kb_search`
+    hits, derived from the single-sourced predicate (status class AND
+    validity window AND not-inbox). Never stored in frontmatter — it is a
+    serving-layer-only derivation (see SPEC.md's new "runtime envelope"
+    note). Compact responses are unchanged (the existing deviation-only
+    `status`/`freshness` emissions stay as they are).
+  - **`evidence: list[str]`** optional parameter on `kb_propose_memory` and
+    `kb_propose_edit` (max 10 items, 500 chars each). For a memory proposal it
+    is rendered into frontmatter via the same `yaml.safe_dump` path as `tags`
+    (so a secret-shaped evidence item is caught by the existing
+    full-postimage secret scan — no separate scan needed); for an edit
+    proposal (whose postimage is caller-supplied verbatim, with no template)
+    it is validated and redacted the same way `reason` already is. In both
+    cases it is persisted in pending meta, echoed on the propose/commit audit
+    events, and surfaced by `kb_list_pending`.
+  - **`kb_list_pending` surfaces provenance it already persisted**:
+    `source_session`, `reason`, and the new `evidence` were already written
+    into pending meta at enqueue time but never returned; they are now on the
+    `PendingEntry` model (`None` when absent, e.g. a memory proposal has no
+    `reason`).
+
 - **Validity/freshness frontmatter metadata with hard expiry semantics**
   (issue #107, format `0.2`). Concept documents may now declare an optional
   nested `validity` object: `valid_from`, `valid_until`, `last_verified`,
@@ -94,6 +134,26 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BEHAVIOR CHANGE: `kb_consult` now hard-filters retrieval to the in-force
+  class (issue #109).** Previously `kb_consult` ran an UNFILTERED search, so
+  an unreviewed agent-written memory, a superseded/deprecated/rejected
+  decision, a draft/proposed document, an expired or upcoming doc, or a
+  memory-inbox file could all be handed back as "the" governing rule for an
+  intent — the single highest-value gap this change closes. `kb_consult` now
+  passes `in_force=true` internally, so only `active`/`accepted`/`approved`
+  documents within their validity window and NOT under the memory inbox are
+  ever returned as rules. **Operational caveat:** a document with no
+  `status` field at all (or a status outside `IN_FORCE_STATUSES`) now stops
+  appearing as a governing rule via `kb_consult`, where it previously did
+  (the prior unfiltered search surfaced it same as any other hit). `status`
+  becoming a mandatory field is tracked separately (issue #114); until a
+  bundle finishes that migration, a status-less doc that WAS relied upon as
+  an implicit rule via `kb_consult` will need `status: active` (or
+  `accepted`/`approved`) added before it is retrievable there again. Plain
+  `kb_search`/`kb_get` are unaffected (they still surface a status-less doc
+  by default); this change is scoped to the enforcement-facing `kb_consult`
+  retrieval path only.
+
 - **BEHAVIOR CHANGE: a document past its `validity.valid_until` now leaves
   the DEFAULT `kb_search` result set**, not just `in_force=true` queries.
   Previously there was no `validity` concept at all, so nothing was ever
@@ -113,7 +173,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `"expiring_within:N"`) for audit queries. `kb_get` by id always resolves
     regardless of expiry, returning the full `validity` object plus a
     computed `freshness` indicator. `kb_consult` never returns an expired
-    document (it reuses the default search path).
+    document (as of issue #109 below, via the `in_force=true` hard filter;
+    previously via the default search path's own expired-exclusion).
   - Compact search hits gain a deviation-only `freshness` field
     (`stale`/`expired`/`upcoming`), omitted when fresh or absent.
   - `kb lint` gains three new WARNING-only findings (never errors, since

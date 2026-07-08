@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -104,6 +105,8 @@ def is_in_force(
     valid_from: str | None,
     valid_until: str | None,
     today: str,
+    *,
+    is_inbox: bool = False,
 ) -> bool:
     """Single-sourced in-force predicate: status-class AND validity window.
 
@@ -113,10 +116,54 @@ def is_in_force(
     index's hard ``in_force`` filter and the dense (embedding) candidate
     source, so status-class and validity-window logic can never drift apart
     between the two call sites.
+
+    ``is_inbox`` (issue #109) is the memory-inbox in-force floor: a document
+    under the memory-inbox prefix is NEVER in force, no matter what status it
+    claims (covers both a legacy inbox file and forged frontmatter on an
+    agent-written memory). It is checked FIRST, short-circuiting the
+    status/window logic, so the floor composes as an additional condition
+    rather than a fork of this predicate. A future composable condition (e.g.
+    the lifecycle-edges supersession-graph exclusion) should follow the same
+    pattern: a keyword-only flag checked here, not a parallel function.
     """
+    if is_inbox:
+        return False
     if status not in IN_FORCE_STATUSES:
         return False
     return not is_expired(valid_until, today) and not is_upcoming(valid_from, today)
+
+
+# --- memory-inbox in-force floor (issue #109) --------------------------------
+#
+# Single source for "is this path under the memory inbox" so index.py (which
+# derives the `is_inbox` column at build time) and tools_write.py (which writes
+# new memory proposals under this prefix) can never drift apart. Previously
+# tools_write.py read KB_MEMORY_INBOX_PREFIX on its own with no relationship to
+# the index's path classification at all.
+
+
+def memory_inbox_prefix() -> str:
+    """Return the directory prefix under which memory proposals are written.
+
+    Defaults to the generic ``memory/inbox/``; a deployment with a different
+    layout overrides it via ``KB_MEMORY_INBOX_PREFIX`` (a trailing slash is
+    normalized in).
+    """
+    prefix = os.environ.get("KB_MEMORY_INBOX_PREFIX", "memory/inbox/").strip()
+    return prefix if prefix.endswith("/") else prefix + "/"
+
+
+def is_inbox_path(rel_path: str) -> bool:
+    """True when ``rel_path`` (KB-root-relative) falls under the memory inbox.
+
+    Normalizes backslashes so a path built on a platform that used them still
+    matches. Consulted at index build time to derive the ``is_inbox`` column;
+    NOT re-derived from ``category`` (a deployment-supplied taxonomy override
+    could reclassify the same path under a different category, and the floor
+    must still hold).
+    """
+    norm = rel_path.replace("\\", "/")
+    return norm.startswith(memory_inbox_prefix())
 
 
 def compute_freshness(
@@ -166,6 +213,18 @@ def in_force_sql_fragment(param: str = "?") -> str:
         f"(docs.valid_from IS NULL OR docs.valid_from <= {param}) "
         f"AND (docs.valid_until IS NULL OR docs.valid_until >= {param})"
     )
+
+
+def not_inbox_sql_fragment() -> str:
+    """WHERE fragment for the memory-inbox in-force floor (issue #109).
+
+    Takes no bind parameters: ``is_inbox`` is a plain 0/1 column computed once
+    at index build time (see :func:`is_inbox_path`), not a per-query value.
+    Callers AND this alongside the status-class and validity-window fragments
+    whenever ``in_force=True`` is requested, so an inbox doc can never satisfy
+    the hard in-force filter no matter what status it claims.
+    """
+    return "docs.is_inbox = 0"
 
 
 TIERS = frozenset({"T1", "T2", "T3", "T4", "meta"})

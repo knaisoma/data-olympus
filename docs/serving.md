@@ -412,6 +412,29 @@ requires a doc match `status` AND be in-force (so `status=superseded` with
 (embedding) candidate source, so a hybrid deployment never leaks an out-of-force
 doc through the semantic path.
 
+The predicate also excludes a memory-inbox floor (issue #109): a document
+under the memory-inbox prefix (`KB_MEMORY_INBOX_PREFIX`, default
+`memory/inbox/`) is never in force regardless of claimed status, so a legacy
+inbox file or forged frontmatter on an agent-written memory cannot satisfy
+`in_force=true` no matter what `status` it declares. This is a plain `is_inbox`
+column derived once at index build time, not a per-query prefix scan.
+
+`kb_consult` passes `in_force=true` on its internal retrieval unconditionally
+(not a caller-facing parameter): the enforcement surface must never present an
+unreviewed, retired, expired/upcoming, or memory-inbox document as a governing
+rule for a code/architectural decision. See `docs/enforcement.md`.
+
+**Computed `in_force` on verbose surfaces.** A verbose (`verbose=true`)
+`kb_get` response and each verbose `kb_search` hit carry a computed
+`in_force: bool`: the same single-sourced predicate evaluated against the
+doc's actual status/validity/inbox-membership, independent of whether the
+query itself passed `in_force=true`. This lets a caller retrieve a doc via a
+default (unfiltered) `kb_get`/`kb_search` and still tell whether it currently
+governs, without a second `in_force=true` round trip. It is a serving-layer
+derivation only, never written to frontmatter (see SPEC.md's "runtime
+envelope" note). Compact responses do not carry this field; the existing
+deviation-only `status`/`freshness` emissions are unchanged.
+
 ## Validity: expired docs leave default results
 
 Independent of `in_force`, a doc past its `validity.valid_until` date is
@@ -433,8 +456,10 @@ and `GET /api/v1/search`):
   `recheck_by`) stays in force and visible.
 
 `kb_get` by id always resolves regardless of expiry, returning the full
-`validity` object plus the computed `freshness` indicator. `kb_consult`
-reuses the default search path and therefore never returns an expired doc.
+`validity` object plus the computed `freshness` indicator. `kb_consult` never
+returns an expired (or upcoming, or proposed/retired, or memory-inbox) doc,
+via its unconditional `in_force=true` retrieval (see the `in_force` section
+above), not merely by reusing the default search path's own expired-exclusion.
 The `data-olympus validity-report` CLI subcommand lists expired and
 soon-to-expire docs from a bundle directory.
 

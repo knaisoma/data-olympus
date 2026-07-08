@@ -328,7 +328,11 @@ def test_render_memory_newline_in_agent_identity_cannot_forge_keys() -> None:
     # The whole payload survives ONLY as the created_by value; no forged keys.
     assert fm["created_by"] == payload
     assert "id" not in fm
-    assert "status" not in fm
+    # `status` IS a real stamped key (issue #109: memory stamping), but it must
+    # be the server-stamped "proposed" value, never the payload's forged
+    # "accepted" -- i.e. the embedded "status: accepted" did not escape into
+    # its own top-level key.
+    assert fm["status"] == "proposed"
     assert "supersedes" not in fm
 
 
@@ -344,6 +348,43 @@ def test_render_memory_bracket_in_tag_cannot_forge_keys() -> None:
     fm = yaml.safe_load(fm_text)
     assert "id" not in fm
     assert fm["tags"] == ["a], id: forged", "normal"]
+
+
+# ---- issue #109: memory stamping (type/status) + evidence rendering ----
+
+
+def test_render_memory_stamps_type_and_status() -> None:
+    """Server-rendered memories are stamped `type: memory`, `status: proposed`
+    so the existing status filter / rerank / in-force machinery applies with
+    zero new code paths. Promotion out of `proposed` happens at review time."""
+    import yaml
+
+    from data_olympus.tools_write import _render_memory
+    out = _render_memory(text="body", tags=[], agent_identity="claude")
+    fm = yaml.safe_load(out.split("---\n", 2)[1])
+    assert fm["type"] == "memory"
+    assert fm["status"] == "proposed"
+
+
+def test_render_memory_includes_evidence_when_supplied() -> None:
+    import yaml
+
+    from data_olympus.tools_write import _render_memory
+    out = _render_memory(
+        text="body", tags=[], agent_identity="claude",
+        evidence=["saw it in the logs", "confirmed with operator"],
+    )
+    fm = yaml.safe_load(out.split("---\n", 2)[1])
+    assert fm["evidence"] == ["saw it in the logs", "confirmed with operator"]
+
+
+def test_render_memory_omits_evidence_key_when_absent() -> None:
+    import yaml
+
+    from data_olympus.tools_write import _render_memory
+    out = _render_memory(text="body", tags=[], agent_identity="claude")
+    fm = yaml.safe_load(out.split("---\n", 2)[1])
+    assert "evidence" not in fm
 
 
 def test_propose_memory_forged_tag_does_not_forge_id(tmp_path, monkeypatch) -> None:
@@ -810,3 +851,115 @@ def test_no_marker_with_refresh_failure_still_commits(tmp_path, monkeypatch) -> 
     )
     assert resp.status == "committed"
     assert pq.size() == 1
+
+
+# ---------------------------------------------------------------------------
+# issue #109: `evidence` on kb_propose_memory / kb_propose_edit
+# ---------------------------------------------------------------------------
+
+
+def test_propose_memory_evidence_surfaces_via_pending(tmp_path) -> None:
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_memory_fn(
+        text="lowconf", tags=[], source_session="session-abc",
+        agent_identity="claude", confidence=0.4, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="10.0.0.1",
+        evidence=["saw it in the logs", "confirmed with operator"],
+    )
+    assert resp.status == "pending_confirmation"
+    listed = kb_list_pending_fn(pending=pen)
+    entry = next(e for e in listed.pending if e.pending_id == resp.pending_id)
+    assert entry.evidence == ["saw it in the logs", "confirmed with operator"]
+    assert entry.source_session == "session-abc"
+
+
+def test_propose_memory_evidence_rejects_too_many_items(tmp_path) -> None:
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_memory_fn(
+        text="x", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.9, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+        evidence=[f"item {i}" for i in range(11)],
+    )
+    assert resp.status == "rejected_invalid_evidence"
+    assert pq.size() == 0
+    assert pen.size() == 0
+
+
+def test_propose_memory_evidence_rejects_oversized_item(tmp_path) -> None:
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_memory_fn(
+        text="x", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.9, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+        evidence=["y" * 501],
+    )
+    assert resp.status == "rejected_invalid_evidence"
+
+
+def test_propose_memory_evidence_within_limits_accepted(tmp_path, monkeypatch) -> None:
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_memory_fn(
+        text="note", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+        evidence=[f"item {i}" for i in range(9)] + ["z" * 500],
+    )
+    assert resp.status == "committed"
+
+
+def test_propose_memory_secret_in_evidence_rejected_redacted(tmp_path, monkeypatch) -> None:
+    """Evidence is rendered into the frontmatter of the postimage (issue #109),
+    so a secret-shaped evidence string passes through the SAME full-postimage
+    secret scan the propose path already runs -- no separate scan is needed.
+    The rejection must redact (pattern name only), never echo the raw secret."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_memory_fn(
+        text="note", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+        evidence=["AKIAABCDEFGHIJKLMNOP"],
+    )
+    assert resp.status == "rejected_secret_detected"
+    assert resp.matching_pattern
+    assert "AKIAABCDEFGHIJKLMNOP" not in (resp.reason or "")
+    assert pq.size() == 0
+
+
+def test_propose_edit_evidence_surfaces_via_pending(tmp_path) -> None:
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    target, blob = _seed_t1_file(repo)
+    resp = kb_propose_edit_fn(
+        target_path=target, postimage="new body\n", base_commit="HEAD",
+        base_blob_sha=blob, target_file_hash=None, reason="lowconf",
+        source_session="s", agent_identity="claude",
+        confidence=0.5, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+        evidence=["checked the runbook"],
+    )
+    assert resp.status == "pending_confirmation"
+    listed = kb_list_pending_fn(pending=pen)
+    entry = next(e for e in listed.pending if e.pending_id == resp.pending_id)
+    assert entry.evidence == ["checked the runbook"]
+    assert entry.reason == "lowconf"
+
+
+def test_propose_edit_evidence_rejects_too_many_items(tmp_path) -> None:
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    target, blob = _seed_t1_file(repo)
+    resp = kb_propose_edit_fn(
+        target_path=target, postimage="new body\n", base_commit="HEAD",
+        base_blob_sha=blob, target_file_hash=None, reason="x",
+        source_session="s", agent_identity="claude",
+        confidence=0.9, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+        evidence=[f"item {i}" for i in range(11)],
+    )
+    assert resp.status == "rejected_invalid_evidence"

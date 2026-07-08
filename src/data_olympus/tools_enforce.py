@@ -63,13 +63,21 @@ def kb_consult_fn(
     default, which clears the gate) from an installer prompt-hook auto-consult
     (PROMPT_HOOK_TRIGGER, recorded for audit/compliance but never gate-clearing).
     Old clients that omit the field are treated as explicit, since a bare consult
-    call is always a real agent action."""
+    call is always a real agent action.
+
+    Retrieval is HARD-filtered to the in-force class (issue #109:
+    ``in_force=True`` on the internal search), so this enforcement surface can
+    never present an unreviewed, proposed, retired, expired, upcoming, or
+    memory-inbox document as a governing rule. Previously this ran an
+    unfiltered search, so e.g. a server-rendered agent memory (before it is
+    reviewed) or a superseded decision could be handed back as "the" rule for
+    an intent."""
     trigger = trigger if trigger in _TRIGGERS else EXPLICIT_TRIGGER
     result = classifier.classify(intent=intent)
     rules = []
     rule_ids: list[str] = []
     if result.is_governed_decision:
-        search = kb_search_fn(idx=idx, query=intent, limit=limit)
+        search = kb_search_fn(idx=idx, query=intent, limit=limit, in_force=True)
         rules = list(search.hits)
         rule_ids = [h.id for h in search.hits]
     ledger.record(

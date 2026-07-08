@@ -141,7 +141,7 @@ def kb_search_fn(
     validity_state: str | None = None,
     today: str | None = None,
 ) -> SearchResponse:
-    from data_olympus.format.validate import compute_freshness, today_iso
+    from data_olympus.format.validate import compute_freshness, is_in_force, today_iso
     from data_olympus.search_gate import abstain_gate
 
     # Clamp to 1..100. Clamping only the upper bound let a negative
@@ -193,6 +193,10 @@ def kb_search_fn(
                     valid_from=h.valid_from, valid_until=h.valid_until,
                     recheck_by=h.recheck_by, today=today,
                 ) or "",
+                in_force=is_in_force(
+                    h.status, h.valid_from, h.valid_until, today,
+                    is_inbox=h.is_inbox,
+                ),
             )
             for h in hits
         ],
@@ -208,7 +212,7 @@ class KbNotFoundError(Exception):
 
 
 def kb_get_fn(*, idx: Index, id: str, today: str | None = None) -> GetResponse:
-    from data_olympus.format.validate import compute_freshness, today_iso
+    from data_olympus.format.validate import compute_freshness, is_in_force, today_iso
 
     doc = idx.get(id)
     if doc is None:
@@ -231,6 +235,9 @@ def kb_get_fn(*, idx: Index, id: str, today: str | None = None) -> GetResponse:
         valid_from=doc.valid_from, valid_until=doc.valid_until,
         recheck_by=doc.recheck_by, today=today,
     ) or ""
+    in_force = is_in_force(
+        doc.status, doc.valid_from, doc.valid_until, today, is_inbox=doc.is_inbox,
+    )
     return GetResponse(
         id=doc.id,
         path=doc.path,
@@ -249,6 +256,7 @@ def kb_get_fn(*, idx: Index, id: str, today: str | None = None) -> GetResponse:
         git_remote_url=doc.git_remote_url,
         validity=validity,
         freshness=freshness,
+        in_force=in_force,
     )
 
 

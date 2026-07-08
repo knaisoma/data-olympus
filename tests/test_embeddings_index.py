@@ -182,7 +182,7 @@ def test_build_default_off_has_no_vectors(
     assert _vector_count(db) == 0
 
 
-def test_schema_version_is_v10(
+def test_schema_version_is_v11(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("KB_EMBEDDINGS_MODE", raising=False)
@@ -198,7 +198,8 @@ def test_schema_version_is_v10(
         ).fetchone()
     finally:
         conn.close()
-    assert row[0] == "10"
+    # v11 adds the is_inbox column (issue #109).
+    assert row[0] == "11"
 
 
 def test_doc_vectors_table_present_in_schema(

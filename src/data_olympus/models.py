@@ -138,6 +138,12 @@ class SearchHitModel(BaseModel):
     # or the validity_state facet); default kb_search never returns an
     # expired doc at all.
     freshness: str = ""
+    # Computed in-force boolean (issue #109), verbose-only (see compact_dump):
+    # the single-sourced format.validate.is_in_force predicate (status class
+    # AND validity window AND not-inbox), NEVER stored in frontmatter. Exposed
+    # so a caller reading a hit that was NOT retrieved via in_force=True (e.g.
+    # a default kb_search) can still tell whether it may govern now.
+    in_force: bool = True
 
     def compact_dump(self) -> dict[str, object]:
         """Token-lean hit shape (issue #65).
@@ -236,6 +242,11 @@ class GetResponse(BaseModel):
     # shows when explicitly included.
     validity: dict[str, str] | None = None
     freshness: str = ""
+    # Computed in-force boolean (issue #109), verbose-only (see compact_dump):
+    # see SearchHitModel.in_force for the rationale. kb_get always resolves
+    # regardless of expiry, so this is the caller's single signal for "may this
+    # doc govern now", independent of status/validity/inbox being read apart.
+    in_force: bool = True
 
     def compact_dump(self) -> dict[str, object]:
         """Token-lean kb_get response (issue #65).
@@ -316,6 +327,7 @@ class ProposeMemoryRequest(BaseModel):
     source_session: str
     agent_identity: str
     confidence: float
+    evidence: list[str] = []
 
 
 class ProposeEditRequest(BaseModel):
@@ -328,6 +340,7 @@ class ProposeEditRequest(BaseModel):
     source_session: str
     agent_identity: str
     confidence: float
+    evidence: list[str] = []
 
 
 class ProposeResponse(BaseModel):
@@ -384,6 +397,18 @@ class PendingEntry(BaseModel):
     # raw postimage; the matched value itself is never included here.
     secret_scan_flagged: bool = False
     matching_pattern: str | None = None
+    # Provenance (issue #109): already persisted in pending meta at enqueue
+    # time (source_session on both proposal types, reason on edit proposals),
+    # simply not surfaced by kb_pending until now. None when the entry
+    # predates this field or the proposal type does not carry it (e.g. a
+    # memory proposal has no `reason`).
+    source_session: str | None = None
+    reason: str | None = None
+    # Optional supporting evidence the proposer supplied (kb_propose_memory /
+    # kb_propose_edit `evidence` param), redacted item-by-item by the same
+    # secret scanner as `tags` before it ever reaches pending meta. None when
+    # no evidence was supplied.
+    evidence: list[str] | None = None
 
 
 class PendingListResponse(BaseModel):
@@ -410,6 +435,10 @@ class AuditEvent(BaseModel):
     # True only on a resolve that committed a postimage the scanner flagged,
     # via an explicit operator override (never set by an auto-commit path).
     secret_scan_override: bool | None = None
+    # Provenance (issue #109): the redacted evidence list echoed on
+    # propose_memory / propose_edit audit events, when supplied. Never the raw
+    # value if a scan flagged an item (see tools_write._redact_evidence).
+    evidence: list[str] | None = None
     # Tamper-evident chain fields (present on events appended with chaining).
     event_id: str | None = None
     prev_hash: str | None = None

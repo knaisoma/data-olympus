@@ -284,6 +284,10 @@ These three are mirrored as the `kb_consult`, `kb_gate_check`, and `kb_complianc
 
 **Only an explicit-trigger consultation satisfies the gate.** `POST /api/v1/gate/check` returns `allow` only when a fresh `POST /api/v1/consult` is on record for the action's `(session_id, workspace)` pair. A read-only KB search or any other tool call does NOT count as a consultation and does NOT clear the gate; the agent MUST issue an explicit `kb_consult` (or the REST equivalent) whose freshness is bounded by `KB_CONSULT_TTL_SEC`. See [`docs/enforcement.md`](docs/enforcement.md).
 
+**`kb_consult` retrieval is hard-filtered to the in-force class.** The rules `kb_consult` returns for a governed intent are restricted to the in-force class (section 4.2's `IN_FORCE_STATUSES`, within their validity window, and never a memory-inbox document — see the runtime envelope note below), so an unreviewed proposed memory, a retired/superseded/rejected document, or an expired/upcoming document is never presented as a governing rule.
+
+**Runtime envelope: computed `in_force` is a serving-layer derivation, never frontmatter.** A verbose `kb_get` or verbose `kb_search` hit MAY carry a computed `in_force: bool` field: the single-sourced predicate (status class AND validity window AND not-under-the-memory-inbox-prefix) evaluated at request time against the server's current clock. This field is NEVER written to a document's frontmatter and MUST NOT be treated as bundle content — it exists only in the served response envelope, alongside `freshness` and the other derived fields section 4.2 already documents. A bundle's on-disk conformance (section 9) is judged entirely on frontmatter; the runtime envelope is additive and orthogonal.
+
 ---
 
 ## 9. Conformance
