@@ -178,9 +178,16 @@ additive and orthogonal, visible only in served MCP/REST responses.
 | `in_force` | `SearchHitModel.in_force`, `GetResponse.in_force` | Single-sourced predicate: status class AND validity window AND not-inbox AND not-graph-excluded (`format.validate.is_in_force`). Verbose responses carry it unconditionally; compact responses emit it deviation-only (`in_force: false` only). |
 | `freshness` | `SearchHitModel.freshness`, `GetResponse.freshness` | One of `stale` / `expired` / `upcoming`, or omitted when fresh or the doc has no `validity` block (`compute_freshness`). |
 | `superseded_by` (computed) | `SearchHitModel.superseded_by`, `GetResponse.superseded_by` | Union of the document's own frontmatter claim and any reverse `supersedes` edge naming it; omitted when empty. |
-| `contradicted_by` | `GetResponse.contradicted_by` | Computed reverse of `contradicts`: every other doc whose `contradicts` names this one. Verbose `kb_get` only. |
+| `contradicted_by` | `GetResponse.contradicted_by` | Computed reverse of `contradicts`: every other doc whose `contradicts` names this one. `kb_get` only (not on search hits); verbose responses always carry it, compact responses emit it when non-empty (`GetResponse.compact_dump`). |
 | `pending_actions` | `HealthResponse.pending_actions`, `ConsultResponse.pending_actions` | Maintenance-ledger CTA (issue #113): short `{kind, message, count}` items an agent should surface to the operator and act on only with confirmation. Omitted entirely (not an empty list) when the corpus is clean. |
-| session recap | planned for `kb_consult`/`kb_health` pending-actions envelope | **Shipping in 0.4.0** ([issue #112](https://github.com/knaisoma/data-olympus/issues/112)): a per-session summary (N committed, M pending) so a governed-lane demotion is never silent. Not yet in `models.py` as of this document — see the note below. |
+
+Every row above is shipped and present in `src/data_olympus/models.py` at the
+code state this document describes. One further envelope addition — a
+per-session recap (N committed, M pending) surfaced through the existing
+`pending_actions` envelope so a governed-lane demotion is never silent — is
+part of [issue #112](https://github.com/knaisoma/data-olympus/issues/112),
+**shipping in 0.4.0** but not yet merged; see the #112 note below for why it
+is not tabled here.
 
 `kb_consult`'s retrieval is hard-filtered to the in-force class (`SPEC.md`
 section 8): the rules it returns are restricted to `IN_FORCE_STATUSES`, within
@@ -204,12 +211,17 @@ persisted in pending meta and are now returned by `kb_list_pending`
 merged).** Per the issue design: a non-operator-confirmed write may not set or
 change `status` into the in-force class, and any agent-proposed edit targeting
 an already in-force document is always demoted to pending regardless of
-confidence. Neither mechanism adds a new frontmatter field — the design notes
-describe a per-write notice plus a per-session recap surfaced through the
-existing `pending_actions` envelope, not a new schema field, so no new row
-belongs in the field tables above until the recap's exact shape lands. This
-subsection is intentionally small: expect a follow-up doc-consistency pass
-once #112 merges.
+confidence. To be explicit about the code state this document describes:
+neither mechanism exists at HEAD yet — a high-confidence agent edit still
+auto-commits (`operator_confirmed=False` in `tools_write.py`'s commit path)
+and the write gate's status vocabulary (`write_gate._WRITE_STATUSES`) accepts
+in-force values (`active`, `accepted`, `approved`) on any write, so today an
+unreviewed write CAN claim in-force status. #112 closes exactly that gap.
+Neither mechanism adds a new frontmatter field — the design describes a
+per-write notice plus the per-session recap mentioned above, surfaced through
+the existing `pending_actions` envelope, so no new row belongs in the field
+tables until the recap's exact shape lands. This subsection is intentionally
+small: expect a follow-up doc-consistency pass once #112 merges.
 
 ---
 
@@ -251,10 +263,13 @@ where data-olympus currently stands on each axis.
   vocabulary to paper over them. `origin_provider` (constant inside
   data-olympus) and `asserted_by` (duplicate of `agent_identity`) were
   rejected for the same not-worth-a-parallel-field reasoning. The
-  authority-forgery risk that motivated the original ask is handled instead by
-  governed-lane protection (issue #112, section 3 above), which prevents an
-  unreviewed write from minting in-force status in the first place rather
-  than adding a field to describe the risk after the fact.
+  authority-forgery risk that motivated the original ask was explicitly split
+  out of the #109 slice and assigned to governed-lane protection ([issue
+  #112](https://github.com/knaisoma/data-olympus/issues/112), shipping in
+  0.4.0 but not merged at the code state this document describes — see the
+  #112 note in section 3 for what HEAD currently allows). The direction is a
+  write-path control that prevents an unreviewed write from minting in-force
+  status, rather than a frontmatter field describing the risk after the fact.
 
 ---
 
@@ -262,18 +277,22 @@ where data-olympus currently stands on each axis.
 
 "OKF-baseline readable" means an OKF consumer that tolerates unknown keys (per
 section 1's inherited rule) can safely ignore the field. Every data-olympus
-extension is readable this way by construction; none of them are in OKF's own
-minimal set (`type`, `title`, `description`, `resource`, `tags`, `timestamp`).
+extension is readable this way by construction. The table also includes the
+OKF-recommended fields this profile constrains further (`type`, `title`,
+`description`, `tags`, `timestamp`), so a single table answers both "will an
+OKF consumer choke on this" and "what does data-olympus tooling do with it".
 
 | Field | OKF-baseline readable? | Lint status | Consumer behavior |
 |---|---|---|---|
-| `id` | yes (unknown key) | error if missing | Stable cross-reference target; never derived from path. |
+| `id` | yes (unknown key) | error if missing | Stable cross-reference target, decoupled from path. Conformance requires an authored `id`; for a non-conformant doc with none, the reference index derives an effective id from the path (`index._derive_id_from_path`) so the doc stays addressable — a fallback for broken input, not a sanctioned authoring mode. |
 | `type` | partially — OKF defines the key, not the vocabulary | error if missing/invalid | Controlled vocabulary layered on OKF's minimal `type` field. |
 | `status` | yes (unknown key) | error if missing/invalid | Drives `IN_FORCE_STATUSES` class membership; absence is the #114 migration hazard. |
 | `tier` | yes (unknown key) | error if missing/invalid | Scope classification; not evaluated by retrieval logic itself. |
+| `title` | yes — OKF recommends it | warning if missing | Boosted in `kb_search` alongside `applies_when`; part of the abstention gate's discriminating column set. |
+| `description` | yes — OKF recommends it | warning if missing | Indexed below `title`/`applies_when`; deliberately excluded from the abstention gate. |
 | `applies_when` | yes (unknown key) | none (documented, not lint-checked) | Highest-weight `kb_search` field; feeds the abstention gate. |
-| `tags` | partially — OKF recommends the key | warning if present and not a list | Faceted search. |
-| `timestamp` | yes — OKF recommends it | none | Content-change metadata; MUST NOT be read as freshness. |
+| `tags` | partially — OKF recommends the key | warning if missing; warning if present and not a list | Faceted search; part of the abstention gate's discriminating column set. |
+| `timestamp` | yes — OKF recommends it | warning if missing | Content-change metadata; MUST NOT be read as freshness. |
 | `supersedes` | yes (unknown key) | error (shape/self/cycle), warning (dangling/asymmetric/path-shaped) | Extracted into the `edges` table; source of the in-force-source graph-exclusion guard. |
 | `superseded_by` | yes (unknown key) | error (shape/self), warning (dangling/asymmetric/path-shaped/in-force) | Same edges table; surfaced on `kb_get`/compact hits (deviation-only). |
 | `contradicts` | yes (unknown key) | error (shape), warning (dangling/path-shaped/in-force pair) | Annotation only; never filters or ranks. |
@@ -281,7 +300,7 @@ minimal set (`type`, `title`, `description`, `resource`, `tags`, `timestamp`).
 | `validity` (and sub-fields) | yes (unknown key) | warning only (malformed value, `recheck_by` past, `valid_until` past while in-force) | Drives `in_force` and default-search exclusion for expiry; `recheck_by` drives `freshness: stale` only. |
 | `in_force` (runtime) | n/a — never in frontmatter | n/a | Serving-envelope only; MUST NOT be treated as bundle content. |
 | `freshness` (runtime) | n/a — never in frontmatter | n/a | Serving-envelope only. |
-| `contradicted_by` (runtime) | n/a — never in frontmatter | n/a | Serving-envelope only; verbose `kb_get`. |
+| `contradicted_by` (runtime) | n/a — never in frontmatter | n/a | Serving-envelope only; `kb_get` (verbose always, compact when non-empty). |
 | `pending_actions` (runtime) | n/a — never in frontmatter | n/a | Serving-envelope only; `kb_health`/`kb_consult`. |
 
 ---
