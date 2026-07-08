@@ -145,6 +145,74 @@ def test_validate_allows_same_id_same_path_edit(tmp_path) -> None:
     assert r.ok
 
 
+def test_validate_rejects_new_document_missing_status(tmp_path) -> None:
+    """Issue #114 write-path migration: status has always been a REQUIRED
+    field (SPEC.md 4.2) and a `kb lint` error, but the write gate historically
+    let a brand-NEW status-less document through (the enum check above only
+    fires when status is PRESENT and invalid). A newly created, non-reserved,
+    non-memory-inbox document without `status` is now rejected."""
+    idx = _index_with(tmp_path, {})
+    new_doc = "---\nid: STD-U-060\ntype: standard\ntier: T1\n---\nbody\n"
+    r = validate_postimage(target_path="universal/foundation/STD-U-060.md",
+                           postimage=new_doc, idx=idx)
+    assert not r.ok
+    assert any(e["code"] == "missing_status" for e in r.errors)
+
+
+def test_validate_allows_edit_to_existing_status_less_document(tmp_path) -> None:
+    """A LEGACY document already missing status (pre-dating this migration)
+    can still be edited without adding status -- the staged migration
+    (maintenance ledger, issue #113) lets operators fix the corpus
+    incrementally rather than being locked out of touching a legacy file."""
+    idx = _index_with(tmp_path, {
+        "universal/foundation/STD-U-LEGACY.md":
+            "---\nid: STD-U-LEGACY\ntype: standard\ntier: T1\n---\nold body\n",
+    })
+    edited = "---\nid: STD-U-LEGACY\ntype: standard\ntier: T1\n---\nnew body\n"
+    r = validate_postimage(
+        target_path="universal/foundation/STD-U-LEGACY.md", postimage=edited, idx=idx)
+    assert r.ok
+
+
+def test_validate_allows_edit_to_existing_status_less_document_via_worktree(tmp_path) -> None:
+    """Same as above, but existence is known only through the WORKTREE tree
+    (no live index yet) -- the same two-source existence check the
+    duplicate-id gate already uses."""
+    import subprocess as sp
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    sp.run(["git", "init", "--initial-branch=main", str(wt)], check=True, env=_env())
+    legacy = wt / "universal" / "foundation" / "STD-U-LEGACY.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("---\nid: STD-U-LEGACY\ntype: standard\ntier: T1\n---\nold\n")
+    sp.run(["git", "add", "-A"], cwd=str(wt), check=True, env=_env())
+    sp.run(["git", "commit", "-m", "seed"], cwd=str(wt), check=True, env=_env())
+    r = validate_postimage(
+        target_path="universal/foundation/STD-U-LEGACY.md",
+        postimage="---\nid: STD-U-LEGACY\ntype: standard\ntier: T1\n---\nnew\n",
+        idx=None, worktree_path=str(wt),
+    )
+    assert r.ok
+
+
+def test_validate_rejects_new_document_missing_status_via_worktree(tmp_path) -> None:
+    """A NEW file (absent from BOTH idx and the worktree tree) without status
+    is rejected even when there is no live index at all (bootstrap case)."""
+    import subprocess as sp
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    sp.run(["git", "init", "--initial-branch=main", str(wt)], check=True, env=_env())
+    sp.run(["git", "commit", "--allow-empty", "-m", "seed"], cwd=str(wt), check=True,
+           env=_env())
+    r = validate_postimage(
+        target_path="universal/foundation/STD-U-NEW.md",
+        postimage="---\nid: STD-U-NEW\ntype: standard\ntier: T1\n---\nbody\n",
+        idx=None, worktree_path=str(wt),
+    )
+    assert not r.ok
+    assert any(e["code"] == "missing_status" for e in r.errors)
+
+
 def test_validate_allows_memory_without_required_fields(tmp_path) -> None:
     """Memory-inbox documents legitimately carry no id/type/status/tier; the gate
     must not reject them just for being sparse (only actively malformed docs)."""

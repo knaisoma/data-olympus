@@ -626,6 +626,30 @@ def test_propose_edit_duplicate_id_rejected(tmp_path, monkeypatch) -> None:
     assert pq.size() == 0
 
 
+def test_propose_edit_new_document_missing_status_rejected(tmp_path, monkeypatch) -> None:
+    """Issue #114 write-path migration: a NEW document created via
+    kb_propose_edit without `status` is rejected -- status has always been a
+    required field (SPEC.md 4.2) and a `kb lint` error, but the write path
+    previously let a brand-new status-less document through. Editing an
+    EXISTING status-less document (see test_kb_propose_edit_high_conf_commits,
+    whose seeded doc has no status/type at all) remains allowed so operators
+    can migrate a legacy corpus incrementally."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    idx = _build_index(git._repo)
+    new_doc = "---\nid: NEW-1\ntype: standard\ntier: T1\n---\nbody\n"
+    resp = kb_propose_edit_fn(
+        target_path="universal/foundation/NEW-1.md", postimage=new_doc,
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason="", source_session="s", agent_identity="claude", confidence=0.95,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4", idx=idx,
+    )
+    assert resp.status == "rejected_invalid_document"
+    assert "status" in (resp.reason or "").lower()
+    assert pq.size() == 0
+
+
 def test_memory_filename_collision_distinct_sessions(tmp_path, monkeypatch) -> None:
     """item 6: two same-day, same-slug memories from DIFFERENT sessions get
     distinct filenames (the uniquifier), so neither overwrites the other."""
