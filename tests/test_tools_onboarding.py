@@ -323,10 +323,14 @@ def test_absent_bootstrap_unchanged_writes_all_files(tmp_path) -> None:
 
 
 def test_partial_high_conf_commit_does_not_overwrite_existing(
-    tmp_path, real_worktrees,
+    tmp_path, real_worktrees, monkeypatch,
 ) -> None:
     """High-confidence partial bootstrap commits only the missing file into the
     worktree; the present file is never written (item 1, commit path)."""
+    # This test is about the partial-bootstrap overwrite guard, not
+    # governance; AGENTS.md's status: active would otherwise trip the issue
+    # #112 governed-lane status clamp and demote instead of commit.
+    monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     from data_olympus.auth import PathBlocklist
     from data_olympus.onboarding_inflight import BootstrapInFlight
     from data_olympus.pending import PendingQueue
@@ -370,10 +374,16 @@ def test_partial_high_conf_commit_does_not_overwrite_existing(
 # item 2: double-bootstrap within the convergence window is rejected.
 # --------------------------------------------------------------------------
 
-def test_double_bootstrap_within_window_rejected(tmp_path, real_worktrees) -> None:
+def test_double_bootstrap_within_window_rejected(
+    tmp_path, real_worktrees, monkeypatch,
+) -> None:
     """After a committed bootstrap, the index still reports absent until it
     converges; a second bootstrap in that window is rejected as in-progress
     (item 2)."""
+    # This test is about the in-flight double-bootstrap guard, not
+    # governance; README.md's status: active would otherwise trip the issue
+    # #112 governed-lane status clamp and demote instead of commit.
+    monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     from data_olympus.auth import PathBlocklist
     from data_olympus.onboarding_inflight import BootstrapInFlight
     from data_olympus.pending import PendingQueue
