@@ -81,6 +81,33 @@ def test_non_default_config_is_threaded_into_app(
     assert state.config.write_block_paths == ["decisions/DEC-008-*.md"]
 
 
+def test_maintenance_ledger_config_reaches_the_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KB_MAINTENANCE_* (issue #113) must reach the live Index instance, not
+    just state.config."""
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    monkeypatch.setenv("KB_MAIN_PATH", str(kb))
+    monkeypatch.setenv("KB_INDEX_PATH", str(tmp_path / "kb.db"))
+    monkeypatch.setenv("KB_MAINTENANCE_LEDGER_PATH", "ops/kb-ledger.md")
+    monkeypatch.setenv("KB_MAINTENANCE_RECENTLY_EXPIRED_DAYS", "14")
+    monkeypatch.setenv("KB_MAINTENANCE_EXPIRING_SOON_DAYS", "45")
+
+    cfg = load_config()
+    assert cfg.maintenance_ledger_path == "ops/kb-ledger.md"
+    assert cfg.maintenance_recently_expired_days == 14
+    assert cfg.maintenance_expiring_soon_days == 45
+
+    app = server.build_app_from_config(cfg, bootstrap_now=False)
+    state = app._dolympus_state  # type: ignore[attr-defined]
+
+    assert state.config.maintenance_ledger_path == "ops/kb-ledger.md"
+    assert state.idx._maintenance_ledger_path == "ops/kb-ledger.md"
+    assert state.idx._maintenance_recently_expired_days == 14
+    assert state.idx._maintenance_expiring_soon_days == 45
+
+
 def test_write_block_tiers_reach_blocklist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_git_kb: Path
 ) -> None:

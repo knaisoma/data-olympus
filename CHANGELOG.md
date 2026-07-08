@@ -14,6 +14,33 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Maintenance ledger: committed corpus-state audit + `pending_actions` CTA
+  surface (issue #113).** A frontmatter-only markdown doc (default
+  `tooling/maintenance-ledger.md`, `KB_MAINTENANCE_LEDGER_PATH`) is now
+  computed at every index build: whether `status` is present on every
+  indexed document (except reserved filenames), plus a capped list (50 paths
+  + a total count) of the ones missing it — the migration vehicle for making
+  `status` mandatory — and, consuming issue #107 validity data, documents
+  that recently expired or are expiring soon within configurable windows
+  (`KB_MAINTENANCE_RECENTLY_EXPIRED_DAYS` / `KB_MAINTENANCE_EXPIRING_SOON_DAYS`,
+  both default 30 days), each capped the same way. When the computed state
+  changes since the last committed copy, the ledger is committed through the
+  same serialized write/commit machinery every other write uses (system
+  agent identity `data-olympus-system`, a normal `maintenance_ledger` audit
+  event); a commit failure is logged/audited and never breaks index refresh
+  or serving. The ledger doc is excluded from its own audit and always
+  carries valid concept frontmatter, so it lints clean on its own merits
+  rather than relying on reserved-filename semantics. The same computed state
+  drives a new `pending_actions` field (a list of `{kind, message, count}`
+  items) on `kb_consult` and `kb_health` responses — deliberately never
+  `kb_search` — present only while the corpus is dirty; both tool
+  descriptions now instruct the model to surface open items to the operator
+  and act on them only with operator confirmation. `kb health`'s plain-text
+  CLI summary displays any open items. Silencing is automatic: remediate,
+  the next index build flips the flag, the next ledger commit records it,
+  and `pending_actions` disappears with no manual acking. See
+  `docs/operations.md` §5.
+
 - **Validity/freshness frontmatter metadata with hard expiry semantics**
   (issue #107, format `0.2`). Concept documents may now declare an optional
   nested `validity` object: `valid_from`, `valid_until`, `last_verified`,
