@@ -412,32 +412,99 @@ requires a doc match `status` AND be in-force (so `status=superseded` with
 (embedding) candidate source, so a hybrid deployment never leaks an out-of-force
 doc through the semantic path.
 
-The predicate also excludes a memory-inbox floor (issue #109): a document
+The predicate also applies a memory-inbox floor (issue #109): a document
 under the memory-inbox prefix (`KB_MEMORY_INBOX_PREFIX`, default
 `memory/inbox/`) is never in force regardless of claimed status, so a legacy
 inbox file or forged frontmatter on an agent-written memory cannot satisfy
 `in_force=true` no matter what `status` it declares. This is a plain `is_inbox`
-column derived once at index build time, not a per-query prefix scan.
+column derived once at index build time, not a per-query prefix scan. Together
+with the supersession-graph exclusion below, the full in-force predicate is:
+status class AND validity window AND not-inbox AND not-graph-excluded.
 
 `kb_consult` passes `in_force=true` on its internal retrieval unconditionally
 (not a caller-facing parameter): the enforcement surface must never present an
-unreviewed, retired, expired/upcoming, or memory-inbox document as a governing
-rule for a code/architectural decision. See `docs/enforcement.md`.
+unreviewed, retired, expired/upcoming, memory-inbox, or graph-excluded
+document as a governing rule for a code/architectural decision. See
+`docs/enforcement.md`.
 
 **Computed `in_force` on served responses.** A verbose (`verbose=true`)
 `kb_get` response and each verbose `kb_search` hit carry a computed
 `in_force: bool`: the same single-sourced predicate evaluated against the
-doc's actual status/validity/inbox-membership, independent of whether the
-query itself passed `in_force=true`. This lets a caller retrieve a doc via a
-default (unfiltered) `kb_get`/`kb_search` and still tell whether it currently
-governs, without a second `in_force=true` round trip. It is a serving-layer
-derivation only, never written to frontmatter (see SPEC.md's "runtime
-envelope" note). Compact responses emit it deviation-only: `in_force: false`
-appears ONLY when the doc is not in force, and an in-force doc's compact
-shape is byte-for-byte unchanged. The deviation emission is required because
-the compact `status`/`freshness` fields key off the RAW frontmatter status: a
-memory-inbox doc with a forged `status: active` would otherwise render as an
-ordinary current rule with no signal that the in-force floor disqualified it.
+doc's actual status/validity/inbox-membership/graph-exclusion, independent of
+whether the query itself passed `in_force=true`. This lets a caller retrieve
+a doc via a default (unfiltered) `kb_get`/`kb_search` and still tell whether
+it currently governs, without a second `in_force=true` round trip. It is a
+serving-layer derivation only, never written to frontmatter (see SPEC.md's
+"runtime envelope" note). Compact responses emit it deviation-only:
+`in_force: false` appears ONLY when the doc is not in force, and an in-force
+doc's compact shape is byte-for-byte unchanged. The deviation emission is
+required because the compact `status`/`freshness` fields key off the RAW
+frontmatter status: a memory-inbox doc with a forged `status: active` would
+otherwise render as an ordinary current rule with no signal that the in-force
+floor disqualified it.
+
+## Supersession-graph exclusion (issue #110 slice 2)
+
+`in_force=true` ALSO excludes any document that is the TARGET of a
+`supersedes` edge whose SOURCE document is itself in force (the full
+status-class-AND-validity-window predicate above, not merely
+`status: superseded`). This is the in-force-source guard: a `draft`, expired,
+or already-retired document can never retire another document just by naming
+it in `supersedes`. It closes the "forgotten status flip" gap -- A (active)
+supersedes B, but B's own `status` was never updated to `superseded` -- B is
+excluded from `in_force=true` results even though its own status class would
+otherwise qualify it. Like the `upcoming` half of the validity window, graph
+exclusion is scoped to `in_force=true` only: a plain (default) search still
+returns the excluded document.
+
+A mutually-supersessive in-force cycle (already a `kb lint` ERROR at parse
+time) is NOT special-cased at retrieval time: every member independently
+satisfies the exclusion rule (each is the target of an in-force source's
+`supersedes` edge), so `in_force=true` excludes ALL of them. A dangling edge
+(source or target id with no corresponding document) excludes nothing; the
+exclusion query joins `edges` to `docs` on both ends.
+
+`kb_consult` runs its search with `in_force=true` (see "Enforcement
+endpoints" below), so it never returns a graph-excluded, not-yet-in-force, or
+retired document -- the same guarantee the unconditional expired-doc exclusion
+already gave it, made explicit for the graph rule since that rule is scoped to
+`in_force=true` rather than applying unconditionally.
+
+A `graph_excluded_docs` health counter (in `kb_health` / `/api/v1/health`,
+alongside `malformed_frontmatter` and `malformed_validity`) reports the count
+of documents currently excluded by this rule. It is evaluated LIVE at
+health-read time against the current date, from the same SQL definition the
+retrieval-time filter uses (`format.validate.graph_excluded_ids_sql`), so
+the counter can never drift from the filter it reports on -- including
+across a date boundary where an in-force source's validity window opens or
+closes between index rebuilds (retrieval evaluates the window per query, so
+a counter frozen at build time would keep reporting a stale value). The
+short health cache (`health_ttl_sec`, default 5s) bounds its staleness. It
+is a WARNING signal only and does not flip `degraded`.
+
+### Retirement is explainable
+
+`kb_get` by id always resolves regardless of in-force or graph-exclusion
+status (same as it already ignores expiry) and returns:
+
+- `superseded_by`: the sorted, deduped UNION of the document's own
+  frontmatter `superseded_by` claim and any reverse `supersedes` edge naming
+  it. This ONE consistent computed shape covers both the honest self-declared
+  case and the forgotten-status-flip case above, where only the superseding
+  document's own `supersedes` list names this one.
+- `contradicts`: the document's own frontmatter list (unchanged from the
+  frontmatter, never affects filtering or ranking anywhere in the retrieval
+  path).
+- `contradicted_by`: the computed reverse -- every other document whose
+  `contradicts` names this one.
+
+All three are omitted from the compact `kb_get` response when empty (same
+deviation-only pattern as `freshness`). Compact `kb_search` hits carry a
+deviation-only `superseded_by` (the same computed union above), omitted when
+the document is not superseded; it is computed and attached to EVERY hit
+regardless of `in_force`, so a plain search result still explains why a hit is
+historically superseded. `kb_search` hits do NOT carry `contradicts` /
+`contradicted_by`; those are kb_get-only.
 
 ## Validity: expired docs leave default results
 
@@ -461,9 +528,10 @@ and `GET /api/v1/search`):
 
 `kb_get` by id always resolves regardless of expiry, returning the full
 `validity` object plus the computed `freshness` indicator. `kb_consult` never
-returns an expired (or upcoming, or proposed/retired, or memory-inbox) doc,
-via its unconditional `in_force=true` retrieval (see the `in_force` section
-above), not merely by reusing the default search path's own expired-exclusion.
+returns an expired (or upcoming, proposed/retired, memory-inbox, or
+graph-excluded) doc, via its unconditional `in_force=true` retrieval (see the
+`in_force` and "Supersession-graph exclusion" sections above), not merely by
+reusing the default search path's own expired-exclusion.
 The `data-olympus validity-report` CLI subcommand lists expired and
 soon-to-expire docs from a bundle directory.
 

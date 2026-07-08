@@ -46,6 +46,13 @@ class HealthState:
     # Count of docs whose ``validity`` block was present but malformed at the
     # last index build (issue #107). Same WARNING-only rationale.
     malformed_validity: int = 0
+    # Count of docs excluded from in-force retrieval by the supersession-graph
+    # rule at the last index build (issue #110 slice 2): the target of a
+    # `supersedes` edge whose source is itself in-force. WARNING-only, same
+    # rationale as malformed_frontmatter/malformed_validity above -- it does
+    # NOT flip ``degraded``; a superseded doc silently losing its own status
+    # flip is a governance data-quality signal, not a service failure.
+    graph_excluded_docs: int = 0
 
 
 def snapshot(
@@ -93,6 +100,8 @@ def snapshot(
     malformed_frontmatter = _mf if isinstance(_mf, int) else 0
     _mv = h.get("malformed_validity")
     malformed_validity = _mv if isinstance(_mv, int) else 0
+    _ge = h.get("graph_excluded_docs")
+    graph_excluded_docs = _ge if isinstance(_ge, int) else 0
     return HealthState(
         kb_commit=str(h["source_commit"]),
         index_built_at=h["index_built_at"] if isinstance(h["index_built_at"], float) else None,
@@ -117,4 +126,5 @@ def snapshot(
         live_sessions=live_sessions,
         malformed_frontmatter=malformed_frontmatter,
         malformed_validity=malformed_validity,
+        graph_excluded_docs=graph_excluded_docs,
     )

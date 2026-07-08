@@ -47,11 +47,13 @@ def test_search_compact_drops_query_path_score(status_kb: Path, tmp_index_path: 
     assert compact["source_commit"] == "x"
     assert compact["total_returned"] == len(resp.hits)
     for hit in compact["hits"]:
-        # `freshness` and `in_force` are deviation-only additions (issues
-        # #107/#109): present only when the hit deviates (stale/expired/
-        # upcoming, or computed not-in-force), never on an ordinary hit.
+        # `freshness`, `in_force`, and `superseded_by` are deviation-only
+        # additions (issues #107/#109/#110): present only when the hit
+        # deviates (stale/expired/upcoming, computed not-in-force, or
+        # superseded), never on an ordinary hit.
         assert set(hit) <= {
-            "id", "title", "snippet", "status", "type", "freshness", "in_force",
+            "id", "title", "snippet", "status", "type", "freshness",
+            "in_force", "superseded_by",
         }
         assert "path" not in hit, "compact drops per-hit path (fetch via kb_get)"
         assert "score" not in hit, "compact drops the raw bm25 score"
