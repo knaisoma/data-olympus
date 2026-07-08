@@ -2,7 +2,7 @@
 
 **Version:** 0.2
 **Date:** 2026-07-08
-**Status:** Stable (shipped with data-olympus v0.3.0; the format is versioned independently of the package, see section 10)
+**Status:** Stable (shipped with data-olympus v0.4.0; the format is versioned independently of the package, see section 10)
 
 ---
 
