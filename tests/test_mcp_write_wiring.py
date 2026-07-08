@@ -128,10 +128,20 @@ async def test_mcp_cleanup_plan_rate_limited(tmp_git_kb: Path, tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_mcp_kb_session_recap_counts_writes(
-    tmp_git_kb: Path, tmp_path: Path,
+    tmp_git_kb: Path, tmp_path: Path, monkeypatch,
 ) -> None:
     """issue #112: kb_session_recap is registered and reflects the audit log
     for the given source_session."""
+    # Unlike the other tests in this file (which park at low confidence and
+    # never commit), the confidence-0.9 propose below runs a real `git commit`
+    # inside the session worktree, which needs an author identity. CI runners
+    # have no global git user.name/user.email (the conftest GIT_CONFIG_GLOBAL
+    # pin carries only init.defaultBranch), so set the env-var identity the
+    # other committing tests use.
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "t")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "t@e.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "t")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@e.com")
     app = _app_with_pipeline(tmp_git_kb, tmp_path)
     async with Client(app) as client:
         await client.call_tool("kb_propose_memory", {
