@@ -120,10 +120,29 @@ def kb_bootstrap_project_fn(
         audit log and therefore to kb_session_recap / kb_consult's
         demoted-writes item. One event per bootstrap call -- INCLUDING the
         early rejections before the admitted path -- mirroring the propose
-        paths' shape (best-effort; never fails the bootstrap)."""
+        paths' shape (best-effort; never fails the bootstrap).
+
+        The synthesized ``target_path`` is built from the RAW caller-supplied
+        ``workspace``/``component``, which for the early rejections has not
+        passed any canonicalization or secret scan yet, so it gets the same
+        issue #71 path discipline every file ``target_path`` gets before it
+        may be echoed into a persisted/loggable surface: a credential-shaped
+        value is replaced with a redacted placeholder, never written to the
+        audit log verbatim (codex round-4 blocker)."""
         if audit_log is not None:
             import contextlib as _contextlib
             import time as _time
+
+            from data_olympus.write_gate import scan_postimage_for_secrets
+            synthesized = (
+                f"projects/{workspace}/"
+                + (f"components/{component}/" if component else "")
+            )
+            path_scan = scan_postimage_for_secrets(postimage=synthesized)
+            audit_target = (
+                synthesized if path_scan.ok
+                else "[target_path redacted: matched a secret pattern]"
+            )
             with _contextlib.suppress(Exception):
                 audit_log.append({
                     "ts": _time.time(),
@@ -131,10 +150,7 @@ def kb_bootstrap_project_fn(
                     "status": resp.status,
                     "agent_identity": agent_identity,
                     "source_session": source_session,
-                    "target_path": (
-                        f"projects/{workspace}/"
-                        + (f"components/{component}/" if component else "")
-                    ),
+                    "target_path": audit_target,
                     "confidence": confidence,
                     "pending_id": resp.pending_id,
                     "commit_sha": resp.commit_sha,

@@ -270,6 +270,71 @@ def test_bootstrap_demotion_visible_in_session_recap(tmp_path, monkeypatch) -> N
     assert recap.demoted_to_pending == 1
 
 
+def test_bootstrap_early_rejection_emits_audit_event(tmp_path, monkeypatch) -> None:
+    """Codex round-4 regression: the EARLY rejections (before the admitted
+    path) emit the bootstrap audit event too, so they are visible to the
+    recap loop like every other outcome."""
+    _set_git_env(monkeypatch)
+    from data_olympus.onboarding_inflight import BootstrapInFlight
+    from data_olympus.tools_onboarding import kb_bootstrap_project_fn
+
+    repo, git, reg, pq, pen, rl, bl = _state(tmp_path)
+    idx = _build_index(repo, today="2026-06-01")
+    audit = AuditLog(log_path=str(tmp_path / "audit.log"), hmac_key="")
+    guard = BootstrapInFlight(str(tmp_path / "inflight"))
+    assert guard.claim("earlyproj", None)  # pre-claim -> in-progress rejection
+    resp = kb_bootstrap_project_fn(
+        idx=idx, workspace="earlyproj", component=None,
+        workspace_remote_url=None, component_remote_url=None,
+        files=[{"target_path": "projects/earlyproj/README.md",
+                "postimage": "---\nid: projects-earlyproj-README\ntype: project\n"
+                             "status: draft\ntier: T3\n---\n# P\n"}],
+        source_session="early-session", agent_identity="claude",
+        confidence=0.99, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        audit_log=audit, in_flight=guard,
+    )
+    assert resp.status == "rejected_already_in_progress"
+    events = [e for e in audit.iter_filtered() if e.get("event_type") == "bootstrap"]
+    assert len(events) == 1
+    assert events[0]["status"] == "rejected_already_in_progress"
+    assert events[0]["source_session"] == "early-session"
+
+
+def test_bootstrap_audit_redacts_credential_shaped_workspace(
+    tmp_path, monkeypatch,
+) -> None:
+    """Codex round-4 blocker regression: the synthesized bootstrap audit
+    target_path comes from the RAW workspace/component, which the early
+    rejections never canonicalized or secret-scanned -- a credential-shaped
+    workspace must be redacted before it reaches the persisted audit log."""
+    _set_git_env(monkeypatch)
+    from data_olympus.onboarding_inflight import BootstrapInFlight
+    from data_olympus.tools_onboarding import kb_bootstrap_project_fn
+
+    repo, git, reg, pq, pen, rl, bl = _state(tmp_path)
+    idx = _build_index(repo, today="2026-06-01")
+    audit = AuditLog(log_path=str(tmp_path / "audit.log"), hmac_key="")
+    token_workspace = "xoxb-123456789012-abcdefghijkl"  # Slack-token shaped
+    guard = BootstrapInFlight(str(tmp_path / "inflight"))
+    assert guard.claim(token_workspace, None)
+    resp = kb_bootstrap_project_fn(
+        idx=idx, workspace=token_workspace, component=None,
+        workspace_remote_url=None, component_remote_url=None,
+        files=[{"target_path": f"projects/{token_workspace}/README.md",
+                "postimage": "# P\n"}],
+        source_session="redact-session", agent_identity="claude",
+        confidence=0.99, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        audit_log=audit, in_flight=guard,
+    )
+    assert resp.status == "rejected_already_in_progress"
+    events = [e for e in audit.iter_filtered() if e.get("event_type") == "bootstrap"]
+    assert len(events) == 1
+    assert token_workspace not in str(events[0])
+    assert events[0]["target_path"].startswith("[target_path redacted")
+
+
 # ============================================================================
 # Stale-index window (codex round-2 blocker): an in-force doc that exists in
 # git but is NOT yet in the index must still be protected -- the in-worktree
