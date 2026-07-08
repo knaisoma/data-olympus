@@ -57,13 +57,15 @@ These fields are shipped, schema-checked by `data-olympus lint`
 (`src/data_olympus/format/lint.py` via `validate_document` and the cross-file
 lifecycle pass), and part of the current `SPEC.md` (version 0.2). "Stable"
 here means the field name and semantics are not expected to change shape; it
-does not mean the field is required in every bundle unless stated.
+does not mean the field is required in every bundle unless stated, and two
+fields (`applies_when`, `owner`) are stable documented conventions with no
+lint coverage — the table's lint column is authoritative per field.
 
 | Field | Required? | Lint severity if violated | Notes |
 |---|---|---|---|
 | `id` | Yes | error (missing) | Stable symbolic identifier, decoupled from path (`SPEC.md` section 4.2). |
 | `type` | Yes | error (missing or not in `{decision, memory, project, reference, standard, workflow}`) | Controlled vocabulary, `format.validate.TYPES`. |
-| `status` | Yes | error (missing or not in `{draft, active, deprecated, superseded, proposed, accepted, rejected}`) | `format.validate.STATUSES`; see the note on issue #114 below — this field is already lint-required today, not a 0.4.0 change. |
+| `status` | Yes | error (missing or not in `{draft, active, deprecated, superseded, proposed, accepted, rejected}`) | `format.validate.STATUSES`; lint-required since the `0.1` draft. What v0.4.0 added (issue #114) is write-path enforcement for new documents — see the note below. |
 | `tier` | Yes | error (missing or not in `{T1, T2, T3, T4, meta}`) | `format.validate.TIERS`. |
 | `applies_when` | Recommended | none today (see caveat below) | Highest-weight indexed field for `kb_search`; feeds the abstention gate. Not yet in `kb lint`'s checked field set. |
 | `supersedes` | Optional | error on malformed shape/self-reference/cycle; warning on dangling/asymmetric/path-shaped target | Scalar ID or list of IDs, normalized to a list (issue #110). |
@@ -77,22 +79,35 @@ does not mean the field is required in every bundle unless stated.
 `format.validate.REQUIRED = ("id", "type", "status", "tier")` has always
 enforced it as a lint **error** when absent — this is not new in v0.4.0.
 
-What v0.4.0 changes (per [issue #114](https://github.com/knaisoma/data-olympus/issues/114),
-**shipping in 0.4.0**, not yet merged as of this document) is the migration
-story for a corpus that already has status-less documents in it: a hard error
-alone would break CI on upgrade for any bundle with legacy gaps. The
-maintenance ledger (issue #113, already shipped — see
-`src/data_olympus/maintenance.py`) already computes
-`status_present_in_all_kb_entries` and a capped `missing_status_paths` list at
-every index build, and surfaces a `missing_status` item through the
-`pending_actions` CTA (`HealthResponse.pending_actions`,
-`ConsultResponse.pending_actions`) when the corpus is dirty. Issue #114's
-remaining scope is to make that migration the operator-facing story for the
-already-existing lint error — nagging until the corpus is clean rather than
-failing outright — and a `SPEC.md` version bump documenting the field's status
-as normative rather than merely restating it. Treat the *lint enforcement* as
-already true today, and the *migration/version-bump ceremony* as the piece
-still landing.
+What v0.4.0 adds (per [issue #114](https://github.com/knaisoma/data-olympus/issues/114),
+merged in PR #128) is **write-path** enforcement plus a staged migration
+story, not a change of required-field semantics:
+
+- **New documents:** `kb_propose_edit` now rejects a postimage that creates a
+  NEW document without `status` (`rejected_invalid_document`, reason
+  `missing_status` — `write_gate.validate_postimage` step 2b). Previously the
+  write path was more permissive than `kb lint`: the enum check only fired
+  when `status` was present and invalid, so a brand-new status-less document
+  slipped through.
+- **Existing documents:** editing an EXISTING status-less document still
+  requires no `status` (`write_gate._target_path_exists` classifies the
+  write), so a legacy corpus is never locked out of incremental fixes.
+  Reserved filenames and memory-inbox documents are exempt (every
+  server-rendered memory is already stamped `status: proposed` per issue
+  #109).
+- **Migration vehicle:** the maintenance ledger (issue #113,
+  `src/data_olympus/maintenance.py`) computes
+  `status_present_in_all_kb_entries` and a capped `missing_status_paths` list
+  at every index build and nags through the `pending_actions` CTA
+  (`HealthResponse.pending_actions`, `ConsultResponse.pending_actions`) until
+  the corpus is clean. Legacy status-less documents keep being served by
+  `kb_search`/`kb_get`, but are never in force (absent status is not in
+  `IN_FORCE_STATUSES`) and never surfaced by `kb_consult`. See
+  `docs/operations.md` section 5.1 for the operator runbook.
+- **No `SPEC.md` version bump:** `SPEC.md` section 10 explains why — `status`
+  has been required (and a lint error when absent) since the `0.1` draft, so
+  this is a reference-implementation enforcement-timing change, not a format
+  change.
 
 ### `applies_when`: authoring guidance
 
@@ -383,9 +398,10 @@ Extension fields graduate out of this profile in one of two directions:
 Format version bumps follow `SPEC.md` section 10's semver-style rule: a new
 optional field or enum value is a minor bump (existing bundles unaffected); a
 required-field change or removed field is a major bump requiring a staged
-migration (the `status`-mandatory direction in issue #114 is the current
-example — see section 2 above for why the lint enforcement is not itself
-new, only its migration ceremony).
+migration. Issue #114 is the instructive counter-example: it changed *write-
+path enforcement* of an already-required field, not the field's semantics, so
+`SPEC.md` section 10 explicitly records it as a reference-implementation
+enforcement-timing change with **no** version bump (see section 2 above).
 
 ---
 
