@@ -232,9 +232,9 @@ def not_inbox_sql_fragment() -> str:
 # Edges become executable retrieval policy: an ``in_force=true`` query
 # additionally excludes any doc that is the TARGET of a `supersedes` edge
 # whose SOURCE doc is itself in-force (the full single-sourced :func:`is_in_force`
-# predicate -- status class AND validity window -- so a draft, expired, or
-# already-retired source can never retire its target; this is the
-# "in-force-source guard" from the accepted decision). A mutually-supersessive
+# predicate -- status class AND validity window AND not memory-inbox -- so a
+# draft, expired, already-retired, or inbox source can never retire its
+# target; this is the "in-force-source guard" from the accepted decision). A mutually-supersessive
 # in-force cycle is NOT special-cased: both docs satisfy the rule independently
 # (each is the target of a supersedes edge from an in-force source), so both are
 # excluded.
@@ -273,6 +273,7 @@ def graph_excluded_ids_sql(status_placeholders: str) -> str:
         "JOIN docs AS tgt ON tgt.id = edges.target_id "
         "WHERE edges.rel = 'supersedes' "
         f"AND src.status IN ({status_placeholders}) "
+        "AND src.is_inbox = 0 "
         "AND (src.valid_from IS NULL OR src.valid_from <= ?) "
         "AND (src.valid_until IS NULL OR src.valid_until >= ?)"
     )

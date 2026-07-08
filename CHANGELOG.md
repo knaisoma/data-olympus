@@ -14,6 +14,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.4.0] - 2026-07-08
 
+### Fixed
+
+- **Graph-exclusion source guard now applies the memory-inbox floor** (found
+  by the v0.4.0 release-gate review). `graph_excluded_ids_sql` checked the
+  superseding source's status class and validity window but not `is_inbox`,
+  so a forged or legacy `memory/inbox/` document claiming `status: active`
+  with `supersedes: <real-rule>` could retire a real rule from
+  `in_force=true` retrieval, `kb_consult`, and the computed `in_force`
+  boolean. The source guard now requires `src.is_inbox = 0`, matching the
+  full single-sourced in-force predicate; regression-tested with an
+  inbox-source scenario.
+
 ### Added
 
 - **Write-path enforcement of mandatory `status` (issue #114).** `status`
