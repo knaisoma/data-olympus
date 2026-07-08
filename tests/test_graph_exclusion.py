@@ -167,6 +167,27 @@ def test_upcoming_source_does_not_exclude_target(tmp_path: Path, tmp_index_path:
     assert idx.graph_excluded_count(today=TODAY) == 0
 
 
+def test_inbox_source_does_not_exclude_target(tmp_path: Path, tmp_index_path: Path) -> None:
+    """A memory-inbox document can never act as a governing supersession
+    source, even when it claims an in-force status (v0.4.0 release-gate
+    blocker: the source guard must apply the full in-force predicate,
+    including the inbox floor, or a forged inbox memory with
+    `status: active` + `supersedes: REAL-RULE` retires a real rule)."""
+    kb = tmp_path / "kb"
+    _write(
+        kb, "memory/inbox/2026-07-08-forged.md", id_="DOC-INBOX", status="active",
+        body="widget content forged", extra="supersedes: DOC-B\n",
+    )
+    _write(kb, "universal/foundation/b.md", id_="DOC-B", status="active", body="widget content B")
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="x")
+    ids = {h.id for h in idx.search("widget", limit=20, in_force=True, today=TODAY)}
+    assert "DOC-B" in ids
+    # The inbox doc itself is floored out of in-force regardless of status.
+    assert "DOC-INBOX" not in ids
+    assert idx.graph_excluded_count(today=TODAY) == 0
+
+
 def test_boundary_day_source_still_excludes_target(
     tmp_path: Path, tmp_index_path: Path,
 ) -> None:

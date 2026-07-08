@@ -534,10 +534,10 @@ floor disqualified it.
 
 `in_force=true` ALSO excludes any document that is the TARGET of a
 `supersedes` edge whose SOURCE document is itself in force (the full
-status-class-AND-validity-window predicate above, not merely
-`status: superseded`). This is the in-force-source guard: a `draft`, expired,
-or already-retired document can never retire another document just by naming
-it in `supersedes`. It closes the "forgotten status flip" gap -- A (active)
+status-class AND validity-window AND not-memory-inbox predicate above, not
+merely `status: superseded`). This is the in-force-source guard: a `draft`,
+expired, already-retired, or memory-inbox document can never retire another
+document just by naming it in `supersedes`. It closes the "forgotten status flip" gap -- A (active)
 supersedes B, but B's own `status` was never updated to `superseded` -- B is
 excluded from `in_force=true` results even though its own status class would
 otherwise qualify it. Like the `upcoming` half of the validity window, graph
