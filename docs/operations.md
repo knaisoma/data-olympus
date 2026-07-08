@@ -351,7 +351,64 @@ after confirming no operator is mid-resolve on that path.
 
 ---
 
-## 5. Quick reference
+## 5. Maintenance ledger
+
+A committed, frontmatter-only markdown doc (default path
+`tooling/maintenance-ledger.md`, `KB_MAINTENANCE_LEDGER_PATH`) records a
+corpus-state audit computed at every index build:
+
+- `status_present_in_all_kb_entries` — whether every indexed document (except
+  reserved filenames — `index.md`/`log.md`/`template.md`) carries a `status`
+  field, plus a capped list (50 paths + a total count) of the ones that don't.
+  This is the migration vehicle for making `status` mandatory.
+- `recently_expired` / `expiring_soon` — documents whose `valid_until`
+  (issue #107 validity metadata) fell in the last `KB_MAINTENANCE_RECENTLY_EXPIRED_DAYS`
+  days (default 30), or falls within the next `KB_MAINTENANCE_EXPIRING_SOON_DAYS`
+  days (default 30), each capped at 50 items + a total count.
+
+The ledger is server-side and best-effort: when the computed state CHANGES
+since the last committed copy, it is committed through the same serialized
+write/commit machinery every other write uses (system agent identity
+`data-olympus-system`, a normal `maintenance_ledger` audit event). A commit
+failure is logged and audited but never breaks index refresh or serving; it is
+retried on the next `git_pull_loop` tick. Recomputation is checked on every
+tick, not only when a new remote commit arrives, so a fresh deployment gets
+its first ledger commit promptly even before anyone else ever pushes to the
+KB. Duplicate commits are guarded three ways, all comparing the structured
+state (never the rendered markdown, whose `computed_at` timestamp changes
+every render): an in-process last-committed memo, the ledger copy in the live
+index, and the system worktree's HEAD copy (which survives restarts), so a
+slow push or short sync interval can never re-commit an unchanged state. A
+`KB_MAINTENANCE_LEDGER_PATH` outside the configured indexed prefixes is
+refused with a `skipped_bad_path` audit event instead of committing a doc the
+index would never serve.
+
+The same computed state also drives a `pending_actions` field on `kb_consult`
+and `kb_health` responses (never `kb_search` — per-hit noise trains agents to
+ignore it): a list of `{kind, message, count}` items, present only while the
+corpus is dirty. An agent seeing `pending_actions` should surface it to the
+operator and act on it only with operator confirmation. Silencing is
+automatic: fix the underlying doc(s), the next index build flips the flag, the
+next ledger commit records it, and `pending_actions` disappears — no manual
+acking.
+
+A private deployment using a custom `KB_TAXONOMY_PATH` (rather than the
+built-in default taxonomy) must make sure `KB_MAINTENANCE_LEDGER_PATH` still
+resolves inside an INDEXED prefix, or the ledger is committed but never
+searchable/gettable via `kb_search`/`kb_get`.
+
+`kb health` (the CLI) shows any open `pending_actions` in its plain-text
+(`-o plain`) summary; `-o json` passes the field through unchanged.
+
+Relevant environment variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `KB_MAINTENANCE_LEDGER_PATH` | `tooling/maintenance-ledger.md` | Committed ledger doc path (must resolve inside an indexed prefix) |
+| `KB_MAINTENANCE_RECENTLY_EXPIRED_DAYS` | `30` | Window (days) for the "recently expired" bucket |
+| `KB_MAINTENANCE_EXPIRING_SOON_DAYS` | `30` | Window (days) for the "expiring soon" bucket |
+
+## 6. Quick reference
 
 | Task | Command |
 |---|---|
@@ -364,3 +421,4 @@ after confirming no operator is mid-resolve on that path.
 | Enable audit rotation | set `KB_AUDIT_MAX_BYTES` in the ConfigMap |
 | Enable proxy headers | set `KB_TRUSTED_PROXIES` in the ConfigMap |
 | Enable Ingress | set `KB_AUTH_TOKEN`, uncomment `- ingress.yaml` in `kustomization.yaml` (see `deploy/k8s/README.md`) |
+| View maintenance-ledger state | `curl -s 'http://<host>/api/v1/health?verbose=true' \| jq .pending_actions` |

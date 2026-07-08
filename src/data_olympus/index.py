@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 import sqlite3
@@ -35,9 +36,18 @@ from data_olympus.embeddings import (
 )
 from data_olympus.format.validate import (
     IN_FORCE_STATUSES,
+    RESERVED,
     in_force_sql_fragment,
     not_expired_sql_fragment,
     today_iso,
+)
+from data_olympus.maintenance import (
+    DEFAULT_EXPIRING_SOON_DAYS,
+    DEFAULT_LEDGER_PATH,
+    DEFAULT_RECENTLY_EXPIRED_DAYS,
+    DocAuditRow,
+    MaintenanceState,
+    compute_maintenance_state,
 )
 from data_olympus.markdown_parse import ParsedDoc, parse_text_checked
 from data_olympus.trigram import (
@@ -520,6 +530,9 @@ class Index:
         embedder: Embedder | None = None,
         dense_candidate_count: int = DEFAULT_DENSE_CANDIDATE_COUNT,
         dense_min_cosine: float = DEFAULT_DENSE_MIN_COSINE,
+        maintenance_ledger_path: str = DEFAULT_LEDGER_PATH,
+        maintenance_recently_expired_days: int = DEFAULT_RECENTLY_EXPIRED_DAYS,
+        maintenance_expiring_soon_days: int = DEFAULT_EXPIRING_SOON_DAYS,
     ) -> None:
         self._db_path = db_path
         # Embeddings (issue #42) are threaded in from Config, NOT re-read from env
@@ -600,6 +613,32 @@ class Index:
         # malformed at the last build (issue #107). Updated by build(); surfaced
         # via health() and the ``malformed_validity_count`` property.
         self._malformed_validity_count = 0
+        # Maintenance ledger (issue #113): the corpus-state audit computed at
+        # the LAST build, cached here so kb_health/kb_consult and the
+        # ledger-commit hook can read it without touching SQLite. None before
+        # the first build() call. ``_maintenance_ledger_path`` is excluded from
+        # its own audit (see maintenance.compute_maintenance_state).
+        self._maintenance_ledger_path = maintenance_ledger_path
+        self._maintenance_recently_expired_days = maintenance_recently_expired_days
+        self._maintenance_expiring_soon_days = maintenance_expiring_soon_days
+        self._maintenance_state: MaintenanceState | None = None
+        # In-process memo of the last MaintenanceState the maintenance-ledger
+        # commit hook successfully committed (set by
+        # maintenance.maybe_update_ledger, never by build()). This is the loop
+        # guard for the window between a ledger commit and its publication
+        # (push -> merge to main -> re-index): during that window the INDEX
+        # still holds the pre-commit ledger copy, so without this memo every
+        # pull-loop tick would look like "state changed" and commit a
+        # duplicate. Not persisted: after a restart the system worktree's HEAD
+        # (which survives restarts; unpushed commits block its GC) covers the
+        # same window (see maybe_update_ledger's worktree check).
+        self.maintenance_last_committed_state: MaintenanceState | None = None
+
+    @property
+    def maintenance_state(self) -> MaintenanceState | None:
+        """The corpus-state audit computed at the last build(), or None before
+        the first build (see data_olympus.maintenance.MaintenanceState)."""
+        return self._maintenance_state
 
     @property
     def malformed_frontmatter_count(self) -> int:
@@ -745,8 +784,15 @@ class Index:
             "mtime",
         )
 
-    def build(self, kb_root: Path, *, source_commit: str) -> IndexBuildResult:
-        """Walk kb_root for .md files and (re)build the FTS index using atomic swap."""
+    def build(
+        self, kb_root: Path, *, source_commit: str, today: str | None = None,
+    ) -> IndexBuildResult:
+        """Walk kb_root for .md files and (re)build the FTS index using atomic swap.
+
+        ``today`` (ISO ``YYYY-MM-DD``) drives the maintenance-ledger expiry
+        window computation (issue #113); defaults to :func:`today_iso` (the
+        real wall clock) but is injectable so tests are deterministic.
+        """
         if not kb_root.is_dir():
             raise NotADirectoryError(f"KB root not a directory: {kb_root}")
 
@@ -841,6 +887,10 @@ class Index:
             # counter), but tracked separately since a doc can have valid
             # front matter overall yet a malformed ``validity`` sub-block.
             malformed_validity = 0
+            # Maintenance-ledger audit rows (issue #113), gathered during this
+            # SAME single pass over the corpus so the audit is nearly free (no
+            # extra walk/query). Computed into a MaintenanceState after the loop.
+            maintenance_rows: list[DocAuditRow] = []
             for pf in parsed:
                 rel = pf.rel
                 doc = pf.doc
@@ -861,6 +911,13 @@ class Index:
                         "block was treated as absent for this doc",
                         rel,
                     )
+                maintenance_rows.append(
+                    DocAuditRow(
+                        path=str(rel), id=doc_id, status=doc.status,
+                        valid_until=doc.valid_until,
+                        is_reserved=rel.name in RESERVED,
+                    )
+                )
                 path_tier, path_category = _classify_by_path(str(rel), path_rules)
                 final_tier = doc.tier or path_tier
                 final_category = doc.category or path_category
@@ -975,6 +1032,16 @@ class Index:
                 )
                 write_cooccurrence_table(conn, table)
             now = time.time()
+            # Maintenance ledger (issue #113): computed from the SAME corpus
+            # walk above, so the audit is nearly free. ``today`` is injectable
+            # for deterministic tests; defaults to the real wall clock.
+            maintenance_state = compute_maintenance_state(
+                maintenance_rows,
+                today=today if today is not None else today_iso(),
+                ledger_path=self._maintenance_ledger_path,
+                recently_expired_days=self._maintenance_recently_expired_days,
+                expiring_soon_days=self._maintenance_expiring_soon_days,
+            )
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('source_commit', ?)",
                 (source_commit,),
@@ -1005,6 +1072,14 @@ class Index:
                 "VALUES ('malformed_validity', ?)",
                 (str(malformed_validity),),
             )
+            # Maintenance-ledger state (issue #113): persisted as JSON so it
+            # survives a process restart that reads the swapped index, same
+            # rationale as the counters above.
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) "
+                "VALUES ('maintenance_state', ?)",
+                (json.dumps(maintenance_state.to_dict()),),
+            )
             # Integrity check before swap
             check = conn.execute("PRAGMA integrity_check").fetchone()
             if check[0] != "ok":
@@ -1030,6 +1105,7 @@ class Index:
         # (finding (j)); the persisted meta row covers a fresh process.
         self._malformed_frontmatter_count = malformed_frontmatter
         self._malformed_validity_count = malformed_validity
+        self._maintenance_state = maintenance_state
         # Invalidate the health cache so the next health() reflects the rebuild
         # immediately rather than serving the pre-swap commit for up to the TTL.
         with self._health_lock:
