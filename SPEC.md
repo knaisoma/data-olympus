@@ -126,13 +126,23 @@ timestamp: "2026-06-24"
 
 An agent mid-task on "I need to log this API response for debugging" shares no vocabulary with the document's title ("Secrets Handling") but matches `"logging a request or response body"` directly.
 
-**Optional decision-chain fields** (not checked by `kb lint`; documented convention only):
+**Decision-chain fields** (typed lifecycle relationships, validated by `kb lint` since [issue #110](https://github.com/knaisoma/data-olympus/issues/110)):
 
-- `supersedes`: concept ID (or list of IDs) that this document replaces.
-- `superseded_by`: concept ID of the document that replaces this one; set when `status: superseded`.
-- `owner`: team or individual responsible for the concept.
+- `supersedes`: the concept ID this document replaces. Authored as either a single scalar ID string or a YAML list of ID strings; both shapes normalize to a list at parse time (the bundled ADR importer emits a bare scalar when there is exactly one entry and a list when there is more than one, so both shapes must be accepted).
+- `superseded_by`: the concept ID of the document that replaces this one; a single scalar ID string. Set when `status: superseded`.
+- `contradicts`: a YAML list of concept IDs whose guidance conflicts with this document's, where the conflict is unresolved (as opposed to `supersedes`, which is a resolved retirement). Documents an open disagreement so an agent reconciles or escalates rather than silently picking a side; `contradicts` never removes a document from retrieval and never affects ranking.
+- `owner`: team or individual responsible for the concept (not checked by `kb lint`; documented convention only).
 
-Note: `supersedes` and `superseded_by` are governance extensions not present in base OKF. They are read by humans and agents tracing decision history, but the current tooling does not resolve, validate, or warn on them: a missing, malformed, or dangling `supersedes`/`superseded_by`/`owner` value produces no `kb lint` finding today.
+**Targets are stable concept IDs, never paths.** A `supersedes` / `superseded_by` / `contradicts` value must be the target document's `id` field, not a file path: paths break silently on rename (see the onboarding rename machinery in the reference implementation, which exists precisely because paths are not stable identifiers), while ids are designed to survive a move. `kb lint` warns when a value looks path-shaped (contains a `/` or ends in `.md`) and suggests the fix.
+
+`supersedes` / `superseded_by` / `contradicts` are governance extensions not present in base OKF; an OKF consumer tolerates them as unknown keys. The reference implementation's indexer extracts all three into an `(source_id, rel, target_id)` edges table at build time. `kb lint` cross-checks these fields across the whole bundle (an in-memory id map over the discovered file list, not a database) and reports:
+
+- **Errors** (block CI): a malformed value shape (a `supersedes`/`contradicts` entry that isn't a string, or a `superseded_by` that isn't a scalar string); a document that supersedes or is superseded_by itself; a supersession cycle (following the merged `supersedes`/`superseded_by` graph, of any length: A supersedes B supersedes A, or longer).
+- **Warnings** (do not block CI by default): a dangling target id (not found anywhere in the bundle); an asymmetric pair (A supersedes B but B's `superseded_by` doesn't name A, in either direction); `superseded_by` set while the document's own `status` is in the in-force class (see section 8); `status: superseded` with no `superseded_by` set; a path-shaped target value; two in-force documents that `contradicts` each other (in either direction).
+
+A structured `relationships:` block (grouping these fields under one key, possibly with per-edge reasons) may be adopted in a future spec version if the upstream OKF discussion on relationship fields (OKF issue #148) settles on a standard shape; per-edge structured metadata (`reason` / `decided_at` / `source`) is deferred for the same reason today (a retired document's body and `description` already carry that rationale in prose). Any such change would land as a staged migration (the importer-style normalization above already tolerates more than one authored shape for `supersedes`), not a breaking removal of the flat fields documented here.
+
+The edges table populated at index-build time is consumed by `kb_get` / `kb_search` surfacing and by in-force retrieval filtering in a later slice of [issue #110](https://github.com/knaisoma/data-olympus/issues/110); this spec section covers only the parsing, indexing, and lint contract, which are stable regardless of how a later slice consumes the table.
 
 **Reserved-file exemption.** Files named `index.md`, `log.md`, or `template.md` in any directory are exempt from both required and recommended field validation. They may carry any frontmatter (or none at all), subject to the rules in sections 6 and 7.
 
@@ -276,8 +286,8 @@ These three are mirrored as the `kb_consult`, `kb_gate_check`, and `kb_complianc
 
 **`kb lint` severity levels:**
 
-- `error`: missing required field, invalid enum value, or YAML parse failure. Blocks CI.
-- `warning`: missing recommended field (`title`, `description`, `tags`, `timestamp`), or `tags` is not a list. Does not block CI by default. Broken links and missing `supersedes`/`superseded_by`/`owner` are not checked and produce no finding either way (see sections 4.2 and 5). `applies_when` is recommended by this spec but is not yet in `kb lint`'s checked field set: a missing or malformed `applies_when` produces no finding today, even though a non-list value is silently parsed as empty (matching `tags`' parsing, minus the warning).
+- `error`: missing required field, invalid enum value, YAML parse failure, a malformed `supersedes`/`superseded_by`/`contradicts` value shape, a document that supersedes or is superseded_by itself, or a supersession cycle (see section 4.2). Blocks CI.
+- `warning`: missing recommended field (`title`, `description`, `tags`, `timestamp`), or `tags` is not a list. A dangling `supersedes`/`superseded_by`/`contradicts` target id, an asymmetric supersession pair, a path-shaped target value, `superseded_by` set on an in-force document, `status: superseded` with no `superseded_by`, or an in-force `contradicts` pair (see section 4.2). Does not block CI by default. Broken links and missing/malformed `owner` are not checked and produce no finding either way (see sections 4.2 and 5). `applies_when` is recommended by this spec but is not yet in `kb lint`'s checked field set: a missing or malformed `applies_when` produces no finding today, even though a non-list value is silently parsed as empty (matching `tags`' parsing, minus the warning).
 
 ---
 
@@ -299,7 +309,7 @@ The `spec_version` field is optional in bundles targeting this `0.1` draft. It b
 
 ## 11. Relationship to other formats
 
-**OKF (Open Knowledge Format).** data-olympus is designed to be readable by OKF consumers: our governance extensions (`id`, `status`, `tier`, `supersedes`, `superseded_by`, `owner`, and the write pipeline) are meant to be invisible to OKF consumers because OKF requires tolerating unknown keys. This is a design intent backed by shared structure (directory layout, frontmatter conventions, reserved filenames, link model), not by an executable conformance test against the OKF reference tooling; [issue #82](https://github.com/knaisoma/data-olympus/issues/82) tracks adding one. The two formats are complementary: OKF defines the interoperable baseline; data-olympus adds the governance layer needed for multi-agent write safety and ADR chain tracking. The relationship is analogous to how OpenAPI is a profile of JSON Schema.
+**OKF (Open Knowledge Format).** data-olympus is designed to be readable by OKF consumers: our governance extensions (`id`, `status`, `tier`, `supersedes`, `superseded_by`, `contradicts`, `owner`, and the write pipeline) are meant to be invisible to OKF consumers because OKF requires tolerating unknown keys. This is a design intent backed by shared structure (directory layout, frontmatter conventions, reserved filenames, link model), not by an executable conformance test against the OKF reference tooling; [issue #82](https://github.com/knaisoma/data-olympus/issues/82) tracks adding one. The two formats are complementary: OKF defines the interoperable baseline; data-olympus adds the governance layer needed for multi-agent write safety and ADR chain tracking. The relationship is analogous to how OpenAPI is a profile of JSON Schema.
 
 **Obsidian and Notion.** Both support markdown files with YAML frontmatter and backlink graphs. data-olympus bundles can be opened in Obsidian as a vault; the frontmatter is visible in properties panels and the body renders normally. The difference is governance: Obsidian and Notion have no concept of propose/pending/resolve write pipelines, controlled-vocabulary enforcement, or tier-based access control. data-olympus complements these tools rather than replacing them: a team may author in Obsidian and commit conformant bundles to git for the MCP server to serve.
 
