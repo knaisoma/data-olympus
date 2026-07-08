@@ -137,6 +137,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.set_defaults(func=_cmd_report)
     from data_olympus.cli.import_cmd import add_import_subparser
     add_import_subparser(sub)
+    from data_olympus.cli.init_cmd import add_init_subparser
+    add_init_subparser(sub)
     return parser
 
 

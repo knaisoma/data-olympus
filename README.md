@@ -31,11 +31,14 @@ uv venv && uv pip install -e '.[dev]'
 # Lint the example bundle
 uv run data-olympus lint example-bundle
 
+# ...or scaffold your own bundle instead of copying example-bundle/
+uv run data-olympus init my-kb
+
 # Start the MCP server against the example bundle
 ./scripts/run-local.sh
 ```
 
-See `docs/quickstart.md` for the full local-run walkthrough, including curl and `kb` CLI queries.
+See `docs/quickstart.md` for the full local-run walkthrough, including curl and `kb` CLI queries. See `docs/adoption.md` for the full bundle-authoring guide.
 
 ## Documentation
 
