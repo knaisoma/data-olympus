@@ -262,11 +262,17 @@ semantics an operator needs at serving time.
   serialized commit section, after every hard gate passes and after the
   worktree base is refreshed onto `origin/main`, the target's CURRENT bytes
   on that refreshed base are re-judged (`status` + validity window from its
-  own frontmatter, `is_inbox` from the path, graph exclusion from the live
-  index when available). A doc pushed as in-force but not yet re-indexed is
-  therefore still demoted (`demotion_reason: "governed_target"`) -- the
-  decision is made against the same content the commit would replace, so
-  index staleness cannot bypass the rule.
+  own frontmatter, `is_inbox` from the path). The backstop deliberately
+  consults NOTHING from the index -- in particular not graph exclusion,
+  whose stale edges could otherwise REMOVE protection the base's own bytes
+  assert (a target still carrying an in-force `status` under a live
+  supersedes edge is over-demoted for operator review rather than
+  auto-committed; a target properly flipped to `superseded` is not in force
+  by its own bytes and stays unprotected). A doc pushed as in-force but not
+  yet re-indexed is therefore still demoted (`demotion_reason:
+  "governed_target"`) -- the decision is made against the same content the
+  commit would replace, so index staleness cannot bypass the rule in
+  either direction.
 - **Injection-pattern annotation.** Every postimage evaluated by the two
   rules above is also scanned for agent-directed injection patterns
   ("ignore previous instructions", "disregard ... policy", an imperative

@@ -114,6 +114,35 @@ def kb_bootstrap_project_fn(
     claimed once the request is admitted and held across a committed outcome
     (item 2); the marker self-expires so a crash cannot wedge the workspace.
     """
+    def _audited(resp: BootstrapResponse) -> BootstrapResponse:
+        """Audit emission (issue #112 feedback loop, codex round-2 concern +
+        round-3 note): bootstrap outcomes were previously invisible to the
+        audit log and therefore to kb_session_recap / kb_consult's
+        demoted-writes item. One event per bootstrap call -- INCLUDING the
+        early rejections before the admitted path -- mirroring the propose
+        paths' shape (best-effort; never fails the bootstrap)."""
+        if audit_log is not None:
+            import contextlib as _contextlib
+            import time as _time
+            with _contextlib.suppress(Exception):
+                audit_log.append({
+                    "ts": _time.time(),
+                    "event_type": "bootstrap",
+                    "status": resp.status,
+                    "agent_identity": agent_identity,
+                    "source_session": source_session,
+                    "target_path": (
+                        f"projects/{workspace}/"
+                        + (f"components/{component}/" if component else "")
+                    ),
+                    "confidence": confidence,
+                    "pending_id": resp.pending_id,
+                    "commit_sha": resp.commit_sha,
+                    "remote_addr": remote_addr,
+                    "demotion_reason": resp.demotion_reason,
+                })
+        return resp
+
     # Server-side re-check that status is absent OR partial. `partial` is a valid
     # entry point: it means the workspace exists in the KB but is missing some
     # canonical file(s), and this bootstrap completes it (item 1).
@@ -124,10 +153,10 @@ def kb_bootstrap_project_fn(
         idx=idx,
     )
     if s.state not in ("absent", "partial"):
-        return BootstrapResponse(
+        return _audited(BootstrapResponse(
             status="rejected_already_onboarded",
             rejected_paths=[],
-        )
+        ))
 
     # Lazily materialize the in-flight guard on the same durable state volume as
     # the pending queue, unless the caller injected one (tests). Both entry points
@@ -144,10 +173,10 @@ def kb_bootstrap_project_fn(
     # already in the convergence window) rejects this one as in-progress and
     # closes the double-bootstrap race the absent-recheck cannot (item 2).
     if not in_flight.claim(workspace, component):
-        return BootstrapResponse(
+        return _audited(BootstrapResponse(
             status="rejected_already_in_progress",
             rejected_paths=[f["target_path"] for f in files],
-        )
+        ))
     # From here on, any outcome that did NOT commit must release the claim so a
     # legitimate retry is not blocked for the full TTL. Only a committed outcome
     # holds the claim across the convergence window. A pre-commit exception (git
@@ -173,32 +202,7 @@ def kb_bootstrap_project_fn(
             serializer=serializer,
         )
         committed = resp.status == "committed"
-        # Audit emission (issue #112 feedback loop, codex round-2 concern):
-        # bootstrap outcomes were previously invisible to the audit log and
-        # therefore to kb_session_recap / kb_consult's demoted-writes item.
-        # One event per bootstrap call, mirroring the propose paths' shape
-        # (best-effort; never fails the bootstrap).
-        if audit_log is not None:
-            import contextlib as _contextlib
-            import time as _time
-            with _contextlib.suppress(Exception):
-                audit_log.append({
-                    "ts": _time.time(),
-                    "event_type": "bootstrap",
-                    "status": resp.status,
-                    "agent_identity": agent_identity,
-                    "source_session": source_session,
-                    "target_path": (
-                        f"projects/{workspace}/"
-                        + (f"components/{component}/" if component else "")
-                    ),
-                    "confidence": confidence,
-                    "pending_id": resp.pending_id,
-                    "commit_sha": resp.commit_sha,
-                    "remote_addr": remote_addr,
-                    "demotion_reason": resp.demotion_reason,
-                })
-        return resp
+        return _audited(resp)
     finally:
         if not committed:
             in_flight.release(workspace, component)

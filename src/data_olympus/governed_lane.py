@@ -180,7 +180,6 @@ def is_target_in_force(
 def is_base_content_in_force(
     content: str,
     target_path: str,
-    idx: Index | None,
     *,
     today: str | None = None,
 ) -> bool:
@@ -194,7 +193,7 @@ def is_base_content_in_force(
     a high-confidence edit to a governing doc auto-commits. This helper runs
     INSIDE the serialized commit section, against the SAME refreshed base
     the commit will sit on, so no index-lag window exists: it parses the
-    base file's own frontmatter and applies the composed predicate directly.
+    base file's own frontmatter and applies the predicate directly.
 
     - ``status`` / validity window come from the base file's frontmatter
       (``normalize_validity_date``, the same normalization the indexer
@@ -202,9 +201,21 @@ def is_base_content_in_force(
       force -- identical to how the indexer classifies the same bytes.
     - ``is_inbox`` comes from the path (``is_inbox_path``), same as the
       indexer's build-time column.
-    - Graph exclusion still consults the LIVE index when available (edges
-      are only computable from the index). A stale edge set errs toward
-      keeping protection (over-demotion, fail closed), never dropping it.
+    - Graph exclusion is DELIBERATELY NOT consulted here (codex round-3
+      security review blocker). Exclusion data only exists in the index, and
+      the whole point of this backstop is that the index may be STALE
+      relative to the base being committed: a stale ``supersedes`` edge
+      (whose source doc has since been removed or demoted in git) would
+      REMOVE protection from a target whose own current bytes say it is in
+      force -- the same class of stale-index fail-open, through a different
+      door. Every input to this predicate therefore comes from the refreshed
+      base itself. The cost is bounded over-demotion: a target still
+      carrying an in-force ``status`` while a live supersedes edge retires
+      it (the "forgotten status flip" case) is demoted for operator review
+      instead of auto-committing -- fail closed. A target whose own
+      ``status`` was properly flipped to ``superseded`` is not in force by
+      its own bytes and remains unprotected, as the issue #112 design
+      specifies.
     """
     from data_olympus.format.validate import is_inbox_path, normalize_validity_date
 
@@ -223,27 +234,10 @@ def is_base_content_in_force(
         valid_from, _bad = normalize_validity_date(validity.get("valid_from"))
         valid_until, _bad = normalize_validity_date(validity.get("valid_until"))
     today = today if today is not None else today_iso()
-    if not is_in_force(
+    return is_in_force(
         status, valid_from or None, valid_until or None, today,
         is_inbox=is_inbox_path(target_path),
-    ):
-        return False
-    # Graph exclusion (removes protection): mirror _effective_doc_id's id
-    # derivation so the id checked here is the one the index assigns.
-    raw_id = fm.get("id")
-    if isinstance(raw_id, str) and raw_id and ":" not in raw_id:
-        doc_id = raw_id
-    else:
-        from pathlib import Path as _Path
-
-        from data_olympus.index import _derive_id_from_path
-        doc_id = _derive_id_from_path(_Path(target_path))
-    graph_excluded_fn = getattr(idx, "graph_excluded_ids", None)
-    try:
-        excluded = graph_excluded_fn(today=today) if graph_excluded_fn is not None else set()
-    except Exception:  # noqa: BLE001 - keep protection on this failure
-        excluded = set()
-    return doc_id not in excluded
+    )
 
 
 @dataclass(frozen=True, slots=True)

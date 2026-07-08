@@ -312,6 +312,52 @@ def test_stale_index_in_force_target_still_demoted(tmp_path, monkeypatch) -> Non
     assert pen.size() == 1
 
 
+def test_stale_graph_exclusion_cannot_remove_protection(tmp_path, monkeypatch) -> None:
+    """Codex round-3 blocker regression: the STALE index graph-excludes
+    TARGET (an old in-force SOURCE with a supersedes edge), but current git
+    has since DEMOTED that source -- the target's own bytes are active and
+    it currently governs. The backstop must judge only the refreshed base
+    bytes and park the edit as governed_target, not let the stale exclusion
+    remove protection and auto-commit."""
+    _set_git_env(monkeypatch)
+    repo, git, reg, pq, pen, rl, bl = _state(tmp_path, seed_files={
+        "decisions/DEC-SOURCE.md": (
+            "---\nid: DEC-SOURCE\ntype: decision\nstatus: accepted\ntier: meta\n"
+            "supersedes: DEC-TARGET\n---\nsource body\n"
+        ),
+        "decisions/DEC-TARGET.md": (
+            "---\nid: DEC-TARGET\ntype: decision\nstatus: active\ntier: meta\n"
+            "---\ntarget body\n"
+        ),
+    })
+    # Index built while SOURCE is in force: TARGET is graph-excluded.
+    idx = _build_index(repo, today="2026-06-01")
+    assert "DEC-TARGET" in idx.graph_excluded_ids(today="2026-06-01")
+    # Now git moves on: SOURCE is demoted to superseded. The index is stale
+    # and still graph-excludes TARGET, but TARGET currently governs.
+    (repo / "decisions" / "DEC-SOURCE.md").write_text(
+        "---\nid: DEC-SOURCE\ntype: decision\nstatus: superseded\ntier: meta\n"
+        "supersedes: DEC-TARGET\n---\nsource body\n"
+    )
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=_env())
+    subprocess.run(["git", "commit", "-m", "demote source"], cwd=repo,
+                   check=True, env=_env())
+
+    resp = kb_propose_edit_fn(
+        target_path="decisions/DEC-TARGET.md",
+        postimage="---\nid: DEC-TARGET\ntype: decision\ntier: meta\n---\nrewritten\n",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason="rewrite", source_session="s", agent_identity="claude",
+        confidence=0.99, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4", idx=idx,
+    )
+    assert resp.status == "pending_confirmation"
+    assert resp.demotion_reason == "governed_target"
+    assert pq.size() == 0
+    assert pen.size() == 1
+
+
 def test_stale_index_expired_target_still_commits(tmp_path, monkeypatch) -> None:
     """Backstop counterpart regression: a git-landed doc the index has not
     seen whose own frontmatter is EXPIRED is not in force, so the edit

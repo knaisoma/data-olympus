@@ -531,12 +531,15 @@ def _commit_in_worktree(
             # be used to slip an edit past the governed-target rule.
             # Deliberately AFTER the hard gates above (reject-before-demote,
             # enforced authoritatively here rather than predicted at the
-            # tool layer) and BEFORE any disk side effect.
+            # tool layer) and BEFORE any disk side effect. The check
+            # deliberately consults NOTHING from the index (codex round-3
+            # blocker: a stale graph-exclusion edge would otherwise remove
+            # protection the base's own bytes assert).
             if governed_target_check and os.path.isfile(full_path):
                 from data_olympus.governed_lane import is_base_content_in_force
                 with open(full_path, encoding="utf-8") as bf:
                     base_content = bf.read()
-                if is_base_content_in_force(base_content, target_path, idx):
+                if is_base_content_in_force(base_content, target_path):
                     raise _WriteDemoted("governed_target")
 
             # 6. Write + add + commit + enqueue; reset on any post-add failure.

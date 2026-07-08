@@ -70,9 +70,11 @@ system write path and the operator resolve path are untouched):
   auto-committing -- an unhealthy index cannot be leveraged to bypass this
   rule. An authoritative in-worktree backstop re-judges the target's
   CURRENT bytes on the refreshed commit base inside the serialized commit
-  section (after the hard gates), so an in-force doc that exists in git
-  but is not yet re-indexed is still demoted -- index lag cannot bypass
-  the rule either.
+  section (after the hard gates), consulting nothing from the index (a
+  stale graph-exclusion edge could otherwise remove protection the base's
+  own bytes assert), so an in-force doc that exists in git but is not yet
+  re-indexed is still demoted -- index lag cannot bypass the rule in
+  either direction.
 - **Injection-pattern annotation.** Advisory only: a postimage matching an
   agent-directed injection heuristic (imperative instruction-override
   phrasing, exfiltration-shaped URLs, base64-looking blobs, "do not tell the
