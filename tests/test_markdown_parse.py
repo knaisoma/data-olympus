@@ -124,3 +124,92 @@ def test_parse_file_multiline_description(tmp_path: Path) -> None:
     )
     doc = parse_file(p)
     assert "First line second line." in doc.description
+
+
+# ---------------------------------------------------------------------------
+# validity frontmatter (issue #107)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_file_extracts_validity_fields(tmp_path: Path) -> None:
+    p = tmp_path / "x.md"
+    p.write_text(
+        "---\nid: STD-5\ntier: T1\n"
+        "validity:\n"
+        "  valid_from: 2026-01-01\n"
+        "  valid_until: 2026-12-31\n"
+        "  last_verified: 2026-06-01\n"
+        "  recheck_by: 2026-09-01\n"
+        "  verification_source: manual review\n"
+        "---\n# B\n"
+    )
+    doc = parse_file(p)
+    assert doc.valid_from == "2026-01-01"
+    assert doc.valid_until == "2026-12-31"
+    assert doc.last_verified == "2026-06-01"
+    assert doc.recheck_by == "2026-09-01"
+    assert doc.verification_source == "manual review"
+    assert doc.validity_malformed is False
+
+
+def test_parse_file_validity_absent_defaults_empty(tmp_path: Path) -> None:
+    p = tmp_path / "y.md"
+    p.write_text("---\nid: STD-6\ntier: T1\n---\n# B\n")
+    doc = parse_file(p)
+    assert doc.valid_from == ""
+    assert doc.valid_until == ""
+    assert doc.last_verified == ""
+    assert doc.recheck_by == ""
+    assert doc.verification_source == ""
+    assert doc.validity_malformed is False
+
+
+def test_parse_file_validity_datetime_normalizes_to_date(tmp_path: Path) -> None:
+    p = tmp_path / "z.md"
+    p.write_text(
+        "---\nid: STD-7\ntier: T1\n"
+        "validity:\n"
+        "  valid_until: 2026-06-01T23:00:00+02:00\n"
+        "---\n# B\n"
+    )
+    doc = parse_file(p)
+    assert doc.valid_until == "2026-06-01"
+
+
+def test_parse_file_validity_zulu_datetime_normalizes_to_date(tmp_path: Path) -> None:
+    p = tmp_path / "z2.md"
+    p.write_text(
+        "---\nid: STD-8\ntier: T1\n"
+        "validity:\n"
+        "  valid_until: '2026-06-01T00:00:00Z'\n"
+        "---\n# B\n"
+    )
+    doc = parse_file(p)
+    assert doc.valid_until == "2026-06-01"
+
+
+def test_parse_file_malformed_validity_treated_as_absent(tmp_path: Path) -> None:
+    """A malformed date anywhere in ``validity`` fails the WHOLE block open (the
+    doc is treated as having no validity at all), and is flagged for a caller
+    to warn/count, rather than silently indexing a partially-parsed block."""
+    p = tmp_path / "bad.md"
+    p.write_text(
+        "---\nid: STD-9\ntier: T1\n"
+        "validity:\n"
+        "  valid_from: 2026-01-01\n"
+        "  valid_until: not-a-real-date\n"
+        "---\n# B\n"
+    )
+    doc = parse_file(p)
+    assert doc.valid_from == ""
+    assert doc.valid_until == ""
+    assert doc.validity_malformed is True
+
+
+def test_parse_file_validity_not_a_mapping_is_malformed(tmp_path: Path) -> None:
+    p = tmp_path / "bad2.md"
+    p.write_text("---\nid: STD-10\ntier: T1\nvalidity: not-a-mapping\n---\n# B\n")
+    doc = parse_file(p)
+    assert doc.validity_malformed is True
+    assert doc.valid_from == ""
+    assert doc.valid_until == ""

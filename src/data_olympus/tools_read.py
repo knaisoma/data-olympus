@@ -106,6 +106,7 @@ def kb_health_fn(
         remote_head_sha=state.remote_head_sha,
         live_sessions=state.live_sessions,
         malformed_frontmatter=state.malformed_frontmatter,
+        malformed_validity=state.malformed_validity,
     )
 
 
@@ -136,7 +137,11 @@ def kb_search_fn(
     in_force: bool = False,
     doc_type: str | None = None,
     abstain: bool = False,
+    include_expired: bool = False,
+    validity_state: str | None = None,
+    today: str | None = None,
 ) -> SearchResponse:
+    from data_olympus.format.validate import compute_freshness, today_iso
     from data_olympus.search_gate import abstain_gate
 
     # Clamp to 1..100. Clamping only the upper bound let a negative
@@ -146,12 +151,16 @@ def kb_search_fn(
         limit = 100
     elif limit < 1:
         limit = 1
+    today = today if today is not None else today_iso()
     search_kwargs: dict[str, object] = {
         "tier": tier,
         "category": category,
         "status": status,
         "in_force": in_force,
         "doc_type": doc_type,
+        "include_expired": include_expired,
+        "validity_state": validity_state,
+        "today": today,
     }
     abstained = False
     abstain_reason: str | None = None
@@ -180,6 +189,10 @@ def kb_search_fn(
                 score=h.score,
                 status=h.status,
                 type=h.doc_type,
+                freshness=compute_freshness(
+                    valid_from=h.valid_from, valid_until=h.valid_until,
+                    recheck_by=h.recheck_by, today=today,
+                ) or "",
             )
             for h in hits
         ],
@@ -194,10 +207,30 @@ class KbNotFoundError(Exception):
     """Raised when kb_get_fn is asked for an id that does not exist."""
 
 
-def kb_get_fn(*, idx: Index, id: str) -> GetResponse:
+def kb_get_fn(*, idx: Index, id: str, today: str | None = None) -> GetResponse:
+    from data_olympus.format.validate import compute_freshness, today_iso
+
     doc = idx.get(id)
     if doc is None:
         raise KbNotFoundError(f"no document with id={id!r}")
+    today = today if today is not None else today_iso()
+    validity: dict[str, str] | None = None
+    has_validity = (
+        doc.valid_from or doc.valid_until or doc.last_verified
+        or doc.recheck_by or doc.verification_source
+    )
+    if has_validity:
+        validity = {
+            "valid_from": doc.valid_from,
+            "valid_until": doc.valid_until,
+            "last_verified": doc.last_verified,
+            "recheck_by": doc.recheck_by,
+            "verification_source": doc.verification_source,
+        }
+    freshness = compute_freshness(
+        valid_from=doc.valid_from, valid_until=doc.valid_until,
+        recheck_by=doc.recheck_by, today=today,
+    ) or ""
     return GetResponse(
         id=doc.id,
         path=doc.path,
@@ -214,6 +247,8 @@ def kb_get_fn(*, idx: Index, id: str) -> GetResponse:
         last_modified_source=doc.last_modified_source,
         source_commit=doc.source_commit,
         git_remote_url=doc.git_remote_url,
+        validity=validity,
+        freshness=freshness,
     )
 
 

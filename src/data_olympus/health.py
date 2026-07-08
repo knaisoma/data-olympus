@@ -43,6 +43,9 @@ class HealthState:
     # filtered correctly. Surfaced as a WARNING signal; it does NOT flip
     # ``degraded`` (see snapshot()).
     malformed_frontmatter: int = 0
+    # Count of docs whose ``validity`` block was present but malformed at the
+    # last index build (issue #107). Same WARNING-only rationale.
+    malformed_validity: int = 0
 
 
 def snapshot(
@@ -88,6 +91,8 @@ def snapshot(
     )
     _mf = h.get("malformed_frontmatter")
     malformed_frontmatter = _mf if isinstance(_mf, int) else 0
+    _mv = h.get("malformed_validity")
+    malformed_validity = _mv if isinstance(_mv, int) else 0
     return HealthState(
         kb_commit=str(h["source_commit"]),
         index_built_at=h["index_built_at"] if isinstance(h["index_built_at"], float) else None,
@@ -111,4 +116,5 @@ def snapshot(
         remote_head_sha=remote_head_sha,
         live_sessions=live_sessions,
         malformed_frontmatter=malformed_frontmatter,
+        malformed_validity=malformed_validity,
     )

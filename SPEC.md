@@ -1,7 +1,7 @@
 # data-olympus Knowledge Format
 
-**Version:** 0.1
-**Date:** 2026-07-03
+**Version:** 0.2
+**Date:** 2026-07-08
 **Status:** Stable (shipped with data-olympus v0.3.0; the format is versioned independently of the package, see section 10)
 
 ---
@@ -125,6 +125,31 @@ timestamp: "2026-06-24"
 ```
 
 An agent mid-task on "I need to log this API response for debugging" shares no vocabulary with the document's title ("Secrets Handling") but matches `"logging a request or response body"` directly.
+
+#### `validity`: freshness metadata with hard expiry semantics
+
+`validity` is an optional nested object, concept-level only (it does not apply to reserved files). It declares a document's time-bounded applicability, separately from `timestamp` (see below). All sub-fields are optional; an ISO date (`"2026-07-08"`) or an ISO datetime (optionally timezone-suffixed, including the `Z` shorthand for UTC) is accepted and normalized to a plain date at index/lint time.
+
+- `valid_from`: the document is not yet in force before this date. A future `valid_from` marks the document `upcoming`.
+- `valid_until`: the document is expired on or after the day *after* this date (the day itself is still in force: the boundary is inclusive). **Expiry has teeth**: a document past `valid_until` is excluded from `kb_search`'s in-force filter (`in_force=true`) AND from every default `kb_search` result, not merely soft-downranked. Rationale: unlike a superseded document, an expired one has no named successor to outrank it — left visible it could be the top hit and would incorrectly govern. Retrieve it anyway with `include_expired=true`, or via the `validity_state` audit facet (below); `kb_get` by id always resolves it regardless of expiry.
+- `last_verified`: the date someone last confirmed the document is still accurate. Advisory; not evaluated by any filter.
+- `recheck_by`: a soft staleness deadline. A `recheck_by` in the past does NOT remove the document from search — it stays in force and visible — but the reference implementation surfaces a deviation-only `stale` indicator on the hit, and `kb lint` emits a warning.
+- `verification_source`: free text describing how/where the document was last verified (a review, an incident, a runbook). Not evaluated by tooling.
+
+```yaml
+validity:
+  valid_from: "2026-01-01"
+  valid_until: "2026-12-31"
+  last_verified: "2026-06-01"
+  recheck_by: "2026-09-01"
+  verification_source: "Q3 security review"
+```
+
+**`timestamp` is content-change metadata, not staleness.** `timestamp` (section 4.2, recommended fields) records when the document's content last meaningfully changed; it says nothing about whether the guidance is still applicable. Tooling MUST NOT derive expiry, staleness, or freshness from `timestamp` or from a file's `last_modified` (git-commit or mtime provenance) — a document can be perfectly fresh and untouched for years, or freshly edited and already past its `valid_until`. `validity` is the only source for freshness semantics.
+
+The reference implementation's `kb_search` accepts `include_expired` (default `false`) and a `validity_state` facet (`"expired"`, `"stale"`, or `"expiring_within:N"` for N days) for audit queries such as "what expired last month" or "what expires soon"; filtering for `"expired"` implies including expired documents regardless of `include_expired`. Compact search hits carry a deviation-only `freshness` field (`stale` / `expired` / `upcoming`), omitted when the document is fresh or has no `validity` block; `expired` only ever appears when the hit was explicitly included. See the `kb_search` and `kb_get` MCP tool descriptions for the full parameter contract.
+
+`kb lint` treats a malformed `validity` value (an unparsable date, or `validity` present but not a mapping) as **absent** (fail open, so the document keeps its normal visibility) while still emitting a warning; see section 9.
 
 **Optional decision-chain fields** (not checked by `kb lint`; documented convention only):
 
@@ -277,7 +302,13 @@ These three are mirrored as the `kb_consult`, `kb_gate_check`, and `kb_complianc
 **`kb lint` severity levels:**
 
 - `error`: missing required field, invalid enum value, or YAML parse failure. Blocks CI.
-- `warning`: missing recommended field (`title`, `description`, `tags`, `timestamp`), or `tags` is not a list. Does not block CI by default. Broken links and missing `supersedes`/`superseded_by`/`owner` are not checked and produce no finding either way (see sections 4.2 and 5). `applies_when` is recommended by this spec but is not yet in `kb lint`'s checked field set: a missing or malformed `applies_when` produces no finding today, even though a non-list value is silently parsed as empty (matching `tags`' parsing, minus the warning).
+- `warning`: missing recommended field (`title`, `description`, `tags`, `timestamp`), `tags` is not a list, or one of the three `validity` findings below. Does not block CI by default. Broken links and missing `supersedes`/`superseded_by`/`owner` are not checked and produce no finding either way (see sections 4.2 and 5). `applies_when` is recommended by this spec but is not yet in `kb lint`'s checked field set: a missing or malformed `applies_when` produces no finding today, even though a non-list value is silently parsed as empty (matching `tags`' parsing, minus the warning).
+
+**`kb lint` validity findings** (always `warning`, never `error` — these are wall-clock-relative checks, and an error would make CI flake purely with the passage of time):
+
+- `recheck_by` is in the past.
+- `valid_until` is in the past while `status` is in the in-force class (`active`/`accepted`/`approved`): the safety net for a typo'd date that would otherwise silently remove a rule from `kb_search` discovery.
+- A `validity` value is malformed (an unparsable date, or `validity` present but not a mapping). The malformed value is treated as absent (fail open) for indexing/search purposes.
 
 ---
 
@@ -292,6 +323,8 @@ Version numbering follows semver semantics:
 
 - **Minor version increment** (for example, `0.1` to `0.2`): backward-compatible additions. New optional or recommended fields, new allowed enum values, new conventions that existing consumers can safely ignore.
 - **Major version increment** (for example, `0.x` to `1.0`, or `1.x` to `2.0`): breaking changes. Removal of fields, changes to required field semantics, or changes to the parsing model that would cause existing conformant bundles to fail validation.
+
+This document is now at `0.2`, incrementing from `0.1`: the addition of the optional `validity` frontmatter object (section 4.2) is a backward-compatible minor change — existing bundles with no `validity` block are unaffected, and an OKF or pre-`0.2` consumer silently ignores the unknown key per section 4.1's forward-compatibility rule. The one **behavior** change accompanying this format addition lives in the reference implementation, not the format itself: a document past its `valid_until` is now excluded from default `kb_search` results (previously the reference implementation had no `validity` concept at all, so nothing was ever excluded on this basis).
 
 The `spec_version` field is optional in bundles targeting this `0.1` draft. It becomes required at `1.0`.
 

@@ -33,7 +33,12 @@ from data_olympus.embeddings import (
     make_hybrid_reranker,
     serialize_vector,
 )
-from data_olympus.format.validate import IN_FORCE_STATUSES
+from data_olympus.format.validate import (
+    IN_FORCE_STATUSES,
+    in_force_sql_fragment,
+    not_expired_sql_fragment,
+    today_iso,
+)
 from data_olympus.markdown_parse import ParsedDoc, parse_text_checked
 from data_olympus.trigram import (
     DEFAULT_FALLBACK_THRESHOLD as DEFAULT_TRIGRAM_FALLBACK_THRESHOLD,
@@ -63,7 +68,12 @@ CREATE TABLE IF NOT EXISTS docs (
     content_markdown TEXT,
     last_modified TEXT,
     last_modified_source TEXT,
-    git_remote_url TEXT
+    git_remote_url TEXT,
+    valid_from TEXT,
+    valid_until TEXT,
+    last_verified TEXT,
+    recheck_by TEXT,
+    verification_source TEXT
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
     id UNINDEXED,
@@ -94,7 +104,9 @@ CREATE TABLE IF NOT EXISTS meta (
 # v6 adds the related_terms co-occurrence table (issue #40).
 # v7 adds the fts_trigram fuzzy-match table (issue #41).
 # v8 adds the doc_vectors table (issue #42, populated only when embeddings on).
-_SCHEMA_VERSION = "8"
+# v9 adds the validity/freshness columns (issue #107): valid_from, valid_until,
+# last_verified, recheck_by, verification_source.
+_SCHEMA_VERSION = "9"
 
 logger = logging.getLogger(__name__)
 
@@ -326,6 +338,12 @@ class SearchHit:
     status: str = ""
     doc_type: str = ""
     rank_class: int = RANK_CLASS_PRIMARY
+    # validity/freshness (issue #107), ISO YYYY-MM-DD or "" when absent. Carried
+    # so callers (kb_search_fn) can compute the deviation-only ``freshness``
+    # indicator without a second doc lookup.
+    valid_from: str = ""
+    valid_until: str = ""
+    recheck_by: str = ""
 
 
 def make_status_reranker(
@@ -402,6 +420,12 @@ class IndexedDoc:
     doc_type: str = ""
     applies_when: list[str] = field(default_factory=list)
     description: str = ""
+    # validity/freshness (issue #107), ISO YYYY-MM-DD or "" when absent.
+    valid_from: str = ""
+    valid_until: str = ""
+    last_verified: str = ""
+    recheck_by: str = ""
+    verification_source: str = ""
 
 
 class DuplicateIdError(ValueError):
@@ -429,6 +453,43 @@ def _derive_id_from_path(rel: Path) -> str:
     """
     parts = list(rel.with_suffix("").parts)
     return "-".join(parts) if parts else rel.stem
+
+
+# ``validity_state`` facet (issue #107): an audit-query filter over the
+# validity/freshness columns, orthogonal to ``in_force``. Three forms:
+#   "expired"            -> valid_until strictly before today.
+#   "stale"               -> recheck_by strictly before today (advisory only).
+#   "expiring_within:N"   -> valid_until in [today, today + N days] inclusive.
+_VALIDITY_STATE_KINDS = frozenset({"expired", "stale", "expiring_within"})
+
+
+def _parse_validity_state(value: str) -> tuple[str, int | None]:
+    """Parse a ``validity_state`` facet value into ``(kind, days)``.
+
+    ``days`` is only meaningful for ``"expiring_within"`` (None otherwise).
+    Raises ValueError for an unrecognized kind or a non-integer/negative day
+    count, so a malformed facet value fails loudly rather than silently
+    matching nothing.
+    """
+    if ":" in value:
+        kind, _, rest = value.partition(":")
+        if kind != "expiring_within":
+            raise ValueError(f"unknown validity_state {value!r}")
+        try:
+            days = int(rest)
+        except ValueError as exc:
+            raise ValueError(f"validity_state {value!r}: N must be an integer") from exc
+        if days < 0:
+            raise ValueError(f"validity_state {value!r}: N must not be negative")
+        return kind, days
+    if value not in _VALIDITY_STATE_KINDS:
+        raise ValueError(f"unknown validity_state {value!r}")
+    return value, None
+
+
+def _add_days_iso(today: str, days: int) -> str:
+    """Return ``today`` (ISO YYYY-MM-DD) plus ``days`` calendar days, as ISO."""
+    return (datetime.date.fromisoformat(today) + datetime.timedelta(days=days)).isoformat()
 
 
 class Index:
@@ -524,6 +585,10 @@ class Index:
         # a WARN log per doc) is the minimal, non-invasive plumbing; wiring it into
         # the /health degraded signal is a tracked follow-up.
         self._malformed_frontmatter_count = 0
+        # Health-visible count of docs whose ``validity`` block was present but
+        # malformed at the last build (issue #107). Updated by build(); surfaced
+        # via health() and the ``malformed_validity_count`` property.
+        self._malformed_validity_count = 0
 
     @property
     def malformed_frontmatter_count(self) -> int:
@@ -535,6 +600,16 @@ class Index:
         WARN per doc during build) makes the condition observable.
         """
         return self._malformed_frontmatter_count
+
+    @property
+    def malformed_validity_count(self) -> int:
+        """Docs with a present-but-malformed ``validity`` block at last build.
+
+        A malformed date anywhere in ``validity`` fails the whole block open
+        (treated as absent, fail open for visibility); this counter (also
+        logged at WARN per doc during build) makes that condition observable.
+        """
+        return self._malformed_validity_count
 
     def _resolve_embedder(self) -> Embedder | None:
         """Return the embedder to use, loading it from the threaded config once.
@@ -740,6 +815,13 @@ class Index:
             # the Index and logged at WARN so a YAML typo that disables a doc's
             # staleness protection is visible rather than silent.
             malformed_frontmatter = 0
+            # Docs whose ``validity`` block was present but malformed (issue
+            # #107): the whole block failed open (absent), so the doc's
+            # expiry/staleness protection is silently disabled. Surfaced the
+            # same way as malformed_frontmatter above (WARN log + health
+            # counter), but tracked separately since a doc can have valid
+            # front matter overall yet a malformed ``validity`` sub-block.
+            malformed_validity = 0
             for pf in parsed:
                 rel = pf.rel
                 doc = pf.doc
@@ -750,6 +832,14 @@ class Index:
                         "malformed front matter in %s: front-matter block present "
                         "but not valid YAML; status/supersedes/other fields were "
                         "dropped (staleness protection disabled for this doc)",
+                        rel,
+                    )
+                if doc.validity_malformed:
+                    malformed_validity += 1
+                    logger.warning(
+                        "malformed validity block in %s: 'validity' present but "
+                        "one or more of its date fields did not parse; the whole "
+                        "block was treated as absent for this doc",
                         rel,
                     )
                 path_tier, path_category = _classify_by_path(str(rel), path_rules)
@@ -764,11 +854,15 @@ class Index:
                 conn.execute(
                     "INSERT INTO docs (id, path, tier, category, status, type, "
                     "applies_when, description, title, tags, "
-                    "content_markdown, last_modified, last_modified_source, git_remote_url) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "content_markdown, last_modified, last_modified_source, git_remote_url, "
+                    "valid_from, valid_until, last_verified, recheck_by, verification_source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (doc_id, str(rel), final_tier, final_category, doc.status, doc.doc_type,
                      applies_when_str, doc.description, doc.title, tags_str, content_markdown,
-                     last_modified, lm_source, doc.git_remote_url),
+                     last_modified, lm_source, doc.git_remote_url,
+                     doc.valid_from or None, doc.valid_until or None,
+                     doc.last_verified or None, doc.recheck_by or None,
+                     doc.verification_source or None),
                 )
                 conn.execute(
                     "INSERT INTO fts (id, title, tags, applies_when, description, body) "
@@ -865,6 +959,12 @@ class Index:
                 "VALUES ('malformed_frontmatter', ?)",
                 (str(malformed_frontmatter),),
             )
+            # Malformed-validity count (issue #107): same rationale as above.
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) "
+                "VALUES ('malformed_validity', ?)",
+                (str(malformed_validity),),
+            )
             # Integrity check before swap
             check = conn.execute("PRAGMA integrity_check").fetchone()
             if check[0] != "ok":
@@ -889,6 +989,7 @@ class Index:
         # Publish the malformed-frontmatter count for the in-process health view
         # (finding (j)); the persisted meta row covers a fresh process.
         self._malformed_frontmatter_count = malformed_frontmatter
+        self._malformed_validity_count = malformed_validity
         # Invalidate the health cache so the next health() reflects the rebuild
         # immediately rather than serving the pre-swap commit for up to the TTL.
         with self._health_lock:
@@ -905,6 +1006,9 @@ class Index:
         status: str | None = None,
         in_force: bool = False,
         doc_type: str | None = None,
+        include_expired: bool = False,
+        validity_state: str | None = None,
+        today: str | None = None,
         columns: list[str] | None = None,
         column_weights: tuple[float, ...] | None = None,
     ) -> list[SearchHit]:
@@ -925,14 +1029,36 @@ class Index:
 
         `status` filters to a single exact status. `in_force` is a HARD
         pre-ranking filter restricting results to the in-force status class
-        (format.validate.IN_FORCE_STATUSES: active/accepted/approved), so a
-        superseded/deprecated doc is EXCLUDED before ranking rather than merely
+        (format.validate.IN_FORCE_STATUSES: active/accepted/approved) AND the
+        validity window (not expired, not upcoming; see
+        format.validate.is_in_force), so a superseded/deprecated/expired/
+        upcoming doc is EXCLUDED before ranking rather than merely
         soft-downranked by the status reranker. The two compose: passing both a
         single `status` and `in_force=True` requires the doc match `status` AND
         be in-force (an empty result if `status` is not itself in-force). The
         filter is applied to both the FTS candidate pool and the dense
         (embedding) candidate source so neither leaks an out-of-force doc.
+
+        `include_expired` (default False, issue #107): by default a doc past
+        its `valid_until` is EXCLUDED from every result, not just from
+        `in_force=True` queries (an expired doc has no named successor to
+        outrank it, so left visible it could be the top hit and would govern).
+        Set True to include expired docs anyway; each carries
+        `freshness=expired` once shaped by `kb_search_fn`. A doc with a future
+        `valid_from` ("upcoming") is NOT excluded by default search, only by
+        `in_force=True`.
+
+        `validity_state` (issue #107) is an audit-query facet, one of
+        `"expired"`, `"stale"`, or `"expiring_within:N"` (N days). Filtering
+        for `"expired"` implies including expired docs regardless of
+        `include_expired`. Composes with `tier`/`category`/`status`/`doc_type`
+        but not with `in_force` (an in-force query has its own window).
+
+        `today` (ISO `YYYY-MM-DD`) drives every validity/freshness comparison
+        above; defaults to `format.validate.today_iso()` (the real wall clock)
+        but is injectable for deterministic tests.
         """
+        today = today if today is not None else today_iso()
         # Stage 1 (expand-query): term extraction + optional expansion hook.
         # The user's ACTUAL terms (post-split, pre-expansion) drive the PRIMARY
         # match; any expansion terms are matched separately and can only backfill
@@ -977,7 +1103,8 @@ class Index:
         try:
             base_where, base_params = self._facet_filters(
                 tier=tier, category=category, status=status,
-                in_force=in_force, doc_type=doc_type,
+                in_force=in_force, doc_type=doc_type, today=today,
+                include_expired=include_expired, validity_state=validity_state,
             )
             # Stage 2 (match): PRIMARY pool from the user's own terms only.
             hits = self._fts_match(
@@ -1038,6 +1165,9 @@ class Index:
                 status=status,
                 in_force=in_force,
                 doc_type=doc_type,
+                include_expired=include_expired,
+                validity_state=validity_state,
+                today=today,
             )
         # Stage 3 (re-rank): optional hook reorders/rescores (default identity).
         if self.reranker is not None:
@@ -1060,6 +1190,9 @@ class Index:
         status: str | None,
         in_force: bool,
         doc_type: str | None,
+        include_expired: bool = False,
+        validity_state: str | None = None,
+        today: str | None = None,
     ) -> builtins.list[SearchHit]:
         """Union dense (cosine) candidates into the FTS pool (reviewer concern 1).
 
@@ -1080,6 +1213,9 @@ class Index:
             status=status,
             in_force=in_force,
             doc_type=doc_type,
+            include_expired=include_expired,
+            validity_state=validity_state,
+            today=today,
         )
         if not dense:
             return fts_hits
@@ -1100,13 +1236,29 @@ class Index:
         status: str | None,
         in_force: bool,
         doc_type: str | None,
+        today: str,
+        include_expired: bool = False,
+        validity_state: str | None = None,
     ) -> tuple[list[str], list[object]]:
         """Build the shared docs.* facet WHERE fragments (no MATCH clause).
 
-        Returns (where_fragments, params) covering tier/category/status/in_force/
-        doc_type. The MATCH clause is prepended per-pass by the caller so the
-        primary, expansion-backfill, trigram, and dense passes all apply the same
-        facet filters from a single source.
+        Returns (where_fragments, params) covering tier/category/status/
+        in_force/doc_type/validity. The MATCH clause is prepended per-pass by
+        the caller so the primary, expansion-backfill, trigram, and dense
+        passes all apply the same facet filters from a single source.
+
+        Validity/freshness (issue #107): ``in_force`` ANDs the status-class
+        filter with the validity-WINDOW fragment (:func:`in_force_sql_fragment`
+        from format.validate), so an in-force query also excludes expired and
+        upcoming docs. Independent of ``in_force``, ``validity_state`` (an
+        explicit audit-query facet: ``"expired"``, ``"stale"``, or
+        ``"expiring_within:N"``) takes over the validity filtering entirely and
+        DISABLES the default not-expired exclusion below (an audit query for
+        "what's expired" must not itself be filtered out by the very
+        not-expired guard it's asking about). With no ``validity_state``, the
+        default (``include_expired=False``) applies
+        :func:`not_expired_sql_fragment` so a doc past ``valid_until`` never
+        appears in an ordinary search; ``include_expired=True`` lifts that.
         """
         where: list[str] = []
         params: list[object] = []
@@ -1123,9 +1275,29 @@ class Index:
             placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
             where.append(f"docs.status IN ({placeholders})")
             params.extend(_IN_FORCE_STATUS_LIST)
+            where.append(in_force_sql_fragment())
+            params.extend([today, today])
         if doc_type:
             where.append("docs.type = ?")
             params.append(doc_type)
+        if validity_state:
+            kind, days = _parse_validity_state(validity_state)
+            if kind == "expired":
+                where.append("(docs.valid_until IS NOT NULL AND docs.valid_until < ?)")
+                params.append(today)
+            elif kind == "stale":
+                where.append("(docs.recheck_by IS NOT NULL AND docs.recheck_by < ?)")
+                params.append(today)
+            elif kind == "expiring_within":
+                cutoff = _add_days_iso(today, days or 0)
+                where.append(
+                    "(docs.valid_until IS NOT NULL AND docs.valid_until >= ? "
+                    "AND docs.valid_until <= ?)"
+                )
+                params.extend([today, cutoff])
+        elif not include_expired:
+            where.append(not_expired_sql_fragment())
+            params.append(today)
         return where, params
 
     def _fts_match(
@@ -1157,6 +1329,9 @@ class Index:
                 COALESCE(docs.title, '') AS title,
                 COALESCE(docs.status, '') AS status,
                 COALESCE(docs.type, '') AS doc_type,
+                COALESCE(docs.valid_from, '') AS valid_from,
+                COALESCE(docs.valid_until, '') AS valid_until,
+                COALESCE(docs.recheck_by, '') AS recheck_by,
                 snippet(fts, 5, '[', ']', '...', 16) AS snippet,
                 {bm25_expr} AS score
             FROM fts
@@ -1175,6 +1350,9 @@ class Index:
                 score=float(r["score"]),
                 status=r["status"],
                 doc_type=r["doc_type"],
+                valid_from=r["valid_from"],
+                valid_until=r["valid_until"],
+                recheck_by=r["recheck_by"],
             )
             for r in rows
         ]
@@ -1287,6 +1465,9 @@ class Index:
                 COALESCE(docs.status, '') AS status,
                 COALESCE(docs.type, '') AS doc_type,
                 COALESCE(docs.description, '') AS description,
+                COALESCE(docs.valid_from, '') AS valid_from,
+                COALESCE(docs.valid_until, '') AS valid_until,
+                COALESCE(docs.recheck_by, '') AS recheck_by,
                 bm25(fts_trigram) AS tscore
             FROM fts_trigram
             JOIN docs ON docs.id = fts_trigram.id
@@ -1314,6 +1495,9 @@ class Index:
                     status=r["status"],
                     doc_type=r["doc_type"],
                     rank_class=RANK_CLASS_BACKFILL,
+                    valid_from=r["valid_from"],
+                    valid_until=r["valid_until"],
+                    recheck_by=r["recheck_by"],
                 )
             )
             offset += 1.0
@@ -1419,6 +1603,9 @@ class Index:
         status: str | None = None,
         in_force: bool = False,
         doc_type: str | None = None,
+        include_expired: bool = False,
+        validity_state: str | None = None,
+        today: str | None = None,
     ) -> builtins.list[SearchHit]:
         """Return up to ``limit`` docs most similar to ``query`` by cosine (issue #42).
 
@@ -1428,8 +1615,10 @@ class Index:
         the stored ``doc_vectors`` (read via the same deserialize path as
         ``get_vector``). Only neighbours clearing ``min_cosine`` are returned, so a
         negative / out-of-scope query whose nearest doc is only weakly similar pulls
-        in nothing (abstention guard). The same tier/category/status/doc_type
-        filters are applied so a filtered search does not leak an off-facet doc.
+        in nothing (abstention guard). The same tier/category/status/doc_type/
+        validity filters are applied (via the SAME :meth:`_facet_filters` the FTS
+        pool uses, issue #107) so a filtered search does not leak an off-facet or
+        expired doc through the dense channel.
 
         Returns the empty list when embeddings are not configured, the query cannot
         be embedded, or the index predates the ``doc_vectors`` table. Each hit
@@ -1450,26 +1639,19 @@ class Index:
         matrix = self._load_vectors()
         if not matrix:
             return []
+        today = today if today is not None else today_iso()
         # Fetch only the facet-eligible doc metadata (no vector blob); the vector
-        # is pulled from the cached matrix by id.
-        where = ["dv.id IS NOT NULL"]
-        params: list[object] = []
-        if tier:
-            where.append("docs.tier = ?")
-            params.append(tier)
-        if category:
-            where.append("docs.category = ?")
-            params.append(category)
-        if status:
-            where.append("docs.status = ?")
-            params.append(status)
-        if in_force:
-            placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
-            where.append(f"docs.status IN ({placeholders})")
-            params.extend(_IN_FORCE_STATUS_LIST)
-        if doc_type:
-            where.append("docs.type = ?")
-            params.append(doc_type)
+        # is pulled from the cached matrix by id. Shares the exact same
+        # tier/category/status/in_force/doc_type/validity WHERE-building as the
+        # FTS pool (single-sourced, issue #107) so the two filter sites cannot
+        # drift apart.
+        facet_where, facet_params = self._facet_filters(
+            tier=tier, category=category, status=status,
+            in_force=in_force, doc_type=doc_type, today=today,
+            include_expired=include_expired, validity_state=validity_state,
+        )
+        where = ["dv.id IS NOT NULL", *facet_where]
+        params: list[object] = list(facet_params)
         sql = f"""
             SELECT
                 dv.id AS id,
@@ -1477,7 +1659,10 @@ class Index:
                 COALESCE(docs.title, '') AS title,
                 COALESCE(docs.status, '') AS status,
                 COALESCE(docs.type, '') AS doc_type,
-                COALESCE(docs.description, '') AS description
+                COALESCE(docs.description, '') AS description,
+                COALESCE(docs.valid_from, '') AS valid_from,
+                COALESCE(docs.valid_until, '') AS valid_until,
+                COALESCE(docs.recheck_by, '') AS recheck_by
             FROM doc_vectors dv
             JOIN docs ON docs.id = dv.id
             WHERE {' AND '.join(where)}
@@ -1509,6 +1694,9 @@ class Index:
                         score=sim,
                         status=r["status"],
                         doc_type=r["doc_type"],
+                        valid_from=r["valid_from"],
+                        valid_until=r["valid_until"],
+                        recheck_by=r["recheck_by"],
                     ),
                 )
             )
@@ -1542,7 +1730,9 @@ class Index:
                 """
                 SELECT id, path, title, tier, category, status, type, tags,
                        applies_when, description, content_markdown,
-                       last_modified, last_modified_source, git_remote_url
+                       last_modified, last_modified_source, git_remote_url,
+                       valid_from, valid_until, last_verified, recheck_by,
+                       verification_source
                 FROM docs WHERE id = ?
                 """,
                 (id,),
@@ -1573,6 +1763,11 @@ class Index:
             doc_type=row["type"] or "",
             applies_when=applies_when,
             description=row["description"] or "",
+            valid_from=row["valid_from"] or "",
+            valid_until=row["valid_until"] or "",
+            last_verified=row["last_verified"] or "",
+            recheck_by=row["recheck_by"] or "",
+            verification_source=row["verification_source"] or "",
         )
 
     def id_to_path_map(self) -> dict[str, str]:
@@ -1701,6 +1896,9 @@ class Index:
             # build. Read from the persisted meta row so a fresh process (that did
             # not run build() itself) still sees it.
             "malformed_frontmatter": int(meta.get("malformed_frontmatter", "0")),
+            # Issue #107: present-but-malformed ``validity`` block count, same
+            # persisted-meta rationale as malformed_frontmatter above.
+            "malformed_validity": int(meta.get("malformed_validity", "0")),
         }
 
     def list_by_prefix(

@@ -12,6 +12,10 @@ applies_when:
   - "committing a credential or API key"
   - "logging a request or response body"
   - "writing a script that calls a secrets manager"
+validity:
+  last_verified: 2026-06-24
+  recheck_by: 2027-06-24
+  verification_source: annual security review
 ---
 # Purpose
 
