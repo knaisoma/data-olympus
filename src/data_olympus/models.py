@@ -348,6 +348,11 @@ class ResolvePendingRequest(BaseModel):
     pending_id: str
     decision: str  # 'approve' | 'reject' | 'edit'
     edited_text: str | None = None
+    # Operator-only override of the issue #71 secret-scanning gate: when True
+    # and the resolved postimage is flagged, the commit proceeds anyway and the
+    # audit event records the override. Never available on the propose (auto-
+    # commit) request models.
+    override_secret_scan: bool = False
 
 
 class ResolvePendingResponse(BaseModel):
@@ -373,6 +378,12 @@ class PendingEntry(BaseModel):
     agent_identity: str | None = None
     created_at: float
     expires_at: float | None = None
+    # issue #71: True when the ORIGINAL postimage was flagged by the secret
+    # scanner at propose time. Surfaced so an operator running `kb pending`
+    # sees the warning (and the pattern name) without needing to inspect the
+    # raw postimage; the matched value itself is never included here.
+    secret_scan_flagged: bool = False
+    matching_pattern: str | None = None
 
 
 class PendingListResponse(BaseModel):
@@ -392,6 +403,13 @@ class AuditEvent(BaseModel):
     commit_sha: str | None = None
     reason: str | None = None
     remote_addr: str | None = None
+    # issue #71 secret-scanning gate: the pattern NAME (never the matched
+    # value) on a rejected_secret_detected event, or on a committed resolve
+    # where the operator consciously overrode a flagged postimage.
+    matching_pattern: str | None = None
+    # True only on a resolve that committed a postimage the scanner flagged,
+    # via an explicit operator override (never set by an auto-commit path).
+    secret_scan_override: bool | None = None
     # Tamper-evident chain fields (present on events appended with chaining).
     event_id: str | None = None
     prev_hash: str | None = None

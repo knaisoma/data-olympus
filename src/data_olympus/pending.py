@@ -250,6 +250,11 @@ class PendingQueue:
                 "confidence": entry["meta"].get("confidence"),
                 "agent_identity": entry["meta"].get("agent_identity"),
                 "created_at": entry["enqueued_at"],
+                # issue #71: surface the secret-scan flag (name only, never
+                # the matched value) so an operator sees the warning via
+                # `kb pending` without inspecting the raw postimage.
+                "secret_scan_flagged": bool(entry["meta"].get("secret_scan_flagged", False)),
+                "matching_pattern": entry["meta"].get("matching_pattern"),
             })
         return out
 

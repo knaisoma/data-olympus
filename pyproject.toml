@@ -23,6 +23,12 @@ dependencies = [
     "pyyaml>=6.0",
     "fastmcp>=3.2.0,<4",
     "pydantic>=2.9",
+    # The secret-scanning gate (issue #71) runs operator-supplied
+    # KB_SECRET_SCAN_EXTRA_PATTERNS through the `regex` engine because it
+    # supports a hard match timeout: a catastrophic-backtracking pattern can
+    # then never hang the single-writer critical path (stdlib `re` has no
+    # timeout and cannot be interrupted once matching).
+    "regex>=2024.5",
 ]
 
 [project.urls]
@@ -48,6 +54,7 @@ dev = [
     "ruff>=0.15.20",
     "mypy>=1.13",
     "types-PyYAML>=6.0",
+    "types-regex>=2024.5",
     # Exercise the embeddings path in CI (the feature stays off by default at
     # runtime; the tests opt in via KB_EMBEDDINGS_MODE and skip if the model
     # cannot be fetched in the sandbox).

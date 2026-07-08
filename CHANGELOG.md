@@ -55,6 +55,43 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in-force graph exclusion, `kb_get`/`kb_search` surfacing, and a health
   counter.
 
+- **Secret-scanning gate on the write path (issue #71).** Every commit path
+  (`kb_propose_memory` / `kb_propose_edit` auto-commit, `kb_resolve_pending`
+  approve, including a resolved `edited_text`, and onboarding bootstrap) now
+  scans the final postimage for credential-shaped content (PEM private-key
+  blocks, GitHub/Slack tokens, AWS access key ids, generic `password=`/
+  `secret=` assignments with a non-placeholder value, and connection strings
+  with an inline password) before anything is written to disk. A match rejects
+  the write with a distinct `rejected_secret_detected` status; nothing is
+  committed and no pending entry is created on the auto-commit/bootstrap
+  paths. Only the pattern name and an approximate line number are ever
+  surfaced in the response, the audit event, or a log line, never the
+  matched secret value. Operators can extend the built-in pattern set with
+  `KB_SECRET_SCAN_EXTRA_PATTERNS` (comma-separated regexes; an invalid entry
+  is logged and skipped, never crashes the server). `kb_resolve_pending` gains
+  an operator-only `override_secret_scan` flag to consciously commit a
+  flagged postimage that is a confirmed false positive; the override is
+  recorded on the resulting audit event, and no auto-commit or bootstrap path
+  exposes it (`kb resolve --override-secret-scan` on the CLI). A low-confidence
+  proposal containing a secret still enters pending, so the override workflow
+  is not defeated, but its scan result is redacted to a pattern name in the
+  propose response and tagged (`secret_scan_flagged`) on the entry so
+  `kb pending` surfaces the warning without ever showing the matched value;
+  the memory filename slug itself falls back to a neutral placeholder instead
+  of embedding the flagged text. The scan runs before the content-validation
+  gate on every commit path so an invalid-document rejection can never echo a
+  credential value through its own error message. The gate also covers the
+  fields around the postimage: a credential-shaped `target_path` (filename)
+  is rejected on edit/bootstrap/resolve without echoing the path back, a
+  flagged edit `reason` is replaced with a redacted note before reaching
+  pending meta / push metadata / audit events, and a flagged memory tag is
+  stored redacted in pending meta. Extra patterns
+  (`KB_SECRET_SCAN_EXTRA_PATTERNS`) with the classic nested-quantifier ReDoS
+  shape are rejected at load time alongside invalid regexes, and every
+  accepted custom pattern executes through the `regex` engine (a new runtime
+  dependency) with a hard 1-second match timeout so a catastrophic pattern
+  cannot hang the single-writer write path.
+
 ### Changed
 
 - **BEHAVIOR CHANGE: a document past its `validity.valid_until` now leaves

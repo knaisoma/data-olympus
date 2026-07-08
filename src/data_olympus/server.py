@@ -699,9 +699,17 @@ def build_app(
         def kb_resolve_pending(
             pending_id: str, decision: str, edited_text: str | None = None,
             source_session: str = "operator-resolve", agent_identity: str = "operator",
+            override_secret_scan: bool = False,
         ) -> dict[str, object]:
             """Resolve a pending proposal: approve (optionally with edited text) or
-            reject. Approval commits + enqueues for push."""
+            reject. Approval commits + enqueues for push.
+
+            ``override_secret_scan``: operator-only override of the secret-
+            scanning gate (issue #71). When True and the resolved postimage
+            matches a credential pattern, the commit proceeds anyway instead
+            of being rejected ``rejected_secret_detected``, and the audit
+            event records that the override was used. Use only after
+            confirming the flagged content is NOT a real credential."""
             if state.worktrees is None or state.push_queue is None or state.pending is None:
                 return {"status": "write_pipeline_disabled"}
             assert state.worktrees is not None
@@ -719,6 +727,7 @@ def build_app(
                 # cap here so the two surfaces match.
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                override_secret_scan=override_secret_scan,
             )
             return resp.model_dump()
 
