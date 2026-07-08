@@ -134,6 +134,39 @@ def test_list_pending_returns_active_entries(tmp_path) -> None:
     assert {p1, p2} <= ids
 
 
+# ---- issue #109: provenance surfacing (source_session, reason, evidence) ----
+
+
+def test_list_surfaces_provenance_fields_when_present(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pid = q.enqueue(
+        proposal_type="edit", target_path="universal/foundation/x.md",
+        postimage="b", base_commit="c", base_blob_sha=None, target_file_hash=None,
+        meta={
+            "confidence": 0.4, "agent_identity": "claude",
+            "source_session": "sess-123", "reason": "fixing a typo",
+            "evidence": ["saw it in the logs", "confirmed with operator"],
+        },
+    )
+    entry = next(e for e in q.list() if e["pending_id"] == pid)
+    assert entry["source_session"] == "sess-123"
+    assert entry["reason"] == "fixing a typo"
+    assert entry["evidence"] == ["saw it in the logs", "confirmed with operator"]
+
+
+def test_list_omits_provenance_fields_cleanly_when_absent(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pid = q.enqueue(
+        proposal_type="memory", target_path="memory/inbox/a.md",
+        postimage="a", base_commit="c", base_blob_sha=None, target_file_hash=None,
+        meta={"confidence": 0.3, "agent_identity": "claude"},
+    )
+    entry = next(e for e in q.list() if e["pending_id"] == pid)
+    assert entry["source_session"] is None
+    assert entry["reason"] is None
+    assert entry["evidence"] is None
+
+
 def test_resolve_approve_returns_postimage_and_metadata(tmp_path) -> None:
     q = PendingQueue(pending_root=str(tmp_path / "p"))
     pid = q.enqueue(

@@ -109,6 +109,28 @@ teardown() {
   [ "$status" -eq 64 ]
 }
 
+@test "kb resolve --override-secret-scan sends the flag through to REST" {
+  run "$KB" resolve "pending-test-id" --decision approve --override-secret-scan
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"committed"* ]]
+  [[ "$output" == *"secret_scan_override_seen"* ]]
+}
+
+@test "kb resolve approve without --override-secret-scan omits the override" {
+  run "$KB" resolve "pending-test-id" --decision approve
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"committed"* ]]
+  [[ "$output" != *"secret_scan_override_seen"* ]]
+}
+
+@test "kb resolve --edit-text with --override-secret-scan sends both" {
+  run "$KB" resolve "pending-test-id" --decision approve --edit-text "fixed body" \
+    --override-secret-scan
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"committed"* ]]
+  [[ "$output" == *"secret_scan_override_seen"* ]]
+}
+
 @test "kb pending lists entries" {
   run "$KB" pending
   [ "$status" -eq 0 ]
@@ -133,6 +155,47 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"propose_memory"* ]]
   [[ "$output" == *"committed"* ]]
+}
+
+@test "kb propose never auto-resolves a governed-lane demotion (no TTY)" {
+  # issue #112 / codex security review blocker: a demoted proposal must NOT
+  # flow into the same-command interactive resolve (which defaults to accept
+  # when no TTY is available). The CLI prints the operator prompt and stops.
+  run "$KB" propose memory "note claiming status: active here" --confidence 0.95
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DEMOTED"* ]]
+  [[ "$output" == *"demoted-abc"* ]]
+  # No same-command resolve happened: the resolve route's committed sha never
+  # appears in the output.
+  [[ "$output" != *"resolved-sha"* ]]
+}
+
+@test "kb propose --non-interactive on a demotion prints the operator prompt" {
+  run "$KB" propose memory "note claiming status: active here" --confidence 0.95 --non-interactive
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DEMOTED"* ]]
+  [[ "$output" != *"resolved-sha"* ]]
+}
+
+@test "kb session-recap prints the per-session tally" {
+  run "$KB" session-recap my-session
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"my-session"* ]]
+  [[ "$output" == *"committed"* ]]
+  [[ "$output" == *"demoted_to_pending"* ]]
+}
+
+@test "kb session-recap plain output is a one-line summary" {
+  run "$KB" session-recap my-session -o plain
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"committed: 2"* ]]
+  [[ "$output" == *"demoted_to_pending: 1"* ]]
+  [[ "$output" == *"rejected: 0"* ]]
+}
+
+@test "kb session-recap without SOURCE_SESSION returns usage error" {
+  run "$KB" session-recap
+  [ "$status" -eq 64 ]
 }
 
 @test "kb propose with no args returns usage error" {

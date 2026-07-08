@@ -351,7 +351,167 @@ after confirming no operator is mid-resolve on that path.
 
 ---
 
-## 5. Quick reference
+## 5. Maintenance ledger
+
+A committed, frontmatter-only markdown doc (default path
+`tooling/maintenance-ledger.md`, `KB_MAINTENANCE_LEDGER_PATH`) records a
+corpus-state audit computed at every index build:
+
+- `status_present_in_all_kb_entries` — whether every indexed document (except
+  reserved filenames — `index.md`/`log.md`/`template.md`) carries a `status`
+  field, plus a capped list (50 paths + a total count) of the ones that don't.
+  This is the migration vehicle for making `status` mandatory.
+- `recently_expired` / `expiring_soon` — documents whose `valid_until`
+  (issue #107 validity metadata) fell in the last `KB_MAINTENANCE_RECENTLY_EXPIRED_DAYS`
+  days (default 30), or falls within the next `KB_MAINTENANCE_EXPIRING_SOON_DAYS`
+  days (default 30), each capped at 50 items + a total count.
+
+The ledger is server-side and best-effort: when the computed state CHANGES
+since the last committed copy, it is committed through the same serialized
+write/commit machinery every other write uses (system agent identity
+`data-olympus-system`, a normal `maintenance_ledger` audit event). A commit
+failure is logged and audited but never breaks index refresh or serving; it is
+retried on the next `git_pull_loop` tick. Recomputation is checked on every
+tick, not only when a new remote commit arrives, so a fresh deployment gets
+its first ledger commit promptly even before anyone else ever pushes to the
+KB. Duplicate commits are guarded three ways, all comparing the structured
+state (never the rendered markdown, whose `computed_at` timestamp changes
+every render): an in-process last-committed memo, the ledger copy in the live
+index, and the system worktree's HEAD copy (which survives restarts), so a
+slow push or short sync interval can never re-commit an unchanged state. A
+`KB_MAINTENANCE_LEDGER_PATH` outside the configured indexed prefixes is
+refused with a `skipped_bad_path` audit event instead of committing a doc the
+index would never serve.
+
+The same computed state also drives a `pending_actions` field on `kb_consult`
+and `kb_health` responses (never `kb_search` — per-hit noise trains agents to
+ignore it): a list of `{kind, message, count}` items, present only while the
+corpus is dirty. An agent seeing `pending_actions` should surface it to the
+operator and act on it only with operator confirmation. Silencing is
+automatic: fix the underlying doc(s), the next index build flips the flag, the
+next ledger commit records it, and `pending_actions` disappears — no manual
+acking.
+
+A private deployment using a custom `KB_TAXONOMY_PATH` (rather than the
+built-in default taxonomy) must make sure `KB_MAINTENANCE_LEDGER_PATH` still
+resolves inside an INDEXED prefix, or the ledger is committed but never
+searchable/gettable via `kb_search`/`kb_get`.
+
+`kb health` (the CLI) shows any open `pending_actions` in its plain-text
+(`-o plain`) summary; `-o json` passes the field through unchanged.
+
+Relevant environment variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `KB_MAINTENANCE_LEDGER_PATH` | `tooling/maintenance-ledger.md` | Committed ledger doc path (must resolve inside an indexed prefix) |
+| `KB_MAINTENANCE_RECENTLY_EXPIRED_DAYS` | `30` | Window (days) for the "recently expired" bucket |
+| `KB_MAINTENANCE_EXPIRING_SOON_DAYS` | `30` | Window (days) for the "expiring soon" bucket |
+
+### 5.1 Migrating a corpus to mandatory `status` (issue #114)
+
+`status` has always been a required frontmatter field (SPEC.md section 4.2) and a `kb lint` error when absent. Issue #114 closed the one gap left open: the write path previously let a brand-new status-less document through even though `kb lint` would already flag it. As of this change, `kb_propose_edit` rejects a postimage that creates a **new** file without `status` (`rejected_invalid_document`, reason `missing_status`); editing an **existing** status-less document is still allowed with no `status` required, so a legacy corpus is never locked out of incremental fixes. `kb_propose_memory` is unaffected — every server-rendered memory already stamps `status: proposed` (issue #109).
+
+This is a migration, not a hard break: a legacy corpus with status-less documents keeps working exactly as before.
+
+- **Nothing stops serving.** A status-less document is still indexed and still returned by a default `kb_search` / `kb_get`. It is simply never in force (`IN_FORCE_STATUSES` membership already excludes an absent status), so it can never be surfaced by `kb_consult` and never outranks or governs anything.
+- **The migration vehicle is the maintenance ledger** (section 5 above): `status_present_in_all_kb_entries` goes `false` and `missing_status.paths` lists up to 50 offending files (plus a total count) the moment any document lacks `status`. The `pending_actions` CTA on `kb_consult`/`kb_health` nags with a `missing_status` item until the corpus is clean, then disappears automatically — no manual acking.
+
+**Runbook:**
+
+1. Upgrade to a data-olympus version that ships this write-path check.
+2. Run `kb lint <bundle-root>` (or `data-olympus lint`) and read the `missing required field 'status'` errors, OR pull the capped list straight from the ledger: `curl -s 'http://<host>/api/v1/health?verbose=true' | jq '.pending_actions'` (see section 6) or read the committed `tooling/maintenance-ledger.md` doc directly.
+3. Fix each listed file: add a `status` value from the controlled vocabulary (`draft`, `active`, `deprecated`, `superseded`, `proposed`, `accepted`, `rejected`) via `kb_propose_edit` (edits to an existing status-less file are unaffected by the new write-path check) or directly in the bundle if you write straight to git.
+4. Re-run `kb lint`; once every document lints clean, the next index build flips `status_present_in_all_kb_entries` to `true`, the ledger commits the clean state, and `pending_actions` stops appearing.
+5. New documents created from this point forward are rejected at write time if `status` is missing, so the corpus cannot regress.
+
+## 6. Governed-lane recap and hook wiring (issue #112)
+
+Governed-lane write protection (see `docs/serving.md` and `SECURITY.md`)
+demotes some writes to pending instead of committing them. Three surfaces
+make sure a demotion is never missed:
+
+### 6.1 `kb_session_recap` / `kb session-recap` / `GET /api/v1/session-recap`
+
+A read-only per-session write tally over the audit log: how many writes for
+`source_session` were `committed`, how many were `demoted_to_pending`
+(parked as pending -- whether for a governed-lane demotion or a plain
+low-confidence proposal, both mean "awaiting operator review"), and how
+many were `rejected` (any `rejected_*` status).
+
+```bash
+kb session-recap my-session-id
+# {"source_session": "my-session-id", "committed": 3, "demoted_to_pending": 1, "rejected": 0}
+kb session-recap my-session-id -o plain
+# committed: 3 | demoted_to_pending: 1 | rejected: 0
+curl -s "http://<host>/api/v1/session-recap?source_session=my-session-id"
+```
+
+Same auth posture as `/api/v1/pending` / `/api/v1/audit`: open by default,
+requires a `Bearer` token when `KB_AUTH_TOKEN`/`KB_AUTH_PRINCIPALS` is
+configured. The scan walks rotated audit segments too (bounded, so a very
+long session history does not turn one query into an unbounded read).
+
+### 6.2 `kb_consult`'s `pending_actions` envelope
+
+`kb_consult` already computes the calling session's recap on every call.
+When `demoted_to_pending > 0` for that `source_session`, a `demoted_writes`
+item is appended to the response's `pending_actions` list (the same CTA
+envelope the maintenance ledger uses -- see section 5) alongside any
+maintenance items; omitted entirely when the session has no open
+demotions. An agent that calls `kb_consult` in its normal course of work
+(as the enforcement gate already requires for a governed decision) sees the
+demotion without any extra step.
+
+### 6.3 SessionEnd/Stop hook (`bin/kb-session-recap-hook`)
+
+`bin/kb-session-recap-hook` is a small standalone script that calls the
+recap endpoint and prints one line (nothing at all when the session had no
+committed/demoted/rejected writes, so a read-only session stays silent):
+
+```
+[KB] session recap: 3 committed, 1 awaiting operator review, 0 rejected
+```
+
+It resolves `SOURCE_SESSION` from (in order) a positional argument, or the
+`session_id` field of a JSON hook payload piped to stdin (the Claude Code
+hook contract). It never blocks or fails the agent's shutdown: a missing
+session id, an unreachable endpoint, or a malformed response is swallowed
+silently (exit 0).
+
+**Wiring it as a Claude Code SessionEnd hook** (`~/.claude/settings.json`):
+
+```json
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/data-olympus/bin/kb-session-recap-hook"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Claude Code pipes the hook event JSON (including `session_id`) to the
+command's stdin, matching this script's default stdin-JSON resolution.
+
+**Wiring it for Codex CLI:** add the equivalent Stop/session-end hook entry
+in `~/.codex/config.toml` per Codex's own hook documentation, invoking this
+same script. If Codex's hook contract does not pipe JSON to stdin the way
+Claude Code's does, pass the session id as the positional argument instead
+(`kb-session-recap-hook "$CODEX_SESSION_ID"`, adapted to however Codex
+exposes it to the hook command).
+
+Set `KB_ENDPOINT` / `KB_AUTH_TOKEN` in the hook's environment the same way
+`bin/kb` reads them.
+
+## 7. Quick reference
 
 | Task | Command |
 |---|---|
@@ -364,3 +524,6 @@ after confirming no operator is mid-resolve on that path.
 | Enable audit rotation | set `KB_AUDIT_MAX_BYTES` in the ConfigMap |
 | Enable proxy headers | set `KB_TRUSTED_PROXIES` in the ConfigMap |
 | Enable Ingress | set `KB_AUTH_TOKEN`, uncomment `- ingress.yaml` in `kustomization.yaml` (see `deploy/k8s/README.md`) |
+| Session write recap | `kb session-recap <source_session>` |
+| Disable governed-lane protection | set `KB_GOVERNED_LANE_PROTECTION=off` in the ConfigMap |
+| View maintenance-ledger state | `curl -s 'http://<host>/api/v1/health?verbose=true' \| jq .pending_actions` |

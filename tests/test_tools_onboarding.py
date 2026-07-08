@@ -323,10 +323,14 @@ def test_absent_bootstrap_unchanged_writes_all_files(tmp_path) -> None:
 
 
 def test_partial_high_conf_commit_does_not_overwrite_existing(
-    tmp_path, real_worktrees,
+    tmp_path, real_worktrees, monkeypatch,
 ) -> None:
     """High-confidence partial bootstrap commits only the missing file into the
     worktree; the present file is never written (item 1, commit path)."""
+    # This test is about the partial-bootstrap overwrite guard, not
+    # governance; AGENTS.md's status: active would otherwise trip the issue
+    # #112 governed-lane status clamp and demote instead of commit.
+    monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     from data_olympus.auth import PathBlocklist
     from data_olympus.onboarding_inflight import BootstrapInFlight
     from data_olympus.pending import PendingQueue
@@ -334,7 +338,13 @@ def test_partial_high_conf_commit_does_not_overwrite_existing(
     idx = _partial_idx(["projects/p/README.md"])  # AGENTS.md missing
     files = [
         {"target_path": "projects/p/README.md", "postimage": "SHOULD NOT LAND\n"},
-        {"target_path": "projects/p/AGENTS.md", "postimage": "agents body\n"},
+        # A NEW document created through the write pipeline must carry
+        # `status` (issue #114); README.md above is already-present so it is
+        # filtered out before reaching the content-validation gate at all,
+        # but AGENTS.md is the missing file this bootstrap actually commits.
+        {"target_path": "projects/p/AGENTS.md",
+         "postimage": "---\nid: projects-p-AGENTS\ntype: project\nstatus: active\n"
+                      "tier: T3\n---\nagents body\n"},
     ]
     push_queue = MagicMock()
     resp = kb_bootstrap_project_fn(
@@ -364,10 +374,16 @@ def test_partial_high_conf_commit_does_not_overwrite_existing(
 # item 2: double-bootstrap within the convergence window is rejected.
 # --------------------------------------------------------------------------
 
-def test_double_bootstrap_within_window_rejected(tmp_path, real_worktrees) -> None:
+def test_double_bootstrap_within_window_rejected(
+    tmp_path, real_worktrees, monkeypatch,
+) -> None:
     """After a committed bootstrap, the index still reports absent until it
     converges; a second bootstrap in that window is rejected as in-progress
     (item 2)."""
+    # This test is about the in-flight double-bootstrap guard, not
+    # governance; README.md's status: active would otherwise trip the issue
+    # #112 governed-lane status clamp and demote instead of commit.
+    monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     from data_olympus.auth import PathBlocklist
     from data_olympus.onboarding_inflight import BootstrapInFlight
     from data_olympus.pending import PendingQueue
@@ -381,7 +397,11 @@ def test_double_bootstrap_within_window_rejected(tmp_path, real_worktrees) -> No
         return kb_bootstrap_project_fn(
             idx=idx, workspace="p", component=None,
             workspace_remote_url=None, component_remote_url=None,
-            files=[{"target_path": "projects/p/README.md", "postimage": "r\n"}],
+            # A NEW document must carry `status` (issue #114) to pass the
+            # write-path content-validation gate.
+            files=[{"target_path": "projects/p/README.md",
+                   "postimage": "---\nid: projects-p-README\ntype: project\n"
+                                "status: active\ntier: T3\n---\nr\n"}],
             source_session="sess-dbl", agent_identity="claude",
             confidence=0.95, confidence_threshold=0.85,
             worktrees=real_worktrees, push_queue=MagicMock(),
@@ -614,6 +634,10 @@ def test_high_conf_bootstrap_commits_via_serialized_path(tmp_path, monkeypatch) 
     """A high-confidence bootstrap commits one atomic commit through the shared
     serialized/validated write path (Codex Blocker 2), and a path lock is held +
     released around it (not leaked)."""
+    # This test is about the serialized commit path, not governance; the
+    # files' status: active would otherwise trip the issue #112 governed-lane
+    # status clamp and demote instead of commit.
+    monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     for k, v in {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
                  "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}.items():
         monkeypatch.setenv(k, v)

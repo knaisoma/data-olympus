@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from data_olympus.enforce_policy import EXPLICIT_TRIGGER, PROMPT_HOOK_TRIGGER
+from data_olympus.maintenance import pending_actions_for
 from data_olympus.models import (
     ComplianceResponse,
     ConsultResponse,
@@ -63,13 +64,42 @@ def kb_consult_fn(
     default, which clears the gate) from an installer prompt-hook auto-consult
     (PROMPT_HOOK_TRIGGER, recorded for audit/compliance but never gate-clearing).
     Old clients that omit the field are treated as explicit, since a bare consult
-    call is always a real agent action."""
+    call is always a real agent action.
+
+    Retrieval is HARD-filtered to the in-force class (issue #109:
+    ``in_force=True`` on the internal search), so this enforcement surface can
+    never present an unreviewed, proposed, retired, expired, upcoming, or
+    memory-inbox document as a governing rule. Previously this ran an
+    unfiltered search, so e.g. a server-rendered agent memory (before it is
+    reviewed) or a superseded decision could be handed back as "the" rule for
+    an intent.
+
+    The response's ``pending_actions`` (issue #113) surfaces open maintenance
+    items (missing ``status`` fields, recently-expired/expiring-soon docs)
+    ONLY when the computed corpus state is dirty; it is omitted entirely on a
+    clean corpus. When present, surface it to the operator and act on it only
+    with operator confirmation -- do not silently start remediating the
+    corpus.
+    """
     trigger = trigger if trigger in _TRIGGERS else EXPLICIT_TRIGGER
     result = classifier.classify(intent=intent)
     rules = []
     rule_ids: list[str] = []
     if result.is_governed_decision:
-        search = kb_search_fn(idx=idx, query=intent, limit=limit)
+        # in_force=True (issues #109 + #110 slice 2): a consult must surface only
+        # CURRENTLY GOVERNING rules. Without this, a draft/superseded/
+        # deprecated/rejected doc -- or one graph-excluded via a supersedes
+        # edge from an in-force source -- could still rank well enough on bm25
+        # to reach the agent as "the rule to follow"; the status reranker only
+        # soft-downranks those, it does not exclude them. The unconditional
+        # not-expired filter already gave this invariant for free ("kb_consult
+        # never returns an expired document"); the graph-exclusion rule is
+        # scoped to in_force=True only (see format.validate.
+        # graph_excluded_ids_sql), so consult must opt in explicitly to get
+        # the same guarantee for a graph-excluded doc. The same flag also
+        # applies the issue #109 memory-inbox floor, so an unreviewed
+        # agent-written memory (or forged inbox frontmatter) is excluded too.
+        search = kb_search_fn(idx=idx, query=intent, limit=limit, in_force=True)
         rules = list(search.hits)
         rule_ids = [h.id for h in search.hits]
     ledger.record(
@@ -83,9 +113,32 @@ def kb_consult_fn(
             "target_path": workspace, "trigger": trigger,
             "reason": ",".join(result.signals) if result.signals else "",
         })
+    pending_actions = pending_actions_for(getattr(idx, "maintenance_state", None))
+    # Governed-lane feedback loop (issue #112): when THIS session has demoted
+    # writes on record, surface a CTA item alongside the maintenance-ledger
+    # items above so a demotion is never silent even if the agent never
+    # thinks to run kb_session_recap on its own. Omitted (no item added) when
+    # the session has no demotions, or there is no audit log to query.
+    if audit_log is not None:
+        from data_olympus.tools_recap import kb_session_recap_fn
+        recap = kb_session_recap_fn(audit_log=audit_log, source_session=source_session)
+        if recap.demoted_to_pending > 0:
+            item = {
+                "kind": "demoted_writes",
+                "message": (
+                    f"{recap.demoted_to_pending} write(s) in this session are "
+                    f"awaiting operator review (governed-lane write "
+                    f"protection or low confidence). Surface this to the "
+                    f"operator; run `kb pending` / kb_session_recap for "
+                    f"details. Act only on operator confirmation."
+                ),
+                "count": recap.demoted_to_pending,
+            }
+            pending_actions = [*(pending_actions or []), item]
     return ConsultResponse(
         is_governed_decision=result.is_governed_decision,
         rules=rules, consulted_at=now, ttl_seconds=int(ttl_sec),
+        pending_actions=pending_actions,
     )
 
 

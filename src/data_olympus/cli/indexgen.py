@@ -13,7 +13,13 @@ _SKIP = {".git", "__pycache__", ".venv", ".pytest_cache", ".ruff_cache", "node_m
 def _dirs_with_markdown(root: Path) -> list[Path]:
     dirs: set[Path] = set()
     for md in root.rglob("*.md"):
-        if any(part in _SKIP for part in md.parts):
+        # Match skip-dirs only among components INSIDE the bundle. Matching
+        # the absolute path would silently skip the whole bundle whenever an
+        # ancestor directory happens to be named like a skip-dir (e.g. a
+        # bundle scaffolded under a `.venv/` or `node_modules/` parent),
+        # regenerating zero indexes. Same discipline as
+        # `discover_bundle_files` in format/lint.py.
+        if any(part in _SKIP for part in md.relative_to(root).parts):
             continue
         if md.name in _RESERVED:
             continue

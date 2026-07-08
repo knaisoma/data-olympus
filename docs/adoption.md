@@ -21,6 +21,25 @@ command in this guide works with either approach; the examples below use
 A bundle is a directory of markdown files with YAML frontmatter. The layout
 mirrors `example-bundle/` in this repo.
 
+### Scaffolding a fresh bundle
+
+Instead of copying `example-bundle/` by hand, scaffold a new bundle with:
+
+```bash
+uv run data-olympus init <dir>
+```
+
+This creates the tier directories (`--tiers`, default `universal,tech-stacks,
+projects,decisions,workflows,tooling`), a root `index.md` carrying the
+`spec_version`/`okf_version` frontmatter, a `template.md` authoring scaffold,
+and one example document per supported `type` (`standard`, `decision`,
+`workflow`, `project`, `memory`, `reference`) — including a real
+`superseded`/`superseded_by`/`supersedes` pair and `applies_when` trigger
+metadata, so `data-olympus lint`, `data-olympus index`, and `kb search` all
+have something to demo against immediately. The command refuses to write into
+a non-empty directory. Scaffold a subset of tiers with, for example,
+`--tiers decisions,workflows`.
+
 ### Required frontmatter fields
 
 Every concept file (every `.md` file that is not `index.md`, `log.md`, or
@@ -86,12 +105,16 @@ Reference other concepts with bundle-relative paths (absolute from the bundle
 root, e.g. `/universal/foundation/STD-U-001.md`). This applies to markdown
 links in the document body.
 
-The `supersedes` and `superseded_by` frontmatter fields are different: they
-hold a concept **ID** (or list of IDs), not a path (e.g. `supersedes: ADR-002`,
-not `supersedes: /decisions/ADR-002.md`). These fields are not resolved or
-validated by the current tooling; they are a documented convention for human
-and agent readers tracing decision history, not a machine-checked chain. See
-`SPEC.md` section 4.2.
+The `supersedes`, `superseded_by`, and `contradicts` frontmatter fields are
+different: they hold concept **IDs**, not paths (e.g. `supersedes: ADR-002`,
+not `supersedes: /decisions/ADR-002.md`). Shapes per field: `supersedes` and
+`contradicts` accept a single ID or a list of IDs (both normalize to a list);
+`superseded_by` is a single scalar ID only, never a list. `kb lint`
+cross-checks these fields across the bundle (malformed shapes, self-references,
+supersession cycles, dangling/asymmetric targets, path-shaped values, and
+in-force `contradicts` pairs are all reported; see `SPEC.md` section 4.2 for
+the exact error/warning list). The reference implementation's indexer also
+extracts them into an edges table consumed by later retrieval features.
 
 ### Directory structure
 

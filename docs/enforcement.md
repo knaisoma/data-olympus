@@ -32,6 +32,19 @@ requires a consult for actions the classifier deems governed, and any explicit
 consult (governed or not) records a fresh explicit timestamp, so an agent can
 always clear the gate by calling `kb_consult` and then retrying.
 
+## Retrieval is hard-filtered to the in-force class (issue #109)
+
+The rules `kb_consult` returns for a governed intent are retrieved with
+`in_force=true` (see `docs/serving.md`'s `in_force` section for the full
+predicate), unconditionally — this is not a caller-facing parameter. So an
+unreviewed agent-written memory (`status: proposed`, stamped automatically by
+`kb_propose_memory`), a superseded/deprecated/rejected decision, an expired or
+upcoming document, or a document under the memory-inbox prefix can never be
+handed back as "the" governing rule for a decision, no matter what its
+frontmatter claims. A document with no `status` field (or one outside the
+in-force class) is likewise never returned here, even though it may still
+surface via plain `kb_search`/`kb_get`.
+
 ## Server endpoints
 
 - `POST /api/v1/consult`: record a consultation for `(source_session, workspace)`

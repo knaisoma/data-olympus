@@ -250,6 +250,27 @@ class PendingQueue:
                 "confidence": entry["meta"].get("confidence"),
                 "agent_identity": entry["meta"].get("agent_identity"),
                 "created_at": entry["enqueued_at"],
+                # issue #71: surface the secret-scan flag (name only, never
+                # the matched value) so an operator sees the warning via
+                # `kb pending` without inspecting the raw postimage.
+                "secret_scan_flagged": bool(entry["meta"].get("secret_scan_flagged", False)),
+                "matching_pattern": entry["meta"].get("matching_pattern"),
+                # issue #109: provenance already persisted in meta at enqueue
+                # time, simply not surfaced until now. `.get(...)` defaults to
+                # None so an entry from before this field existed (or a
+                # proposal type that doesn't carry it, e.g. memory has no
+                # `reason`) omits it cleanly rather than raising KeyError.
+                "source_session": entry["meta"].get("source_session"),
+                "reason": entry["meta"].get("reason"),
+                "evidence": entry["meta"].get("evidence"),
+                # Governed-lane write protection (issue #112): surfaced the
+                # same way as secret_scan_flagged above -- already persisted
+                # in meta at enqueue time, simply not read until now. None/
+                # False for any entry that predates this field or parked for
+                # a plain low-confidence reason rather than a demotion.
+                "demotion_reason": entry["meta"].get("demotion_reason"),
+                "injection_suspect": bool(entry["meta"].get("injection_suspect", False)),
+                "injection_patterns": entry["meta"].get("injection_patterns"),
             })
         return out
 

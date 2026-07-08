@@ -58,6 +58,16 @@ trigram, auth, audit rotation):
 - `KB_PENDING_TIMEOUT_SEC`: age after which an unresolved pending proposal is
   auto-expired by the pending GC loop (default `86400`, i.e. 24h). Each expiry
   emits an audit event.
+- `KB_SECRET_SCAN_EXTRA_PATTERNS`: comma-separated additional regexes the
+  secret-scanning gate (issue #71) checks alongside its built-in pattern set
+  (see "Write serialization and integrity gates" above). Each entry is scanned
+  as its own named pattern (`custom_1`, `custom_2`, ...); an invalid regex, or
+  one with the classic nested-quantifier ReDoS shape, is logged and skipped
+  rather than raised, and every accepted pattern runs with a hard 1-second
+  match timeout. Empty by default (no extra patterns).
+- `KB_GOVERNED_LANE_PROTECTION`: governed-lane write protection (issue #112),
+  default `on`; set `off` to restore the exact pre-#112 behavior (see
+  "Governed-lane write protection" below).
 
 ## Read-only mirrors may scale horizontally
 
@@ -173,6 +183,129 @@ section so concurrent writes cannot corrupt each other:
   BEFORE the file is written and `git add`-ed, and on any failure after the add
   the worktree is hard-reset, so a rejected write never leaves a staged leftover
   for the session's next commit to sweep in.
+- A **secret-scanning gate** (issue #71) runs on the postimage BEFORE the
+  content-validation gate, on every commit path (auto-commit propose, resolve
+  approve, including a resolved `edited_text`, and onboarding bootstrap). It
+  runs first so a postimage that is both malformed AND carries a
+  credential-shaped value is always rejected via the redacted
+  `rejected_secret_detected` path, never via `rejected_invalid_document`
+  (which echoes the offending value verbatim in its message). The gate
+  checks a built-in pattern set (PEM private-key blocks; GitHub `ghp_`/`gho_`/
+  `ghs_`/`ghr_`/`github_pat_` tokens; AWS `AKIA...` access key ids; Slack
+  `xox[bpars]-` tokens; generic `password=`/`passwd=`/`secret=` assignments,
+  including env-style prefixed keys like `DB_PASSWORD=`, with a
+  non-placeholder value; and `scheme://user:pass@host` connection strings)
+  plus any operator-supplied `KB_SECRET_SCAN_EXTRA_PATTERNS`. A match on an
+  auto-commit or bootstrap path rejects the write `rejected_secret_detected`
+  before anything is written to disk. Only the pattern name and an
+  approximate line number are ever surfaced in the response, the audit
+  event, or a log line, never the matched value. A low-confidence proposal
+  containing a secret still enters pending (removing it would defeat the
+  operator-override workflow below), but the scan runs at propose time too:
+  the response never echoes the raw text when flagged (only the pattern
+  name), the pending entry is tagged `secret_scan_flagged`/`matching_pattern`
+  (names only) so `kb pending` surfaces the warning, and a flagged memory
+  proposal's filename falls back to a neutral slug instead of embedding the
+  flagged text. The gate also covers the fields AROUND the postimage: a
+  credential-shaped `target_path` (filename) is rejected on edit, bootstrap,
+  and resolve without ever echoing the path back (it would otherwise land in
+  responses, audit events, commit subjects, and the git tree); a flagged edit
+  `reason` is replaced with a redacted note before it reaches pending meta,
+  push metadata, or audit events; and a flagged memory tag is stored redacted
+  in pending meta. `kb_resolve_pending` accepts an operator-only
+  `override_secret_scan` boolean (`kb resolve --override-secret-scan` on the
+  CLI) to consciously commit a false positive anyway (recorded in the audit
+  event); no auto-commit or bootstrap path exposes this override, so an agent
+  can never self-authorize past a flagged write. An extra pattern with the
+  classic nested-quantifier ReDoS shape is rejected at load time alongside an
+  invalid regex, and every accepted custom pattern executes through the
+  `regex` engine with a hard 1-second match timeout, so a catastrophic
+  pattern the load-time check misses is bounded at scan time (logged and
+  skipped) instead of hanging the single-writer write path.
+
+## Governed-lane write protection (`KB_GOVERNED_LANE_PROTECTION`, issue #112)
+
+`KB_GOVERNED_LANE_PROTECTION` (default `on`; case-insensitive `off`/`0`/
+`false`/`no` disables it and restores the exact pre-#112 behavior) gates a
+demotion-only feature on top of the write path above: "agents can propose,
+only humans can promote." No write is ever REJECTED by this feature; an
+affected write is DEMOTED to the pending queue instead of auto-committing.
+See `SECURITY.md`'s "Governed-lane write protection" section for the full
+threat-model rationale; this section covers the mechanics and the demotion
+semantics an operator needs at serving time.
+
+- **Status clamp.** Checked on the auto-commit path of `kb_propose_memory`
+  / `kb_propose_edit`, and on every `kb_bootstrap_project` file. If the
+  postimage's `status` field is being set/changed to a value in the
+  in-force class (`active`/`accepted`/`approved` --
+  `format.validate.IN_FORCE_STATUSES`, single-sourced, never a local copy),
+  the write is demoted with `demotion_reason: "status_promotion"` instead of
+  committed. Unconditional on the PRIOR status: a brand-new file, a
+  promotion from a non-in-force status, and an unreviewed re-claim of an
+  already in-force status all clamp the same way.
+- **Governed-target edit demotion.** Checked only on `kb_propose_edit`. If
+  the edit's `target_path` currently resolves to an IN-FORCE document in the
+  live index (the full composed predicate: status class AND validity window
+  AND not-inbox AND not-graph-excluded -- the same predicate
+  `Index.search(in_force=True)` and `kb_get`'s computed `in_force` field
+  use), the write is demoted with `demotion_reason: "governed_target"`,
+  REGARDLESS of confidence. A target that is expired or has been superseded
+  out of force is not currently governing anything and so is not protected
+  by this rule. The lookup FAILS CLOSED: when the target's in-force state
+  cannot be verified (no index wired, or an index read fails), the edit is
+  demoted with the distinct `demotion_reason: "governed_target_unverified"`
+  rather than auto-committed on the strength of a broken lookup -- an
+  unhealthy index can never be used to slip an edit past this rule. A
+  target with no entry in a HEALTHY index is definitive at the tool layer
+  (a brand-new file cannot already be in force), and an authoritative
+  IN-WORKTREE BACKSTOP closes the residual index-lag window: inside the
+  serialized commit section, after every hard gate passes and after the
+  worktree base is refreshed onto `origin/main`, the target's CURRENT bytes
+  on that refreshed base are re-judged (`status` + validity window from its
+  own frontmatter, `is_inbox` from the path). The backstop deliberately
+  consults NOTHING from the index -- in particular not graph exclusion,
+  whose stale edges could otherwise REMOVE protection the base's own bytes
+  assert (a target still carrying an in-force `status` under a live
+  supersedes edge is over-demoted for operator review rather than
+  auto-committed; a target properly flipped to `superseded` is not in force
+  by its own bytes and stays unprotected). A doc pushed as in-force but not
+  yet re-indexed is therefore still demoted (`demotion_reason:
+  "governed_target"`) -- the decision is made against the same content the
+  commit would replace, so index staleness cannot bypass the rule in
+  either direction.
+- **Injection-pattern annotation.** Every postimage evaluated by the two
+  rules above is also scanned for agent-directed injection patterns
+  ("ignore previous instructions", "disregard ... policy", an imperative
+  paired with an http(s) URL, a long base64-looking run, "do not tell the
+  operator"). A match sets `injection_suspect: true` and populates
+  `injection_patterns` (a list of `"pattern_name:line"` strings, mirroring
+  the issue #71 secret-scan redaction discipline -- never the matched text)
+  on the pending entry. This is ADVISORY ONLY: it never blocks a write and
+  never causes a demotion by itself; it exists so the human reviewer sees
+  the signal alongside the demoted content.
+- **Ordering.** The issue #71 secret-scanning gate and the content-
+  validation / duplicate-id gate are evaluated FIRST for any write that
+  would otherwise auto-commit. A postimage that would be rejected outright
+  by either of those gates IS rejected (`rejected_secret_detected` /
+  `rejected_invalid_document`), never silently demoted -- a demotion cannot
+  be used as a side door around a hard rejection.
+- **Unaffected paths.** The maintenance-ledger system write
+  (`maintenance.maybe_update_ledger`, which stamps its own doc
+  `status: active`) commits through the shared multi-file write primitive
+  DIRECTLY, bypassing the tool-function layer these checks live in, so it is
+  never gated by this feature. The operator resolve path
+  (`kb_resolve_pending` / `kb resolve`) is likewise never gated: an
+  operator-confirmed resolve IS the promotion this feature exists to
+  require.
+- **Per-write feedback.** A demoted response carries the same
+  `pending_id` shape as a plain low-confidence park, plus `demotion_reason`
+  and an `operator_prompt` that explicitly instructs the calling model to
+  inform the operator that the write awaits review rather than proceeding
+  silently.
+- **Per-session feedback.** See `docs/operations.md` for `kb_session_recap`
+  / `kb session-recap` / `GET /api/v1/session-recap`, the `kb_consult`
+  `pending_actions` surfacing, and the `bin/kb-session-recap-hook`
+  SessionEnd/Stop hook wiring.
 
 ## Push queue and write-path visibility
 
@@ -344,22 +477,150 @@ Override the map at deploy time, with no code change:
 ## `in_force`: hard in-force filter
 
 `kb_search` accepts an `in_force: bool = False` parameter (MCP tool and
-`GET /api/v1/search?in_force=true`). When set, results are HARD-filtered to the
-in-force status class (`active`, `accepted`, `approved`) BEFORE ranking, so a
-`superseded`, `deprecated`, `draft`, or `proposed` doc is excluded entirely
-rather than merely soft-downranked by the status rerank above.
+`GET /api/v1/search?in_force=true`). When set, results are HARD-filtered
+BEFORE ranking to docs that are currently in force: the in-force status class
+(`active`, `accepted`, `approved`) AND the validity window
+(`validity.valid_from` not in the future, `validity.valid_until` not in the
+past; both boundary days inclusive). So a `superseded`, `deprecated`,
+`draft`, `proposed`, expired, or upcoming doc is excluded entirely rather
+than merely soft-downranked by the status rerank above.
 
 Use it when you want only guidance that currently applies and a demoted-but-
 present retired doc is not acceptable. It differs from the status rerank: the
 rerank always keeps every hit and only reorders; `in_force` drops out-of-force
-hits. The in-force class is defined once (`format.validate.IN_FORCE_STATUSES`)
-and shared by both the rerank boosts and this filter.
+hits. The in-force predicate is defined once
+(`format.validate.IN_FORCE_STATUSES` for the status class,
+`format.validate.is_in_force` for the combined status-AND-window predicate)
+and shared by the rerank boosts and this filter.
 
 `in_force` composes with the single-status `status` filter: passing both
 requires a doc match `status` AND be in-force (so `status=superseded` with
 `in_force=true` yields nothing). The filter also applies to the dense
 (embedding) candidate source, so a hybrid deployment never leaks an out-of-force
 doc through the semantic path.
+
+The predicate also applies a memory-inbox floor (issue #109): a document
+under the memory-inbox prefix (`KB_MEMORY_INBOX_PREFIX`, default
+`memory/inbox/`) is never in force regardless of claimed status, so a legacy
+inbox file or forged frontmatter on an agent-written memory cannot satisfy
+`in_force=true` no matter what `status` it declares. This is a plain `is_inbox`
+column derived once at index build time, not a per-query prefix scan. Together
+with the supersession-graph exclusion below, the full in-force predicate is:
+status class AND validity window AND not-inbox AND not-graph-excluded.
+
+`kb_consult` passes `in_force=true` on its internal retrieval unconditionally
+(not a caller-facing parameter): the enforcement surface must never present an
+unreviewed, retired, expired/upcoming, memory-inbox, or graph-excluded
+document as a governing rule for a code/architectural decision. See
+`docs/enforcement.md`.
+
+**Computed `in_force` on served responses.** A verbose (`verbose=true`)
+`kb_get` response and each verbose `kb_search` hit carry a computed
+`in_force: bool`: the same single-sourced predicate evaluated against the
+doc's actual status/validity/inbox-membership/graph-exclusion, independent of
+whether the query itself passed `in_force=true`. This lets a caller retrieve
+a doc via a default (unfiltered) `kb_get`/`kb_search` and still tell whether
+it currently governs, without a second `in_force=true` round trip. It is a
+serving-layer derivation only, never written to frontmatter (see SPEC.md's
+"runtime envelope" note). Compact responses emit it deviation-only:
+`in_force: false` appears ONLY when the doc is not in force, and an in-force
+doc's compact shape is byte-for-byte unchanged. The deviation emission is
+required because the compact `status`/`freshness` fields key off the RAW
+frontmatter status: a memory-inbox doc with a forged `status: active` would
+otherwise render as an ordinary current rule with no signal that the in-force
+floor disqualified it.
+
+## Supersession-graph exclusion (issue #110 slice 2)
+
+`in_force=true` ALSO excludes any document that is the TARGET of a
+`supersedes` edge whose SOURCE document is itself in force (the full
+status-class AND validity-window AND not-memory-inbox predicate above, not
+merely `status: superseded`). This is the in-force-source guard: a `draft`,
+expired, already-retired, or memory-inbox document can never retire another
+document just by naming it in `supersedes`. It closes the "forgotten status flip" gap -- A (active)
+supersedes B, but B's own `status` was never updated to `superseded` -- B is
+excluded from `in_force=true` results even though its own status class would
+otherwise qualify it. Like the `upcoming` half of the validity window, graph
+exclusion is scoped to `in_force=true` only: a plain (default) search still
+returns the excluded document.
+
+A mutually-supersessive in-force cycle (already a `kb lint` ERROR at parse
+time) is NOT special-cased at retrieval time: every member independently
+satisfies the exclusion rule (each is the target of an in-force source's
+`supersedes` edge), so `in_force=true` excludes ALL of them. A dangling edge
+(source or target id with no corresponding document) excludes nothing; the
+exclusion query joins `edges` to `docs` on both ends.
+
+`kb_consult` runs its search with `in_force=true` (see "Enforcement
+endpoints" below), so it never returns a graph-excluded, not-yet-in-force, or
+retired document -- the same guarantee the unconditional expired-doc exclusion
+already gave it, made explicit for the graph rule since that rule is scoped to
+`in_force=true` rather than applying unconditionally.
+
+A `graph_excluded_docs` health counter (in `kb_health` / `/api/v1/health`,
+alongside `malformed_frontmatter` and `malformed_validity`) reports the count
+of documents currently excluded by this rule. It is evaluated LIVE at
+health-read time against the current date, from the same SQL definition the
+retrieval-time filter uses (`format.validate.graph_excluded_ids_sql`), so
+the counter can never drift from the filter it reports on -- including
+across a date boundary where an in-force source's validity window opens or
+closes between index rebuilds (retrieval evaluates the window per query, so
+a counter frozen at build time would keep reporting a stale value). The
+short health cache (`health_ttl_sec`, default 5s) bounds its staleness. It
+is a WARNING signal only and does not flip `degraded`.
+
+### Retirement is explainable
+
+`kb_get` by id always resolves regardless of in-force or graph-exclusion
+status (same as it already ignores expiry) and returns:
+
+- `superseded_by`: the sorted, deduped UNION of the document's own
+  frontmatter `superseded_by` claim and any reverse `supersedes` edge naming
+  it. This ONE consistent computed shape covers both the honest self-declared
+  case and the forgotten-status-flip case above, where only the superseding
+  document's own `supersedes` list names this one.
+- `contradicts`: the document's own frontmatter list (unchanged from the
+  frontmatter, never affects filtering or ranking anywhere in the retrieval
+  path).
+- `contradicted_by`: the computed reverse -- every other document whose
+  `contradicts` names this one.
+
+All three are omitted from the compact `kb_get` response when empty (same
+deviation-only pattern as `freshness`). Compact `kb_search` hits carry a
+deviation-only `superseded_by` (the same computed union above), omitted when
+the document is not superseded; it is computed and attached to EVERY hit
+regardless of `in_force`, so a plain search result still explains why a hit is
+historically superseded. `kb_search` hits do NOT carry `contradicts` /
+`contradicted_by`; those are kb_get-only.
+
+## Validity: expired docs leave default results
+
+Independent of `in_force`, a doc past its `validity.valid_until` date is
+excluded from EVERY default `kb_search` result (SPEC.md section 4.2): an
+expired doc has no named successor to outrank it, so left visible it could be
+the top hit and would govern. Three related `kb_search` parameters (MCP tool
+and `GET /api/v1/search`):
+
+- `include_expired: bool = false` restores expired docs to the result set;
+  each carries `freshness: "expired"` in its hit.
+- `validity_state` is an audit facet: `"expired"`, `"stale"` (past
+  `recheck_by`), or `"expiring_within:N"` (docs whose `valid_until` falls
+  within N days). Filtering for `"expired"` implies including expired docs. A
+  malformed value is rejected (HTTP 400 on REST).
+- Compact hits carry a deviation-only `freshness` field
+  (`stale`/`expired`/`upcoming`), omitted when fresh or when the doc has no
+  `validity` block. A doc with a future `valid_from` stays in default results
+  flagged `upcoming`; only `in_force=true` excludes it. A stale doc (past
+  `recheck_by`) stays in force and visible.
+
+`kb_get` by id always resolves regardless of expiry, returning the full
+`validity` object plus the computed `freshness` indicator. `kb_consult` never
+returns an expired (or upcoming, proposed/retired, memory-inbox, or
+graph-excluded) doc, via its unconditional `in_force=true` retrieval (see the
+`in_force` and "Supersession-graph exclusion" sections above), not merely by
+reusing the default search path's own expired-exclusion.
+The `data-olympus validity-report` CLI subcommand lists expired and
+soon-to-expire docs from a bundle directory.
 
 ## `abstain`: signal-gated abstention
 

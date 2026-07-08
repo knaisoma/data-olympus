@@ -259,6 +259,9 @@ def build_app(
     embeddings_enabled: bool = False,
     embeddings_weight: float = 0.35,
     embeddings_model: str = "BAAI/bge-small-en-v1.5",
+    maintenance_ledger_path: str = "tooling/maintenance-ledger.md",
+    maintenance_recently_expired_days: int = 30,
+    maintenance_expiring_soon_days: int = 30,
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
 
@@ -307,6 +310,9 @@ def build_app(
         embeddings_enabled=embeddings_enabled,
         embeddings_weight=embeddings_weight,
         embeddings_model=embeddings_model,
+        maintenance_ledger_path=maintenance_ledger_path,
+        maintenance_recently_expired_days=maintenance_recently_expired_days,
+        maintenance_expiring_soon_days=maintenance_expiring_soon_days,
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
@@ -343,6 +349,9 @@ def build_app(
         trigram_fallback_threshold=config.trigram_fallback_threshold,
         embeddings=emb_config,
         embedder=embedder,
+        maintenance_ledger_path=config.maintenance_ledger_path,
+        maintenance_recently_expired_days=config.maintenance_recently_expired_days,
+        maintenance_expiring_soon_days=config.maintenance_expiring_soon_days,
     )
     synonym_expander = default_query_expander()
     cooc_expander = idx.cooccurrence_expander() if cooccurrence_enabled() else None
@@ -443,7 +452,12 @@ def build_app(
         verbose: False (default) returns a token-compact shape that keeps the core
         snapshot and OMITS diagnostic fields that are null/empty (e.g.
         last_index_error, remote_head_sha when unset). verbose=True returns every
-        field including the nulls."""
+        field including the nulls.
+
+        pending_actions, when present, lists open maintenance items (missing
+        `status` fields, recently-expired/expiring-soon docs) computed at the
+        last index build; it is omitted when the corpus is clean. Surface it
+        to the operator and act on it only with operator confirmation."""
         resp = kb_health_fn(
             idx=state.idx,
             last_git_pull_at=state.last_git_pull_at,
@@ -485,6 +499,8 @@ def build_app(
         in_force: bool = False,
         doc_type: str | None = None,
         abstain: bool = False,
+        include_expired: bool = False,
+        validity_state: str | None = None,
         verbose: bool = False,
     ) -> dict[str, object]:
         """Full-text search across the KB.
@@ -493,10 +509,22 @@ def build_app(
         doc_type e.g. 'decision'). Returns ranked hits with snippets.
 
         in_force: when true, HARD-filter to the in-force status class
-        (active/accepted/approved) before ranking, EXCLUDING superseded and
-        deprecated docs rather than only soft-downranking them. Composes with an
+        (active/accepted/approved) AND the validity window (not expired, not
+        upcoming) before ranking, EXCLUDING superseded/deprecated/expired/
+        upcoming docs rather than only soft-downranking them. Composes with an
         explicit `status` (both must hold). Use this when you want only guidance
         that currently applies.
+
+        A doc past its `valid_until` date is EXCLUDED from every default search
+        result (not just `in_force=True`): an expired doc has no named successor
+        to outrank it, so left visible it could be the top hit and would govern.
+        Set `include_expired=true` to see it anyway; it then carries
+        `freshness: "expired"`. A doc with a future `valid_from` ("upcoming")
+        stays visible in default search, flagged `freshness: "upcoming"`; only
+        `in_force=true` excludes it. `validity_state` is an audit-query facet:
+        one of `"expired"`, `"stale"`, or `"expiring_within:N"` (N days) to list
+        docs by validity condition; filtering for `"expired"` implies including
+        them regardless of `include_expired`.
 
         abstain: when true, apply the signal gate. If the query matches no
         discriminating column (title/tags/applies_when) it is treated as
@@ -507,14 +535,23 @@ def build_app(
 
         verbose: False (default) returns a token-compact shape. Each hit is
         {id, title, snippet} plus `status` only when a hit is NOT in-force
-        (superseded/deprecated) and `type` when set; the `query` echo, per-hit
+        (superseded/deprecated), `type` when set, and `freshness` only when a
+        hit deviates (`stale`/`expired`/`upcoming`); the `query` echo, per-hit
         `path`, and `score` are dropped (fetch a hit's full metadata with
-        kb_get(id); array order conveys rank). verbose=True restores the full
-        legacy shape with query, path, score, status, and type on every hit.
+        kb_get(id); array order conveys rank). A compact hit additionally
+        carries `in_force: false` when the computed in-force predicate (the
+        single-sourced status + validity-window + not-inbox rule; never
+        stored in frontmatter) says the doc does NOT currently govern --
+        emitted deviation-only, so an in-force hit's compact shape is
+        unchanged. verbose=True restores the full legacy shape with query,
+        path, score, status, type, freshness, and the computed
+        `in_force: bool` on every hit, so a hit retrieved WITHOUT
+        `in_force=true` can still be checked for whether it may govern now.
         """
         resp = kb_search_fn(
             idx=state.idx, query=query, limit=limit, tier=tier, category=category,
             status=status, in_force=in_force, doc_type=doc_type, abstain=abstain,
+            include_expired=include_expired, validity_state=validity_state,
         )
         return shape_response(resp, verbose=verbose)
 
@@ -523,12 +560,21 @@ def build_app(
         """Retrieve a document by id (STD-U-001, ADR-002, T-NNN, etc.).
         Returns the full content markdown plus metadata.
 
+        Always resolves regardless of expiry (ids never dangle): an expired
+        document is still returned, with its full `validity` object and a
+        computed `freshness` indicator (`stale`/`expired`/`upcoming`).
+
         verbose: False (default) returns the full `content_markdown` body (kb_get
         exists to read the doc) with a trimmed envelope: `path`,
         `git_remote_url`, and `last_modified_source` are dropped and empty
-        status/type/applies_when/description are omitted; `source_commit` and
-        `last_modified` provenance are kept. verbose=True returns the full legacy
-        envelope with every field."""
+        status/type/applies_when/description/validity/freshness are omitted;
+        `source_commit` and `last_modified` provenance are kept, and
+        `in_force: false` is emitted when the computed in-force predicate says
+        the doc does NOT currently govern (deviation-only; an in-force doc
+        omits the key). verbose=True returns the full legacy envelope with
+        every field plus the computed `in_force: bool` (the single-sourced
+        status + validity-window + not-inbox predicate; never stored in
+        frontmatter)."""
         from data_olympus.tools_read import KbNotFoundError, kb_get_fn
         try:
             resp = kb_get_fn(idx=state.idx, id=id)
@@ -615,10 +661,15 @@ def build_app(
         def kb_propose_memory(
             text: str, tags: list[str], source_session: str,
             agent_identity: str, confidence: float,
+            evidence: list[str] | None = None,
         ) -> dict[str, object]:
             """Propose a new memory file. High confidence auto-commits and
             enqueues for push; low confidence enters the pending queue for operator
-            review."""
+            review.
+
+            evidence: optional supporting-context strings (max 10 items, 500
+            chars each), rendered into the memory's frontmatter and surfaced by
+            kb_pending."""
             if state.worktrees is None or state.push_queue is None or state.pending is None:
                 return {"status": "write_pipeline_disabled"}
             assert state.worktrees is not None
@@ -638,6 +689,7 @@ def build_app(
                 can_auto_commit=_current_principal.get().can_auto_commit,
                 max_text_bytes=state.config.max_text_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                evidence=evidence,
             )
             return resp.model_dump()
 
@@ -646,10 +698,16 @@ def build_app(
             target_path: str, postimage: str, base_commit: str,
             base_blob_sha: str | None, target_file_hash: str | None,
             reason: str, source_session: str, agent_identity: str, confidence: float,
+            evidence: list[str] | None = None,
         ) -> dict[str, object]:
             """Propose an edit to an existing (or new) markdown file under an
             indexed tier. High confidence auto-commits + queues for push; low
-            confidence enters the pending queue for operator review."""
+            confidence enters the pending queue for operator review.
+
+            evidence: optional supporting-context strings (max 10 items, 500
+            chars each), persisted in pending meta / audit events and surfaced
+            by kb_pending (not rendered into the postimage: unlike
+            kb_propose_memory, the postimage here is caller-supplied verbatim)."""
             if state.worktrees is None or state.push_queue is None or state.pending is None:
                 return {"status": "write_pipeline_disabled"}
             assert state.worktrees is not None
@@ -671,6 +729,7 @@ def build_app(
                 can_auto_commit=_current_principal.get().can_auto_commit,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                evidence=evidence,
             )
             return resp.model_dump()
 
@@ -678,9 +737,17 @@ def build_app(
         def kb_resolve_pending(
             pending_id: str, decision: str, edited_text: str | None = None,
             source_session: str = "operator-resolve", agent_identity: str = "operator",
+            override_secret_scan: bool = False,
         ) -> dict[str, object]:
             """Resolve a pending proposal: approve (optionally with edited text) or
-            reject. Approval commits + enqueues for push."""
+            reject. Approval commits + enqueues for push.
+
+            ``override_secret_scan``: operator-only override of the secret-
+            scanning gate (issue #71). When True and the resolved postimage
+            matches a credential pattern, the commit proceeds anyway instead
+            of being rejected ``rejected_secret_detected``, and the audit
+            event records that the override was used. Use only after
+            confirming the flagged content is NOT a real credential."""
             if state.worktrees is None or state.push_queue is None or state.pending is None:
                 return {"status": "write_pipeline_disabled"}
             assert state.worktrees is not None
@@ -698,6 +765,7 @@ def build_app(
                 # cap here so the two surfaces match.
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                override_secret_scan=override_secret_scan,
             )
             return resp.model_dump()
 
@@ -720,6 +788,20 @@ def build_app(
             from data_olympus.tools_audit import kb_audit_fn
             resp = kb_audit_fn(audit_log=state.audit_log, since=since,
                               agent=agent, status=status, limit=limit)
+            return resp.model_dump()
+
+        @app.tool()
+        def kb_session_recap(source_session: str) -> dict[str, object]:
+            """Read-only per-session write summary (issue #112 feedback loop):
+            N committed, M demoted-to-pending, K rejected for source_session.
+            Call this (or `kb pending`) whenever a write response indicated a
+            demotion, to confirm the current tally before informing the
+            operator."""
+            if state.audit_log is None:
+                from data_olympus.models import SessionRecapResponse
+                return SessionRecapResponse(source_session=source_session).model_dump()
+            from data_olympus.tools_recap import kb_session_recap_fn
+            resp = kb_session_recap_fn(audit_log=state.audit_log, source_session=source_session)
             return resp.model_dump()
 
         @app.tool()
@@ -768,7 +850,18 @@ def build_app(
             """Record a consultation for (source_session, workspace) and return the
             governing rules for the intent. Call before code/architectural work.
             trigger is 'explicit' (default: a deliberate consult, clears the gate)
-            or 'prompt_hook' (an installer auto-consult: audited, never clears)."""
+            or 'prompt_hook' (an installer auto-consult: audited, never clears).
+
+            Retrieval is hard-filtered to the in-force class (active/accepted/
+            approved, within its validity window, and never a memory-inbox
+            doc): an unreviewed proposed memory, a retired/superseded decision,
+            an expired doc, or a legacy/forged inbox file is never returned as
+            a governing rule.
+
+            pending_actions, when present, lists open maintenance items (missing
+            `status` fields, recently-expired/expiring-soon docs); omitted when
+            the corpus is clean. Surface it to the operator and act on it only
+            with operator confirmation."""
             if (throttled := _mcp_rate_limited()) is not None:
                 return throttled
             import time as _time
@@ -781,7 +874,7 @@ def build_app(
                 ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
                 audit_log=state.audit_log, trigger=trigger,
             )
-            return resp.model_dump()
+            return resp.model_dump(exclude_none=True)
 
         @app.tool()
         def kb_gate_check(
@@ -896,6 +989,9 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         embeddings_enabled=config.embeddings_enabled,
         embeddings_weight=config.embeddings_weight,
         embeddings_model=config.embeddings_model,
+        maintenance_ledger_path=config.maintenance_ledger_path,
+        maintenance_recently_expired_days=config.maintenance_recently_expired_days,
+        maintenance_expiring_soon_days=config.maintenance_expiring_soon_days,
     )
 
 

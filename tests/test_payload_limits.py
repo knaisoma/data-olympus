@@ -65,7 +65,11 @@ def test_memory_text_under_cap_ok(tmp_path, monkeypatch) -> None:
         text="small", tags=[], source_session="s", agent_identity="claude",
         confidence=0.9, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
         pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
-        max_text_bytes=100,
+        # issue #109: memory stamping (`type: memory`, `status: proposed`)
+        # added ~30 bytes of frontmatter, so the cap here is raised enough to
+        # keep clearing it comfortably (the over-cap test above still uses a
+        # 100-byte cap against a 200-byte body, unaffected).
+        max_text_bytes=200,
     )
     assert resp.status == "committed"
 

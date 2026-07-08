@@ -23,18 +23,24 @@ so both surfaces share one policy.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
+import re
 import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from data_olympus.format.frontmatter import parse_frontmatter
-from data_olympus.format.validate import RESERVED, TIERS, TYPES
+from data_olympus.format.validate import RESERVED, TIERS, TYPES, is_inbox_path
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from data_olympus.index import Index
+
+_log = logging.getLogger("data_olympus.write_gate")
 
 # The status vocabulary the write gate enforces. Mirrors validate.STATUSES but
 # includes ``approved`` (the real KB uses it for accepted decisions; see
@@ -216,6 +222,33 @@ def _is_reserved(target_path: str) -> bool:
     return PurePosixPath(target_path).name in RESERVED
 
 
+def _target_path_exists(
+    target_path: str, *, idx: Index | None, worktree_path: str | None,
+) -> bool:
+    """True when ``target_path`` already names a document known to the live
+    index or present in the worktree's committed tree -- i.e. this write is an
+    EDIT to an existing document rather than the creation of a NEW one.
+
+    Checked against the same two sources the duplicate-id check below already
+    consults (index first, then the worktree tree), so a same-session
+    new-then-edit sequence is classified correctly even before the index has
+    rebuilt. Fails open toward "exists" only in the sense that either source
+    finding the path is conclusive; finding it in NEITHER source means the
+    write is treated as creating a new document (issue #114)."""
+    if idx is not None:
+        try:
+            index_map = idx.id_to_path_map()
+        except Exception:  # noqa: BLE001 - index read must never fail-closed here
+            index_map = {}
+        if isinstance(index_map, dict) and target_path in index_map.values():
+            return True
+    if worktree_path is not None:
+        real = os.path.join(worktree_path, target_path)
+        if os.path.isfile(real):
+            return True
+    return False
+
+
 def _effective_doc_id(fm: dict[str, object], target_path: str) -> str:
     """The id the indexer will assign to ``target_path``: the explicit
     frontmatter ``id`` when present and a plain string, else the path-derived id.
@@ -291,10 +324,24 @@ def validate_postimage(
       does not parse to a mapping, currently commits and then breaks the index
       build. Rejected as ``invalid_frontmatter``.
     - **Invalid enum value.** ``type`` / ``status`` / ``tier`` present but outside
-      the controlled vocabulary. Rejected as ``invalid_enum``. (Missing required
-      fields are NOT rejected here: memory-inbox documents legitimately carry no
-      ``id``/``type``/``status``/``tier`` and derive their id from the path. The
+      the controlled vocabulary. Rejected as ``invalid_enum``. (Other missing
+      required fields are NOT rejected here: memory-inbox documents legitimately
+      carry no ``id``/``type``/``tier`` and derive their id from the path. The
       gate blocks documents that are actively malformed, not merely sparse.)
+    - **Missing status on a NEW document (issue #114).** ``status`` has always
+      been a required field (SPEC.md section 4.2) and a ``kb lint`` error, but
+      the write path historically let a brand-new status-less document through
+      (the enum check above only fires when ``status`` is PRESENT and invalid).
+      A NEW, non-reserved, non-memory-inbox document (one that does not already
+      exist per :func:`_target_path_exists`) missing ``status`` is rejected as
+      ``missing_status``. Editing an EXISTING status-less document (one that
+      predates this check) remains allowed with no ``status`` required, so an
+      operator can migrate a legacy corpus incrementally -- see the maintenance
+      ledger (issue #113) for the migration vehicle that tracks the backlog.
+      Reserved filenames stay fully schema-exempt (as above); memory-inbox
+      documents are exempt here too, since every server-rendered memory already
+      stamps ``status: proposed`` (issue #109) -- this exemption preserves that
+      behavior rather than changing it.
     - **Duplicate / forged id.** The EFFECTIVE id the rebuild will assign (explicit
       frontmatter ``id`` or the path-derived id) already belongs to a DIFFERENT
       path, in the live index OR in the worktree's committed tree. A duplicate id
@@ -333,6 +380,25 @@ def validate_postimage(
                     "message": f"invalid {field} '{value}' "
                                f"(allowed: {sorted(allowed)})",
                 })
+
+    # 2b. Missing status on a NEW document (issue #114). See the docstring
+    # above for the reserved / memory-inbox exemptions and the migration
+    # rationale. Only fires when the document does NOT already exist (an edit
+    # to a legacy status-less doc is unaffected).
+    if (
+        not _is_reserved(target_path)
+        and not is_inbox_path(target_path)
+        and fm.get("status") is None
+        and not _target_path_exists(target_path, idx=idx, worktree_path=worktree_path)
+    ):
+        errors.append({
+            "field": "status", "code": "missing_status",
+            "message": (
+                f"new document '{target_path}' is missing required field "
+                f"'status' (SPEC.md section 4.2); editing an existing "
+                f"status-less document is still allowed during migration"
+            ),
+        })
 
     # 3. Duplicate / forged id against BOTH the live index and the worktree tree,
     # using the EFFECTIVE id (explicit or path-derived) so a new file whose derived
@@ -379,4 +445,250 @@ def reset_worktree(worktree_path: str) -> None:
     subprocess.run(
         ["git", "-C", worktree_path, "reset", "--hard", "HEAD"],
         check=True, capture_output=True,
+    )
+
+
+# --- secret-scanning gate (issue #71) --------------------------------------
+#
+# Scans a postimage for credential-shaped content BEFORE it is committed, so a
+# leaked credential in an agent-captured memory/edit/bootstrap file never
+# becomes a permanent git object on the hosted remote. Every regex below is a
+# bounded, non-backtracking character-class match (no nested quantifiers over
+# overlapping alternatives), so a large postimage cannot trigger catastrophic
+# backtracking (ReDoS).
+#
+# REDACTION IS THE POINT of this module: callers must only ever surface
+# ``SecretMatch.pattern_name`` and ``SecretMatch.line`` (an approximate,
+# 1-indexed line number) to a tool response, pending meta, audit event, or log
+# line. The matched substring itself never leaves ``scan_postimage_for_secrets``.
+
+
+@dataclass(frozen=True, slots=True)
+class SecretMatch:
+    """One detected secret occurrence. Carries ONLY the pattern name and an
+    approximate line number, never the matched text."""
+
+    pattern_name: str
+    line: int
+
+
+@dataclass(frozen=True, slots=True)
+class SecretScanResult:
+    """Outcome of scanning a postimage for credential-shaped content."""
+
+    ok: bool
+    match: SecretMatch | None = None
+
+
+_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN (?:(?:RSA|EC|OPENSSH|DSA|PGP) )?PRIVATE KEY-----"
+)
+# gh[oprs]_ covers ghp_/gho_/ghs_/ghr_ in one alternation; github_pat_ is a
+# distinct, longer-lived token format introduced later. Both are grouped under
+# one pattern name since the issue treats them as a single "GitHub tokens"
+# class.
+_GITHUB_TOKEN_RE = re.compile(
+    r"\b(?:gh[oprs]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})\b"
+)
+_AWS_ACCESS_KEY_RE = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+_SLACK_TOKEN_RE = re.compile(r"\bxox[bpars]-[A-Za-z0-9-]{10,200}\b")
+# Generic key=value / key: value credential assignment. Matches both a bare
+# key (``password=``) and a prefixed key (``DB_PASSWORD=``, ``API_SECRET:``) --
+# real leaks are far more often an env-style prefixed key than a bare word, so
+# requiring a leading word boundary on ``password``/``secret`` itself (which
+# ``\b`` would, since ``_`` is a word character with no boundary before
+# ``PASSWORD`` in ``DB_PASSWORD``) would miss the common case. The value is
+# captured so obvious placeholders (``password=changeme``,
+# ``password=<your password>``) can be excluded below rather than flagged as a
+# real leak.
+_GENERIC_CRED_RE = re.compile(
+    r"""(?:^|[^A-Za-z0-9_])[A-Za-z0-9_]{0,40}(?:password|passwd|secret)"""
+    r"""\s*[:=]\s*(['"]?)(?P<value>[^\s'"]{1,200})\1""",
+    re.IGNORECASE,
+)
+# scheme://user:password@host -- a connection string carrying an inline
+# password. Every segment is a bounded negated-character-class match.
+_CONN_STRING_RE = re.compile(
+    r"\b[A-Za-z][A-Za-z0-9+.-]{1,20}://"
+    r"[^\s:/@'\"]{1,200}:[^\s@/'\"]{1,200}@[^\s/'\"]{1,200}"
+)
+
+_BUILTIN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("private_key_block", _PRIVATE_KEY_RE),
+    ("github_token", _GITHUB_TOKEN_RE),
+    ("aws_access_key_id", _AWS_ACCESS_KEY_RE),
+    ("slack_token", _SLACK_TOKEN_RE),
+    ("generic_credential_assignment", _GENERIC_CRED_RE),
+    ("connection_string_password", _CONN_STRING_RE),
+)
+
+_PLACEHOLDER_VALUES = frozenset({
+    "", "changeme", "change_me", "change-me", "placeholder", "example",
+    "redacted", "xxx", "xxxx", "todo", "fixme", "password", "secret",
+    "test", "null", "none", "n/a", "your_password", "yourpassword",
+})
+
+
+def _is_placeholder_value(value: str) -> bool:
+    """True when a matched credential VALUE is an obvious non-secret
+    placeholder (docs/templates commonly write ``password=changeme`` or
+    ``password=<your password>``). Reduces false positives on the generic
+    key=value pattern without weakening detection of a real-looking value."""
+    v = value.strip().strip("'\"")
+    if not v:
+        return True
+    if v.lower() in _PLACEHOLDER_VALUES:
+        return True
+    return v[0] in "<{$" or set(v.lower()) <= {"x"} or set(v) <= {"*"}
+
+
+def _line_of(content: str, index: int) -> int:
+    """1-indexed line number of ``index`` within ``content``."""
+    return content.count("\n", 0, index) + 1
+
+
+# Heuristic ReDoS pre-filter for operator-supplied extra patterns. Matches a
+# parenthesized group that itself contains a `+`/`*` quantifier, immediately
+# followed by another `+`/`*` quantifying the whole group -- the classic
+# catastrophic-backtracking shape (``(a+)+``, ``(\d*)*``, ``([a-z]+)*``, ...).
+# This is deliberately only a CHEAP FIRST LINE: it cannot recognize every
+# catastrophic form (overlapping alternation like ``(a|aa)+``, braced nesting,
+# shapes spread across nested groups). The AUTHORITATIVE defense is that every
+# custom pattern is executed through the third-party ``regex`` engine with a
+# hard match timeout (see ``scan_postimage_for_secrets``), so even a
+# pathological pattern the pre-filter misses cannot hang the single-writer
+# write path.
+_REDOS_NESTED_QUANTIFIER_RE = re.compile(r"\([^()]*[+*][^()]*\)[+*]")
+
+# Hard per-pattern, per-postimage match budget for OPERATOR-SUPPLIED custom
+# patterns (built-ins are hand-audited linear-time and use stdlib `re`).
+# Generous for any legitimate token pattern over a <=1 MiB postimage; a
+# pattern that exceeds it is logged and skipped for that scan.
+_CUSTOM_PATTERN_TIMEOUT_SEC = 1.0
+
+
+def _looks_redos_prone(pattern_src: str) -> bool:
+    """True when ``pattern_src`` contains the classic nested-quantifier shape
+    that causes catastrophic backtracking in a backtracking regex engine."""
+    return bool(_REDOS_NESTED_QUANTIFIER_RE.search(pattern_src))
+
+
+def load_extra_secret_patterns(
+    env_value: str | None = None,
+) -> list[tuple[str, Any]]:
+    """Parse ``KB_SECRET_SCAN_EXTRA_PATTERNS``: a comma-separated list of extra
+    regexes an operator wants scanned in addition to the built-in set. Each
+    entry becomes its own named pattern (``custom_1``, ``custom_2``, ...). An
+    invalid regex is logged and SKIPPED, never raised, so one operator typo in
+    the env var cannot crash the write path. A pattern with the classic
+    nested-quantifier ReDoS shape (see :func:`_looks_redos_prone`) is also
+    logged and skipped at load time.
+
+    Custom patterns are compiled with the third-party ``regex`` engine, NOT
+    stdlib ``re``, because ``regex`` supports a hard per-call match timeout:
+    a catastrophic pattern the load-time heuristic misses (overlapping
+    alternation, braced nesting, ...) is then bounded at SCAN time by
+    ``_CUSTOM_PATTERN_TIMEOUT_SEC`` instead of hanging the single-writer
+    write path (stdlib ``re`` cannot be interrupted once matching)."""
+    import regex as regex_mod
+
+    raw = (
+        env_value if env_value is not None
+        else os.environ.get("KB_SECRET_SCAN_EXTRA_PATTERNS", "")
+    )
+    out: list[tuple[str, Any]] = []
+    for piece in raw.split(","):
+        pattern_src = piece.strip()
+        if not pattern_src:
+            continue
+        if _looks_redos_prone(pattern_src):
+            _log.warning(
+                "KB_SECRET_SCAN_EXTRA_PATTERNS entry %r has a nested-quantifier "
+                "shape that risks catastrophic backtracking and will be "
+                "skipped; rewrite it without a quantifier nested inside a "
+                "quantified group", pattern_src,
+            )
+            continue
+        try:
+            compiled = regex_mod.compile(pattern_src)
+        except regex_mod.error as exc:
+            _log.warning(
+                "KB_SECRET_SCAN_EXTRA_PATTERNS entry %r is not a valid regex "
+                "and will be skipped: %s", pattern_src, exc,
+            )
+            continue
+        out.append((f"custom_{len(out) + 1}", compiled))
+    return out
+
+
+def _first_custom_match_start(pattern: Any, postimage: str) -> int | None:
+    """Start index of ``pattern``'s first match in ``postimage``, or None.
+
+    ``pattern`` is a compiled ``regex``-module pattern; the search runs with a
+    hard ``_CUSTOM_PATTERN_TIMEOUT_SEC`` budget. On timeout the pattern is
+    logged (name only, never the scanned content) and treated as non-matching
+    for this scan, so one pathological operator pattern degrades to a skipped
+    check instead of hanging every write."""
+    try:
+        m = pattern.search(postimage, timeout=_CUSTOM_PATTERN_TIMEOUT_SEC)
+    except TimeoutError:
+        _log.warning(
+            "custom secret-scan pattern %r exceeded its %.1fs match budget and "
+            "was skipped for this scan; rewrite it to avoid catastrophic "
+            "backtracking", pattern.pattern, _CUSTOM_PATTERN_TIMEOUT_SEC,
+        )
+        return None
+    return m.start() if m is not None else None
+
+
+def scan_postimage_for_secrets(
+    *,
+    postimage: str,
+    extra_patterns: Sequence[tuple[str, Any]] | None = None,
+) -> SecretScanResult:
+    """Scan ``postimage`` for credential-shaped content (issue #71).
+
+    Checks the built-in pattern set plus ``extra_patterns`` (default: parsed
+    fresh from ``KB_SECRET_SCAN_EXTRA_PATTERNS`` on every call, so a changed env
+    var takes effect without threading config through every caller). Returns
+    the EARLIEST match across all patterns. Only the pattern NAME and an
+    approximate 1-indexed line number are returned in the result -- never the
+    matched substring -- so a caller can safely put it in a tool response,
+    audit event, or log line without leaking the secret value itself.
+
+    Built-in patterns are stdlib ``re`` (hand-audited linear-time). Custom
+    patterns are ``regex``-module patterns executed with a hard match timeout
+    via :func:`_first_custom_match_start`."""
+    best: tuple[int, str] | None = None  # (start_index, pattern_name)
+
+    for name, pattern in _BUILTIN_PATTERNS:
+        match_start: int | None = None
+        for m in pattern.finditer(postimage):
+            if name == "generic_credential_assignment" and _is_placeholder_value(
+                m.group("value")
+            ):
+                continue
+            match_start = m.start()
+            break
+        if match_start is None:
+            continue
+        if best is None or match_start < best[0]:
+            best = (match_start, name)
+
+    custom = (
+        extra_patterns if extra_patterns is not None
+        else load_extra_secret_patterns()
+    )
+    for name, pattern in custom:
+        match_start = _first_custom_match_start(pattern, postimage)
+        if match_start is None:
+            continue
+        if best is None or match_start < best[0]:
+            best = (match_start, name)
+
+    if best is None:
+        return SecretScanResult(ok=True)
+    start, name = best
+    return SecretScanResult(
+        ok=False, match=SecretMatch(pattern_name=name, line=_line_of(postimage, start))
     )

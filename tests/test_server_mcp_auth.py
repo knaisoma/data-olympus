@@ -146,3 +146,30 @@ async def test_observability_tool_open_when_no_auth_configured(monkeypatch) -> N
         return "audit-events"
 
     assert await mw.on_call_tool(_ctx("kb_audit"), call_next) == "audit-events"
+
+
+@pytest.mark.asyncio
+async def test_session_recap_requires_auth_when_configured(monkeypatch) -> None:
+    """issue #112 (codex security review concern): kb_session_recap is
+    audit-derived per-session metadata and must be gated like kb_audit,
+    matching the REST /api/v1/session-recap posture."""
+    from fastmcp.exceptions import ToolError
+    _patch_headers(monkeypatch, {})  # anonymous
+    mw = MCPAuthMiddleware(PrincipalRegistry(auth_token=TOKEN))
+
+    async def call_next(_ctx):  # pragma: no cover - must not be reached
+        return "ok"
+
+    with pytest.raises(ToolError):
+        await mw.on_call_tool(_ctx("kb_session_recap"), call_next)
+
+
+@pytest.mark.asyncio
+async def test_session_recap_allowed_with_token(monkeypatch) -> None:
+    _patch_headers(monkeypatch, {"authorization": f"Bearer {TOKEN}"})
+    mw = MCPAuthMiddleware(PrincipalRegistry(auth_token=TOKEN))
+
+    async def call_next(_ctx):
+        return "recap"
+
+    assert await mw.on_call_tool(_ctx("kb_session_recap"), call_next) == "recap"

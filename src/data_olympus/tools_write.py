@@ -19,6 +19,11 @@ from data_olympus.auth import (
     safe_join_under_root,
 )
 from data_olympus.format.frontmatter import parse_frontmatter
+from data_olympus.governed_lane import (
+    GovernedLaneVerdict,
+    evaluate_governed_lane,
+    governed_lane_protection_enabled,
+)
 from data_olympus.models import (
     PendingEntry,
     PendingListResponse,
@@ -27,9 +32,11 @@ from data_olympus.models import (
 )
 from data_olympus.pending import PathLockBusyError, PendingQueue, PendingQueueFullError
 from data_olympus.write_gate import (
+    SecretMatch,
     WriteSerializer,
     check_cas,
     reset_worktree,
+    scan_postimage_for_secrets,
     validate_postimage,
 )
 
@@ -50,6 +57,13 @@ if TYPE_CHECKING:
 _DEFAULT_SERIALIZER = WriteSerializer()
 
 _log = logging.getLogger("data_olympus.tools_write")
+
+# Placeholder used wherever a caller-supplied target_path matched a secret
+# pattern (issue #71, codex round-3 Blocker 2): the path is echoed in
+# responses, audit events, commit subjects/trailers, and would be committed
+# as a git path, so a credential-shaped FILENAME is itself a leak and must
+# never be repeated back anywhere once flagged.
+_REDACTED_PATH = "[target_path redacted: matched a secret pattern]"
 
 
 def _slugify(text: str) -> str:
@@ -75,10 +89,76 @@ def _memory_inbox_prefix() -> str:
 
     Defaults to the generic ``memory/inbox/``; a deployment with a different
     layout overrides it via KB_MEMORY_INBOX_PREFIX (a trailing slash is
-    normalized in).
+    normalized in). Delegates to format.validate.memory_inbox_prefix, the
+    single source shared with index.py's memory-inbox in-force floor (issue
+    #109) -- this wrapper is kept only so existing callers/tests importing
+    ``tools_write._memory_inbox_prefix`` are unaffected.
     """
-    prefix = os.environ.get("KB_MEMORY_INBOX_PREFIX", "memory/inbox/").strip()
-    return prefix if prefix.endswith("/") else prefix + "/"
+    from data_olympus.format.validate import memory_inbox_prefix
+    return memory_inbox_prefix()
+
+
+# ``evidence`` validation (issue #109): optional supporting-context list on
+# kb_propose_memory / kb_propose_edit. Fixed limits (not config-driven, unlike
+# max_text_bytes/max_postimage_bytes): a small, cheap-to-review list of short
+# strings, not a payload-sizing concern.
+_MAX_EVIDENCE_ITEMS = 10
+_MAX_EVIDENCE_ITEM_CHARS = 500
+
+
+def _validate_evidence(evidence: object) -> str | None:
+    """Return a rejection reason string if ``evidence`` is invalid, else None.
+
+    Rejects (rather than truncating/coercing) so a caller sees exactly why its
+    proposal did not go through, instead of a silently-shortened evidence list.
+
+    The OUTER type is checked first (codex review blocker): the REST routes
+    pass ``body.get("evidence", ...)`` straight through, and a JSON string is
+    itself iterable (every char a 1-char str), so without this check a short
+    string would silently pass the per-item validation below as a "list" of
+    characters. MCP is schema-validated upstream, but this function is the
+    single authoritative gate for every surface.
+    """
+    if not isinstance(evidence, list):
+        return (
+            f"evidence must be a list of strings "
+            f"(got {type(evidence).__name__})"
+        )
+    if len(evidence) > _MAX_EVIDENCE_ITEMS:
+        return (
+            f"evidence exceeds max {_MAX_EVIDENCE_ITEMS} items "
+            f"(got {len(evidence)})"
+        )
+    for item in evidence:
+        if not isinstance(item, str):
+            return "evidence items must be strings"
+        if len(item) > _MAX_EVIDENCE_ITEM_CHARS:
+            return (
+                f"evidence item exceeds max {_MAX_EVIDENCE_ITEM_CHARS} chars "
+                f"(got {len(item)})"
+            )
+    return None
+
+
+def _redact_evidence(evidence: list[str]) -> list[str]:
+    """Scan each evidence item for a secret pattern, replacing a flagged item
+    with a redacted placeholder (pattern name only) before it is persisted to
+    pending meta or echoed in an audit event -- the same treatment `tags`
+    already gets in kb_propose_memory_fn. For a memory proposal the RAW
+    evidence still reaches the committed/reviewed postimage via `_render_memory`
+    (needed for operator review, same rationale as tags in the body); only this
+    separate meta/audit copy is redacted."""
+    out: list[str] = []
+    for item in evidence:
+        scan = scan_postimage_for_secrets(postimage=str(item))
+        if scan.match is not None:
+            out.append(
+                f"[evidence redacted: secret pattern '{scan.match.pattern_name}' "
+                f"detected]"
+            )
+        else:
+            out.append(str(item))
+    return out
 
 
 def _classify(target_path: str) -> tuple[str, str]:
@@ -101,6 +181,11 @@ def _emit_audit(
     commit_sha: str | None = None,
     reason: str | None = None,
     remote_addr: str | None = None,
+    matching_pattern: str | None = None,
+    secret_scan_override: bool | None = None,
+    evidence: list[str] | None = None,
+    demotion_reason: str | None = None,
+    injection_suspect: bool | None = None,
 ) -> None:
     if audit_log is None:
         return
@@ -119,7 +204,84 @@ def _emit_audit(
             "commit_sha": commit_sha,
             "reason": reason,
             "remote_addr": remote_addr,
+            "matching_pattern": matching_pattern,
+            "secret_scan_override": secret_scan_override,
+            "evidence": evidence,
+            "demotion_reason": demotion_reason,
+            "injection_suspect": injection_suspect,
         })
+
+
+def _governed_lane_check(
+    *,
+    postimage: str,
+    target_path: str,
+    idx: Index | None,
+    check_governed_target: bool,
+    confidence: float,
+    confidence_threshold: float,
+    can_auto_commit: bool,
+) -> GovernedLaneVerdict:
+    """Evaluate the governed-lane rules (issue #112) for one candidate write,
+    applying the secret-scan-precedence ordering rule.
+
+    Returns a verdict with ``demotion_reason=None`` when
+    ``KB_GOVERNED_LANE_PROTECTION=off``, so callers can unconditionally branch
+    on ``verdict.demoted`` without their own feature-flag check (this
+    restores the pre-#112 behavior exactly, per the issue's rollout
+    contract).
+
+    Ordering rule: when this proposal would otherwise auto-commit (high
+    confidence AND authorized) and the postimage or target_path itself
+    matches a secret pattern, OR the postimage otherwise fails the issue #4
+    content-validation gate (malformed frontmatter, an invalid enum value, or
+    a forged/duplicate id), any demotion verdict is CANCELLED so the existing
+    high-confidence branch reaches ``_commit_in_worktree``'s own gates and
+    rejects outright instead of silently parking bad content as pending: a
+    HARD rejection always takes precedence over a SOFT demotion. A
+    low-confidence proposal is unaffected (its secret/validation decision is
+    already deferred to operator resolve time, unchanged by this feature).
+
+    The cancel decision must be a SOUND prediction of the commit path's own
+    gates -- cancelling on a pre-check failure the commit path will NOT
+    reproduce would turn the cancel into a demotion bypass (the write would
+    sail through ``_commit_in_worktree`` and commit). Secret-scan results
+    are deterministic (same pure function, same inputs) and the
+    frontmatter/enum/duplicate-id validation errors are stable between this
+    pre-check and the commit path (the commit path's extra worktree scan
+    only ever finds MORE collisions, never fewer). The one exception is the
+    issue #114 ``missing_status`` code: its new-vs-existing classification
+    consults the index/worktree, and this pre-check runs WITHOUT the
+    worktree (``worktree_path=None``), so with a missing/unhealthy index an
+    EXISTING doc can be misclassified as new here while the commit path
+    (which sees the worktree) passes it. ``missing_status`` is therefore
+    excluded from the cancel decision: when in doubt the demotion STANDS
+    (fail closed), and a genuinely status-less NEW document parked this way
+    is still rejected by the full gate at operator resolve time.
+    """
+    if not governed_lane_protection_enabled():
+        return GovernedLaneVerdict(demotion_reason=None)
+    verdict = evaluate_governed_lane(
+        postimage=postimage, target_path=target_path, idx=idx,
+        check_governed_target=check_governed_target,
+    )
+    would_auto_commit = confidence >= confidence_threshold and can_auto_commit
+    if verdict.demoted and would_auto_commit:
+        vr = validate_postimage(
+            target_path=target_path, postimage=postimage, idx=idx,
+        )
+        validation_would_reject = (not vr.ok) and any(
+            e.get("code") != "missing_status" for e in vr.errors
+        )
+        secret_flagged = (
+            not scan_postimage_for_secrets(postimage=target_path).ok
+            or not scan_postimage_for_secrets(postimage=postimage).ok
+        )
+        if secret_flagged or validation_would_reject:
+            return GovernedLaneVerdict(
+                demotion_reason=None, injection_matches=verdict.injection_matches,
+            )
+    return verdict
 
 
 class _WriteRejected(Exception):
@@ -130,6 +292,22 @@ class _WriteRejected(Exception):
     def __init__(self, response: ProposeResponse) -> None:
         self.response = response
         super().__init__(response.status)
+
+
+class _WriteDemoted(Exception):
+    """Internal control-flow signal (issue #112, codex round-2 blocker): the
+    in-worktree governed-target backstop found the edit's target IN FORCE on
+    the refreshed commit base, so the write must be DEMOTED to pending
+    instead of committed. Raised only from :func:`_commit_in_worktree` when
+    ``governed_target_check=True`` (the propose-edit auto-commit path);
+    :func:`kb_propose_edit_fn` catches it and parks the proposal. Never
+    escapes the module. Deliberately raised AFTER the hard gates (secret
+    scan, content validation), preserving the reject-before-demote ordering
+    authoritatively rather than by prediction."""
+
+    def __init__(self, demotion_reason: str) -> None:
+        self.demotion_reason = demotion_reason
+        super().__init__(demotion_reason)
 
 
 def _commit_in_worktree(
@@ -154,21 +332,47 @@ def _commit_in_worktree(
     push_meta: dict[str, Any] | None = None,
     lock_owner: str | None = None,
     hold_path_lock: bool = False,
-) -> tuple[str, str]:
+    secret_scan_override: bool = False,
+    governed_target_check: bool = False,
+) -> tuple[str, str, SecretMatch | None]:
     """Serialized write -> git add -> commit -> enqueue critical section.
 
     Shared by the auto-commit (propose) path and the operator-resolve path so both
-    honor identical integrity gates (scope items 1, 3, 4, 8). Returns
-    ``(commit_sha, push_state)`` where push_state is ``"queued"`` or
-    ``"enqueue_failed_recovery_pending"`` (see _enqueue_after_commit). Raises
-    :class:`_WriteRejected` (carrying the ProposeResponse) when a gate rejects, or
-    :class:`PathLockBusyError` when the per-path advisory lock is held.
+    honor identical integrity gates (scope items 1, 3, 4, 8, and the issue #71
+    secret-scanning gate). Returns ``(commit_sha, push_state, secret_override)``
+    where push_state is ``"queued"`` or ``"enqueue_failed_recovery_pending"``
+    (see _enqueue_after_commit), and ``secret_override`` is the
+    :class:`~data_olympus.write_gate.SecretMatch` the scanner found IF
+    ``secret_scan_override`` was True and a pattern actually matched (else
+    ``None``) -- so the resolve caller can audit that an override was
+    exercised, without this shared helper needing to know about audit at all.
+    Raises :class:`_WriteRejected` (carrying the ProposeResponse) when a gate
+    rejects, or :class:`PathLockBusyError` when the per-path advisory lock is
+    held.
+
+    ``secret_scan_override`` is ONLY ever passed True by the operator
+    resolve path (:func:`kb_resolve_pending_fn`). Neither
+    :func:`kb_propose_memory_fn` nor :func:`kb_propose_edit_fn` expose a
+    parameter that can reach it, so an agent can never self-authorize past a
+    flagged auto-commit -- only a human resolving a pending entry can.
 
     ``hold_path_lock`` (resolve path): when True the caller ALREADY holds the
     per-path advisory lock (the one acquired at ``enqueue`` time and kept through
     ``claim_for_resolve``), so this does not re-acquire it. Re-acquiring the same
     file-based lock would self-deadlock / raise PathLockBusyError (Codex round-2
     Blocker B). When False (the propose path) the lock is acquired here.
+
+    ``governed_target_check`` (issue #112, codex round-2 blocker): passed True
+    ONLY by :func:`kb_propose_edit_fn`'s auto-commit path when governed-lane
+    protection is enabled. After every hard gate passes, the target's
+    CURRENT content on the refreshed base is checked with
+    ``governed_lane.is_base_content_in_force``; an in-force target raises
+    :class:`_WriteDemoted` so the caller parks the proposal as pending. This
+    closes the index-lag window the index-based tool-layer check cannot see
+    (a doc pushed as in-force but not yet re-indexed), because it judges the
+    SAME bytes the commit would sit on. Never set by the resolve path
+    (operator resolve IS the promotion), the memory path (a brand-new inbox
+    file), or bootstrap (absent/partial workspaces only).
 
     Order of operations, all under the process-wide write lock AND the per-path
     advisory lock (shared with the pending queue):
@@ -252,7 +456,63 @@ def _commit_in_worktree(
                     status="rejected_stale_base", target_path=target_path,
                     reason=cas.reason))
 
-            # 5. Content-validation gate (item 4). Pass the worktree so the
+            # 5. Secret-scanning gate (issue #71): reject a postimage carrying
+            # credential-shaped content BEFORE it is committed. Only the
+            # pattern name + an approximate line number are ever surfaced (see
+            # write_gate.scan_postimage_for_secrets); the matched value itself
+            # never reaches the response, a log line, or (below) the audit
+            # event. ``secret_scan_override`` lets the operator resolve path
+            # consciously commit anyway; it is never available here from the
+            # auto-commit paths (see the docstring above).
+            #
+            # This gate runs BEFORE content-validation (step 5a below) on
+            # purpose: ``validate_postimage`` echoes the offending value
+            # verbatim in an ``invalid_enum`` rejection message (e.g. a
+            # postimage with ``status: AKIA...`` in the frontmatter), so if a
+            # postimage is BOTH malformed AND carries a credential-shaped
+            # value, checking validation first would leak the secret through
+            # that message. Scanning first means such a postimage is always
+            # rejected as the redacted ``rejected_secret_detected``, never as
+            # ``rejected_invalid_document``.
+            secret_override: SecretMatch | None = None
+            # 5-pre. Defense-in-depth path scan (codex round-3 Blocker 2):
+            # the propose paths already reject a credential-shaped
+            # target_path before it reaches here, but the RESOLVE path
+            # commits pending entries that may predate that check (or were
+            # demoted from a push conflict), and the path lands in the commit
+            # subject, trailers, and the git tree. The rejection deliberately
+            # does NOT echo the path. The operator resolve override applies
+            # here exactly as it does to a flagged postimage.
+            path_scan = scan_postimage_for_secrets(postimage=target_path)
+            if not path_scan.ok:
+                assert path_scan.match is not None
+                if secret_scan_override:
+                    secret_override = path_scan.match
+                else:
+                    raise _WriteRejected(ProposeResponse(
+                        status="rejected_secret_detected",
+                        reason=(
+                            f"secret pattern '{path_scan.match.pattern_name}' "
+                            f"detected in target_path"
+                        ),
+                        matching_pattern=path_scan.match.pattern_name,
+                    ))
+            secret_result = scan_postimage_for_secrets(postimage=postimage)
+            if not secret_result.ok:
+                assert secret_result.match is not None
+                if secret_scan_override:
+                    secret_override = secret_override or secret_result.match
+                else:
+                    raise _WriteRejected(ProposeResponse(
+                        status="rejected_secret_detected", target_path=target_path,
+                        reason=(
+                            f"secret pattern '{secret_result.match.pattern_name}' "
+                            f"detected near line {secret_result.match.line}"
+                        ),
+                        matching_pattern=secret_result.match.pattern_name,
+                    ))
+
+            # 5a. Content-validation gate (item 4). Pass the worktree so the
             # duplicate-id check also scans the committed tree (catches a
             # same-new-id race between two serialized commits before the index
             # rebuilds).
@@ -263,6 +523,24 @@ def _commit_in_worktree(
                 raise _WriteRejected(ProposeResponse(
                     status="rejected_invalid_document", target_path=target_path,
                     reason="; ".join(e["message"] for e in vr.errors)))
+
+            # 5b. Governed-target backstop (issue #112, codex round-2
+            # blocker): judge the target's in-force state from its CURRENT
+            # bytes on the refreshed base -- the exact content this commit
+            # would replace -- so an index that lags origin/main can never
+            # be used to slip an edit past the governed-target rule.
+            # Deliberately AFTER the hard gates above (reject-before-demote,
+            # enforced authoritatively here rather than predicted at the
+            # tool layer) and BEFORE any disk side effect. The check
+            # deliberately consults NOTHING from the index (codex round-3
+            # blocker: a stale graph-exclusion edge would otherwise remove
+            # protection the base's own bytes assert).
+            if governed_target_check and os.path.isfile(full_path):
+                from data_olympus.governed_lane import is_base_content_in_force
+                with open(full_path, encoding="utf-8") as bf:
+                    base_content = bf.read()
+                if is_base_content_in_force(base_content, target_path):
+                    raise _WriteDemoted("governed_target")
 
             # 6. Write + add + commit + enqueue; reset on any post-add failure.
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
@@ -291,7 +569,7 @@ def _commit_in_worktree(
             # pass on THIS worktree re-enqueues the orphan so the running push loop
             # picks it up without waiting for a restart.
             push_state = _enqueue_after_commit(push_queue, sha, wt.path, push_meta)
-            return sha, push_state
+            return sha, push_state, secret_override
 
 
 def _enqueue_after_commit(
@@ -405,13 +683,47 @@ def commit_multifile_in_worktree(
             if eid:
                 seen_ids[eid] = tp
 
-        # Containment + validation for every file BEFORE any write.
+        # Containment + secret-scan + validation for every file BEFORE any
+        # write. The secret scan runs BEFORE content-validation (same
+        # ordering rationale as ``_commit_in_worktree``): ``validate_postimage``
+        # echoes an invalid enum value verbatim, so checking it first could
+        # leak a credential-shaped value through that message instead of the
+        # redacted ``rejected_secret_detected`` path. Bootstrap has no
+        # operator override at all (it always commits atomically with no
+        # human in the loop), so a single flagged file rejects the whole
+        # bundle before any file in it is written.
         for f in files:
             tp, pi = f["target_path"], f["postimage"]
             full = safe_join_under_root(wt.path, tp)
             if full is None:
                 raise _WriteRejected(ProposeResponse(
                     status="rejected_symlink_escape", target_path=tp))
+            # Path scan first (codex round-3 Blocker 2): a credential-shaped
+            # filename would land in the commit and be echoed in
+            # responses/audit; the rejection must not echo it either.
+            path_scan = scan_postimage_for_secrets(postimage=tp)
+            if not path_scan.ok:
+                assert path_scan.match is not None
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_secret_detected",
+                    target_path=_REDACTED_PATH,
+                    reason=(
+                        f"secret pattern '{path_scan.match.pattern_name}' "
+                        f"detected in a bundle target_path"
+                    ),
+                    matching_pattern=path_scan.match.pattern_name,
+                ))
+            secret_result = scan_postimage_for_secrets(postimage=pi)
+            if not secret_result.ok:
+                assert secret_result.match is not None
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_secret_detected", target_path=tp,
+                    reason=(
+                        f"secret pattern '{secret_result.match.pattern_name}' "
+                        f"detected near line {secret_result.match.line}"
+                    ),
+                    matching_pattern=secret_result.match.pattern_name,
+                ))
             vr = validate_postimage(
                 target_path=tp, postimage=pi, idx=idx, worktree_path=wt.path)
             if not vr.ok:
@@ -460,6 +772,7 @@ def kb_propose_memory_fn(
     max_text_bytes: int = 0,
     serializer: WriteSerializer | None = None,
     idx: Index | None = None,
+    evidence: list[str] | None = None,
 ) -> ProposeResponse:
     """Propose a new memory file under the memory inbox prefix as
     <date>-<slug>-<uniq>.md.
@@ -471,9 +784,33 @@ def kb_propose_memory_fn(
     when False (an authenticated principal lacking the auto_commit capability, or
     an untrusted caller) the proposal is parked as pending regardless of the
     client-asserted confidence. This is the confidence clamp.
+
+    ``evidence`` (issue #109, optional): supporting-context strings validated
+    by ``_validate_evidence`` (max 10 items, 500 chars each), rendered into the
+    memory's frontmatter (so a credential-shaped item is caught by the SAME
+    full-postimage secret scan below -- see ``_render_memory``), and persisted
+    (redacted copy) in pending meta / audit events / ``kb_pending``.
     """
+    # Normalize ONLY the None "not supplied" sentinel (codex re-review
+    # blocker): `evidence or []` also coerced falsy non-lists ('' / {} /
+    # False / 0) from raw REST JSON to [] BEFORE validation, silently
+    # accepting them instead of rejecting rejected_invalid_evidence.
+    if evidence is None:
+        evidence = []
+    evidence_error = _validate_evidence(evidence)
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
-    slug = _slugify(text)
+    # issue #71: the slug is derived VERBATIM from the caller's free text (no
+    # redaction -- `_slugify` only lowercases and normalizes separators), so a
+    # credential-shaped substring in ``text`` would otherwise survive intact
+    # in the committed filename / the pending entry's target_path / every
+    # response and audit event that echoes target_path (all of which are
+    # normally safe to log). Scan the raw text FIRST and fall back to a
+    # neutral slug when flagged, so no fragment of a real secret ever reaches
+    # the filename. ``uniq`` (a session+text hash) still disambiguates same-day
+    # flagged proposals; the authoritative scan/reject decision below still
+    # runs against the full rendered postimage.
+    text_secret_result = scan_postimage_for_secrets(postimage=text)
+    slug = _slugify(text) if text_secret_result.ok else "flagged"
     uniq = _memory_uniquifier(source_session, text)
     target_path = f"{_memory_inbox_prefix()}{today}-{slug}-{uniq}.md"
     audit_base: dict[str, Any] = {
@@ -484,6 +821,14 @@ def kb_propose_memory_fn(
         "confidence": confidence,
         "remote_addr": remote_addr,
     }
+
+    # 0. Evidence validation (issue #109): a cheap client-input check, run
+    # before any path/blocklist/rate-limit work.
+    if evidence_error is not None:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_invalid_evidence",
+                                   "reason": evidence_error})
+        return ProposeResponse(status="rejected_invalid_evidence",
+                               reason=evidence_error, target_path=target_path)
 
     # 1. Structural rule (cheap).
     if not is_writable_path(target_path):
@@ -519,7 +864,9 @@ def kb_propose_memory_fn(
     # server prepends (tags, agent identity, ISO timestamp) is part of what gets
     # written and pushed, and an unbounded tags list would otherwise slip past a
     # body-only check (item 3).
-    postimage = _render_memory(text=text, tags=tags, agent_identity=agent_identity)
+    postimage = _render_memory(
+        text=text, tags=tags, agent_identity=agent_identity, evidence=evidence,
+    )
 
     # 4b. Payload size cap (reject before any disk side effect).
     if max_text_bytes > 0 and len(postimage.encode("utf-8")) > max_text_bytes:
@@ -527,7 +874,55 @@ def kb_propose_memory_fn(
         return ProposeResponse(status="rejected_payload_too_large",
                                target_path=target_path)
 
-    if confidence < confidence_threshold or not can_auto_commit:
+    # Governed-lane write protection (issue #112): a memory proposal always
+    # targets a brand-new memory-inbox file, never a currently in-force
+    # document, so only rule 1 (status clamp) applies (check_governed_target=
+    # False). In practice the server-rendered memory always stamps
+    # status: proposed (see _render_memory), so this rarely fires for memory
+    # today; it is still evaluated here so a future caller-supplied status
+    # override cannot bypass the clamp.
+    governed_verdict = _governed_lane_check(
+        postimage=postimage, target_path=target_path, idx=idx,
+        check_governed_target=False, confidence=confidence,
+        confidence_threshold=confidence_threshold, can_auto_commit=can_auto_commit,
+    )
+    demotion_reason = governed_verdict.demotion_reason
+    injection_matches = governed_verdict.injection_matches
+
+    if confidence < confidence_threshold or not can_auto_commit or demotion_reason is not None:
+        # Scan BEFORE enqueueing (issue #71): a low-confidence proposal is
+        # never rejected here (that would defeat the operator-override
+        # workflow at resolve time -- see kb_resolve_pending_fn), but a
+        # flagged proposal's raw text must not be echoed back in THIS
+        # response, only the pattern name. The pending entry itself still
+        # carries the full postimage on disk (unavoidable: the operator needs
+        # something to review/edit/approve), tagged with
+        # ``secret_scan_flagged``/``matching_pattern`` metadata (names only,
+        # never the matched value) so `kb pending` surfaces the warning
+        # without exposing the secret.
+        secret_result = scan_postimage_for_secrets(postimage=postimage)
+        flagged_pattern = (
+            secret_result.match.pattern_name if secret_result.match is not None else None
+        )
+        # Pending META must never carry a raw credential value (codex round-3
+        # Blocker 1): the postimage field is the single reviewed artifact and
+        # unavoidably holds the flagged content, but meta is treated as
+        # loggable, so a tag that itself matches a secret pattern is stored
+        # redacted (pattern name only).
+        safe_tags: list[str] = []
+        for t in tags:
+            tag_scan = scan_postimage_for_secrets(postimage=str(t))
+            if tag_scan.match is not None:
+                safe_tags.append(
+                    f"[tag redacted: secret pattern "
+                    f"'{tag_scan.match.pattern_name}' detected]"
+                )
+            else:
+                safe_tags.append(str(t))
+        # Evidence (issue #109): same redaction treatment as tags above, so a
+        # secret-shaped evidence item never reaches pending meta / audit / the
+        # kb_pending response in the clear.
+        safe_evidence = _redact_evidence(evidence)
         try:
             pid = pending.enqueue(
                 proposal_type="memory",
@@ -540,7 +935,15 @@ def kb_propose_memory_fn(
                     "agent_identity": agent_identity,
                     "source_session": source_session,
                     "confidence": confidence,
-                    "tags": tags,
+                    "tags": safe_tags,
+                    "secret_scan_flagged": flagged_pattern is not None,
+                    "matching_pattern": flagged_pattern,
+                    "evidence": safe_evidence or None,
+                    "demotion_reason": demotion_reason,
+                    "injection_suspect": bool(injection_matches),
+                    "injection_patterns": (
+                        governed_verdict.injection_pattern_names() or None
+                    ),
                 },
             )
         except PathLockBusyError:
@@ -556,7 +959,44 @@ def kb_propose_memory_fn(
                 target_path=target_path,
             )
         _emit_audit(audit_log, **{**audit_base, "status": "pending_confirmation",
-                                   "pending_id": pid})
+                                   "pending_id": pid, "matching_pattern": flagged_pattern,
+                                   "evidence": safe_evidence or None,
+                                   "demotion_reason": demotion_reason,
+                                   "injection_suspect": bool(injection_matches) or None})
+        if flagged_pattern is not None:
+            return ProposeResponse(
+                status="pending_confirmation",
+                pending_id=pid,
+                matching_pattern=flagged_pattern,
+                demotion_reason=demotion_reason,
+                operator_prompt=(
+                    # target_path is deliberately OMITTED here: for a memory
+                    # proposal it is slugified straight from the (possibly
+                    # secret-bearing) text, so it can itself embed the leaked
+                    # value verbatim; pending_id is enough to look the entry
+                    # up via `kb pending`.
+                    f"Proposed memory (pending_id={pid}) was FLAGGED by the "
+                    f"secret scanner (pattern: {flagged_pattern}). Review it "
+                    f"via `kb pending` / `kb resolve {pid} --decision reject`, or "
+                    f"`kb resolve {pid} --decision approve --override-secret-scan` "
+                    f"only if this is a confirmed false positive."
+                ),
+            )
+        if demotion_reason is not None:
+            return ProposeResponse(
+                status="pending_confirmation",
+                pending_id=pid,
+                demotion_reason=demotion_reason,
+                operator_prompt=(
+                    f"Proposed memory (pending_id={pid}) was DEMOTED to pending "
+                    f"review by governed-lane write protection "
+                    f"(reason: {demotion_reason}). Agents can propose; only a "
+                    f"human can promote this write. Inform the operator that it "
+                    f"awaits review -- do not attempt to bypass it. Run "
+                    f"`kb pending` to inspect it, then `kb resolve {pid} "
+                    f"--decision approve|reject`."
+                ),
+            )
         return ProposeResponse(
             status="pending_confirmation",
             pending_id=pid,
@@ -568,7 +1008,7 @@ def kb_propose_memory_fn(
 
     # High confidence: serialized commit + enqueue push (items 1, 4, 8).
     try:
-        sha, push_state = _commit_in_worktree(
+        sha, push_state, _secret_override = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
             source_session=source_session, agent_identity=agent_identity,
@@ -582,17 +1022,26 @@ def kb_propose_memory_fn(
     except _WriteRejected as rej:
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
-                                   "reason": resp.reason})
+                                   "reason": resp.reason,
+                                   "matching_pattern": resp.matching_pattern})
         return resp
     except PathLockBusyError:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
         return ProposeResponse(status="rejected_path_lock_busy",
                                target_path=target_path)
-    _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
+    _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha,
+                               "evidence": _redact_evidence(evidence) or None,
+                               "injection_suspect": bool(injection_matches) or None})
     return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state)
 
 
-def _render_memory(*, text: str, tags: list[str], agent_identity: str) -> str:
+def _render_memory(
+    *,
+    text: str,
+    tags: list[str],
+    agent_identity: str,
+    evidence: list[str] | None = None,
+) -> str:
     """Render a memory file: YAML frontmatter block + body.
 
     The frontmatter is built as a dict and serialized with ``yaml.safe_dump``
@@ -604,16 +1053,36 @@ def _render_memory(*, text: str, tags: list[str], agent_identity: str) -> str:
     ``id`` breaks every index rebuild. ``safe_dump`` quotes and escapes any value
     that would otherwise change the document structure, so newline/bracket
     payloads survive only as data inside the intended key.
+
+    ``type: memory`` / ``status: proposed`` (issue #109, memory stamping): every
+    server-rendered memory is stamped with the concept schema's real vocabulary
+    (SPEC.md 4.2), so the EXISTING status filter (``in_force``), the status
+    rerank, and the compact deviating-status emission all apply to it with zero
+    new code paths -- an agent-written memory is retrievable but never
+    presented as a governing rule (``kb_consult`` hard-filters to in-force)
+    until an operator promotes it out of ``proposed`` at review time. Promotion
+    itself is out of scope here.
+
+    ``evidence`` (optional, issue #109) is rendered into frontmatter the same
+    safe_dump way as ``tags``: a list of caller-supplied supporting strings the
+    proposer already validated (see ``_validate_evidence``). Because it lands in
+    the SAME postimage this function returns, it passes through the existing
+    full-postimage secret scan the propose path already runs -- no separate
+    scan is needed here.
     """
     import yaml
 
     fm: dict[str, Any] = {
+        "type": "memory",
+        "status": "proposed",
         "created_by": agent_identity,
         "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
     }
     if tags:
         # Coerce to plain str so a non-str element can't smuggle a YAML tag.
         fm["tags"] = [str(t) for t in tags]
+    if evidence:
+        fm["evidence"] = [str(e) for e in evidence]
     dumped = yaml.safe_dump(
         fm, sort_keys=False, default_flow_style=False, allow_unicode=True
     )
@@ -643,11 +1112,61 @@ def kb_propose_edit_fn(
     max_postimage_bytes: int = 0,
     serializer: WriteSerializer | None = None,
     idx: Index | None = None,
+    evidence: list[str] | None = None,
 ) -> ProposeResponse:
     """Propose an edit to an existing (or new) file under target_path.
 
     ``can_auto_commit=False`` clamps the proposal to pending regardless of
-    confidence (see kb_propose_memory_fn for the rationale)."""
+    confidence (see kb_propose_memory_fn for the rationale).
+
+    ``evidence`` (issue #109, optional): supporting-context strings validated
+    by ``_validate_evidence`` (max 10 items, 500 chars each). Unlike
+    kb_propose_memory_fn, ``postimage`` here is caller-supplied verbatim (no
+    server-rendered template), so evidence is never injected into committed
+    content -- it is redacted (same treatment as ``reason``) and persisted only
+    in pending meta / audit events / ``kb_pending``.
+    """
+    # Normalize ONLY the None sentinel; see the matching comment in
+    # kb_propose_memory_fn (codex re-review blocker: falsy non-lists must
+    # reject, not silently coerce to []).
+    if evidence is None:
+        evidence = []
+    evidence_error = _validate_evidence(evidence)
+    # issue #71 (codex round-3 Blocker 2): scan the caller-supplied path
+    # BEFORE anything echoes it. A credential-shaped filename would otherwise
+    # surface in this function's responses and audit events, in the commit
+    # subject/trailers, and as a committed git path, even with a clean
+    # postimage. The rejection deliberately does NOT echo the path.
+    path_scan = scan_postimage_for_secrets(postimage=target_path)
+    if not path_scan.ok:
+        assert path_scan.match is not None
+        path_reason = (f"secret pattern '{path_scan.match.pattern_name}' "
+                       f"detected in target_path")
+        _emit_audit(audit_log, event_type="propose_edit",
+                    status="rejected_secret_detected",
+                    agent_identity=agent_identity,
+                    source_session=source_session,
+                    target_path=_REDACTED_PATH, confidence=confidence,
+                    remote_addr=remote_addr, reason=path_reason,
+                    matching_pattern=path_scan.match.pattern_name)
+        return ProposeResponse(
+            status="rejected_secret_detected",
+            reason=path_reason,
+            matching_pattern=path_scan.match.pattern_name,
+        )
+
+    # issue #71 (codex round-3 Blocker 1): ``reason`` is persisted into
+    # pending meta, push metadata, and audit events, none of which may carry
+    # a raw credential value. A flagged reason is REPLACED with a redacted
+    # note rather than rejecting the write: reason is advisory metadata, not
+    # committed content, so redaction preserves the operation while keeping
+    # every downstream surface clean.
+    reason_scan = scan_postimage_for_secrets(postimage=reason)
+    if not reason_scan.ok:
+        assert reason_scan.match is not None
+        reason = (f"[reason redacted: secret pattern "
+                  f"'{reason_scan.match.pattern_name}' detected]")
+
     audit_base: dict[str, Any] = {
         "event_type": "propose_edit",
         "agent_identity": agent_identity,
@@ -657,6 +1176,20 @@ def kb_propose_edit_fn(
         "reason": reason,
         "remote_addr": remote_addr,
     }
+
+    # 0. Evidence validation (issue #109): a cheap client-input check, run
+    # before any path/blocklist/rate-limit work.
+    if evidence_error is not None:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_invalid_evidence",
+                                   "reason": evidence_error})
+        return ProposeResponse(status="rejected_invalid_evidence",
+                               reason=evidence_error, target_path=target_path)
+
+    # Redacted copy for pending meta / audit events (never the raw value if a
+    # scan flagged an item -- postimage here is caller-supplied verbatim, so
+    # unlike kb_propose_memory_fn there is no template to render evidence into).
+    safe_evidence = _redact_evidence(evidence)
+
     canonical = normalize_target_path(target_path)
     if canonical is None or not is_writable_path(canonical):
         # audit_base["reason"] otherwise carries the caller's edit rationale;
@@ -693,7 +1226,34 @@ def kb_propose_edit_fn(
         return ProposeResponse(status="rejected_payload_too_large",
                                target_path=target_path)
 
-    if confidence < confidence_threshold or not can_auto_commit:
+    # Governed-lane write protection (issue #112): an edit is checked against
+    # BOTH rules -- the status clamp (rule 1: the postimage sets/changes
+    # status into the in-force class) and the governed-target demotion
+    # (rule 2: the target is CURRENTLY in force in the live index, regardless
+    # of confidence). See _governed_lane_check for the secret-scan-precedence
+    # ordering rule.
+    governed_verdict = _governed_lane_check(
+        postimage=postimage, target_path=target_path, idx=idx,
+        check_governed_target=True, confidence=confidence,
+        confidence_threshold=confidence_threshold, can_auto_commit=can_auto_commit,
+    )
+    demotion_reason = governed_verdict.demotion_reason
+    injection_matches = governed_verdict.injection_matches
+
+    def _park(park_demotion_reason: str | None) -> ProposeResponse:
+        """Enqueue this proposal as pending (a plain low-confidence park, a
+        governed-lane demotion decided at the tool layer, or one raised by
+        the in-worktree backstop) and shape the response. Extracted so the
+        pre-commit branch and the post-backstop ``_WriteDemoted`` handler
+        share one enqueue/audit/response path."""
+        # Scan BEFORE enqueueing (issue #71): see the matching comment in
+        # kb_propose_memory_fn for the rationale (never reject here -- that
+        # would remove the operator-override path at resolve time -- but
+        # never echo the raw postimage back in THIS response when flagged).
+        secret_result = scan_postimage_for_secrets(postimage=postimage)
+        flagged_pattern = (
+            secret_result.match.pattern_name if secret_result.match is not None else None
+        )
         try:
             pid = pending.enqueue(
                 proposal_type="edit",
@@ -705,7 +1265,15 @@ def kb_propose_edit_fn(
                 meta={"agent_identity": agent_identity,
                       "source_session": source_session,
                       "confidence": confidence,
-                      "reason": reason},
+                      "reason": reason,
+                      "secret_scan_flagged": flagged_pattern is not None,
+                      "matching_pattern": flagged_pattern,
+                      "evidence": safe_evidence or None,
+                      "demotion_reason": park_demotion_reason,
+                      "injection_suspect": bool(injection_matches),
+                      "injection_patterns": (
+                          governed_verdict.injection_pattern_names() or None
+                      )},
             )
         except PathLockBusyError:
             _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
@@ -716,7 +1284,39 @@ def kb_propose_edit_fn(
             return ProposeResponse(status="rejected_pending_queue_full",
                                    target_path=target_path)
         _emit_audit(audit_log, **{**audit_base, "status": "pending_confirmation",
-                                   "pending_id": pid})
+                                   "pending_id": pid, "matching_pattern": flagged_pattern,
+                                   "evidence": safe_evidence or None,
+                                   "demotion_reason": park_demotion_reason,
+                                   "injection_suspect": bool(injection_matches) or None})
+        if flagged_pattern is not None:
+            return ProposeResponse(
+                status="pending_confirmation",
+                pending_id=pid,
+                matching_pattern=flagged_pattern,
+                demotion_reason=park_demotion_reason,
+                operator_prompt=(
+                    f"Proposed edit to {target_path} was FLAGGED by the secret "
+                    f"scanner (pattern: {flagged_pattern}). Review it via "
+                    f"`kb pending` / `kb resolve {pid} --decision reject`, or "
+                    f"`kb resolve {pid} --decision approve --override-secret-scan` "
+                    f"only if this is a confirmed false positive."
+                ),
+            )
+        if park_demotion_reason is not None:
+            return ProposeResponse(
+                status="pending_confirmation",
+                pending_id=pid,
+                demotion_reason=park_demotion_reason,
+                operator_prompt=(
+                    f"Proposed edit to {target_path} (pending_id={pid}) was "
+                    f"DEMOTED to pending review by governed-lane write "
+                    f"protection (reason: {park_demotion_reason}). Agents can "
+                    f"propose; only a human can promote this write. Inform the "
+                    f"operator that it awaits review -- do not attempt to "
+                    f"bypass it. Run `kb pending` to inspect it, then "
+                    f"`kb resolve {pid} --decision approve|reject`."
+                ),
+            )
         return ProposeResponse(
             status="pending_confirmation",
             pending_id=pid,
@@ -724,9 +1324,17 @@ def kb_propose_edit_fn(
             operator_prompt=f"Proposed edit to {target_path}. Accept (y), edit, or reject (n)?",
         )
 
+    if confidence < confidence_threshold or not can_auto_commit or demotion_reason is not None:
+        return _park(demotion_reason)
+
     # Serialized commit + CAS + validation + enqueue (items 1, 3, 4, 8).
+    # governed_target_check (issue #112, codex round-2 blocker): the
+    # in-worktree backstop re-judges the target's in-force state from its
+    # CURRENT bytes on the refreshed base, closing the index-lag window the
+    # tool-layer check above cannot see. Enabled exactly when protection is
+    # on; a _WriteDemoted raised there parks the proposal below.
     try:
-        sha, push_state = _commit_in_worktree(
+        sha, push_state, _secret_override = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
             source_session=source_session, agent_identity=agent_identity,
@@ -738,17 +1346,23 @@ def kb_propose_edit_fn(
             target_file_hash=target_file_hash,
             push_meta={"source_session": source_session,
                        "agent_identity": agent_identity, "reason": reason},
+            governed_target_check=governed_lane_protection_enabled(),
         )
+    except _WriteDemoted as dem:
+        return _park(dem.demotion_reason)
     except _WriteRejected as rej:
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
-                                   "reason": resp.reason or reason})
+                                   "reason": resp.reason or reason,
+                                   "matching_pattern": resp.matching_pattern})
         return resp
     except PathLockBusyError:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
         return ProposeResponse(status="rejected_path_lock_busy",
                                target_path=target_path)
-    _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
+    _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha,
+                               "evidence": safe_evidence or None,
+                               "injection_suspect": bool(injection_matches) or None})
     return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state)
 
 
@@ -766,7 +1380,17 @@ def kb_resolve_pending_fn(
     max_postimage_bytes: int = 0,
     serializer: WriteSerializer | None = None,
     idx: Index | None = None,
+    override_secret_scan: bool = False,
 ) -> ResolvePendingResponse:
+    """Resolve a pending proposal. ``override_secret_scan`` (default False) is
+    the operator's explicit, conscious override of the issue #71 secret-
+    scanning gate: when True and the resolved postimage (the original or, if
+    supplied, ``edited_text``) matches a credential pattern, the commit
+    proceeds anyway instead of being rejected ``rejected_secret_detected``, and
+    the resulting audit event records that the override was used. This
+    parameter exists ONLY on the operator resolve path -- neither
+    ``kb_propose_memory_fn`` nor ``kb_propose_edit_fn`` accept it, so an agent
+    can never self-authorize past a flagged auto-commit."""
     from data_olympus.pending import PendingAlreadyResolvedError
 
     audit_base: dict[str, Any] = {
@@ -814,7 +1438,17 @@ def kb_resolve_pending_fn(
         return ResolvePendingResponse(status="already_resolved")
 
     target_tier, _ = _classify(resolved.target_path)
-    audit_base["target_path"] = resolved.target_path
+    # issue #71: the resolved entry's target_path may itself be
+    # credential-shaped (a legacy entry predating the propose-time path gate),
+    # and audit_base flows into EVERY audit event this function emits,
+    # including the rejection the commit helper is about to raise for exactly
+    # that path. Redact it here so no audit event ever carries the raw value;
+    # the commit helper re-scans the real path for the reject/override
+    # decision itself.
+    resolved_path_scan = scan_postimage_for_secrets(postimage=resolved.target_path)
+    audit_base["target_path"] = (
+        resolved.target_path if resolved_path_scan.ok else _REDACTED_PATH
+    )
     audit_base["target_tier"] = target_tier
     try:
         audit_base["confidence"] = float(resolved.meta.get("confidence", 0.0))
@@ -826,7 +1460,7 @@ def kb_resolve_pending_fn(
     # hold_path_lock=True: the lock is already held from enqueue via the claim, so
     # _commit_in_worktree must not re-acquire it (would deadlock / raise busy).
     try:
-        sha, push_state = _commit_in_worktree(
+        sha, push_state, secret_override = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
             source_session=resolved.meta.get("source_session", source_session),
@@ -843,6 +1477,7 @@ def kb_resolve_pending_fn(
             push_meta={},
             lock_owner=f"resolve:{pending_id}",
             hold_path_lock=True,
+            secret_scan_override=override_secret_scan,
         )
     except _WriteRejected as rej:
         # Gate rejected AFTER the claim: put the entry back so the operator can
@@ -850,7 +1485,8 @@ def kb_resolve_pending_fn(
         pending.restore_resolve(pending_id)
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
-                                   "reason": resp.reason})
+                                   "reason": resp.reason,
+                                   "matching_pattern": resp.matching_pattern})
         return ResolvePendingResponse(status=resp.status, reason=resp.reason)
     except Exception:
         # A git/enqueue failure after the claim: restore the entry rather than
@@ -864,8 +1500,16 @@ def kb_resolve_pending_fn(
     # republished by in-process/startup recovery, so re-resolving would duplicate
     # it -- the entry must be consumed, not restored (Codex round-4).
     pending.finalize_resolve(pending_id, resolved.target_path)
+    # secret_override is only non-None when the operator explicitly passed
+    # override_secret_scan=True AND the scanner actually flagged something, so
+    # the audit trail truthfully distinguishes "override requested but nothing
+    # to override" from "a flagged write was consciously approved anyway".
+    audit_extra: dict[str, Any] = {}
+    if secret_override is not None:
+        audit_extra["secret_scan_override"] = True
+        audit_extra["matching_pattern"] = secret_override.pattern_name
     _emit_audit(audit_log, **{**audit_base, "status": "committed",
-                               "commit_sha": sha})
+                               "commit_sha": sha, **audit_extra})
     return ResolvePendingResponse(status="committed", commit_sha=sha,
                                   push_state=push_state)
 
@@ -880,6 +1524,16 @@ def kb_list_pending_fn(*, pending: PendingQueue) -> PendingListResponse:
                 confidence=e.get("confidence"),
                 agent_identity=e.get("agent_identity"),
                 created_at=e["created_at"],
+                secret_scan_flagged=e.get("secret_scan_flagged", False),
+                matching_pattern=e.get("matching_pattern"),
+                # issue #109: provenance kb_pending already persisted but did
+                # not surface until now.
+                source_session=e.get("source_session"),
+                reason=e.get("reason"),
+                evidence=e.get("evidence"),
+                demotion_reason=e.get("demotion_reason"),
+                injection_suspect=e.get("injection_suspect", False),
+                injection_patterns=e.get("injection_patterns"),
             )
             for e in pending.list()
         ]

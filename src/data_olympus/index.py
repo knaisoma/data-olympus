@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 import sqlite3
@@ -33,7 +34,24 @@ from data_olympus.embeddings import (
     make_hybrid_reranker,
     serialize_vector,
 )
-from data_olympus.format.validate import IN_FORCE_STATUSES
+from data_olympus.format.validate import (
+    IN_FORCE_STATUSES,
+    RESERVED,
+    graph_excluded_ids_sql,
+    in_force_sql_fragment,
+    is_inbox_path,
+    not_expired_sql_fragment,
+    not_inbox_sql_fragment,
+    today_iso,
+)
+from data_olympus.maintenance import (
+    DEFAULT_EXPIRING_SOON_DAYS,
+    DEFAULT_LEDGER_PATH,
+    DEFAULT_RECENTLY_EXPIRED_DAYS,
+    DocAuditRow,
+    MaintenanceState,
+    compute_maintenance_state,
+)
 from data_olympus.markdown_parse import ParsedDoc, parse_text_checked
 from data_olympus.trigram import (
     DEFAULT_FALLBACK_THRESHOLD as DEFAULT_TRIGRAM_FALLBACK_THRESHOLD,
@@ -63,7 +81,13 @@ CREATE TABLE IF NOT EXISTS docs (
     content_markdown TEXT,
     last_modified TEXT,
     last_modified_source TEXT,
-    git_remote_url TEXT
+    git_remote_url TEXT,
+    valid_from TEXT,
+    valid_until TEXT,
+    last_verified TEXT,
+    recheck_by TEXT,
+    verification_source TEXT,
+    is_inbox INTEGER NOT NULL DEFAULT 0
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
     id UNINDEXED,
@@ -78,6 +102,13 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS edges (
+    source_id TEXT NOT NULL,
+    rel TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    PRIMARY KEY (source_id, rel, target_id)
+);
+CREATE INDEX IF NOT EXISTS edges_target_idx ON edges (target_id);
 """ + RELATED_TERMS_SCHEMA + EMBEDDINGS_SCHEMA
 
 # The trigram secondary index (issue #41) is a SECOND full copy of every indexed
@@ -94,7 +125,17 @@ CREATE TABLE IF NOT EXISTS meta (
 # v6 adds the related_terms co-occurrence table (issue #40).
 # v7 adds the fts_trigram fuzzy-match table (issue #41).
 # v8 adds the doc_vectors table (issue #42, populated only when embeddings on).
-_SCHEMA_VERSION = "8"
+# v9 adds the edges table (issue #110 slice 1: typed lifecycle relationships
+# supersedes/superseded_by/contradicts, parsed from front matter into
+# (source_id, rel, target_id) rows). Slice 2 consumes this table for in-force
+# graph exclusion and retrieval surfacing; this slice only populates it.
+# v10 adds the validity/freshness columns (issue #107): valid_from, valid_until,
+# last_verified, recheck_by, verification_source.
+# v11 adds the is_inbox column (issue #109): 1 when the doc's path falls under
+# the memory-inbox prefix (format.validate.is_inbox_path), computed once at
+# build time so the memory-inbox in-force floor is a plain column check
+# (format.validate.not_inbox_sql_fragment) rather than a per-query prefix scan.
+_SCHEMA_VERSION = "11"
 
 logger = logging.getLogger(__name__)
 
@@ -326,6 +367,25 @@ class SearchHit:
     status: str = ""
     doc_type: str = ""
     rank_class: int = RANK_CLASS_PRIMARY
+    # validity/freshness (issue #107), ISO YYYY-MM-DD or "" when absent. Carried
+    # so callers (kb_search_fn) can compute the deviation-only ``freshness``
+    # indicator without a second doc lookup.
+    valid_from: str = ""
+    valid_until: str = ""
+    recheck_by: str = ""
+    # Memory-inbox in-force floor (issue #109): 1:1 with the `docs.is_inbox`
+    # column, carried so a caller (kb_search_fn) can compute the single-sourced
+    # `is_in_force(..., is_inbox=...)` predicate without a second doc lookup.
+    is_inbox: bool = False
+    # Lifecycle-relationship surfacing (issue #110 slice 2): the SORTED list of
+    # ids that supersede this doc, computed as the UNION of the doc's own
+    # frontmatter `superseded_by` claim and any reverse `supersedes` edge
+    # targeting it (see index._superseded_by_map). Deviation-only: emitted by
+    # SearchHitModel.compact_dump only when non-empty, same pattern as
+    # `status`/`freshness`. Purely informational -- carries NO ranking or
+    # filtering effect on its own (a hit's presence/absence is governed by the
+    # `in_force` graph-exclusion filter, not by this field).
+    superseded_by: tuple[str, ...] = ()
 
 
 def make_status_reranker(
@@ -402,6 +462,29 @@ class IndexedDoc:
     doc_type: str = ""
     applies_when: list[str] = field(default_factory=list)
     description: str = ""
+    # validity/freshness (issue #107), ISO YYYY-MM-DD or "" when absent.
+    valid_from: str = ""
+    valid_until: str = ""
+    last_verified: str = ""
+    recheck_by: str = ""
+    verification_source: str = ""
+    # Memory-inbox in-force floor (issue #109): see SearchHit.is_inbox.
+    is_inbox: bool = False
+    # Lifecycle-relationship surfacing (issue #110 slice 2), computed at read
+    # time from the `edges` table (see _superseded_by_map / _edges_from /
+    # _edges_targeting). `superseded_by` is the UNION of this doc's own
+    # frontmatter `superseded_by` claim and any reverse `supersedes` edge
+    # targeting it -- ONE consistent shape covering both the honest
+    # self-declared case and the "forgotten status flip" case where the
+    # superseding doc names this one in its `supersedes` list but this doc's
+    # own frontmatter never got a matching `superseded_by`. `contradicts` is
+    # this doc's own frontmatter list (direct, never affects filtering or
+    # ranking); `contradicted_by` is the computed reverse: every other doc
+    # whose `contradicts` names this one. All three are dangling-safe: an edge
+    # whose other end has no `docs` row is never surfaced.
+    superseded_by: tuple[str, ...] = ()
+    contradicts: tuple[str, ...] = ()
+    contradicted_by: tuple[str, ...] = ()
 
 
 class DuplicateIdError(ValueError):
@@ -431,6 +514,119 @@ def _derive_id_from_path(rel: Path) -> str:
     return "-".join(parts) if parts else rel.stem
 
 
+# ``validity_state`` facet (issue #107): an audit-query filter over the
+# validity/freshness columns, orthogonal to ``in_force``. Three forms:
+#   "expired"            -> valid_until strictly before today.
+#   "stale"               -> recheck_by strictly before today (advisory only).
+#   "expiring_within:N"   -> valid_until in [today, today + N days] inclusive.
+_VALIDITY_STATE_KINDS = frozenset({"expired", "stale", "expiring_within"})
+
+
+def _parse_validity_state(value: str) -> tuple[str, int | None]:
+    """Parse a ``validity_state`` facet value into ``(kind, days)``.
+
+    ``days`` is only meaningful for ``"expiring_within"`` (None otherwise).
+    Raises ValueError for an unrecognized kind or a non-integer/negative day
+    count, so a malformed facet value fails loudly rather than silently
+    matching nothing.
+    """
+    if ":" in value:
+        kind, _, rest = value.partition(":")
+        if kind != "expiring_within":
+            raise ValueError(f"unknown validity_state {value!r}")
+        try:
+            days = int(rest)
+        except ValueError as exc:
+            raise ValueError(f"validity_state {value!r}: N must be an integer") from exc
+        if days < 0:
+            raise ValueError(f"validity_state {value!r}: N must not be negative")
+        return kind, days
+    if value not in _VALIDITY_STATE_KINDS:
+        raise ValueError(f"unknown validity_state {value!r}")
+    return value, None
+
+
+def _add_days_iso(today: str, days: int) -> str:
+    """Return ``today`` (ISO YYYY-MM-DD) plus ``days`` calendar days, as ISO."""
+    return (datetime.date.fromisoformat(today) + datetime.timedelta(days=days)).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle-relationship surfacing helpers (issue #110 slice 2)
+# ---------------------------------------------------------------------------
+#
+# Shared by Index.get() (single id) and Index.search() (batched over the
+# current hit pool). Both directions JOIN edges to docs on the OTHER end (the
+# end NOT already constrained by the caller's id filter) so a dangling edge
+# (either end missing a `docs` row) is never surfaced -- the same
+# never-trust-edges-verbatim discipline the graph-exclusion SQL uses.
+
+
+def _edges_from(
+    conn: sqlite3.Connection, rel: str, source_ids: builtins.list[str],
+) -> dict[str, builtins.list[str]]:
+    """``{source_id: [target_id, ...]}`` for ``rel`` edges FROM each of
+    ``source_ids``, restricted to targets that exist as real docs."""
+    if not source_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in source_ids)
+    rows = conn.execute(
+        "SELECT DISTINCT edges.source_id AS src, edges.target_id AS tgt "
+        "FROM edges JOIN docs ON docs.id = edges.target_id "
+        f"WHERE edges.rel = ? AND edges.source_id IN ({placeholders})",
+        [rel, *source_ids],
+    ).fetchall()
+    out: dict[str, builtins.list[str]] = {}
+    for r in rows:
+        out.setdefault(r["src"], []).append(r["tgt"])
+    return out
+
+
+def _edges_targeting(
+    conn: sqlite3.Connection, rel: str, target_ids: builtins.list[str],
+) -> dict[str, builtins.list[str]]:
+    """``{target_id: [source_id, ...]}`` for ``rel`` edges TARGETING each of
+    ``target_ids``, restricted to sources that exist as real docs."""
+    if not target_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in target_ids)
+    rows = conn.execute(
+        "SELECT DISTINCT edges.target_id AS tgt, edges.source_id AS src "
+        "FROM edges JOIN docs ON docs.id = edges.source_id "
+        f"WHERE edges.rel = ? AND edges.target_id IN ({placeholders})",
+        [rel, *target_ids],
+    ).fetchall()
+    out: dict[str, builtins.list[str]] = {}
+    for r in rows:
+        out.setdefault(r["tgt"], []).append(r["src"])
+    return out
+
+
+def _superseded_by_map(
+    conn: sqlite3.Connection, ids: builtins.list[str],
+) -> dict[str, builtins.list[str]]:
+    """``{doc_id: [superseder_id, ...]}`` (sorted, deduped) for every id in
+    ``ids`` that is superseded, by ONE consistent rule (issue #110 slice 2):
+    the UNION of the doc's own frontmatter ``superseded_by`` claim (the
+    ``superseded_by`` rel, edge FROM the doc) and any reverse ``supersedes``
+    edge targeting it (the ``supersedes`` rel, edge TO the doc). The union
+    covers both the honest self-declared case and the "forgotten status flip"
+    case where only the superseding doc's own ``supersedes`` list names this
+    one. An id with neither is omitted from the returned dict entirely (never
+    an empty-list entry), so callers can use a plain ``.get(id, [])``.
+    """
+    if not ids:
+        return {}
+    own = _edges_from(conn, "superseded_by", ids)
+    reverse = _edges_targeting(conn, "supersedes", ids)
+    out: dict[str, builtins.list[str]] = {}
+    for doc_id in ids:
+        combined = sorted(set(own.get(doc_id, [])) | set(reverse.get(doc_id, [])))
+        if combined:
+            out[doc_id] = combined
+    return out
+
+
 class Index:
     """SQLite FTS5 index. Single-writer; safe for concurrent reads."""
 
@@ -448,6 +644,9 @@ class Index:
         embedder: Embedder | None = None,
         dense_candidate_count: int = DEFAULT_DENSE_CANDIDATE_COUNT,
         dense_min_cosine: float = DEFAULT_DENSE_MIN_COSINE,
+        maintenance_ledger_path: str = DEFAULT_LEDGER_PATH,
+        maintenance_recently_expired_days: int = DEFAULT_RECENTLY_EXPIRED_DAYS,
+        maintenance_expiring_soon_days: int = DEFAULT_EXPIRING_SOON_DAYS,
     ) -> None:
         self._db_path = db_path
         # Embeddings (issue #42) are threaded in from Config, NOT re-read from env
@@ -524,6 +723,36 @@ class Index:
         # a WARN log per doc) is the minimal, non-invasive plumbing; wiring it into
         # the /health degraded signal is a tracked follow-up.
         self._malformed_frontmatter_count = 0
+        # Health-visible count of docs whose ``validity`` block was present but
+        # malformed at the last build (issue #107). Updated by build(); surfaced
+        # via health() and the ``malformed_validity_count`` property.
+        self._malformed_validity_count = 0
+        # Maintenance ledger (issue #113): the corpus-state audit computed at
+        # the LAST build, cached here so kb_health/kb_consult and the
+        # ledger-commit hook can read it without touching SQLite. None before
+        # the first build() call. ``_maintenance_ledger_path`` is excluded from
+        # its own audit (see maintenance.compute_maintenance_state).
+        self._maintenance_ledger_path = maintenance_ledger_path
+        self._maintenance_recently_expired_days = maintenance_recently_expired_days
+        self._maintenance_expiring_soon_days = maintenance_expiring_soon_days
+        self._maintenance_state: MaintenanceState | None = None
+        # In-process memo of the last MaintenanceState the maintenance-ledger
+        # commit hook successfully committed (set by
+        # maintenance.maybe_update_ledger, never by build()). This is the loop
+        # guard for the window between a ledger commit and its publication
+        # (push -> merge to main -> re-index): during that window the INDEX
+        # still holds the pre-commit ledger copy, so without this memo every
+        # pull-loop tick would look like "state changed" and commit a
+        # duplicate. Not persisted: after a restart the system worktree's HEAD
+        # (which survives restarts; unpushed commits block its GC) covers the
+        # same window (see maybe_update_ledger's worktree check).
+        self.maintenance_last_committed_state: MaintenanceState | None = None
+
+    @property
+    def maintenance_state(self) -> MaintenanceState | None:
+        """The corpus-state audit computed at the last build(), or None before
+        the first build (see data_olympus.maintenance.MaintenanceState)."""
+        return self._maintenance_state
 
     @property
     def malformed_frontmatter_count(self) -> int:
@@ -535,6 +764,81 @@ class Index:
         WARN per doc during build) makes the condition observable.
         """
         return self._malformed_frontmatter_count
+
+    @property
+    def malformed_validity_count(self) -> int:
+        """Docs with a present-but-malformed ``validity`` block at last build.
+
+        A malformed date anywhere in ``validity`` fails the whole block open
+        (treated as absent, fail open for visibility); this counter (also
+        logged at WARN per doc during build) makes that condition observable.
+        """
+        return self._malformed_validity_count
+
+    def graph_excluded_count(self, *, today: str | None = None) -> int:
+        """Count of docs CURRENTLY excluded from in-force retrieval by the
+        supersession-graph rule (issue #110 slice 2): the TARGET of a
+        `supersedes` edge whose SOURCE is itself in-force.
+
+        Computed LIVE against ``today`` (default: the real wall clock via
+        :func:`today_iso`; injectable for deterministic tests) from the same
+        SQL definition the retrieval-time filter uses
+        (:func:`data_olympus.format.validate.graph_excluded_ids_sql`), so the
+        counter can never drift from the filter it reports on. Live (not
+        build-time) evaluation matters because the in-force-source guard is
+        wall-clock-relative: a source whose validity window opens or closes
+        between rebuilds changes retrieval behavior per query, and a counter
+        frozen at build time would keep reporting the stale value (codex
+        review blocker). Returns 0 when the index file or the ``edges`` table
+        does not exist (an index predating schema v9).
+        """
+        if not self._db_path.exists():
+            return 0
+        resolved_today = today if today is not None else today_iso()
+        placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT target_id) FROM "
+                f"({graph_excluded_ids_sql(placeholders)})",
+                [*_IN_FORCE_STATUS_LIST, resolved_today, resolved_today],
+            ).fetchone()
+        except sqlite3.OperationalError:
+            # edges table absent (index predates schema v9): nothing excluded.
+            return 0
+        finally:
+            conn.close()
+        return int(row[0]) if row else 0
+
+    def graph_excluded_ids(self, *, today: str | None = None) -> set[str]:
+        """The doc ids CURRENTLY graph-excluded from in-force retrieval.
+
+        Same live SQL definition as :meth:`graph_excluded_count` (single
+        source: :func:`data_olympus.format.validate.graph_excluded_ids_sql`),
+        returned as a set so a response-shaping caller (the computed per-doc
+        ``in_force`` boolean on kb_get / kb_search hits, issue #109) can
+        compose the graph rule into the full in-force predicate -- status
+        class AND validity window AND not-inbox AND not-graph-excluded --
+        with ONE query per request instead of one per hit. Returns the empty
+        set when the index file or the ``edges`` table does not exist.
+        """
+        if not self._db_path.exists():
+            return set()
+        resolved_today = today if today is not None else today_iso()
+        placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT target_id FROM "
+                f"({graph_excluded_ids_sql(placeholders)})",
+                [*_IN_FORCE_STATUS_LIST, resolved_today, resolved_today],
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # edges table absent (index predates schema v9): nothing excluded.
+            return set()
+        finally:
+            conn.close()
+        return {r["target_id"] for r in rows}
 
     def _resolve_embedder(self) -> Embedder | None:
         """Return the embedder to use, loading it from the threaded config once.
@@ -659,8 +963,15 @@ class Index:
             "mtime",
         )
 
-    def build(self, kb_root: Path, *, source_commit: str) -> IndexBuildResult:
-        """Walk kb_root for .md files and (re)build the FTS index using atomic swap."""
+    def build(
+        self, kb_root: Path, *, source_commit: str, today: str | None = None,
+    ) -> IndexBuildResult:
+        """Walk kb_root for .md files and (re)build the FTS index using atomic swap.
+
+        ``today`` (ISO ``YYYY-MM-DD``) drives the maintenance-ledger expiry
+        window computation (issue #113); defaults to :func:`today_iso` (the
+        real wall clock) but is injectable so tests are deterministic.
+        """
         if not kb_root.is_dir():
             raise NotADirectoryError(f"KB root not a directory: {kb_root}")
 
@@ -721,6 +1032,14 @@ class Index:
             # walk; only populated when co-occurrence expansion is enabled.
             build_cooccurrence = cooccurrence_enabled()
             doc_token_sets: list[set[str]] = []
+            # Lifecycle-relationship edges (issue #110 slice 1). Collected during
+            # the single indexing pass and written into the edges table in one
+            # batch after the walk, same pattern as embed_inputs below, so the
+            # edges table is part of the same atomic tmp-DB swap. Deduplicated via
+            # a set: a doc listing the same target twice in one field (e.g. a
+            # repeated id in `supersedes`) must not raise on the edges table's
+            # composite primary key.
+            edge_rows: set[tuple[str, str, str]] = set()
             # Embedding vectors (issue #42). Whether/what to embed is decided from
             # the threaded ``self._embeddings`` config (reviewer concern 2), NOT
             # from an env re-read: Config is the single source of truth. Only when
@@ -740,6 +1059,17 @@ class Index:
             # the Index and logged at WARN so a YAML typo that disables a doc's
             # staleness protection is visible rather than silent.
             malformed_frontmatter = 0
+            # Docs whose ``validity`` block was present but malformed (issue
+            # #107): the whole block failed open (absent), so the doc's
+            # expiry/staleness protection is silently disabled. Surfaced the
+            # same way as malformed_frontmatter above (WARN log + health
+            # counter), but tracked separately since a doc can have valid
+            # front matter overall yet a malformed ``validity`` sub-block.
+            malformed_validity = 0
+            # Maintenance-ledger audit rows (issue #113), gathered during this
+            # SAME single pass over the corpus so the audit is nearly free (no
+            # extra walk/query). Computed into a MaintenanceState after the loop.
+            maintenance_rows: list[DocAuditRow] = []
             for pf in parsed:
                 rel = pf.rel
                 doc = pf.doc
@@ -752,6 +1082,21 @@ class Index:
                         "dropped (staleness protection disabled for this doc)",
                         rel,
                     )
+                if doc.validity_malformed:
+                    malformed_validity += 1
+                    logger.warning(
+                        "malformed validity block in %s: 'validity' present but "
+                        "one or more of its date fields did not parse; the whole "
+                        "block was treated as absent for this doc",
+                        rel,
+                    )
+                maintenance_rows.append(
+                    DocAuditRow(
+                        path=str(rel), id=doc_id, status=doc.status,
+                        valid_until=doc.valid_until,
+                        is_reserved=rel.name in RESERVED,
+                    )
+                )
                 path_tier, path_category = _classify_by_path(str(rel), path_rules)
                 final_tier = doc.tier or path_tier
                 final_category = doc.category or path_category
@@ -761,14 +1106,24 @@ class Index:
                     kb_root, rel, git_mtimes,
                 )
                 content_markdown = pf.raw_text
+                # Memory-inbox in-force floor (issue #109): derived from the
+                # RELATIVE PATH via the single-sourced is_inbox_path, not from
+                # final_category (a taxonomy override could reclassify the same
+                # path under a different category and the floor must still hold).
+                is_inbox = is_inbox_path(str(rel))
                 conn.execute(
                     "INSERT INTO docs (id, path, tier, category, status, type, "
                     "applies_when, description, title, tags, "
-                    "content_markdown, last_modified, last_modified_source, git_remote_url) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "content_markdown, last_modified, last_modified_source, git_remote_url, "
+                    "valid_from, valid_until, last_verified, recheck_by, verification_source, "
+                    "is_inbox) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (doc_id, str(rel), final_tier, final_category, doc.status, doc.doc_type,
                      applies_when_str, doc.description, doc.title, tags_str, content_markdown,
-                     last_modified, lm_source, doc.git_remote_url),
+                     last_modified, lm_source, doc.git_remote_url,
+                     doc.valid_from or None, doc.valid_until or None,
+                     doc.last_verified or None, doc.recheck_by or None,
+                     doc.verification_source or None, int(is_inbox)),
                 )
                 conn.execute(
                     "INSERT INTO fts (id, title, tags, applies_when, description, body) "
@@ -792,6 +1147,18 @@ class Index:
                     doc_token_sets.append(
                         tokenize_doc(doc.title, tags_str, doc.description, doc.body)
                     )
+                # Lifecycle-relationship edges (issue #110 slice 1): extract both
+                # directions of the supersession field pair plus `contradicts`
+                # into (source_id, rel, target_id) rows, stored verbatim (a
+                # dangling or malformed target is a `kb lint` concern, not an
+                # index-build concern; the index just records what the front
+                # matter declared).
+                for target in doc.supersedes:
+                    edge_rows.add((doc_id, "supersedes", target))
+                if doc.superseded_by:
+                    edge_rows.add((doc_id, "superseded_by", doc.superseded_by))
+                for target in doc.contradicts:
+                    edge_rows.add((doc_id, "contradicts", target))
                 if build_embeddings:
                     # Embed title + applies_when + tags + description + body: the
                     # retrievable semantic content PLUS the curated intent
@@ -814,6 +1181,15 @@ class Index:
                     )[:_EMBED_TEXT_MAX_CHARS]
                     embed_inputs.append((doc_id, embed_text))
                 count += 1
+            # Lifecycle-relationship edges (issue #110 slice 1): one batched
+            # insert into the SAME tmp DB, so the edges table swaps atomically
+            # with the rest of the index below.
+            if edge_rows:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO edges (source_id, rel, target_id) "
+                    "VALUES (?, ?, ?)",
+                    sorted(edge_rows),
+                )
             # Embedding vectors (issue #42): one batched embed of all docs, then
             # persist into the tmp DB. Kept inside the build so vectors are part
             # of the same atomic swap and a query never sees a half-built table.
@@ -841,6 +1217,16 @@ class Index:
                 )
                 write_cooccurrence_table(conn, table)
             now = time.time()
+            # Maintenance ledger (issue #113): computed from the SAME corpus
+            # walk above, so the audit is nearly free. ``today`` is injectable
+            # for deterministic tests; defaults to the real wall clock.
+            maintenance_state = compute_maintenance_state(
+                maintenance_rows,
+                today=today if today is not None else today_iso(),
+                ledger_path=self._maintenance_ledger_path,
+                recently_expired_days=self._maintenance_recently_expired_days,
+                expiring_soon_days=self._maintenance_expiring_soon_days,
+            )
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('source_commit', ?)",
                 (source_commit,),
@@ -864,6 +1250,20 @@ class Index:
                 "INSERT OR REPLACE INTO meta (key, value) "
                 "VALUES ('malformed_frontmatter', ?)",
                 (str(malformed_frontmatter),),
+            )
+            # Malformed-validity count (issue #107): same rationale as above.
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) "
+                "VALUES ('malformed_validity', ?)",
+                (str(malformed_validity),),
+            )
+            # Maintenance-ledger state (issue #113): persisted as JSON so it
+            # survives a process restart that reads the swapped index, same
+            # rationale as the counters above.
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) "
+                "VALUES ('maintenance_state', ?)",
+                (json.dumps(maintenance_state.to_dict()),),
             )
             # Integrity check before swap
             check = conn.execute("PRAGMA integrity_check").fetchone()
@@ -889,6 +1289,8 @@ class Index:
         # Publish the malformed-frontmatter count for the in-process health view
         # (finding (j)); the persisted meta row covers a fresh process.
         self._malformed_frontmatter_count = malformed_frontmatter
+        self._malformed_validity_count = malformed_validity
+        self._maintenance_state = maintenance_state
         # Invalidate the health cache so the next health() reflects the rebuild
         # immediately rather than serving the pre-swap commit for up to the TTL.
         with self._health_lock:
@@ -905,6 +1307,9 @@ class Index:
         status: str | None = None,
         in_force: bool = False,
         doc_type: str | None = None,
+        include_expired: bool = False,
+        validity_state: str | None = None,
+        today: str | None = None,
         columns: list[str] | None = None,
         column_weights: tuple[float, ...] | None = None,
     ) -> list[SearchHit]:
@@ -925,14 +1330,47 @@ class Index:
 
         `status` filters to a single exact status. `in_force` is a HARD
         pre-ranking filter restricting results to the in-force status class
-        (format.validate.IN_FORCE_STATUSES: active/accepted/approved), so a
-        superseded/deprecated doc is EXCLUDED before ranking rather than merely
+        (format.validate.IN_FORCE_STATUSES: active/accepted/approved) AND the
+        validity window (not expired, not upcoming; see
+        format.validate.is_in_force), so a superseded/deprecated/expired/
+        upcoming doc is EXCLUDED before ranking rather than merely
         soft-downranked by the status reranker. The two compose: passing both a
         single `status` and `in_force=True` requires the doc match `status` AND
         be in-force (an empty result if `status` is not itself in-force). The
         filter is applied to both the FTS candidate pool and the dense
         (embedding) candidate source so neither leaks an out-of-force doc.
+
+        `in_force=True` ALSO excludes any doc that is the TARGET of a
+        `supersedes` edge whose SOURCE doc is itself in-force (issue #110
+        slice 2; see format.validate.graph_excluded_ids_sql, the single
+        definition shared with the `graph_excluded_docs` health counter). This
+        closes the "forgotten status flip" gap: a doc superseded only via an
+        edge, whose own `status` was never updated, is excluded from
+        `in_force=True` results but stays visible in a default search (same as
+        an upcoming doc). A mutually-supersessive in-force cycle is not
+        special-cased: every member independently satisfies the rule and all
+        are excluded. A dangling edge excludes nothing.
+
+        `include_expired` (default False, issue #107): by default a doc past
+        its `valid_until` is EXCLUDED from every result, not just from
+        `in_force=True` queries (an expired doc has no named successor to
+        outrank it, so left visible it could be the top hit and would govern).
+        Set True to include expired docs anyway; each carries
+        `freshness=expired` once shaped by `kb_search_fn`. A doc with a future
+        `valid_from` ("upcoming") is NOT excluded by default search, only by
+        `in_force=True`.
+
+        `validity_state` (issue #107) is an audit-query facet, one of
+        `"expired"`, `"stale"`, or `"expiring_within:N"` (N days). Filtering
+        for `"expired"` implies including expired docs regardless of
+        `include_expired`. Composes with `tier`/`category`/`status`/`doc_type`
+        but not with `in_force` (an in-force query has its own window).
+
+        `today` (ISO `YYYY-MM-DD`) drives every validity/freshness comparison
+        above; defaults to `format.validate.today_iso()` (the real wall clock)
+        but is injectable for deterministic tests.
         """
+        today = today if today is not None else today_iso()
         # Stage 1 (expand-query): term extraction + optional expansion hook.
         # The user's ACTUAL terms (post-split, pre-expansion) drive the PRIMARY
         # match; any expansion terms are matched separately and can only backfill
@@ -977,7 +1415,8 @@ class Index:
         try:
             base_where, base_params = self._facet_filters(
                 tier=tier, category=category, status=status,
-                in_force=in_force, doc_type=doc_type,
+                in_force=in_force, doc_type=doc_type, today=today,
+                include_expired=include_expired, validity_state=validity_state,
             )
             # Stage 2 (match): PRIMARY pool from the user's own terms only.
             hits = self._fts_match(
@@ -1038,6 +1477,9 @@ class Index:
                 status=status,
                 in_force=in_force,
                 doc_type=doc_type,
+                include_expired=include_expired,
+                validity_state=validity_state,
+                today=today,
             )
         # Stage 3 (re-rank): optional hook reorders/rescores (default identity).
         if self.reranker is not None:
@@ -1047,7 +1489,29 @@ class Index:
         # and that truncation must happen whether or not a reranker is installed:
         # doing it only inside the reranker branch let search() return more than
         # ``limit`` hits when embeddings were configured but no reranker was set.
-        return hits[:limit]
+        final_hits = hits[:limit]
+        # Stage 4 (surface, issue #110 slice 2): decorate the FINAL (already
+        # truncated) hits with `superseded_by`, purely informational and
+        # computed AFTER ranking/truncation since it has no ranking or
+        # filtering effect (unconditional -- applied regardless of
+        # ``in_force``, same as `freshness`, so a plain search still explains
+        # why a hit is historically superseded).
+        return self._attach_superseded_by(final_hits)
+
+    def _attach_superseded_by(self, hits: list[SearchHit]) -> list[SearchHit]:
+        if not hits:
+            return hits
+        conn = self._connect()
+        try:
+            by_id = _superseded_by_map(conn, [h.id for h in hits])
+        finally:
+            conn.close()
+        if not by_id:
+            return hits
+        return [
+            replace(h, superseded_by=tuple(by_id[h.id])) if h.id in by_id else h
+            for h in hits
+        ]
 
     def _union_dense_candidates(
         self,
@@ -1060,6 +1524,9 @@ class Index:
         status: str | None,
         in_force: bool,
         doc_type: str | None,
+        include_expired: bool = False,
+        validity_state: str | None = None,
+        today: str | None = None,
     ) -> builtins.list[SearchHit]:
         """Union dense (cosine) candidates into the FTS pool (reviewer concern 1).
 
@@ -1080,6 +1547,9 @@ class Index:
             status=status,
             in_force=in_force,
             doc_type=doc_type,
+            include_expired=include_expired,
+            validity_state=validity_state,
+            today=today,
         )
         if not dense:
             return fts_hits
@@ -1100,13 +1570,46 @@ class Index:
         status: str | None,
         in_force: bool,
         doc_type: str | None,
+        today: str,
+        include_expired: bool = False,
+        validity_state: str | None = None,
     ) -> tuple[list[str], list[object]]:
         """Build the shared docs.* facet WHERE fragments (no MATCH clause).
 
-        Returns (where_fragments, params) covering tier/category/status/in_force/
-        doc_type. The MATCH clause is prepended per-pass by the caller so the
-        primary, expansion-backfill, trigram, and dense passes all apply the same
-        facet filters from a single source.
+        Returns (where_fragments, params) covering tier/category/status/
+        in_force/doc_type/validity. The MATCH clause is prepended per-pass by
+        the caller so the primary, expansion-backfill, trigram, and dense
+        passes all apply the same facet filters from a single source.
+
+        Validity/freshness (issue #107): ``in_force`` ANDs the status-class
+        filter with the validity-WINDOW fragment (:func:`in_force_sql_fragment`
+        from format.validate), so an in-force query also excludes expired and
+        upcoming docs. It ALSO ANDs the memory-inbox floor
+        (:func:`not_inbox_sql_fragment`, issue #109): a doc under the memory
+        inbox is never in force regardless of claimed status, so it is excluded
+        here rather than only downstream at response-shaping time (this is the
+        hard filter every ``in_force=True`` caller -- kb_search, kb_consult,
+        the dense candidate source -- shares).
+
+        Independent of ``in_force``, ``validity_state`` (an
+        explicit audit-query facet: ``"expired"``, ``"stale"``, or
+        ``"expiring_within:N"``) takes over the validity filtering entirely and
+        DISABLES the default not-expired exclusion below (an audit query for
+        "what's expired" must not itself be filtered out by the very
+        not-expired guard it's asking about). With no ``validity_state``, the
+        default (``include_expired=False``) applies
+        :func:`not_expired_sql_fragment` so a doc past ``valid_until`` never
+        appears in an ordinary search; ``include_expired=True`` lifts that.
+
+        Supersession-graph exclusion (issue #110 slice 2): ``in_force`` ALSO
+        excludes any doc that is the TARGET of a `supersedes` edge whose
+        SOURCE is itself in-force (:func:`graph_excluded_ids_sql` from
+        format.validate is the single source of this rule, shared with the
+        live `graph_excluded_docs` health counter, see
+        :meth:`graph_excluded_count`). This is scoped to ``in_force`` only,
+        exactly like the ``upcoming`` half of the validity window above: a
+        graph-excluded doc stays visible in a plain (non-``in_force``) search,
+        same as an upcoming doc does.
         """
         where: list[str] = []
         params: list[object] = []
@@ -1123,9 +1626,37 @@ class Index:
             placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
             where.append(f"docs.status IN ({placeholders})")
             params.extend(_IN_FORCE_STATUS_LIST)
+            where.append(in_force_sql_fragment())
+            params.extend([today, today])
+            # Memory-inbox floor (issue #109): no bind params, see docstring.
+            where.append(not_inbox_sql_fragment())
+            # Supersession-graph exclusion (issue #110 slice 2): composes with
+            # the fragments above -- the full in-force predicate is status
+            # class AND validity window AND not-inbox AND not-graph-excluded.
+            where.append(f"docs.id NOT IN ({graph_excluded_ids_sql(placeholders)})")
+            params.extend(_IN_FORCE_STATUS_LIST)
+            params.extend([today, today])
         if doc_type:
             where.append("docs.type = ?")
             params.append(doc_type)
+        if validity_state:
+            kind, days = _parse_validity_state(validity_state)
+            if kind == "expired":
+                where.append("(docs.valid_until IS NOT NULL AND docs.valid_until < ?)")
+                params.append(today)
+            elif kind == "stale":
+                where.append("(docs.recheck_by IS NOT NULL AND docs.recheck_by < ?)")
+                params.append(today)
+            elif kind == "expiring_within":
+                cutoff = _add_days_iso(today, days or 0)
+                where.append(
+                    "(docs.valid_until IS NOT NULL AND docs.valid_until >= ? "
+                    "AND docs.valid_until <= ?)"
+                )
+                params.extend([today, cutoff])
+        elif not include_expired:
+            where.append(not_expired_sql_fragment())
+            params.append(today)
         return where, params
 
     def _fts_match(
@@ -1157,6 +1688,10 @@ class Index:
                 COALESCE(docs.title, '') AS title,
                 COALESCE(docs.status, '') AS status,
                 COALESCE(docs.type, '') AS doc_type,
+                COALESCE(docs.valid_from, '') AS valid_from,
+                COALESCE(docs.valid_until, '') AS valid_until,
+                COALESCE(docs.recheck_by, '') AS recheck_by,
+                COALESCE(docs.is_inbox, 0) AS is_inbox,
                 snippet(fts, 5, '[', ']', '...', 16) AS snippet,
                 {bm25_expr} AS score
             FROM fts
@@ -1175,6 +1710,10 @@ class Index:
                 score=float(r["score"]),
                 status=r["status"],
                 doc_type=r["doc_type"],
+                valid_from=r["valid_from"],
+                valid_until=r["valid_until"],
+                recheck_by=r["recheck_by"],
+                is_inbox=bool(r["is_inbox"]),
             )
             for r in rows
         ]
@@ -1287,6 +1826,10 @@ class Index:
                 COALESCE(docs.status, '') AS status,
                 COALESCE(docs.type, '') AS doc_type,
                 COALESCE(docs.description, '') AS description,
+                COALESCE(docs.valid_from, '') AS valid_from,
+                COALESCE(docs.valid_until, '') AS valid_until,
+                COALESCE(docs.recheck_by, '') AS recheck_by,
+                COALESCE(docs.is_inbox, 0) AS is_inbox,
                 bm25(fts_trigram) AS tscore
             FROM fts_trigram
             JOIN docs ON docs.id = fts_trigram.id
@@ -1314,6 +1857,10 @@ class Index:
                     status=r["status"],
                     doc_type=r["doc_type"],
                     rank_class=RANK_CLASS_BACKFILL,
+                    valid_from=r["valid_from"],
+                    valid_until=r["valid_until"],
+                    recheck_by=r["recheck_by"],
+                    is_inbox=bool(r["is_inbox"]),
                 )
             )
             offset += 1.0
@@ -1419,6 +1966,9 @@ class Index:
         status: str | None = None,
         in_force: bool = False,
         doc_type: str | None = None,
+        include_expired: bool = False,
+        validity_state: str | None = None,
+        today: str | None = None,
     ) -> builtins.list[SearchHit]:
         """Return up to ``limit`` docs most similar to ``query`` by cosine (issue #42).
 
@@ -1428,8 +1978,10 @@ class Index:
         the stored ``doc_vectors`` (read via the same deserialize path as
         ``get_vector``). Only neighbours clearing ``min_cosine`` are returned, so a
         negative / out-of-scope query whose nearest doc is only weakly similar pulls
-        in nothing (abstention guard). The same tier/category/status/doc_type
-        filters are applied so a filtered search does not leak an off-facet doc.
+        in nothing (abstention guard). The same tier/category/status/doc_type/
+        validity filters are applied (via the SAME :meth:`_facet_filters` the FTS
+        pool uses, issue #107) so a filtered search does not leak an off-facet or
+        expired doc through the dense channel.
 
         Returns the empty list when embeddings are not configured, the query cannot
         be embedded, or the index predates the ``doc_vectors`` table. Each hit
@@ -1450,26 +2002,19 @@ class Index:
         matrix = self._load_vectors()
         if not matrix:
             return []
+        today = today if today is not None else today_iso()
         # Fetch only the facet-eligible doc metadata (no vector blob); the vector
-        # is pulled from the cached matrix by id.
-        where = ["dv.id IS NOT NULL"]
-        params: list[object] = []
-        if tier:
-            where.append("docs.tier = ?")
-            params.append(tier)
-        if category:
-            where.append("docs.category = ?")
-            params.append(category)
-        if status:
-            where.append("docs.status = ?")
-            params.append(status)
-        if in_force:
-            placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
-            where.append(f"docs.status IN ({placeholders})")
-            params.extend(_IN_FORCE_STATUS_LIST)
-        if doc_type:
-            where.append("docs.type = ?")
-            params.append(doc_type)
+        # is pulled from the cached matrix by id. Shares the exact same
+        # tier/category/status/in_force/doc_type/validity WHERE-building as the
+        # FTS pool (single-sourced, issue #107) so the two filter sites cannot
+        # drift apart.
+        facet_where, facet_params = self._facet_filters(
+            tier=tier, category=category, status=status,
+            in_force=in_force, doc_type=doc_type, today=today,
+            include_expired=include_expired, validity_state=validity_state,
+        )
+        where = ["dv.id IS NOT NULL", *facet_where]
+        params: list[object] = list(facet_params)
         sql = f"""
             SELECT
                 dv.id AS id,
@@ -1477,7 +2022,11 @@ class Index:
                 COALESCE(docs.title, '') AS title,
                 COALESCE(docs.status, '') AS status,
                 COALESCE(docs.type, '') AS doc_type,
-                COALESCE(docs.description, '') AS description
+                COALESCE(docs.description, '') AS description,
+                COALESCE(docs.valid_from, '') AS valid_from,
+                COALESCE(docs.valid_until, '') AS valid_until,
+                COALESCE(docs.recheck_by, '') AS recheck_by,
+                COALESCE(docs.is_inbox, 0) AS is_inbox
             FROM doc_vectors dv
             JOIN docs ON docs.id = dv.id
             WHERE {' AND '.join(where)}
@@ -1509,6 +2058,10 @@ class Index:
                         score=sim,
                         status=r["status"],
                         doc_type=r["doc_type"],
+                        valid_from=r["valid_from"],
+                        valid_until=r["valid_until"],
+                        recheck_by=r["recheck_by"],
+                        is_inbox=bool(r["is_inbox"]),
                     ),
                 )
             )
@@ -1542,7 +2095,9 @@ class Index:
                 """
                 SELECT id, path, title, tier, category, status, type, tags,
                        applies_when, description, content_markdown,
-                       last_modified, last_modified_source, git_remote_url
+                       last_modified, last_modified_source, git_remote_url,
+                       valid_from, valid_until, last_verified, recheck_by,
+                       verification_source, is_inbox
                 FROM docs WHERE id = ?
                 """,
                 (id,),
@@ -1553,6 +2108,12 @@ class Index:
                 "SELECT value FROM meta WHERE key='source_commit'"
             ).fetchone()
             source_commit = commit_row[0] if commit_row else ""
+            # Lifecycle-relationship surfacing (issue #110 slice 2): computed
+            # from the `edges` table so "retirement is explainable" -- see
+            # _superseded_by_map / _edges_from / _edges_targeting.
+            superseded_by = _superseded_by_map(conn, [id]).get(id, [])
+            contradicts = _edges_from(conn, "contradicts", [id]).get(id, [])
+            contradicted_by = _edges_targeting(conn, "contradicts", [id]).get(id, [])
         finally:
             conn.close()
         tags = [t for t in (row["tags"] or "").split() if t]
@@ -1573,6 +2134,15 @@ class Index:
             doc_type=row["type"] or "",
             applies_when=applies_when,
             description=row["description"] or "",
+            valid_from=row["valid_from"] or "",
+            valid_until=row["valid_until"] or "",
+            last_verified=row["last_verified"] or "",
+            recheck_by=row["recheck_by"] or "",
+            verification_source=row["verification_source"] or "",
+            is_inbox=bool(row["is_inbox"]),
+            superseded_by=tuple(superseded_by),
+            contradicts=tuple(contradicts),
+            contradicted_by=tuple(contradicted_by),
         )
 
     def id_to_path_map(self) -> dict[str, str]:
@@ -1701,6 +2271,18 @@ class Index:
             # build. Read from the persisted meta row so a fresh process (that did
             # not run build() itself) still sees it.
             "malformed_frontmatter": int(meta.get("malformed_frontmatter", "0")),
+            # Issue #107: present-but-malformed ``validity`` block count, same
+            # persisted-meta rationale as malformed_frontmatter above.
+            "malformed_validity": int(meta.get("malformed_validity", "0")),
+            # Issue #110 slice 2: docs CURRENTLY excluded from in-force
+            # retrieval by the supersession-graph rule. Computed LIVE (not
+            # from a persisted build-time meta row) because the in-force-
+            # source guard is wall-clock-relative: a source's validity window
+            # opening/closing between rebuilds changes retrieval per query,
+            # and a frozen counter would drift from the filter it reports on
+            # (codex review blocker). The health cache bounds staleness to
+            # ``health_ttl_sec`` (default 5s).
+            "graph_excluded_docs": self.graph_excluded_count(),
         }
 
     def list_by_prefix(

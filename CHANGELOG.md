@@ -12,6 +12,397 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-08
+
+### Fixed
+
+- **`data-olympus init` stamped a stale format version** (found by the
+  release-gate review): the scaffold's root `index.md` declared
+  `spec_version: "0.1"` while the shipped format is `0.2`. Corrected, with a
+  drift test tying the scaffold constant to SPEC.md's header and
+  `example-bundle/index.md` so future format bumps fail fast.
+
+- **Graph-exclusion source guard now applies the memory-inbox floor** (found
+  by the v0.4.0 release-gate review). `graph_excluded_ids_sql` checked the
+  superseding source's status class and validity window but not `is_inbox`,
+  so a forged or legacy `memory/inbox/` document claiming `status: active`
+  with `supersedes: <real-rule>` could retire a real rule from
+  `in_force=true` retrieval, `kb_consult`, and the computed `in_force`
+  boolean. The source guard now requires `src.is_inbox = 0`, matching the
+  full single-sourced in-force predicate; regression-tested with an
+  inbox-source scenario.
+
+### Added
+
+- **Write-path enforcement of mandatory `status` (issue #114).** `status`
+  has been a required frontmatter field (SPEC.md 4.2) and a `kb lint` error
+  since the format's `0.1` draft — this was already true of the lint layer
+  and is not a change of required-field semantics. The gap this closes is at
+  the write path: `kb_propose_edit` now rejects a postimage that creates a
+  **NEW** document without `status` (`rejected_invalid_document`, reason
+  `missing_status`), where previously the write path was more permissive
+  than `kb lint` and let a brand-new status-less document through.
+  - **Staged migration, not a hard break.** Editing an EXISTING status-less
+    document still requires no `status`, so a legacy corpus already carrying
+    status-less docs (tracked by the issue #113 maintenance ledger's
+    `status_present_in_all_kb_entries` flag and `missing_status` file list)
+    is never locked out of incremental fixes. Those documents keep being
+    served by `kb_search`/`kb_get` exactly as before; they are simply never
+    in force (already true via `IN_FORCE_STATUSES` membership) and never
+    surfaced by `kb_consult`.
+  - `kb_propose_memory` is unaffected: every server-rendered memory already
+    stamps `status: proposed` (issue #109).
+  - Reserved filenames (`index.md`/`log.md`/`template.md`) and documents
+    under the memory-inbox prefix are exempt, consistent with their existing
+    exemptions from the write-path's other schema checks.
+  - No SPEC.md version bump: see SPEC.md section 10 for why this is a
+    reference-implementation enforcement-timing change, not a format change.
+  - See `docs/operations.md` section 5.1 for the operator migration runbook
+    (lint, read the ledger's missing-status list, fix, done) and the new
+    integration test (`tests/test_status_mandatory_migration.py`) tying
+    lint-error + still-served + never-in-force + ledger flag + the
+    `pending_actions` CTA together as one tested contract.
+
+- **Governed-lane write protection (issue #112) -- BREAKING DEFAULT-BEHAVIOR
+  CHANGE.** "Agents can propose, only humans can promote." Behind
+  `KB_GOVERNED_LANE_PROTECTION` (**default ON**; set to `off` to restore the
+  exact pre-#112 behavior). No write is ever rejected by this feature --
+  affected writes land as a PENDING entry instead of auto-committing:
+  - **Status clamp.** Any non-operator-confirmed write (the auto-commit path
+    of `kb_propose_memory` / `kb_propose_edit`, and `kb_bootstrap_project`
+    files) whose postimage sets or changes `status` INTO the in-force class
+    (`active`/`accepted`/`approved`, single-sourced from
+    `format.validate.IN_FORCE_STATUSES`) is demoted to pending with
+    `demotion_reason: "status_promotion"`. An operator-confirmed resolve of
+    that entry commits it -- the human step IS the promotion.
+  - **Governed-target edit demotion.** Any `kb_propose_edit` whose target
+    document is CURRENTLY in force (the full composed predicate: status class
+    AND validity window AND not-inbox AND not-graph-excluded, evaluated
+    against the live index) is demoted with `demotion_reason:
+    "governed_target"`, regardless of confidence. An expired or
+    superseded-out target is NOT in force and so is not protected by this
+    rule. The lookup FAILS CLOSED: an edit whose target's in-force state
+    cannot be verified (no index, or an index read failure) is demoted with
+    the distinct `demotion_reason: "governed_target_unverified"` rather than
+    auto-committed on the strength of a broken lookup. An authoritative
+    in-worktree backstop additionally re-judges the target's CURRENT bytes
+    on the refreshed commit base (inside the serialized commit section,
+    after the hard gates), consulting nothing from the index (a stale
+    graph-exclusion edge could otherwise remove protection the base's own
+    bytes assert), so an in-force doc that exists in git but is not yet
+    re-indexed is still demoted -- index lag cannot bypass the rule in
+    either direction.
+  - **Injection-pattern annotation (advisory only).** Postimages are scanned
+    for agent-directed injection patterns ("ignore previous instructions",
+    exfiltration-shaped imperatives, base64-looking blobs, "do not tell the
+    operator", ...); a match annotates the pending entry (`injection_suspect`,
+    `injection_patterns`: pattern names + line numbers, never the matched
+    text) but never blocks or demotes by itself.
+  - **Ordering:** the issue #71 secret-scanning gate (and the content-
+    validation / duplicate-id gate) always run BEFORE this feature's
+    demotion decision -- a postimage that would be rejected outright is
+    REJECTED, never silently demoted.
+  - **Feedback loop, so a demotion is never silent:** every demotion response
+    carries the `pending_id`, `demotion_reason`, and an `operator_prompt`
+    instructing the model to inform the operator; a new read-only
+    `kb_session_recap(source_session)` MCP tool / `GET /api/v1/session-recap`
+    REST route / `kb session-recap SOURCE_SESSION` CLI subcommand reports N
+    committed / M demoted-to-pending / K rejected for a session; `kb_consult`
+    surfaces a `demoted_writes` item in its `pending_actions` envelope when
+    the calling session has open demotions; and `bin/kb-session-recap-hook`
+    is a ready-to-wire SessionEnd/Stop hook script (documented for Claude
+    Code / Codex) that prints the recap one-liner automatically.
+  - **CLI review gate:** `bin/kb propose` never flows a demoted
+    (`demotion_reason`) or secret-flagged (`matching_pattern`) proposal into
+    its same-command interactive resolve (which defaults to accept without a
+    TTY); it prints the operator prompt and requires an explicit later
+    `kb resolve`. The MCP `kb_session_recap` tool requires an authenticated
+    principal when auth is configured, matching the REST route.
+  - Unaffected: the maintenance-ledger system write path (issue #113) and the
+    operator pending-resolve path (which IS the promotion).
+
+- **Provenance surfacing + consult hardening (issue #109).** Revised decision:
+  no `authority_state`/`allowed_use` enum (rejected as a parallel vocabulary
+  that could drift from `status`); the real gaps are fixed at the root
+  instead:
+  - **Memory stamping.** Server-rendered memory files (`kb_propose_memory`)
+    now carry `type: memory` and `status: proposed` in frontmatter (neither
+    was stamped before), so the EXISTING status filter, status rerank, and
+    compact deviation-only status emission all apply to an agent-written
+    memory with zero new code paths. Promotion out of `proposed` happens at
+    operator review time, not here.
+  - **Memory-inbox in-force floor.** A document under the memory-inbox prefix
+    (`KB_MEMORY_INBOX_PREFIX`, default `memory/inbox/`) is now NEVER in force,
+    regardless of claimed status — covers both a legacy inbox file and forged
+    frontmatter on an agent-written memory. Implemented as a new `is_inbox`
+    column derived once at index-build time
+    (`format.validate.is_inbox_path`/`memory_inbox_prefix`, the single source
+    also consulted by the write path) and composed into the existing
+    single-sourced `is_in_force` predicate and SQL fragments (`index.py`
+    schema version bumped 10 -> 11), not a forked predicate.
+  - **Computed `in_force: bool`** on verbose `kb_get` and verbose `kb_search`
+    hits, derived from the single-sourced predicate (status class AND
+    validity window AND not-inbox AND, composing the issue #110 slice-2 graph
+    rule, not-graph-excluded). Never stored in frontmatter — it is a
+    serving-layer-only derivation (see SPEC.md's new "runtime envelope"
+    note). Compact responses emit it deviation-only (`in_force: false` only
+    when the doc is NOT in force; an in-force doc's compact shape is
+    byte-for-byte unchanged): the compact `status`/`freshness` fields reflect
+    raw frontmatter, so a memory-inbox doc with a forged `status: active`
+    would otherwise read as an ordinary current rule with no correcting
+    signal. The existing deviation-only `status`/`freshness` emissions stay
+    as they are.
+  - **`evidence: list[str]`** optional parameter on `kb_propose_memory` and
+    `kb_propose_edit` (max 10 items, 500 chars each). For a memory proposal it
+    is rendered into frontmatter via the same `yaml.safe_dump` path as `tags`
+    (so a secret-shaped evidence item is caught by the existing
+    full-postimage secret scan — no separate scan needed); for an edit
+    proposal (whose postimage is caller-supplied verbatim, with no template)
+    it is validated and redacted the same way `reason` already is. In both
+    cases it is persisted in pending meta, echoed on the propose/commit audit
+    events, and surfaced by `kb_list_pending`.
+  - **`kb_list_pending` surfaces provenance it already persisted**:
+    `source_session`, `reason`, and the new `evidence` were already written
+    into pending meta at enqueue time but never returned; they are now on the
+    `PendingEntry` model (`None` when absent, e.g. a memory proposal has no
+    `reason`).
+
+- **Maintenance ledger: committed corpus-state audit + `pending_actions` CTA
+  surface (issue #113).** A frontmatter-only markdown doc (default
+  `tooling/maintenance-ledger.md`, `KB_MAINTENANCE_LEDGER_PATH`) is now
+  computed at every index build: whether `status` is present on every
+  indexed document (except reserved filenames), plus a capped list (50 paths
+  + a total count) of the ones missing it — the migration vehicle for making
+  `status` mandatory — and, consuming issue #107 validity data, documents
+  that recently expired or are expiring soon within configurable windows
+  (`KB_MAINTENANCE_RECENTLY_EXPIRED_DAYS` / `KB_MAINTENANCE_EXPIRING_SOON_DAYS`,
+  both default 30 days), each capped the same way. When the computed state
+  changes since the last committed copy, the ledger is committed through the
+  same serialized write/commit machinery every other write uses (system
+  agent identity `data-olympus-system`, a normal `maintenance_ledger` audit
+  event); a commit failure is logged/audited and never breaks index refresh
+  or serving. The ledger doc is excluded from its own audit and always
+  carries valid concept frontmatter, so it lints clean on its own merits
+  rather than relying on reserved-filename semantics. The same computed state
+  drives a new `pending_actions` field (a list of `{kind, message, count}`
+  items) on `kb_consult` and `kb_health` responses — deliberately never
+  `kb_search` — present only while the corpus is dirty; both tool
+  descriptions now instruct the model to surface open items to the operator
+  and act on them only with operator confirmation. `kb health`'s plain-text
+  CLI summary displays any open items. Silencing is automatic: remediate,
+  the next index build flips the flag, the next ledger commit records it,
+  and `pending_actions` disappears with no manual acking. See
+  `docs/operations.md` §5.
+
+- **Validity/freshness frontmatter metadata with hard expiry semantics**
+  (issue #107, format `0.2`). Concept documents may now declare an optional
+  nested `validity` object: `valid_from`, `valid_until`, `last_verified`,
+  `recheck_by` (ISO date or datetime, normalized to a date at index/lint
+  time), and free-text `verification_source`. Indexed as columns on the
+  docs table (schema version bumped 9 -> 10, on top of the lifecycle-edges
+  bump below). See SPEC.md section 4.2.
+
+- **`data-olympus init <dir>` bundle scaffold command** (issue #66). Creates a
+  new knowledge bundle: the tier directories (`--tiers`, default `universal,
+  tech-stacks,projects,decisions,workflows,tooling`), a root `index.md`
+  carrying the `spec_version`/`okf_version` frontmatter, a `template.md`
+  authoring scaffold, and one example concept document per SPEC-supported
+  `type` (`standard`, `decision`, `workflow`, `project`, `memory`,
+  `reference`), including a real `superseded`/`superseded_by`/`supersedes`
+  pair and `applies_when` trigger metadata. The generated bundle passes
+  `data-olympus lint` with zero errors and zero warnings and builds cleanly
+  under `data-olympus index`. Refuses to scaffold into a non-empty directory
+  (no `--force` in this slice).
+
+- **Typed lifecycle relationships: parsed, indexed, and lint-validated
+  (issue #110, slice 1).** `supersedes` (scalar ID or list of IDs, normalized
+  to a list at parse time so both shapes the ADR importer emits lint clean),
+  `superseded_by` (scalar ID), and a new `contradicts` field (scalar ID or
+  list of IDs, normalized to a list the same way as `supersedes`;
+  unresolved-conflict evidence that never affects retrieval ranking) are now
+  parsed into `ParsedDoc` and extracted into a new `edges` table
+  (`source_id`, `rel`, `target_id`) at index-build time (schema version
+  bumped 8 -> 9). `kb lint` gained a cross-file pass (an in-memory id map
+  over the discovered bundle, no database) that reports: **errors** for a
+  malformed field shape, self-supersession, or a supersession cycle of any
+  length; **warnings** for a dangling target id, an asymmetric
+  supersedes/superseded_by pair, a path-shaped target value (concept ids are
+  the only stable target, never paths), `superseded_by` set on an in-force
+  document, `status: superseded` with no `superseded_by`, and an in-force
+  `contradicts` pair. `SPEC.md` section 4.2 documents the normalized shapes
+  and the full lint severity list; the "not validated today" note is
+  removed. Slice 2 (a separate change) will consume the edges table for
+  in-force graph exclusion, `kb_get`/`kb_search` surfacing, and a health
+  counter.
+
+- **Supersession edges become executable retrieval policy (issue #110,
+  slice 2).** `in_force=true` now ADDITIONALLY excludes any document that is
+  the TARGET of a `supersedes` edge whose SOURCE document is itself in force
+  (the full status-class-AND-validity-window predicate, not merely
+  `status: superseded`): a `draft`, expired, or already-retired document can
+  never retire another document just by naming it in `supersedes`.
+  - **Behavior change: a document superseded only via an edge (its own
+    `status` was never flipped) is now excluded from `in_force=true`
+    results, even though its own status class would otherwise qualify it.**
+    It remains visible in a default (non-`in_force`) `kb_search`, same as an
+    `upcoming` document. This closes the "forgotten status flip" gap.
+  - A mutually-supersessive in-force cycle (already a `kb lint` ERROR at
+    parse time) is NOT special-cased: every member independently satisfies
+    the exclusion rule, so ALL members of the cycle are excluded from
+    `in_force=true`.
+  - A dangling edge (source or target id with no corresponding document)
+    excludes nothing and is not counted; the exclusion query joins `edges`
+    to `docs` on both ends, never trusting either raw id.
+  - **`kb_consult` now queries with `in_force=true`** (previously it ran a
+    plain default search), so it never returns a not-yet-in-force, retired,
+    or graph-excluded document as a "governing rule". The unconditional
+    not-expired exclusion already gave this guarantee for expired docs; this
+    closes the same gap for status/graph exclusion.
+  - New `graph_excluded_docs` health counter (`kb_health` / `/api/v1/health`,
+    alongside `malformed_frontmatter` / `malformed_validity`): the count of
+    documents currently excluded by this rule, evaluated LIVE at health-read
+    time against the current date from the same SQL definition
+    (`format.validate.graph_excluded_ids_sql`) the retrieval-time filter
+    uses, so the counter can never drift from the filter it reports on, even
+    across a date boundary where an in-force source's validity window opens
+    or closes between index rebuilds. Exposed on the Index as
+    `graph_excluded_count(today=...)` (injectable date for deterministic
+    tests; health reads the real wall clock, bounded by the short health
+    cache).
+  - **Retirement is explainable.** `kb_get` (regardless of in-force/graph-
+    exclusion status, same as it already ignores expiry) gains
+    `superseded_by`: the sorted UNION of the document's own frontmatter
+    `superseded_by` claim and any reverse `supersedes` edge naming it -- ONE
+    consistent computed shape covering both the honest self-declared case
+    and the forgotten-status-flip case. `kb_get` also gains `contradicts`
+    (the document's own frontmatter list) and the computed reverse
+    `contradicted_by`. All three are omitted from the compact response when
+    empty. `contradicts` is annotation only: it has NO filtering or ranking
+    effect anywhere in the retrieval path.
+  - Compact `kb_search` hits gain a deviation-only `superseded_by` (the same
+    computed union above), omitted when the document is not superseded;
+    computed and attached to every hit regardless of `in_force`, so a plain
+    search result still explains why a hit is historically superseded.
+  - `SPEC.md` section 4.2 documents the graph-exclusion rule, the health
+    counter, and the surfacing contract.
+
+- **Secret-scanning gate on the write path (issue #71).** Every commit path
+  (`kb_propose_memory` / `kb_propose_edit` auto-commit, `kb_resolve_pending`
+  approve, including a resolved `edited_text`, and onboarding bootstrap) now
+  scans the final postimage for credential-shaped content (PEM private-key
+  blocks, GitHub/Slack tokens, AWS access key ids, generic `password=`/
+  `secret=` assignments with a non-placeholder value, and connection strings
+  with an inline password) before anything is written to disk. A match rejects
+  the write with a distinct `rejected_secret_detected` status; nothing is
+  committed and no pending entry is created on the auto-commit/bootstrap
+  paths. Only the pattern name and an approximate line number are ever
+  surfaced in the response, the audit event, or a log line, never the
+  matched secret value. Operators can extend the built-in pattern set with
+  `KB_SECRET_SCAN_EXTRA_PATTERNS` (comma-separated regexes; an invalid entry
+  is logged and skipped, never crashes the server). `kb_resolve_pending` gains
+  an operator-only `override_secret_scan` flag to consciously commit a
+  flagged postimage that is a confirmed false positive; the override is
+  recorded on the resulting audit event, and no auto-commit or bootstrap path
+  exposes it (`kb resolve --override-secret-scan` on the CLI). A low-confidence
+  proposal containing a secret still enters pending, so the override workflow
+  is not defeated, but its scan result is redacted to a pattern name in the
+  propose response and tagged (`secret_scan_flagged`) on the entry so
+  `kb pending` surfaces the warning without ever showing the matched value;
+  the memory filename slug itself falls back to a neutral placeholder instead
+  of embedding the flagged text. The scan runs before the content-validation
+  gate on every commit path so an invalid-document rejection can never echo a
+  credential value through its own error message. The gate also covers the
+  fields around the postimage: a credential-shaped `target_path` (filename)
+  is rejected on edit/bootstrap/resolve without echoing the path back, a
+  flagged edit `reason` is replaced with a redacted note before reaching
+  pending meta / push metadata / audit events, and a flagged memory tag is
+  stored redacted in pending meta. Extra patterns
+  (`KB_SECRET_SCAN_EXTRA_PATTERNS`) with the classic nested-quantifier ReDoS
+  shape are rejected at load time alongside invalid regexes, and every
+  accepted custom pattern executes through the `regex` engine (a new runtime
+  dependency) with a hard 1-second match timeout so a catastrophic pattern
+  cannot hang the single-writer write path.
+- **OKF profile document (issue #108).** `docs/okf-profile.md`: a field-by-
+  field reference distinguishing stable governance extensions (`id`, `type`,
+  `status`, `tier`, `applies_when`, `supersedes`/`superseded_by`/`contradicts`,
+  `validity`) from runtime-only serving envelope fields (`in_force`,
+  `freshness`, `contradicted_by`, `pending_actions`) and from experimental
+  candidates tracked against open OKF ecosystem discussions (structured
+  `relationships:`, version-keyed validity, a confidence/reliability axis).
+  Documents the issue #109 decision to reject an `authority_state`/
+  `allowed_use` enum, and a short factual comparison against `inkxel/throughline`,
+  `inkxel/dotKnowledge`, and `dynamicfeed/signed-okf`. Cross-linked from
+  `README.md`, `WHY.md`, and `SPEC.md` section 11. Documentation only; no
+  behavior change.
+
+### Changed
+
+- **BEHAVIOR CHANGE: `kb_consult` now hard-filters retrieval to the in-force
+  class (issue #109).** Previously `kb_consult` ran an UNFILTERED search, so
+  an unreviewed agent-written memory, a superseded/deprecated/rejected
+  decision, a draft/proposed document, an expired or upcoming doc, or a
+  memory-inbox file could all be handed back as "the" governing rule for an
+  intent — the single highest-value gap this change closes. `kb_consult` now
+  passes `in_force=true` internally, so only `active`/`accepted`/`approved`
+  documents within their validity window and NOT under the memory inbox are
+  ever returned as rules. **Operational caveat:** a document with no
+  `status` field at all (or a status outside `IN_FORCE_STATUSES`) now stops
+  appearing as a governing rule via `kb_consult`, where it previously did
+  (the prior unfiltered search surfaced it same as any other hit). `status`
+  becoming a mandatory field is tracked separately (issue #114); until a
+  bundle finishes that migration, a status-less doc that WAS relied upon as
+  an implicit rule via `kb_consult` will need `status: active` (or
+  `accepted`/`approved`) added before it is retrievable there again. Plain
+  `kb_search`/`kb_get` are unaffected (they still surface a status-less doc
+  by default); this change is scoped to the enforcement-facing `kb_consult`
+  retrieval path only.
+
+- **BEHAVIOR CHANGE: a document past its `validity.valid_until` now leaves
+  the DEFAULT `kb_search` result set**, not just `in_force=true` queries.
+  Previously there was no `validity` concept at all, so nothing was ever
+  excluded on this basis; a bundle that starts dating its documents will see
+  expired ones silently drop out of ordinary search results (they are still
+  reachable via `kb_get(id)`, `include_expired=true`, or the new
+  `validity_state=expired` audit facet). Rationale: unlike a superseded
+  document, an expired one has no named successor to outrank it, so left
+  visible it could surface as the top hit and incorrectly govern.
+  - A document with a future `valid_from` ("upcoming") is NOT excluded by
+    default search, only by `in_force=true`; it is flagged
+    `freshness: "upcoming"`.
+  - A document past `recheck_by` ("stale") stays in force and visible;
+    it is flagged `freshness: "stale"` (advisory only).
+  - `kb_search` gains `include_expired` (default `false`) and a
+    `validity_state` facet (`"expired"`, `"stale"`,
+    `"expiring_within:N"`) for audit queries. `kb_get` by id always resolves
+    regardless of expiry, returning the full `validity` object plus a
+    computed `freshness` indicator. `kb_consult` never returns an expired
+    document (as of issue #109 below, via the `in_force=true` hard filter;
+    previously via the default search path's own expired-exclusion).
+  - Compact search hits gain a deviation-only `freshness` field
+    (`stale`/`expired`/`upcoming`), omitted when fresh or absent.
+  - `kb lint` gains three new WARNING-only findings (never errors, since
+    they are wall-clock-relative): `recheck_by` in the past; `valid_until`
+    in the past while `status` is in the in-force class; a malformed
+    `validity` value (treated as absent for indexing/search, fail open).
+  - `kb_health` / `data-olympus report` gain a `malformed_validity` counter
+    mirroring the existing `malformed_frontmatter` one.
+  - New `data-olympus validity-report` CLI subcommand lists expired and
+    soon-to-expire documents by scanning a bundle directory directly.
+  - `timestamp` is unaffected and remains content-change metadata only;
+    SPEC.md now explicitly forbids deriving staleness from `timestamp` or
+    `last_modified`.
+
+### Fixed
+
+- **`data-olympus index` silently regenerated zero indexes for a bundle whose
+  absolute path passes through a skip-named ancestor** (found in companion
+  review of the `init` scaffold). `regenerate_indexes` matched skip-directory
+  names (`.git`, `.venv`, `node_modules`, ...) against the bundle's absolute
+  path components instead of the bundle-relative ones, so a bundle located
+  under e.g. a `.venv/` or `node_modules/` parent produced "wrote 0 index.md
+  file(s)" with no error. Skip matching is now relative to the bundle root,
+  matching `discover_bundle_files` in the lint pipeline.
+
 ## [0.3.5] - 2026-07-06
 
 ### Fixed
@@ -1109,7 +1500,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/knaisoma/data-olympus/compare/v0.3.5...v0.4.0
+[0.3.5]: https://github.com/knaisoma/data-olympus/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/knaisoma/data-olympus/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/knaisoma/data-olympus/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/knaisoma/data-olympus/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/knaisoma/data-olympus/compare/v0.3.0...v0.3.1

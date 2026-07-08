@@ -226,8 +226,9 @@ def _propose_status(status: str) -> int:
         # The target path is held by an advisory lock; retry after it clears.
         # 423 Locked.
         return 423
-    if status == "rejected_invalid_document":
-        # The postimage failed the content-validation gate. 422 Unprocessable.
+    if status in ("rejected_invalid_document", "rejected_secret_detected"):
+        # The postimage failed the content-validation or secret-scanning gate
+        # (issue #71). 422 Unprocessable.
         return 422
     return 400
 
@@ -243,7 +244,7 @@ def _resolve_status(status: str) -> int:
         return 409
     if status == "rejected_stale_base":
         return 409
-    if status == "rejected_invalid_document":
+    if status in ("rejected_invalid_document", "rejected_secret_detected"):
         return 422
     if status in ("rejected", "rejected_symlink_escape"):
         return 200
@@ -424,11 +425,22 @@ def register_routes(
         category = request.query_params.get("category") or None
         in_force = _query_bool(request.query_params.get("in_force"))
         abstain = _query_bool(request.query_params.get("abstain"))
+        include_expired = _query_bool(request.query_params.get("include_expired"))
+        validity_state = request.query_params.get("validity_state") or None
         verbose = _query_bool(request.query_params.get("verbose"))
-        resp = await _offload(
-            kb_search_fn, idx=state.idx, query=q, limit=limit, tier=tier,
-            category=category, in_force=in_force, abstain=abstain,
-        )
+        try:
+            resp = await _offload(
+                kb_search_fn, idx=state.idx, query=q, limit=limit, tier=tier,
+                category=category, in_force=in_force, abstain=abstain,
+                include_expired=include_expired, validity_state=validity_state,
+            )
+        except ValueError as e:
+            # A malformed validity_state (e.g. 'bogus' or 'expiring_within:abc')
+            # is a client error: surface an actionable 400, not an opaque 500
+            # (same rationale as _missing_fields_response).
+            return JSONResponse(
+                {"error": "bad_request", "message": str(e)}, status_code=400,
+            )
         return JSONResponse(shape_response(resp, verbose=verbose))
 
     @app.custom_route("/api/v1/get/{id}", methods=["GET"])
@@ -498,6 +510,7 @@ def register_routes(
                 can_auto_commit=principal.can_auto_commit,
                 max_text_bytes=state.config.max_text_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                evidence=body.get("evidence", []),
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)
@@ -546,6 +559,7 @@ def register_routes(
                 can_auto_commit=principal.can_auto_commit,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                evidence=body.get("evidence", []),
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)
@@ -580,6 +594,7 @@ def register_routes(
                     audit_log=state.audit_log,
                     max_postimage_bytes=state.config.max_postimage_bytes,
                     serializer=state.write_serializer, idx=state.idx,
+                    override_secret_scan=bool(body.get("override_secret_scan", False)),
                 )
             except PendingNotFoundError:
                 # Unknown or already-resolved/expired pending_id: a client-side
@@ -667,7 +682,7 @@ def register_routes(
                 # clients are real agent calls).
                 trigger=body.get("trigger", "explicit"),
             )
-            return JSONResponse(resp.model_dump())
+            return JSONResponse(resp.model_dump(exclude_none=True))
 
         @app.custom_route("/api/v1/gate/check", methods=["POST"])
         async def gate_check(request: Request) -> JSONResponse:
@@ -720,6 +735,32 @@ def register_routes(
             agent = qp.get("agent")
             resp = await _offload(
                 kb_compliance_fn, audit_log=state.audit_log, since=since, agent=agent)
+            return JSONResponse(resp.model_dump())
+
+        @app.custom_route("/api/v1/session-recap", methods=["GET"])
+        async def session_recap(request: Request) -> JSONResponse:
+            # Observability route (issue #112 feedback loop): same auth posture
+            # as /pending, /audit, /compliance.
+            _principal, denied = _authorize(request, registry)
+            if denied is not None:
+                return denied
+            qp = request.query_params
+            source_session = qp.get("source_session", "")
+            if not source_session:
+                return JSONResponse(
+                    {"error": "missing_field", "message": "source_session is required"},
+                    status_code=400,
+                )
+            if state.audit_log is None:
+                from data_olympus.models import SessionRecapResponse
+                return JSONResponse(
+                    SessionRecapResponse(source_session=source_session).model_dump()
+                )
+            from data_olympus.tools_recap import kb_session_recap_fn
+            resp = await _offload(
+                kb_session_recap_fn, audit_log=state.audit_log,
+                source_session=source_session,
+            )
             return JSONResponse(resp.model_dump())
 
         @app.custom_route("/api/v1/audit/event", methods=["POST"])
