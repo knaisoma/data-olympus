@@ -9,7 +9,7 @@
 #   kb health [-o json|plain]
 #   kb propose memory TEXT [--tags t1,t2] [--confidence 0.9] [--non-interactive]
 #   kb propose edit TARGET_PATH --postimage-file FILE [--reason R] [--confidence 0.9] [--non-interactive]
-#   kb resolve PENDING_ID --decision approve|reject [--edit-text TEXT]
+#   kb resolve PENDING_ID --decision approve|reject [--edit-text TEXT] [--override-secret-scan]
 #   kb pending [-o json|plain]
 #   kb audit [--since EPOCH] [--agent A] [--status S] [--limit N] [-o json|plain]
 #   kb audit --verify   (recompute the tamper-evident hash chain)
@@ -323,13 +323,19 @@ cmd_propose_edit() {
   handle_propose_response "$non_interactive"
 }
 
-# Subcommand: kb resolve PENDING_ID --decision approve|reject [--edit-text TEXT]
+# Subcommand: kb resolve PENDING_ID --decision approve|reject [--edit-text TEXT] [--override-secret-scan]
 cmd_resolve() {
-  local pid="" decision="" edit_text="" edit_text_set=0
+  local pid="" decision="" edit_text="" edit_text_set=0 override_secret_scan=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --decision) need_value "$1" "${2:-}"; decision="$2"; shift 2 ;;
       --edit-text) need_value "$1" "${2:-}"; edit_text="$2"; edit_text_set=1; shift 2 ;;
+      # Operator-only override of the secret-scanning gate (issue #71): commits
+      # a postimage the scanner flagged anyway, after the operator has
+      # confirmed the flagged content is a false positive. Recorded on the
+      # resulting audit event; not available on any other resolve outcome or
+      # on the propose (auto-commit) subcommands.
+      --override-secret-scan) override_secret_scan=1; shift ;;
       -h|--help) usage ;;
       -*) echo "kb: unknown flag $1" >&2; exit 64 ;;
       *) [[ -z "$pid" ]] && pid="$1" || { echo "kb: too many positional args" >&2; exit 64; }; shift ;;
@@ -342,9 +348,11 @@ cmd_resolve() {
   esac
   local body
   if [[ "$decision" == "approve" && "$edit_text_set" == "1" ]]; then
-    body=$(jq -n --arg t "$edit_text" '{decision: "approve", edited_text: $t}')
+    body=$(jq -n --arg t "$edit_text" --argjson o "$([[ "$override_secret_scan" == "1" ]] && echo true || echo false)" \
+      '{decision: "approve", edited_text: $t, override_secret_scan: $o}')
   elif [[ "$decision" == "approve" ]]; then
-    body='{"decision": "approve"}'
+    body=$(jq -n --argjson o "$([[ "$override_secret_scan" == "1" ]] && echo true || echo false)" \
+      '{decision: "approve", override_secret_scan: $o}')
   else
     body='{"decision": "reject"}'
   fi

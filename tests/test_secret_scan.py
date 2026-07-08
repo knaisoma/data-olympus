@@ -32,6 +32,7 @@ from data_olympus.push_queue import PushQueue
 from data_olympus.rate_limit import SlidingWindowLimiter
 from data_olympus.tools_onboarding import kb_bootstrap_project_fn
 from data_olympus.tools_write import (
+    kb_list_pending_fn,
     kb_propose_edit_fn,
     kb_propose_memory_fn,
     kb_resolve_pending_fn,
@@ -503,10 +504,8 @@ def test_rejection_audit_event_carries_pattern_and_line_not_value(
 
 
 def test_pending_meta_never_contains_secret_value(tmp_path, monkeypatch) -> None:
-    """A LOW-confidence propose is not scanned at enqueue time (the operator
-    must be able to see/edit/reject it), but IF the auto-commit path rejects
-    a HIGH-confidence proposal, no pending entry (and thus no pending meta) is
-    ever created carrying the secret."""
+    """A HIGH-confidence proposal containing a secret is rejected outright: no
+    pending entry (and thus no pending meta) is ever created carrying it."""
     _set_git_env(monkeypatch)
     git, reg, pq, pen, rl, bl = _state(tmp_path)
     resp = kb_propose_memory_fn(
@@ -517,3 +516,158 @@ def test_pending_meta_never_contains_secret_value(tmp_path, monkeypatch) -> None
     )
     assert resp.status == "rejected_secret_detected"
     assert pen.list() == []
+
+
+# ============================================================================
+# Codex round-1 blockers: gate ordering + low-confidence redaction + ReDoS
+# ============================================================================
+
+
+def test_secret_in_invalid_enum_value_is_redacted_not_leaked(tmp_path, monkeypatch) -> None:
+    """A postimage that is BOTH malformed (invalid enum value) AND carries a
+    credential-shaped value in that same field must be rejected as the
+    redacted ``rejected_secret_detected``, never as ``rejected_invalid_document``
+    (which echoes the offending value verbatim and would leak it)."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_edit_fn(
+        target_path="decisions/DEC-leak2.md",
+        postimage=f"---\nid: DEC-leak2\ntype: decision\nstatus: {AWS_ACCESS_KEY}\n"
+                  f"tier: meta\n---\nbody\n",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason="oops", source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    assert resp.status == "rejected_secret_detected"
+    assert resp.matching_pattern == "aws_access_key_id"
+    assert AWS_ACCESS_KEY not in (resp.reason or "")
+
+
+def test_low_confidence_memory_with_secret_redacts_response_and_flags_pending(
+    tmp_path, monkeypatch,
+) -> None:
+    """A low-confidence memory proposal containing a secret still enters
+    pending (so the operator retains the override workflow at resolve time),
+    but the propose RESPONSE must never echo the raw text, only the pattern
+    name; `kb pending` must surface the warning."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_memory_fn(
+        text=f"note with {SLACK_TOKEN}", tags=[], source_session="s",
+        agent_identity="claude", confidence=0.3, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    assert resp.status == "pending_confirmation"
+    assert resp.proposal_text is None, "flagged text must not be echoed back"
+    assert resp.matching_pattern == "slack_token"
+    assert SLACK_TOKEN not in str(resp)
+    listing = kb_list_pending_fn(pending=pen)
+    assert len(listing.pending) == 1
+    entry = listing.pending[0]
+    assert entry.secret_scan_flagged is True
+    assert entry.matching_pattern == "slack_token"
+    assert SLACK_TOKEN not in str(listing)
+
+
+def test_low_confidence_edit_with_secret_redacts_response_and_flags_pending(
+    tmp_path, monkeypatch,
+) -> None:
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_edit_fn(
+        target_path="decisions/DEC-lowconf.md",
+        postimage=f"---\nid: DEC-lowconf\ntype: decision\nstatus: accepted\n"
+                  f"tier: meta\n---\ncreds: {AWS_ACCESS_KEY}\n",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason="low-conf", source_session="s", agent_identity="claude",
+        confidence=0.3, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    assert resp.status == "pending_confirmation"
+    assert resp.proposal_text is None
+    assert resp.matching_pattern == "aws_access_key_id"
+    assert AWS_ACCESS_KEY not in str(resp)
+    listing = kb_list_pending_fn(pending=pen)
+    assert listing.pending[0].secret_scan_flagged is True
+    assert AWS_ACCESS_KEY not in str(listing)
+
+
+def test_low_confidence_clean_memory_still_echoes_proposal_text(
+    tmp_path, monkeypatch,
+) -> None:
+    """Regression: unflagged low-confidence proposals keep the existing
+    behavior (raw proposal_text returned for operator review/edit)."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_memory_fn(
+        text="perfectly ordinary note", tags=[], source_session="s",
+        agent_identity="claude", confidence=0.3, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    assert resp.status == "pending_confirmation"
+    assert resp.proposal_text == "perfectly ordinary note"
+    assert resp.matching_pattern is None
+    listing = kb_list_pending_fn(pending=pen)
+    assert listing.pending[0].secret_scan_flagged is False
+
+
+def test_low_confidence_bootstrap_with_secret_flags_pending_entries(
+    tmp_path, monkeypatch,
+) -> None:
+    """A low-confidence bootstrap bundle with a flagged file still enqueues
+    (all-or-nothing, per the existing bundle contract), tags the flagged
+    entry, and mentions the flag in operator_prompt without leaking the value."""
+    reg, pq, pen, rl, bl = _bootstrap_pieces(tmp_path, monkeypatch)
+    idx = MagicMock()
+    idx.list_by_prefix.return_value = []
+    idx.list_with_remote_url.return_value = []
+    idx.id_to_path_map.return_value = {}
+    files = [
+        {"target_path": "projects/p/README.md",
+         "postimage": "---\nid: projects-p-README\ntype: project\nstatus: active\n"
+                      "tier: T3\n---\n# P\n"},
+        {"target_path": "projects/p/AGENTS.md",
+         "postimage": f"---\nid: projects-p-AGENTS\ntype: project\nstatus: active\n"
+                      f"tier: T3\n---\nkey: {GITHUB_TOKEN}\n"},
+    ]
+    resp = kb_bootstrap_project_fn(
+        idx=idx, workspace="p", component=None,
+        workspace_remote_url=None, component_remote_url=None,
+        files=files, source_session="s", agent_identity="claude",
+        confidence=0.3, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+    )
+    assert resp.status == "pending_confirmation"
+    assert GITHUB_TOKEN not in str(resp)
+    assert "FLAGGED" in (resp.operator_prompt or "")
+    listing = kb_list_pending_fn(pending=pen)
+    assert len(listing.pending) == 2
+    flagged = [e for e in listing.pending if e.secret_scan_flagged]
+    assert len(flagged) == 1
+    assert flagged[0].matching_pattern == "github_token"
+    assert GITHUB_TOKEN not in str(listing)
+
+
+def test_extra_pattern_redos_shape_is_skipped() -> None:
+    """A nested-quantifier ReDoS shape (the classic catastrophic-backtracking
+    pattern) is logged and skipped, same as an invalid regex, since it runs
+    against every postimage on the single-writer critical path."""
+    extra = load_extra_secret_patterns("(a+)+,INTERNAL-[0-9]{6}")
+    # Only the safe entry survives; the ReDoS-shaped one is dropped.
+    assert len(extra) == 1
+    result = scan_postimage_for_secrets(
+        postimage="ref INTERNAL-482910 here", extra_patterns=extra,
+    )
+    assert not result.ok
+    assert result.match.pattern_name == "custom_1"
+
+
+def test_extra_pattern_redos_variants_all_skipped() -> None:
+    for bad in ("(a+)+", "(a*)*", "([a-z]+)*", "(\\d*)+"):
+        extra = load_extra_secret_patterns(bad)
+        assert extra == [], f"{bad!r} should have been skipped as ReDoS-prone"

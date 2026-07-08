@@ -178,23 +178,36 @@ section so concurrent writes cannot corrupt each other:
   BEFORE the file is written and `git add`-ed, and on any failure after the add
   the worktree is hard-reset, so a rejected write never leaves a staged leftover
   for the session's next commit to sweep in.
-- A **secret-scanning gate** (issue #71) runs on the postimage right after the
+- A **secret-scanning gate** (issue #71) runs on the postimage BEFORE the
   content-validation gate, on every commit path (auto-commit propose, resolve
   approve, including a resolved `edited_text`, and onboarding bootstrap). It
+  runs first so a postimage that is both malformed AND carries a
+  credential-shaped value is always rejected via the redacted
+  `rejected_secret_detected` path, never via `rejected_invalid_document`
+  (which echoes the offending value verbatim in its message). The gate
   checks a built-in pattern set (PEM private-key blocks; GitHub `ghp_`/`gho_`/
   `ghs_`/`ghr_`/`github_pat_` tokens; AWS `AKIA...` access key ids; Slack
-  `xox[bpars]-` tokens; generic `password=`/`passwd=`/`secret=` assignments
-  with a non-placeholder value; and `scheme://user:pass@host` connection
-  strings) plus any operator-supplied `KB_SECRET_SCAN_EXTRA_PATTERNS`. A match
-  rejects the write `rejected_secret_detected` before anything is written to
-  disk. Only the pattern name and an approximate line number are ever surfaced
-  in the response, the audit event, or a log line, never the matched value.
-  A low-confidence proposal parked as pending is not scanned at enqueue time
-  (so an operator can still see and edit it); the gate applies when it is
-  resolved. `kb_resolve_pending` accepts an operator-only `override_secret_scan`
-  boolean to consciously commit a false positive anyway (recorded in the audit
+  `xox[bpars]-` tokens; generic `password=`/`passwd=`/`secret=` assignments,
+  including env-style prefixed keys like `DB_PASSWORD=`, with a
+  non-placeholder value; and `scheme://user:pass@host` connection strings)
+  plus any operator-supplied `KB_SECRET_SCAN_EXTRA_PATTERNS`. A match on an
+  auto-commit or bootstrap path rejects the write `rejected_secret_detected`
+  before anything is written to disk. Only the pattern name and an
+  approximate line number are ever surfaced in the response, the audit
+  event, or a log line, never the matched value. A low-confidence proposal
+  containing a secret still enters pending (removing it would defeat the
+  operator-override workflow below), but the scan runs at propose time too:
+  the response never echoes the raw text when flagged (only the pattern
+  name), the pending entry is tagged `secret_scan_flagged`/`matching_pattern`
+  (names only) so `kb pending` surfaces the warning, and a flagged memory
+  proposal's filename falls back to a neutral slug instead of embedding the
+  flagged text. `kb_resolve_pending` accepts an operator-only
+  `override_secret_scan` boolean (`kb resolve --override-secret-scan` on the
+  CLI) to consciously commit a false positive anyway (recorded in the audit
   event); no auto-commit or bootstrap path exposes this override, so an agent
-  can never self-authorize past a flagged write.
+  can never self-authorize past a flagged write. An extra pattern with the
+  classic nested-quantifier ReDoS shape is rejected at load time alongside an
+  invalid regex.
 
 ## Push queue and write-path visibility
 

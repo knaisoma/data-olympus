@@ -352,6 +352,12 @@ class PendingEntry(BaseModel):
     agent_identity: str | None = None
     created_at: float
     expires_at: float | None = None
+    # issue #71: True when the ORIGINAL postimage was flagged by the secret
+    # scanner at propose time. Surfaced so an operator running `kb pending`
+    # sees the warning (and the pattern name) without needing to inspect the
+    # raw postimage; the matched value itself is never included here.
+    secret_scan_flagged: bool = False
+    matching_pattern: str | None = None
 
 
 class PendingListResponse(BaseModel):

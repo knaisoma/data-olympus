@@ -64,7 +64,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   an operator-only `override_secret_scan` flag to consciously commit a
   flagged postimage that is a confirmed false positive; the override is
   recorded on the resulting audit event, and no auto-commit or bootstrap path
-  exposes it.
+  exposes it (`kb resolve --override-secret-scan` on the CLI). A low-confidence
+  proposal containing a secret still enters pending, so the override workflow
+  is not defeated, but its scan result is redacted to a pattern name in the
+  propose response and tagged (`secret_scan_flagged`) on the entry so
+  `kb pending` surfaces the warning without ever showing the matched value;
+  the memory filename slug itself falls back to a neutral placeholder instead
+  of embedding the flagged text. The scan runs before the content-validation
+  gate on every commit path so an invalid-document rejection can never echo a
+  credential value through its own error message. Extra patterns
+  (`KB_SECRET_SCAN_EXTRA_PATTERNS`) with the classic nested-quantifier ReDoS
+  shape are rejected at load time alongside invalid regexes.
 
 ### Fixed
 

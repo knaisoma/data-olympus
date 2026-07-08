@@ -109,6 +109,28 @@ teardown() {
   [ "$status" -eq 64 ]
 }
 
+@test "kb resolve --override-secret-scan sends the flag through to REST" {
+  run "$KB" resolve "pending-test-id" --decision approve --override-secret-scan
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"committed"* ]]
+  [[ "$output" == *"secret_scan_override_seen"* ]]
+}
+
+@test "kb resolve approve without --override-secret-scan omits the override" {
+  run "$KB" resolve "pending-test-id" --decision approve
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"committed"* ]]
+  [[ "$output" != *"secret_scan_override_seen"* ]]
+}
+
+@test "kb resolve --edit-text with --override-secret-scan sends both" {
+  run "$KB" resolve "pending-test-id" --decision approve --edit-text "fixed body" \
+    --override-secret-scan
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"committed"* ]]
+  [[ "$output" == *"secret_scan_override_seen"* ]]
+}
+
 @test "kb pending lists entries" {
   run "$KB" pending
   [ "$status" -eq 0 ]

@@ -243,12 +243,15 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/v1/resolve/"):
             decision = body.get("decision", "")
             if decision == "approve":
-                self._send(
-                    200,
-                    json.dumps(
-                        {"status": "committed", "commit_sha": "resolved-sha"}
-                    ),
-                )
+                resp: dict[str, object] = {
+                    "status": "committed", "commit_sha": "resolved-sha",
+                }
+                # Echo back whether the CLI sent the operator-only secret-scan
+                # override, so a bats test can assert the flag round-trips
+                # through the CLI -> REST body without a real scanner (issue #71).
+                if body.get("override_secret_scan"):
+                    resp["secret_scan_override_seen"] = True
+                self._send(200, json.dumps(resp))
             elif decision == "reject":
                 self._send(200, json.dumps({"status": "rejected"}))
             else:

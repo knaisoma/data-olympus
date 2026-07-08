@@ -332,7 +332,20 @@ def _bootstrap_admitted(
                 with contextlib.suppress(Exception):
                     pending.reject(pid)
 
+        from data_olympus.write_gate import scan_postimage_for_secrets
+        any_flagged = False
         for f in files:
+            # Scan BEFORE enqueueing (issue #71), same rationale as the
+            # memory/edit propose paths: never reject a low-confidence
+            # bootstrap file here (that would remove the operator-override
+            # path at resolve time), but tag the pending entry (pattern name
+            # only, never the matched value) so `kb pending` warns the
+            # operator without exposing the secret.
+            secret_result = scan_postimage_for_secrets(postimage=f["postimage"])
+            flagged_pattern = (
+                secret_result.match.pattern_name if secret_result.match is not None else None
+            )
+            any_flagged = any_flagged or flagged_pattern is not None
             try:
                 pid = pending.enqueue(
                     proposal_type="edit",
@@ -345,7 +358,9 @@ def _bootstrap_admitted(
                           "bootstrap": True,
                           "bundle_id": bundle_id,
                           "workspace": workspace,
-                          "component": component},
+                          "component": component,
+                          "secret_scan_flagged": flagged_pattern is not None,
+                          "matching_pattern": flagged_pattern},
                 )
                 pending_ids.append(pid)
             except PathLockBusyError:
@@ -367,12 +382,18 @@ def _bootstrap_admitted(
                     status="rejected_pending_queue_full",
                     rejected_paths=[f["target_path"] for f in files],
                 )
+        flagged_note = (
+            " One or more files were FLAGGED by the secret scanner; review "
+            "before resolving (see `kb pending` for the matched pattern name)."
+            if any_flagged else ""
+        )
         return BootstrapResponse(
             status="pending_confirmation",
             pending_id=pending_ids[0] if pending_ids else None,
             operator_prompt=(
                 f"Bootstrap of {workspace} pending ({len(pending_ids)} files, "
                 f"bundle {bundle_id}); run `kb pending` to see entries."
+                f"{flagged_note}"
             ),
         )
 

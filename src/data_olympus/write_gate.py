@@ -487,6 +487,24 @@ def _line_of(content: str, index: int) -> int:
     return content.count("\n", 0, index) + 1
 
 
+# Heuristic ReDoS guard for operator-supplied extra patterns. Matches a
+# parenthesized group that itself contains a `+`/`*` quantifier, immediately
+# followed by another `+`/`*` quantifying the whole group -- the classic
+# catastrophic-backtracking shape (``(a+)+``, ``(\d*)*``, ``([a-z]+)*``, ...).
+# This is a heuristic, not a proof of safety (it does not catch every ReDoS
+# shape, e.g. one spread across nested groups), but it catches the common,
+# well-known evil-regex pattern with no false negatives on the built-in set
+# (none of which have a quantifier nested inside a quantified group). Bounded
+# repetition (``{n,m}``) and non-nested quantifiers are not flagged.
+_REDOS_NESTED_QUANTIFIER_RE = re.compile(r"\([^()]*[+*][^()]*\)[+*]")
+
+
+def _looks_redos_prone(pattern_src: str) -> bool:
+    """True when ``pattern_src`` contains the classic nested-quantifier shape
+    that causes catastrophic backtracking in a backtracking regex engine."""
+    return bool(_REDOS_NESTED_QUANTIFIER_RE.search(pattern_src))
+
+
 def load_extra_secret_patterns(
     env_value: str | None = None,
 ) -> list[tuple[str, re.Pattern[str]]]:
@@ -494,7 +512,11 @@ def load_extra_secret_patterns(
     regexes an operator wants scanned in addition to the built-in set. Each
     entry becomes its own named pattern (``custom_1``, ``custom_2``, ...). An
     invalid regex is logged and SKIPPED, never raised, so one operator typo in
-    the env var cannot crash the write path."""
+    the env var cannot crash the write path. A pattern with the classic
+    nested-quantifier ReDoS shape (see :func:`_looks_redos_prone`) is also
+    logged and skipped: it runs against every proposed postimage on the
+    single-writer critical path, so a catastrophic-backtracking pattern would
+    hang the whole write pipeline, not just one request."""
     raw = (
         env_value if env_value is not None
         else os.environ.get("KB_SECRET_SCAN_EXTRA_PATTERNS", "")
@@ -503,6 +525,14 @@ def load_extra_secret_patterns(
     for piece in raw.split(","):
         pattern_src = piece.strip()
         if not pattern_src:
+            continue
+        if _looks_redos_prone(pattern_src):
+            _log.warning(
+                "KB_SECRET_SCAN_EXTRA_PATTERNS entry %r has a nested-quantifier "
+                "shape that risks catastrophic backtracking and will be "
+                "skipped; rewrite it without a quantifier nested inside a "
+                "quantified group", pattern_src,
+            )
             continue
         try:
             compiled = re.compile(pattern_src)
