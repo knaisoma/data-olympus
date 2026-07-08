@@ -826,9 +826,12 @@ def test_resolve_of_legacy_pending_entry_with_secret_path_rejected(
 ) -> None:
     """Defense in depth: a pending entry whose target_path carries a
     credential-shaped value (e.g. created before this gate existed) is
-    rejected at resolve-commit time, without echoing the path."""
+    rejected at resolve-commit time, without echoing the path in the response
+    OR in the emitted audit event (audit_base is populated with the resolved
+    path before the commit helper rejects, so it must be redacted there)."""
     _set_git_env(monkeypatch)
     git, reg, pq, pen, rl, bl = _state(tmp_path)
+    audit = AuditLog(log_path=str(tmp_path / "audit.log"), hmac_key="")
     # Enqueue a poisoned entry directly (bypassing the propose gate, as a
     # legacy entry would have).
     pid = pen.enqueue(
@@ -844,7 +847,12 @@ def test_resolve_of_legacy_pending_entry_with_secret_path_rejected(
         pending_id=pid, decision="approve", edited_text=None,
         worktrees=reg, push_queue=pq, pending=pen,
         source_session="s", agent_identity="operator",
+        audit_log=audit,
     )
     assert resp.status == "rejected_secret_detected"
-    assert AWS_ACCESS_KEY not in (resp.reason or "")
+    assert AWS_ACCESS_KEY not in str(resp)
     assert pen.size() == 1  # entry restored, not consumed
+    events = list(audit.iter_filtered())
+    assert len(events) >= 1
+    for ev in events:
+        assert AWS_ACCESS_KEY not in str(ev), "audit event must not carry the raw path"

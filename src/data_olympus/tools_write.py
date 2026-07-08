@@ -1060,7 +1060,17 @@ def kb_resolve_pending_fn(
         return ResolvePendingResponse(status="already_resolved")
 
     target_tier, _ = _classify(resolved.target_path)
-    audit_base["target_path"] = resolved.target_path
+    # issue #71: the resolved entry's target_path may itself be
+    # credential-shaped (a legacy entry predating the propose-time path gate),
+    # and audit_base flows into EVERY audit event this function emits,
+    # including the rejection the commit helper is about to raise for exactly
+    # that path. Redact it here so no audit event ever carries the raw value;
+    # the commit helper re-scans the real path for the reject/override
+    # decision itself.
+    resolved_path_scan = scan_postimage_for_secrets(postimage=resolved.target_path)
+    audit_base["target_path"] = (
+        resolved.target_path if resolved_path_scan.ok else _REDACTED_PATH
+    )
     audit_base["target_tier"] = target_tier
     try:
         audit_base["confidence"] = float(resolved.meta.get("confidence", 0.0))
