@@ -17,7 +17,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Typed lifecycle relationships: parsed, indexed, and lint-validated
   (issue #110, slice 1).** `supersedes` (scalar ID or list of IDs, normalized
   to a list at parse time so both shapes the ADR importer emits lint clean),
-  `superseded_by` (scalar ID), and a new `contradicts` field (list of IDs,
+  `superseded_by` (scalar ID), and a new `contradicts` field (scalar ID or
+  list of IDs, normalized to a list the same way as `supersedes`;
   unresolved-conflict evidence that never affects retrieval ranking) are now
   parsed into `ParsedDoc` and extracted into a new `edges` table
   (`source_id`, `rel`, `target_id`) at index-build time (schema version
