@@ -321,8 +321,75 @@ def _bootstrap_admitted(
             rejected_paths=oversized,
         )
 
-    if confidence < confidence_threshold or not can_auto_commit:
-        # Low confidence (or caller not authorized to auto-commit): enqueue ALL
+    # Governed-lane write protection (issue #112): a bootstrap file only ever
+    # targets a NEW or currently-missing canonical path (never an already
+    # in-force document -- see the `partial`-state narrowing above), so only
+    # rule 1 (status clamp) applies; check_governed_target=False. The bundle
+    # is atomic, so ANY file whose postimage sets/changes status into the
+    # in-force class demotes the WHOLE bundle to pending review (it is
+    # reviewed/approved as a unit, same as the existing low-confidence bundle
+    # path). Same secret-scan/content-validation precedence rule as the
+    # propose paths: a bundle that would otherwise be REJECTED outright by a
+    # hard gate is never silently demoted instead.
+    from data_olympus.governed_lane import (
+        GovernedLaneVerdict,
+        evaluate_governed_lane,
+        governed_lane_protection_enabled,
+    )
+    per_file_verdict: dict[str, GovernedLaneVerdict] = {}
+    bundle_demotion_reason: str | None = None
+    if governed_lane_protection_enabled():
+        for f in files:
+            v = evaluate_governed_lane(
+                postimage=f["postimage"], target_path=f["target_path"], idx=idx,
+                check_governed_target=False,
+            )
+            per_file_verdict[f["target_path"]] = v
+            if v.demoted and bundle_demotion_reason is None:
+                bundle_demotion_reason = v.demotion_reason
+        would_auto_commit = confidence >= confidence_threshold and can_auto_commit
+        if bundle_demotion_reason is not None and would_auto_commit:
+            from data_olympus.format.frontmatter import parse_frontmatter
+            from data_olympus.write_gate import (
+                _effective_doc_id,
+                scan_postimage_for_secrets,
+                validate_postimage,
+            )
+            gates_clean = True
+            seen_ids: dict[str, str] = {}
+            for f in files:
+                tp, pi = f["target_path"], f["postimage"]
+                if (
+                    not scan_postimage_for_secrets(postimage=tp).ok
+                    or not scan_postimage_for_secrets(postimage=pi).ok
+                    or not validate_postimage(target_path=tp, postimage=pi, idx=idx).ok
+                ):
+                    gates_clean = False
+                    break
+                # Intra-bundle duplicate-id check (mirrors
+                # commit_multifile_in_worktree's own check): neither file is
+                # in the index/tree yet, so the per-file validate_postimage
+                # call above cannot catch two bundle files claiming the same
+                # effective id.
+                try:
+                    bfm, _body = parse_frontmatter(pi)
+                except ValueError:
+                    bfm = {}
+                eid = _effective_doc_id(bfm, tp)
+                if eid and eid in seen_ids and seen_ids[eid] != tp:
+                    gates_clean = False
+                    break
+                if eid:
+                    seen_ids[eid] = tp
+            if not gates_clean:
+                bundle_demotion_reason = None
+
+    if (
+        confidence < confidence_threshold or not can_auto_commit
+        or bundle_demotion_reason is not None
+    ):
+        # Low confidence (or caller not authorized to auto-commit, or a
+        # governed-lane demotion): enqueue ALL
         # files as a single pending bundle. The pending queue stores per-file
         # entries; every entry of one bootstrap shares a `bundle_id` in its meta
         # so the operator (and a future bundle-aware resolve UX) can treat them as
@@ -362,6 +429,13 @@ def _bootstrap_admitted(
                 secret_result.match.pattern_name if secret_result.match is not None else None
             )
             any_flagged = any_flagged or flagged_pattern is not None
+            file_verdict = per_file_verdict.get(f["target_path"])
+            file_demotion_reason = (
+                file_verdict.demotion_reason if file_verdict is not None else None
+            )
+            file_injection_matches = (
+                file_verdict.injection_matches if file_verdict is not None else ()
+            )
             try:
                 pid = pending.enqueue(
                     proposal_type="edit",
@@ -376,7 +450,15 @@ def _bootstrap_admitted(
                           "workspace": workspace,
                           "component": component,
                           "secret_scan_flagged": flagged_pattern is not None,
-                          "matching_pattern": flagged_pattern},
+                          "matching_pattern": flagged_pattern,
+                          "demotion_reason": (
+                              file_demotion_reason or bundle_demotion_reason
+                          ),
+                          "injection_suspect": bool(file_injection_matches),
+                          "injection_patterns": (
+                              [f"{m.pattern_name}:{m.line}" for m in file_injection_matches]
+                              or None
+                          )},
                 )
                 pending_ids.append(pid)
             except PathLockBusyError:
@@ -403,13 +485,21 @@ def _bootstrap_admitted(
             "before resolving (see `kb pending` for the matched pattern name)."
             if any_flagged else ""
         )
+        demotion_note = (
+            f" This bundle was DEMOTED to pending review by governed-lane "
+            f"write protection (reason: {bundle_demotion_reason}). Agents can "
+            f"propose; only a human can promote this write. Inform the "
+            f"operator that it awaits review -- do not attempt to bypass it."
+            if bundle_demotion_reason is not None else ""
+        )
         return BootstrapResponse(
             status="pending_confirmation",
             pending_id=pending_ids[0] if pending_ids else None,
+            demotion_reason=bundle_demotion_reason,
             operator_prompt=(
                 f"Bootstrap of {workspace} pending ({len(pending_ids)} files, "
                 f"bundle {bundle_id}); run `kb pending` to see entries."
-                f"{flagged_note}"
+                f"{flagged_note}{demotion_note}"
             ),
         )
 

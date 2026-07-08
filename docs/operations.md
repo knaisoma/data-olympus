@@ -425,7 +425,93 @@ This is a migration, not a hard break: a legacy corpus with status-less document
 4. Re-run `kb lint`; once every document lints clean, the next index build flips `status_present_in_all_kb_entries` to `true`, the ledger commits the clean state, and `pending_actions` stops appearing.
 5. New documents created from this point forward are rejected at write time if `status` is missing, so the corpus cannot regress.
 
-## 6. Quick reference
+## 6. Governed-lane recap and hook wiring (issue #112)
+
+Governed-lane write protection (see `docs/serving.md` and `SECURITY.md`)
+demotes some writes to pending instead of committing them. Three surfaces
+make sure a demotion is never missed:
+
+### 6.1 `kb_session_recap` / `kb session-recap` / `GET /api/v1/session-recap`
+
+A read-only per-session write tally over the audit log: how many writes for
+`source_session` were `committed`, how many were `demoted_to_pending`
+(parked as pending -- whether for a governed-lane demotion or a plain
+low-confidence proposal, both mean "awaiting operator review"), and how
+many were `rejected` (any `rejected_*` status).
+
+```bash
+kb session-recap my-session-id
+# {"source_session": "my-session-id", "committed": 3, "demoted_to_pending": 1, "rejected": 0}
+kb session-recap my-session-id -o plain
+# committed: 3 | demoted_to_pending: 1 | rejected: 0
+curl -s "http://<host>/api/v1/session-recap?source_session=my-session-id"
+```
+
+Same auth posture as `/api/v1/pending` / `/api/v1/audit`: open by default,
+requires a `Bearer` token when `KB_AUTH_TOKEN`/`KB_AUTH_PRINCIPALS` is
+configured. The scan walks rotated audit segments too (bounded, so a very
+long session history does not turn one query into an unbounded read).
+
+### 6.2 `kb_consult`'s `pending_actions` envelope
+
+`kb_consult` already computes the calling session's recap on every call.
+When `demoted_to_pending > 0` for that `source_session`, a `demoted_writes`
+item is appended to the response's `pending_actions` list (the same CTA
+envelope the maintenance ledger uses -- see section 5) alongside any
+maintenance items; omitted entirely when the session has no open
+demotions. An agent that calls `kb_consult` in its normal course of work
+(as the enforcement gate already requires for a governed decision) sees the
+demotion without any extra step.
+
+### 6.3 SessionEnd/Stop hook (`bin/kb-session-recap-hook`)
+
+`bin/kb-session-recap-hook` is a small standalone script that calls the
+recap endpoint and prints one line (nothing at all when the session had no
+committed/demoted/rejected writes, so a read-only session stays silent):
+
+```
+[KB] session recap: 3 committed, 1 awaiting operator review, 0 rejected
+```
+
+It resolves `SOURCE_SESSION` from (in order) a positional argument, or the
+`session_id` field of a JSON hook payload piped to stdin (the Claude Code
+hook contract). It never blocks or fails the agent's shutdown: a missing
+session id, an unreachable endpoint, or a malformed response is swallowed
+silently (exit 0).
+
+**Wiring it as a Claude Code SessionEnd hook** (`~/.claude/settings.json`):
+
+```json
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/data-olympus/bin/kb-session-recap-hook"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Claude Code pipes the hook event JSON (including `session_id`) to the
+command's stdin, matching this script's default stdin-JSON resolution.
+
+**Wiring it for Codex CLI:** add the equivalent Stop/session-end hook entry
+in `~/.codex/config.toml` per Codex's own hook documentation, invoking this
+same script. If Codex's hook contract does not pipe JSON to stdin the way
+Claude Code's does, pass the session id as the positional argument instead
+(`kb-session-recap-hook "$CODEX_SESSION_ID"`, adapted to however Codex
+exposes it to the hook command).
+
+Set `KB_ENDPOINT` / `KB_AUTH_TOKEN` in the hook's environment the same way
+`bin/kb` reads them.
+
+## 7. Quick reference
 
 | Task | Command |
 |---|---|
@@ -438,4 +524,6 @@ This is a migration, not a hard break: a legacy corpus with status-less document
 | Enable audit rotation | set `KB_AUDIT_MAX_BYTES` in the ConfigMap |
 | Enable proxy headers | set `KB_TRUSTED_PROXIES` in the ConfigMap |
 | Enable Ingress | set `KB_AUTH_TOKEN`, uncomment `- ingress.yaml` in `kustomization.yaml` (see `deploy/k8s/README.md`) |
+| Session write recap | `kb session-recap <source_session>` |
+| Disable governed-lane protection | set `KB_GOVERNED_LANE_PROTECTION=off` in the ConfigMap |
 | View maintenance-ledger state | `curl -s 'http://<host>/api/v1/health?verbose=true' \| jq .pending_actions` |

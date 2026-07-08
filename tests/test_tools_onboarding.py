@@ -624,6 +624,10 @@ def test_high_conf_bootstrap_commits_via_serialized_path(tmp_path, monkeypatch) 
     """A high-confidence bootstrap commits one atomic commit through the shared
     serialized/validated write path (Codex Blocker 2), and a path lock is held +
     released around it (not leaked)."""
+    # This test is about the serialized commit path, not governance; the
+    # files' status: active would otherwise trip the issue #112 governed-lane
+    # status clamp and demote instead of commit.
+    monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     for k, v in {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
                  "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}.items():
         monkeypatch.setenv(k, v)

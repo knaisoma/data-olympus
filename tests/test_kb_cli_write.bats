@@ -157,6 +157,27 @@ teardown() {
   [[ "$output" == *"committed"* ]]
 }
 
+@test "kb session-recap prints the per-session tally" {
+  run "$KB" session-recap my-session
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"my-session"* ]]
+  [[ "$output" == *"committed"* ]]
+  [[ "$output" == *"demoted_to_pending"* ]]
+}
+
+@test "kb session-recap plain output is a one-line summary" {
+  run "$KB" session-recap my-session -o plain
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"committed: 2"* ]]
+  [[ "$output" == *"demoted_to_pending: 1"* ]]
+  [[ "$output" == *"rejected: 0"* ]]
+}
+
+@test "kb session-recap without SOURCE_SESSION returns usage error" {
+  run "$KB" session-recap
+  [ "$status" -eq 64 ]
+}
+
 @test "kb propose with no args returns usage error" {
   run "$KB" propose
   [ "$status" -eq 64 ]

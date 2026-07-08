@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# kb-session-recap-hook - print a one-line per-session write recap (issue #112).
+#
+# Intended for wiring as a SessionEnd (or Stop) hook in a coding agent so a
+# governed-lane demotion (or a plain low-confidence park, or a rejection) is
+# never silent: the operator sees a summary the moment the session ends,
+# without having to remember to run `kb session-recap` or `kb pending`
+# themselves.
+#
+# Usage:
+#   kb-session-recap-hook [SOURCE_SESSION]
+#
+# SOURCE_SESSION resolution order:
+#   1. the positional argument, if given (manual invocation / testing);
+#   2. the `session_id` field of a JSON hook payload read from stdin (the
+#      Claude Code / Codex SessionEnd/Stop hook contract -- see below);
+#   3. otherwise this hook prints nothing and exits 0 (never blocks/fails the
+#      agent's shutdown over a missing session id).
+#
+# Output: nothing when the session has zero committed/demoted/rejected
+# writes on record (a purely read-only or empty session stays silent, no
+# noise); otherwise one line, e.g.:
+#   [KB] session recap: 3 committed, 1 awaiting operator review, 0 rejected
+#
+# Environment:
+#   KB_ENDPOINT      REST endpoint (default http://localhost:8080)
+#   KB_AUTH_TOKEN     when set, sent as Authorization: Bearer
+#
+# Never blocks or fails the agent's shutdown: any connection failure, missing
+# session id, or malformed response is swallowed and this exits 0 silently.
+#
+# --- Wiring as a session-end hook (documentation only) ---------------------
+#
+# Claude Code (~/.claude/settings.json), a SessionEnd hook:
+#   {
+#     "hooks": {
+#       "SessionEnd": [
+#         {
+#           "hooks": [
+#             {
+#               "type": "command",
+#               "command": "/path/to/data-olympus/bin/kb-session-recap-hook"
+#             }
+#           ]
+#         }
+#       ]
+#     }
+#   }
+# Claude Code pipes the hook event JSON (including `session_id`) to the
+# command's stdin, which is exactly what this script expects.
+#
+# Codex CLI: wire the equivalent Stop/session-end hook in ~/.codex/config.toml
+# per Codex's hook documentation, invoking this same script; Codex's hook
+# payload also carries a session id field the operator maps to SOURCE_SESSION
+# (pass it as the positional argument if Codex's contract does not pipe JSON
+# on stdin the way Claude Code's does).
+set -uo pipefail
+
+KB_ENDPOINT="${KB_ENDPOINT:-http://localhost:8080}"
+KB_AUTH_TOKEN="${KB_AUTH_TOKEN:-}"
+
+SESSION="${1:-}"
+if [[ -z "$SESSION" ]]; then
+  PAYLOAD="$(cat 2>/dev/null || true)"
+  SESSION="$(python3 -c 'import json,sys
+try:
+    d = json.loads(sys.stdin.read() or "{}")
+    v = d.get("session_id", "")
+    print(v if isinstance(v, str) else "")
+except Exception:
+    print("")' <<<"$PAYLOAD" 2>/dev/null)" || SESSION=""
+fi
+
+[[ -z "$SESSION" ]] && exit 0
+
+url_encode() {
+  python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+}
+
+auth_k_arg=()
+if [[ -n "$KB_AUTH_TOKEN" ]]; then
+  auth_k_arg=(-K <(printf 'header = "Authorization: Bearer %s"\n' "$KB_AUTH_TOKEN"))
+fi
+
+tmpfile="$(mktemp)"
+if ! curl --silent --max-time 5 --output "$tmpfile" \
+      ${auth_k_arg[@]+"${auth_k_arg[@]}"} \
+      "$KB_ENDPOINT/api/v1/session-recap?source_session=$(url_encode "$SESSION")" 2>/dev/null; then
+  rm -f "$tmpfile"
+  exit 0
+fi
+BODY="$(cat "$tmpfile")"
+rm -f "$tmpfile"
+
+python3 -c 'import json,sys
+try:
+    d = json.loads(sys.argv[1] or "{}")
+    committed = int(d.get("committed", 0) or 0)
+    demoted = int(d.get("demoted_to_pending", 0) or 0)
+    rejected = int(d.get("rejected", 0) or 0)
+    if committed == 0 and demoted == 0 and rejected == 0:
+        sys.exit(0)
+    print(f"[KB] session recap: {committed} committed, {demoted} awaiting "
+          f"operator review, {rejected} rejected")
+except Exception:
+    pass' "$BODY"
+exit 0

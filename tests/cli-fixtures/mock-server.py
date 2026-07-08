@@ -16,6 +16,7 @@ Read routes:
     GET /api/v1/search?q=worktree       -> search-worktree.json
     GET /api/v1/pending                 -> canned pending list
     GET /api/v1/audit                   -> canned audit events
+    GET /api/v1/session-recap           -> canned recap (echoes source_session)
     GET /api/v1/onboarding/status       -> synthetic status:
                                             state=onboarded for workspace=example-project,
                                             state=absent for any other workspace.
@@ -168,6 +169,17 @@ class Handler(BaseHTTPRequestHandler):
                         "limit_hit": False,
                     }
                 ),
+            )
+        elif path == "/api/v1/session-recap":
+            source_session = (qs.get("source_session") or [""])[0]
+            self._send(
+                200,
+                json.dumps({
+                    "source_session": source_session,
+                    "committed": 2,
+                    "demoted_to_pending": 1,
+                    "rejected": 0,
+                }),
             )
         else:
             self._send(404, '{"error":"unknown_route"}')

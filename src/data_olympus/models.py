@@ -418,6 +418,13 @@ class ProposeResponse(BaseModel):
     target_path: str | None = None
     matching_pattern: str | None = None
     resolved_path: str | None = None
+    # Governed-lane write protection (issue #112): set when a pending_confirmation
+    # outcome was NOT a plain low-confidence park but a demotion under
+    # KB_GOVERNED_LANE_PROTECTION -- "status_promotion" (the postimage sets/
+    # changes status into the in-force class) or "governed_target" (the edit
+    # target is currently in force). None on every other outcome (including a
+    # plain low-confidence pending_confirmation).
+    demotion_reason: str | None = None
 
 
 class ResolvePendingRequest(BaseModel):
@@ -472,6 +479,17 @@ class PendingEntry(BaseModel):
     # secret scanner as `tags` before it ever reaches pending meta. None when
     # no evidence was supplied.
     evidence: list[str] | None = None
+    # Governed-lane write protection (issue #112): see ProposeResponse.demotion_reason
+    # for the rationale. None when this entry parked for a plain low-confidence
+    # reason rather than a governed-lane demotion.
+    demotion_reason: str | None = None
+    # Injection-pattern annotation (issue #112, advisory only -- never demotes
+    # or rejects by itself): True when the postimage matched at least one
+    # agent-directed injection heuristic. `injection_patterns` carries
+    # `"pattern_name:line"` entries (never the matched text), mirroring the
+    # issue #71 secret-scan redaction discipline.
+    injection_suspect: bool = False
+    injection_patterns: list[str] | None = None
 
 
 class PendingListResponse(BaseModel):
@@ -502,6 +520,13 @@ class AuditEvent(BaseModel):
     # propose_memory / propose_edit audit events, when supplied. Never the raw
     # value if a scan flagged an item (see tools_write._redact_evidence).
     evidence: list[str] | None = None
+    # Governed-lane write protection (issue #112): the demotion reason
+    # ("status_promotion" | "governed_target") when a pending_confirmation
+    # event was a governed-lane demotion rather than a plain low-confidence
+    # park; and whether the postimage matched an advisory injection-pattern
+    # heuristic (never blocks/demotes by itself -- see governed_lane.py).
+    demotion_reason: str | None = None
+    injection_suspect: bool | None = None
     # Tamper-evident chain fields (present on events appended with chaining).
     event_id: str | None = None
     prev_hash: str | None = None
@@ -512,6 +537,20 @@ class AuditResponse(BaseModel):
     events: list[AuditEvent]
     returned: int
     limit_hit: bool = False
+
+
+class SessionRecapResponse(BaseModel):
+    """kb_session_recap response (issue #112): a per-session write summary
+    over the audit log -- N committed, M demoted-to-pending
+    (pending_confirmation, including but not limited to governed-lane
+    demotions), K rejected (any rejected_* status). Used by the per-session
+    feedback loop (bin/kb session-recap, the SessionEnd hook, and the
+    kb_consult pending_actions envelope) so a demotion is never silent."""
+
+    source_session: str
+    committed: int = 0
+    demoted_to_pending: int = 0
+    rejected: int = 0
 
 
 class AuditVerifyResponse(BaseModel):
@@ -603,6 +642,8 @@ class BootstrapResponse(BaseModel):
     rejected_paths: list[str] = []
     push_state: str | None = None
     operator_prompt: str | None = None
+    # Governed-lane write protection (issue #112): see ProposeResponse.demotion_reason.
+    demotion_reason: str | None = None
 
 
 class CleanupItem(BaseModel):

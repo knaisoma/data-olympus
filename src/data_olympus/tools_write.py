@@ -19,6 +19,11 @@ from data_olympus.auth import (
     safe_join_under_root,
 )
 from data_olympus.format.frontmatter import parse_frontmatter
+from data_olympus.governed_lane import (
+    GovernedLaneVerdict,
+    evaluate_governed_lane,
+    governed_lane_protection_enabled,
+)
 from data_olympus.models import (
     PendingEntry,
     PendingListResponse,
@@ -179,6 +184,8 @@ def _emit_audit(
     matching_pattern: str | None = None,
     secret_scan_override: bool | None = None,
     evidence: list[str] | None = None,
+    demotion_reason: str | None = None,
+    injection_suspect: bool | None = None,
 ) -> None:
     if audit_log is None:
         return
@@ -200,7 +207,64 @@ def _emit_audit(
             "matching_pattern": matching_pattern,
             "secret_scan_override": secret_scan_override,
             "evidence": evidence,
+            "demotion_reason": demotion_reason,
+            "injection_suspect": injection_suspect,
         })
+
+
+def _governed_lane_check(
+    *,
+    postimage: str,
+    target_path: str,
+    idx: Index | None,
+    check_governed_target: bool,
+    confidence: float,
+    confidence_threshold: float,
+    can_auto_commit: bool,
+) -> GovernedLaneVerdict:
+    """Evaluate the governed-lane rules (issue #112) for one candidate write,
+    applying the secret-scan-precedence ordering rule.
+
+    Returns a verdict with ``demotion_reason=None`` when
+    ``KB_GOVERNED_LANE_PROTECTION=off``, so callers can unconditionally branch
+    on ``verdict.demoted`` without their own feature-flag check (this
+    restores the pre-#112 behavior exactly, per the issue's rollout
+    contract).
+
+    Ordering rule: when this proposal would otherwise auto-commit (high
+    confidence AND authorized) and the postimage or target_path itself
+    matches a secret pattern, OR the postimage otherwise fails the issue #4
+    content-validation gate (malformed frontmatter, an invalid enum value, or
+    a forged/duplicate id), any demotion verdict is CANCELLED so the existing
+    high-confidence branch reaches ``_commit_in_worktree``'s own gates and
+    rejects outright instead of silently parking bad content as pending: a
+    HARD rejection always takes precedence over a SOFT demotion. A
+    low-confidence proposal is unaffected (its secret/validation decision is
+    already deferred to operator resolve time, unchanged by this feature).
+    The duplicate-id half of content-validation here checks only the live
+    index (``worktree_path=None``); the authoritative check with the full
+    worktree tree still runs inside ``_commit_in_worktree``.
+    """
+    if not governed_lane_protection_enabled():
+        return GovernedLaneVerdict(demotion_reason=None)
+    verdict = evaluate_governed_lane(
+        postimage=postimage, target_path=target_path, idx=idx,
+        check_governed_target=check_governed_target,
+    )
+    would_auto_commit = confidence >= confidence_threshold and can_auto_commit
+    if verdict.demoted and would_auto_commit:
+        gates_clean = (
+            scan_postimage_for_secrets(postimage=target_path).ok
+            and scan_postimage_for_secrets(postimage=postimage).ok
+            and validate_postimage(
+                target_path=target_path, postimage=postimage, idx=idx,
+            ).ok
+        )
+        if not gates_clean:
+            return GovernedLaneVerdict(
+                demotion_reason=None, injection_matches=verdict.injection_matches,
+            )
+    return verdict
 
 
 class _WriteRejected(Exception):
@@ -746,7 +810,22 @@ def kb_propose_memory_fn(
         return ProposeResponse(status="rejected_payload_too_large",
                                target_path=target_path)
 
-    if confidence < confidence_threshold or not can_auto_commit:
+    # Governed-lane write protection (issue #112): a memory proposal always
+    # targets a brand-new memory-inbox file, never a currently in-force
+    # document, so only rule 1 (status clamp) applies (check_governed_target=
+    # False). In practice the server-rendered memory always stamps
+    # status: proposed (see _render_memory), so this rarely fires for memory
+    # today; it is still evaluated here so a future caller-supplied status
+    # override cannot bypass the clamp.
+    governed_verdict = _governed_lane_check(
+        postimage=postimage, target_path=target_path, idx=idx,
+        check_governed_target=False, confidence=confidence,
+        confidence_threshold=confidence_threshold, can_auto_commit=can_auto_commit,
+    )
+    demotion_reason = governed_verdict.demotion_reason
+    injection_matches = governed_verdict.injection_matches
+
+    if confidence < confidence_threshold or not can_auto_commit or demotion_reason is not None:
         # Scan BEFORE enqueueing (issue #71): a low-confidence proposal is
         # never rejected here (that would defeat the operator-override
         # workflow at resolve time -- see kb_resolve_pending_fn), but a
@@ -796,6 +875,11 @@ def kb_propose_memory_fn(
                     "secret_scan_flagged": flagged_pattern is not None,
                     "matching_pattern": flagged_pattern,
                     "evidence": safe_evidence or None,
+                    "demotion_reason": demotion_reason,
+                    "injection_suspect": bool(injection_matches),
+                    "injection_patterns": (
+                        governed_verdict.injection_pattern_names() or None
+                    ),
                 },
             )
         except PathLockBusyError:
@@ -812,12 +896,15 @@ def kb_propose_memory_fn(
             )
         _emit_audit(audit_log, **{**audit_base, "status": "pending_confirmation",
                                    "pending_id": pid, "matching_pattern": flagged_pattern,
-                                   "evidence": safe_evidence or None})
+                                   "evidence": safe_evidence or None,
+                                   "demotion_reason": demotion_reason,
+                                   "injection_suspect": bool(injection_matches) or None})
         if flagged_pattern is not None:
             return ProposeResponse(
                 status="pending_confirmation",
                 pending_id=pid,
                 matching_pattern=flagged_pattern,
+                demotion_reason=demotion_reason,
                 operator_prompt=(
                     # target_path is deliberately OMITTED here: for a memory
                     # proposal it is slugified straight from the (possibly
@@ -829,6 +916,21 @@ def kb_propose_memory_fn(
                     f"via `kb pending` / `kb resolve {pid} --decision reject`, or "
                     f"`kb resolve {pid} --decision approve --override-secret-scan` "
                     f"only if this is a confirmed false positive."
+                ),
+            )
+        if demotion_reason is not None:
+            return ProposeResponse(
+                status="pending_confirmation",
+                pending_id=pid,
+                demotion_reason=demotion_reason,
+                operator_prompt=(
+                    f"Proposed memory (pending_id={pid}) was DEMOTED to pending "
+                    f"review by governed-lane write protection "
+                    f"(reason: {demotion_reason}). Agents can propose; only a "
+                    f"human can promote this write. Inform the operator that it "
+                    f"awaits review -- do not attempt to bypass it. Run "
+                    f"`kb pending` to inspect it, then `kb resolve {pid} "
+                    f"--decision approve|reject`."
                 ),
             )
         return ProposeResponse(
@@ -864,7 +966,8 @@ def kb_propose_memory_fn(
         return ProposeResponse(status="rejected_path_lock_busy",
                                target_path=target_path)
     _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha,
-                               "evidence": _redact_evidence(evidence) or None})
+                               "evidence": _redact_evidence(evidence) or None,
+                               "injection_suspect": bool(injection_matches) or None})
     return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state)
 
 
@@ -1059,7 +1162,21 @@ def kb_propose_edit_fn(
         return ProposeResponse(status="rejected_payload_too_large",
                                target_path=target_path)
 
-    if confidence < confidence_threshold or not can_auto_commit:
+    # Governed-lane write protection (issue #112): an edit is checked against
+    # BOTH rules -- the status clamp (rule 1: the postimage sets/changes
+    # status into the in-force class) and the governed-target demotion
+    # (rule 2: the target is CURRENTLY in force in the live index, regardless
+    # of confidence). See _governed_lane_check for the secret-scan-precedence
+    # ordering rule.
+    governed_verdict = _governed_lane_check(
+        postimage=postimage, target_path=target_path, idx=idx,
+        check_governed_target=True, confidence=confidence,
+        confidence_threshold=confidence_threshold, can_auto_commit=can_auto_commit,
+    )
+    demotion_reason = governed_verdict.demotion_reason
+    injection_matches = governed_verdict.injection_matches
+
+    if confidence < confidence_threshold or not can_auto_commit or demotion_reason is not None:
         # Scan BEFORE enqueueing (issue #71): see the matching comment in
         # kb_propose_memory_fn for the rationale (never reject here -- that
         # would remove the operator-override path at resolve time -- but
@@ -1082,7 +1199,12 @@ def kb_propose_edit_fn(
                       "reason": reason,
                       "secret_scan_flagged": flagged_pattern is not None,
                       "matching_pattern": flagged_pattern,
-                      "evidence": safe_evidence or None},
+                      "evidence": safe_evidence or None,
+                      "demotion_reason": demotion_reason,
+                      "injection_suspect": bool(injection_matches),
+                      "injection_patterns": (
+                          governed_verdict.injection_pattern_names() or None
+                      )},
             )
         except PathLockBusyError:
             _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
@@ -1094,18 +1216,36 @@ def kb_propose_edit_fn(
                                    target_path=target_path)
         _emit_audit(audit_log, **{**audit_base, "status": "pending_confirmation",
                                    "pending_id": pid, "matching_pattern": flagged_pattern,
-                                   "evidence": safe_evidence or None})
+                                   "evidence": safe_evidence or None,
+                                   "demotion_reason": demotion_reason,
+                                   "injection_suspect": bool(injection_matches) or None})
         if flagged_pattern is not None:
             return ProposeResponse(
                 status="pending_confirmation",
                 pending_id=pid,
                 matching_pattern=flagged_pattern,
+                demotion_reason=demotion_reason,
                 operator_prompt=(
                     f"Proposed edit to {target_path} was FLAGGED by the secret "
                     f"scanner (pattern: {flagged_pattern}). Review it via "
                     f"`kb pending` / `kb resolve {pid} --decision reject`, or "
                     f"`kb resolve {pid} --decision approve --override-secret-scan` "
                     f"only if this is a confirmed false positive."
+                ),
+            )
+        if demotion_reason is not None:
+            return ProposeResponse(
+                status="pending_confirmation",
+                pending_id=pid,
+                demotion_reason=demotion_reason,
+                operator_prompt=(
+                    f"Proposed edit to {target_path} (pending_id={pid}) was "
+                    f"DEMOTED to pending review by governed-lane write "
+                    f"protection (reason: {demotion_reason}). Agents can "
+                    f"propose; only a human can promote this write. Inform the "
+                    f"operator that it awaits review -- do not attempt to "
+                    f"bypass it. Run `kb pending` to inspect it, then "
+                    f"`kb resolve {pid} --decision approve|reject`."
                 ),
             )
         return ProposeResponse(
@@ -1141,7 +1281,8 @@ def kb_propose_edit_fn(
         return ProposeResponse(status="rejected_path_lock_busy",
                                target_path=target_path)
     _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha,
-                               "evidence": safe_evidence or None})
+                               "evidence": safe_evidence or None,
+                               "injection_suspect": bool(injection_matches) or None})
     return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state)
 
 
@@ -1310,6 +1451,9 @@ def kb_list_pending_fn(*, pending: PendingQueue) -> PendingListResponse:
                 source_session=e.get("source_session"),
                 reason=e.get("reason"),
                 evidence=e.get("evidence"),
+                demotion_reason=e.get("demotion_reason"),
+                injection_suspect=e.get("injection_suspect", False),
+                injection_patterns=e.get("injection_patterns"),
             )
             for e in pending.list()
         ]
