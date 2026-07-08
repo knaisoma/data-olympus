@@ -524,12 +524,15 @@ def build_app(
         (superseded/deprecated), `type` when set, and `freshness` only when a
         hit deviates (`stale`/`expired`/`upcoming`); the `query` echo, per-hit
         `path`, and `score` are dropped (fetch a hit's full metadata with
-        kb_get(id); array order conveys rank). verbose=True restores the full
-        legacy shape with query, path, score, status, type, freshness, and a
-        computed `in_force: bool` on every hit (the single-sourced status +
-        validity-window + not-inbox predicate; never stored in frontmatter),
-        so a hit retrieved WITHOUT `in_force=true` can still be checked for
-        whether it may govern now.
+        kb_get(id); array order conveys rank). A compact hit additionally
+        carries `in_force: false` when the computed in-force predicate (the
+        single-sourced status + validity-window + not-inbox rule; never
+        stored in frontmatter) says the doc does NOT currently govern --
+        emitted deviation-only, so an in-force hit's compact shape is
+        unchanged. verbose=True restores the full legacy shape with query,
+        path, score, status, type, freshness, and the computed
+        `in_force: bool` on every hit, so a hit retrieved WITHOUT
+        `in_force=true` can still be checked for whether it may govern now.
         """
         resp = kb_search_fn(
             idx=state.idx, query=query, limit=limit, tier=tier, category=category,
@@ -551,10 +554,13 @@ def build_app(
         exists to read the doc) with a trimmed envelope: `path`,
         `git_remote_url`, and `last_modified_source` are dropped and empty
         status/type/applies_when/description/validity/freshness are omitted;
-        `source_commit` and `last_modified` provenance are kept. verbose=True
-        returns the full legacy envelope with every field plus a computed
-        `in_force: bool` (the single-sourced status + validity-window +
-        not-inbox predicate; never stored in frontmatter)."""
+        `source_commit` and `last_modified` provenance are kept, and
+        `in_force: false` is emitted when the computed in-force predicate says
+        the doc does NOT currently govern (deviation-only; an in-force doc
+        omits the key). verbose=True returns the full legacy envelope with
+        every field plus the computed `in_force: bool` (the single-sourced
+        status + validity-window + not-inbox predicate; never stored in
+        frontmatter)."""
         from data_olympus.tools_read import KbNotFoundError, kb_get_fn
         try:
             resp = kb_get_fn(idx=state.idx, id=id)

@@ -101,12 +101,24 @@ _MAX_EVIDENCE_ITEMS = 10
 _MAX_EVIDENCE_ITEM_CHARS = 500
 
 
-def _validate_evidence(evidence: list[str]) -> str | None:
+def _validate_evidence(evidence: object) -> str | None:
     """Return a rejection reason string if ``evidence`` is invalid, else None.
 
     Rejects (rather than truncating/coercing) so a caller sees exactly why its
     proposal did not go through, instead of a silently-shortened evidence list.
+
+    The OUTER type is checked first (codex review blocker): the REST routes
+    pass ``body.get("evidence", ...)`` straight through, and a JSON string is
+    itself iterable (every char a 1-char str), so without this check a short
+    string would silently pass the per-item validation below as a "list" of
+    characters. MCP is schema-validated upstream, but this function is the
+    single authoritative gate for every surface.
     """
+    if not isinstance(evidence, list):
+        return (
+            f"evidence must be a list of strings "
+            f"(got {type(evidence).__name__})"
+        )
     if len(evidence) > _MAX_EVIDENCE_ITEMS:
         return (
             f"evidence exceeds max {_MAX_EVIDENCE_ITEMS} items "

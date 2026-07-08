@@ -149,21 +149,54 @@ def test_kb_get_in_force_true_for_active_no_validity(
     assert doc.in_force is True
 
 
-# --- compact responses are unchanged (in_force is verbose-only) -------------
+# --- compact responses: deviation-only in_force emission --------------------
+#
+# An IN-FORCE doc's compact shape is byte-for-byte unchanged (no in_force
+# key). A NOT-in-force doc whose raw status looks in-force (e.g. a forged
+# `status: active` under the memory inbox) would otherwise be shown as an
+# ordinary current rule in compact hits -- the existing deviation-only status
+# emission hides status precisely for the in-force class. So compact emits
+# `in_force: false` ONLY when the computed predicate is False (codex review
+# blocker on issue #109).
 
 
-def test_compact_search_hit_omits_in_force(
+def test_compact_search_hit_omits_in_force_when_in_force(
     tmp_path: Path, tmp_index_path: Path,
 ) -> None:
     idx = _idx(tmp_path, tmp_index_path)
     resp = kb_search_fn(idx=idx, query="gizmo", today="2026-06-01")
     compact = resp.compact_dump()
-    assert all("in_force" not in h for h in compact["hits"])
+    by_id = {h["id"]: h for h in compact["hits"]}
+    assert "in_force" not in by_id["DOC-OUTSIDE-ACTIVE"]
 
 
-def test_compact_get_omits_in_force(
+def test_compact_search_hit_flags_inbox_doc_not_in_force(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    """The forged-inbox case: compact hit's status is hidden (raw status is in
+    the in-force class), so `in_force: false` is the only signal that this doc
+    must not be treated as a governing rule. It must be emitted."""
+    idx = _idx(tmp_path, tmp_index_path)
+    resp = kb_search_fn(idx=idx, query="gizmo", today="2026-06-01")
+    compact = resp.compact_dump()
+    by_id = {h["id"]: h for h in compact["hits"]}
+    assert by_id["DOC-INBOX-ACTIVE"]["in_force"] is False
+    # And the raw status did NOT betray the deviation (that's exactly why the
+    # explicit flag is required).
+    assert "status" not in by_id["DOC-INBOX-ACTIVE"]
+
+
+def test_compact_get_omits_in_force_when_in_force(
     tmp_path: Path, tmp_index_path: Path,
 ) -> None:
     idx = _idx(tmp_path, tmp_index_path)
     doc = kb_get_fn(idx=idx, id="DOC-OUTSIDE-ACTIVE", today="2026-06-01")
     assert "in_force" not in doc.compact_dump()
+
+
+def test_compact_get_flags_inbox_doc_not_in_force(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    idx = _idx(tmp_path, tmp_index_path)
+    doc = kb_get_fn(idx=idx, id="DOC-INBOX-ACTIVE", today="2026-06-01")
+    assert doc.compact_dump()["in_force"] is False

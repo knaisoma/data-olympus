@@ -424,7 +424,7 @@ column derived once at index build time, not a per-query prefix scan.
 unreviewed, retired, expired/upcoming, or memory-inbox document as a governing
 rule for a code/architectural decision. See `docs/enforcement.md`.
 
-**Computed `in_force` on verbose surfaces.** A verbose (`verbose=true`)
+**Computed `in_force` on served responses.** A verbose (`verbose=true`)
 `kb_get` response and each verbose `kb_search` hit carry a computed
 `in_force: bool`: the same single-sourced predicate evaluated against the
 doc's actual status/validity/inbox-membership, independent of whether the
@@ -432,8 +432,12 @@ query itself passed `in_force=true`. This lets a caller retrieve a doc via a
 default (unfiltered) `kb_get`/`kb_search` and still tell whether it currently
 governs, without a second `in_force=true` round trip. It is a serving-layer
 derivation only, never written to frontmatter (see SPEC.md's "runtime
-envelope" note). Compact responses do not carry this field; the existing
-deviation-only `status`/`freshness` emissions are unchanged.
+envelope" note). Compact responses emit it deviation-only: `in_force: false`
+appears ONLY when the doc is not in force, and an in-force doc's compact
+shape is byte-for-byte unchanged. The deviation emission is required because
+the compact `status`/`freshness` fields key off the RAW frontmatter status: a
+memory-inbox doc with a forged `status: active` would otherwise render as an
+ordinary current rule with no signal that the in-force floor disqualified it.
 
 ## Validity: expired docs leave default results
 

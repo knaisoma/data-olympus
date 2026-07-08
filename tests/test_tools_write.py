@@ -898,6 +898,52 @@ def test_propose_memory_evidence_rejects_oversized_item(tmp_path) -> None:
     assert resp.status == "rejected_invalid_evidence"
 
 
+def test_propose_memory_evidence_rejects_non_list_outer_type(tmp_path) -> None:
+    """Codex review blocker: REST passes raw JSON `evidence` through, and a
+    plain string is iterable (each char is a 1-char str), so without an outer
+    isinstance check a JSON string of <= 10 chars would silently pass item
+    validation. The outer type must be a real list."""
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    for bad in ("abcd", {"a": "b"}, 42):
+        resp = kb_propose_memory_fn(
+            text="x", tags=[], source_session="s", agent_identity="claude",
+            confidence=0.9, confidence_threshold=0.85, worktrees=reg,
+            push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+            remote_addr="1.2.3.4",
+            evidence=bad,  # type: ignore[arg-type]
+        )
+        assert resp.status == "rejected_invalid_evidence", bad
+    assert pq.size() == 0
+    assert pen.size() == 0
+
+
+def test_propose_memory_evidence_rejects_non_string_item(tmp_path) -> None:
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_memory_fn(
+        text="x", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.9, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+        evidence=["ok", 42],  # type: ignore[list-item]
+    )
+    assert resp.status == "rejected_invalid_evidence"
+
+
+def test_propose_edit_evidence_rejects_non_list_outer_type(tmp_path) -> None:
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    target, blob = _seed_t1_file(repo)
+    resp = kb_propose_edit_fn(
+        target_path=target, postimage="new body\n", base_commit="HEAD",
+        base_blob_sha=blob, target_file_hash=None, reason="x",
+        source_session="s", agent_identity="claude",
+        confidence=0.9, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+        evidence="not-a-list",  # type: ignore[arg-type]
+    )
+    assert resp.status == "rejected_invalid_evidence"
+
+
 def test_propose_memory_evidence_within_limits_accepted(tmp_path, monkeypatch) -> None:
     _set_git_env(monkeypatch)
     git, reg, pq, pen, rl, bl = _state(tmp_path)

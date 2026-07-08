@@ -37,8 +37,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     hits, derived from the single-sourced predicate (status class AND
     validity window AND not-inbox). Never stored in frontmatter — it is a
     serving-layer-only derivation (see SPEC.md's new "runtime envelope"
-    note). Compact responses are unchanged (the existing deviation-only
-    `status`/`freshness` emissions stay as they are).
+    note). Compact responses emit it deviation-only (`in_force: false` only
+    when the doc is NOT in force; an in-force doc's compact shape is
+    byte-for-byte unchanged): the compact `status`/`freshness` fields reflect
+    raw frontmatter, so a memory-inbox doc with a forged `status: active`
+    would otherwise read as an ordinary current rule with no correcting
+    signal. The existing deviation-only `status`/`freshness` emissions stay
+    as they are.
   - **`evidence: list[str]`** optional parameter on `kb_propose_memory` and
     `kb_propose_edit` (max 10 items, 500 chars each). For a memory proposal it
     is rendered into frontmatter via the same `yaml.safe_dump` path as `tags`

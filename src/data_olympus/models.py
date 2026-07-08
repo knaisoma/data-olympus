@@ -138,11 +138,13 @@ class SearchHitModel(BaseModel):
     # or the validity_state facet); default kb_search never returns an
     # expired doc at all.
     freshness: str = ""
-    # Computed in-force boolean (issue #109), verbose-only (see compact_dump):
-    # the single-sourced format.validate.is_in_force predicate (status class
-    # AND validity window AND not-inbox), NEVER stored in frontmatter. Exposed
-    # so a caller reading a hit that was NOT retrieved via in_force=True (e.g.
-    # a default kb_search) can still tell whether it may govern now.
+    # Computed in-force boolean (issue #109): the single-sourced
+    # format.validate.is_in_force predicate (status class AND validity window
+    # AND not-inbox), NEVER stored in frontmatter. Always present verbose;
+    # compact emits it deviation-only (`in_force: false`, see compact_dump).
+    # Exposed so a caller reading a hit that was NOT retrieved via
+    # in_force=True (e.g. a default kb_search) can still tell whether it may
+    # govern now.
     in_force: bool = True
 
     def compact_dump(self) -> dict[str, object]:
@@ -159,6 +161,14 @@ class SearchHitModel(BaseModel):
         ``type`` only when present, and ``freshness`` only when non-empty
         (issue #107: a fresh/absent-validity hit omits it entirely).
         ``verbose=True`` restores the full shape.
+
+        ``in_force`` is emitted deviation-only, i.e. ONLY when False (issue
+        #109, codex review blocker). The status/freshness emissions above key
+        off the RAW frontmatter status, so a memory-inbox doc with a forged
+        ``status: active`` would otherwise render as an ordinary current rule
+        in compact hits with no deviation signal at all -- the floor made it
+        not-in-force, but nothing said so. An in-force hit stays byte-for-byte
+        unchanged (no key).
         """
         snippet = self.snippet
         if len(snippet) > COMPACT_SNIPPET_CHARS:
@@ -170,6 +180,8 @@ class SearchHitModel(BaseModel):
             d["type"] = self.type
         if self.freshness:
             d["freshness"] = self.freshness
+        if not self.in_force:
+            d["in_force"] = False
         return d
 
 
@@ -242,10 +254,11 @@ class GetResponse(BaseModel):
     # shows when explicitly included.
     validity: dict[str, str] | None = None
     freshness: str = ""
-    # Computed in-force boolean (issue #109), verbose-only (see compact_dump):
-    # see SearchHitModel.in_force for the rationale. kb_get always resolves
-    # regardless of expiry, so this is the caller's single signal for "may this
-    # doc govern now", independent of status/validity/inbox being read apart.
+    # Computed in-force boolean (issue #109): see SearchHitModel.in_force for
+    # the rationale. Always present verbose; compact emits it deviation-only
+    # (`in_force: false`, see compact_dump). kb_get always resolves regardless
+    # of expiry, so this is the caller's single signal for "may this doc
+    # govern now", independent of status/validity/inbox being read apart.
     in_force: bool = True
 
     def compact_dump(self) -> dict[str, object]:
@@ -261,6 +274,13 @@ class GetResponse(BaseModel):
         Omits empty ``status`` / ``type`` / ``applies_when`` / ``description`` /
         ``validity`` / ``freshness`` (issue #107: a doc with no validity
         metadata omits both entirely). ``verbose=True`` restores the full shape.
+
+        ``in_force`` is emitted deviation-only, i.e. ONLY when False (issue
+        #109, codex review blocker): compact kb_get shows the RAW frontmatter
+        ``status``, so a memory-inbox doc with a forged ``status: active``
+        would otherwise read as an ordinary current rule with no signal that
+        the in-force floor disqualified it. An in-force doc's compact shape is
+        byte-for-byte unchanged (no key).
         """
         d: dict[str, object] = {
             "id": self.id,
@@ -284,6 +304,8 @@ class GetResponse(BaseModel):
             d["validity"] = dict(self.validity)
         if self.freshness:
             d["freshness"] = self.freshness
+        if not self.in_force:
+            d["in_force"] = False
         return d
 
 
