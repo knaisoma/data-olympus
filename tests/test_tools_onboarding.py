@@ -334,7 +334,13 @@ def test_partial_high_conf_commit_does_not_overwrite_existing(
     idx = _partial_idx(["projects/p/README.md"])  # AGENTS.md missing
     files = [
         {"target_path": "projects/p/README.md", "postimage": "SHOULD NOT LAND\n"},
-        {"target_path": "projects/p/AGENTS.md", "postimage": "agents body\n"},
+        # A NEW document created through the write pipeline must carry
+        # `status` (issue #114); README.md above is already-present so it is
+        # filtered out before reaching the content-validation gate at all,
+        # but AGENTS.md is the missing file this bootstrap actually commits.
+        {"target_path": "projects/p/AGENTS.md",
+         "postimage": "---\nid: projects-p-AGENTS\ntype: project\nstatus: active\n"
+                      "tier: T3\n---\nagents body\n"},
     ]
     push_queue = MagicMock()
     resp = kb_bootstrap_project_fn(
@@ -381,7 +387,11 @@ def test_double_bootstrap_within_window_rejected(tmp_path, real_worktrees) -> No
         return kb_bootstrap_project_fn(
             idx=idx, workspace="p", component=None,
             workspace_remote_url=None, component_remote_url=None,
-            files=[{"target_path": "projects/p/README.md", "postimage": "r\n"}],
+            # A NEW document must carry `status` (issue #114) to pass the
+            # write-path content-validation gate.
+            files=[{"target_path": "projects/p/README.md",
+                   "postimage": "---\nid: projects-p-README\ntype: project\n"
+                                "status: active\ntier: T3\n---\nr\n"}],
             source_session="sess-dbl", agent_identity="claude",
             confidence=0.95, confidence_threshold=0.85,
             worktrees=real_worktrees, push_queue=MagicMock(),

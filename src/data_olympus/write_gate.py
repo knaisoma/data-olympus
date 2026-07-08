@@ -33,7 +33,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from data_olympus.format.frontmatter import parse_frontmatter
-from data_olympus.format.validate import RESERVED, TIERS, TYPES
+from data_olympus.format.validate import RESERVED, TIERS, TYPES, is_inbox_path
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -222,6 +222,33 @@ def _is_reserved(target_path: str) -> bool:
     return PurePosixPath(target_path).name in RESERVED
 
 
+def _target_path_exists(
+    target_path: str, *, idx: Index | None, worktree_path: str | None,
+) -> bool:
+    """True when ``target_path`` already names a document known to the live
+    index or present in the worktree's committed tree -- i.e. this write is an
+    EDIT to an existing document rather than the creation of a NEW one.
+
+    Checked against the same two sources the duplicate-id check below already
+    consults (index first, then the worktree tree), so a same-session
+    new-then-edit sequence is classified correctly even before the index has
+    rebuilt. Fails open toward "exists" only in the sense that either source
+    finding the path is conclusive; finding it in NEITHER source means the
+    write is treated as creating a new document (issue #114)."""
+    if idx is not None:
+        try:
+            index_map = idx.id_to_path_map()
+        except Exception:  # noqa: BLE001 - index read must never fail-closed here
+            index_map = {}
+        if isinstance(index_map, dict) and target_path in index_map.values():
+            return True
+    if worktree_path is not None:
+        real = os.path.join(worktree_path, target_path)
+        if os.path.isfile(real):
+            return True
+    return False
+
+
 def _effective_doc_id(fm: dict[str, object], target_path: str) -> str:
     """The id the indexer will assign to ``target_path``: the explicit
     frontmatter ``id`` when present and a plain string, else the path-derived id.
@@ -297,10 +324,24 @@ def validate_postimage(
       does not parse to a mapping, currently commits and then breaks the index
       build. Rejected as ``invalid_frontmatter``.
     - **Invalid enum value.** ``type`` / ``status`` / ``tier`` present but outside
-      the controlled vocabulary. Rejected as ``invalid_enum``. (Missing required
-      fields are NOT rejected here: memory-inbox documents legitimately carry no
-      ``id``/``type``/``status``/``tier`` and derive their id from the path. The
+      the controlled vocabulary. Rejected as ``invalid_enum``. (Other missing
+      required fields are NOT rejected here: memory-inbox documents legitimately
+      carry no ``id``/``type``/``tier`` and derive their id from the path. The
       gate blocks documents that are actively malformed, not merely sparse.)
+    - **Missing status on a NEW document (issue #114).** ``status`` has always
+      been a required field (SPEC.md section 4.2) and a ``kb lint`` error, but
+      the write path historically let a brand-new status-less document through
+      (the enum check above only fires when ``status`` is PRESENT and invalid).
+      A NEW, non-reserved, non-memory-inbox document (one that does not already
+      exist per :func:`_target_path_exists`) missing ``status`` is rejected as
+      ``missing_status``. Editing an EXISTING status-less document (one that
+      predates this check) remains allowed with no ``status`` required, so an
+      operator can migrate a legacy corpus incrementally -- see the maintenance
+      ledger (issue #113) for the migration vehicle that tracks the backlog.
+      Reserved filenames stay fully schema-exempt (as above); memory-inbox
+      documents are exempt here too, since every server-rendered memory already
+      stamps ``status: proposed`` (issue #109) -- this exemption preserves that
+      behavior rather than changing it.
     - **Duplicate / forged id.** The EFFECTIVE id the rebuild will assign (explicit
       frontmatter ``id`` or the path-derived id) already belongs to a DIFFERENT
       path, in the live index OR in the worktree's committed tree. A duplicate id
@@ -339,6 +380,25 @@ def validate_postimage(
                     "message": f"invalid {field} '{value}' "
                                f"(allowed: {sorted(allowed)})",
                 })
+
+    # 2b. Missing status on a NEW document (issue #114). See the docstring
+    # above for the reserved / memory-inbox exemptions and the migration
+    # rationale. Only fires when the document does NOT already exist (an edit
+    # to a legacy status-less doc is unaffected).
+    if (
+        not _is_reserved(target_path)
+        and not is_inbox_path(target_path)
+        and fm.get("status") is None
+        and not _target_path_exists(target_path, idx=idx, worktree_path=worktree_path)
+    ):
+        errors.append({
+            "field": "status", "code": "missing_status",
+            "message": (
+                f"new document '{target_path}' is missing required field "
+                f"'status' (SPEC.md section 4.2); editing an existing "
+                f"status-less document is still allowed during migration"
+            ),
+        })
 
     # 3. Duplicate / forged id against BOTH the live index and the worktree tree,
     # using the EFFECTIVE id (explicit or path-derived) so a new file whose derived

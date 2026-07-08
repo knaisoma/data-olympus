@@ -14,6 +14,35 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Write-path enforcement of mandatory `status` (issue #114).** `status`
+  has been a required frontmatter field (SPEC.md 4.2) and a `kb lint` error
+  since the format's `0.1` draft — this was already true of the lint layer
+  and is not a change of required-field semantics. The gap this closes is at
+  the write path: `kb_propose_edit` now rejects a postimage that creates a
+  **NEW** document without `status` (`rejected_invalid_document`, reason
+  `missing_status`), where previously the write path was more permissive
+  than `kb lint` and let a brand-new status-less document through.
+  - **Staged migration, not a hard break.** Editing an EXISTING status-less
+    document still requires no `status`, so a legacy corpus already carrying
+    status-less docs (tracked by the issue #113 maintenance ledger's
+    `status_present_in_all_kb_entries` flag and `missing_status` file list)
+    is never locked out of incremental fixes. Those documents keep being
+    served by `kb_search`/`kb_get` exactly as before; they are simply never
+    in force (already true via `IN_FORCE_STATUSES` membership) and never
+    surfaced by `kb_consult`.
+  - `kb_propose_memory` is unaffected: every server-rendered memory already
+    stamps `status: proposed` (issue #109).
+  - Reserved filenames (`index.md`/`log.md`/`template.md`) and documents
+    under the memory-inbox prefix are exempt, consistent with their existing
+    exemptions from the write-path's other schema checks.
+  - No SPEC.md version bump: see SPEC.md section 10 for why this is a
+    reference-implementation enforcement-timing change, not a format change.
+  - See `docs/operations.md` section 5.1 for the operator migration runbook
+    (lint, read the ledger's missing-status list, fix, done) and the new
+    integration test (`tests/test_status_mandatory_migration.py`) tying
+    lint-error + still-served + never-in-force + ledger flag + the
+    `pending_actions` CTA together as one tested contract.
+
 - **Provenance surfacing + consult hardening (issue #109).** Revised decision:
   no `authority_state`/`allowed_use` enum (rejected as a parallel vocabulary
   that could drift from `status`); the real gaps are fixed at the root

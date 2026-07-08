@@ -408,6 +408,23 @@ Relevant environment variables:
 | `KB_MAINTENANCE_RECENTLY_EXPIRED_DAYS` | `30` | Window (days) for the "recently expired" bucket |
 | `KB_MAINTENANCE_EXPIRING_SOON_DAYS` | `30` | Window (days) for the "expiring soon" bucket |
 
+### 5.1 Migrating a corpus to mandatory `status` (issue #114)
+
+`status` has always been a required frontmatter field (SPEC.md section 4.2) and a `kb lint` error when absent. Issue #114 closed the one gap left open: the write path previously let a brand-new status-less document through even though `kb lint` would already flag it. As of this change, `kb_propose_edit` rejects a postimage that creates a **new** file without `status` (`rejected_invalid_document`, reason `missing_status`); editing an **existing** status-less document is still allowed with no `status` required, so a legacy corpus is never locked out of incremental fixes. `kb_propose_memory` is unaffected — every server-rendered memory already stamps `status: proposed` (issue #109).
+
+This is a migration, not a hard break: a legacy corpus with status-less documents keeps working exactly as before.
+
+- **Nothing stops serving.** A status-less document is still indexed and still returned by a default `kb_search` / `kb_get`. It is simply never in force (`IN_FORCE_STATUSES` membership already excludes an absent status), so it can never be surfaced by `kb_consult` and never outranks or governs anything.
+- **The migration vehicle is the maintenance ledger** (section 5 above): `status_present_in_all_kb_entries` goes `false` and `missing_status.paths` lists up to 50 offending files (plus a total count) the moment any document lacks `status`. The `pending_actions` CTA on `kb_consult`/`kb_health` nags with a `missing_status` item until the corpus is clean, then disappears automatically — no manual acking.
+
+**Runbook:**
+
+1. Upgrade to a data-olympus version that ships this write-path check.
+2. Run `kb lint <bundle-root>` (or `data-olympus lint`) and read the `missing required field 'status'` errors, OR pull the capped list straight from the ledger: `curl -s 'http://<host>/api/v1/health?verbose=true' | jq '.pending_actions'` (see section 6) or read the committed `tooling/maintenance-ledger.md` doc directly.
+3. Fix each listed file: add a `status` value from the controlled vocabulary (`draft`, `active`, `deprecated`, `superseded`, `proposed`, `accepted`, `rejected`) via `kb_propose_edit` (edits to an existing status-less file are unaffected by the new write-path check) or directly in the bundle if you write straight to git.
+4. Re-run `kb lint`; once every document lints clean, the next index build flips `status_present_in_all_kb_entries` to `true`, the ledger commits the clean state, and `pending_actions` stops appearing.
+5. New documents created from this point forward are rejected at write time if `status` is missing, so the corpus cannot regress.
+
 ## 6. Quick reference
 
 | Task | Command |
