@@ -12,6 +12,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-08
+
 ### Added
 
 - **Write-path enforcement of mandatory `status` (issue #114).** `status`
