@@ -29,6 +29,13 @@ YESTERDAY = "2026-07-07"
 TOMORROW = "2026-07-09"
 
 
+def _shift(day: str, days: int) -> str:
+    """Return ``day`` (ISO date) plus ``days`` calendar days, as ISO."""
+    import datetime
+
+    return (datetime.date.fromisoformat(day) + datetime.timedelta(days=days)).isoformat()
+
+
 def _write(
     kb: Path,
     rel: str,
@@ -52,29 +59,39 @@ def _write(
     )
 
 
-def _build_kb(tmp_path: Path) -> Path:
+def _build_kb(tmp_path: Path, *, today: str = TODAY) -> Path:
+    """A KB whose validity dates are RELATIVE to ``today``.
+
+    The engine/tools tests inject the fixed ``TODAY`` everywhere, so they use
+    the module constants unchanged. The REST tests exercise the real server
+    path (which reads the wall clock), so they pass ``today=today_iso()`` and
+    the yesterday/boundary/tomorrow dates shift with it — the assertions stay
+    true on any calendar day (codex review blocker 1).
+    """
+    yesterday = _shift(today, -1)
+    tomorrow = _shift(today, 1)
     kb = tmp_path / "kb"
     kb.mkdir()
     _write(kb, "universal/foundation/fresh.md", id_="DOC-FRESH", body="widget content fresh")
     _write(
         kb, "universal/foundation/expired.md", id_="DOC-EXPIRED",
         body="widget content expired",
-        validity=f"validity:\n  valid_until: {YESTERDAY}\n",
+        validity=f"validity:\n  valid_until: {yesterday}\n",
     )
     _write(
         kb, "universal/foundation/boundary.md", id_="DOC-BOUNDARY",
         body="widget content boundary",
-        validity=f"validity:\n  valid_until: {TODAY}\n",
+        validity=f"validity:\n  valid_until: {today}\n",
     )
     _write(
         kb, "universal/foundation/upcoming.md", id_="DOC-UPCOMING",
         body="widget content upcoming",
-        validity=f"validity:\n  valid_from: {TOMORROW}\n",
+        validity=f"validity:\n  valid_from: {tomorrow}\n",
     )
     _write(
         kb, "universal/foundation/stale.md", id_="DOC-STALE",
         body="widget content stale",
-        validity=f"validity:\n  recheck_by: {YESTERDAY}\n",
+        validity=f"validity:\n  recheck_by: {yesterday}\n",
     )
     return kb
 
@@ -389,7 +406,12 @@ def test_get_response_no_validity_when_absent(tmp_path: Path, tmp_index_path: Pa
 
 
 def _validity_http_app(tmp_path: Path):
-    kb = _build_kb(tmp_path)
+    from data_olympus.format.validate import today_iso
+
+    # The REST path reads the REAL clock, so this fixture's validity dates
+    # must shift with it or the assertions rot after the authoring date
+    # (codex review blocker 1).
+    kb = _build_kb(tmp_path, today=today_iso())
     app = build_app(
         kb_main_path=kb,
         kb_index_path=tmp_path / "idx.db",
@@ -425,6 +447,26 @@ async def test_rest_validity_state_threads(tmp_path: Path) -> None:
         )
     ids = {h["id"] for h in resp.json()["hits"]}
     assert ids == {"DOC-EXPIRED"}
+
+
+@pytest.mark.asyncio
+async def test_rest_invalid_validity_state_is_400(tmp_path: Path) -> None:
+    """A malformed validity_state is a client error, not an opaque 500
+    (codex review blocker 2)."""
+    http_app = _validity_http_app(tmp_path)
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        bogus = await client.get(
+            "/api/v1/search", params={"q": "widget", "validity_state": "bogus"},
+        )
+        bad_days = await client.get(
+            "/api/v1/search",
+            params={"q": "widget", "validity_state": "expiring_within:abc"},
+        )
+    assert bogus.status_code == 400
+    assert bogus.json()["error"] == "bad_request"
+    assert bad_days.status_code == 400
+    assert bad_days.json()["error"] == "bad_request"
 
 
 # ---------------------------------------------------------------------------
