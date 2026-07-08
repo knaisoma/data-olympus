@@ -26,7 +26,10 @@ from data_olympus.cli.indexgen import regenerate_indexes
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-SPEC_VERSION = "0.1"
+# Must track the current SPEC.md format version (the drift test in
+# tests/test_cli_init.py compares this against SPEC.md's header and
+# example-bundle/index.md, so a future format bump fails fast here).
+SPEC_VERSION = "0.2"
 OKF_VERSION = "0.1"
 
 # The six top-level tier directories `--tiers` selects among (issue #66's

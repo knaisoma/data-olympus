@@ -16,6 +16,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`data-olympus init` stamped a stale format version** (found by the
+  release-gate review): the scaffold's root `index.md` declared
+  `spec_version: "0.1"` while the shipped format is `0.2`. Corrected, with a
+  drift test tying the scaffold constant to SPEC.md's header and
+  `example-bundle/index.md` so future format bumps fail fast.
+
 - **Graph-exclusion source guard now applies the memory-inbox floor** (found
   by the v0.4.0 release-gate review). `graph_excluded_ids_sql` checked the
   superseding source's status class and validity window but not `is_inbox`,
