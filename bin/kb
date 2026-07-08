@@ -782,6 +782,9 @@ do_curl() {
 }
 
 # Helper: emit a plain-text human-readable summary of a health JSON body.
+# Appends a `pending_actions` section (issue #113: the maintenance-ledger CTA
+# surface) only when the field is present and non-empty, so a clean corpus'
+# report is unchanged.
 format_plain_health() {
   if command -v jq >/dev/null 2>&1; then
     echo "$REST_BODY" | jq -r '
@@ -791,7 +794,10 @@ degraded: \(.degraded)
 last_pull_at: \(.last_git_pull_at // "never")
 staleness_seconds: \(.staleness_seconds // "n/a")
 index_build_status: \(.last_index_build_status)
-pending: \(.pending_count) | push_queue: \(.push_queue_size)"
+pending: \(.pending_count) | push_queue: \(.push_queue_size)" +
+      (if ((.pending_actions // []) | length) > 0 then
+        "\npending_actions:\n" + ((.pending_actions // []) | map("  - [" + .kind + "] " + .message + " (count=" + (.count | tostring) + ")") | join("\n"))
+      else "" end)
     '
   else
     echo "$REST_BODY"

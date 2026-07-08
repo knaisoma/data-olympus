@@ -62,6 +62,19 @@ class Config:
     auth_principals: list[dict[str, Any]] = field(default_factory=list)
     consult_ttl_sec: int = 300
     ledger_path: str = "/state/ledger.json"
+    # Maintenance ledger (issue #113): committed frontmatter-only markdown doc
+    # recording corpus-state audit flags (missing `status`, recently-expired /
+    # expiring-soon docs per #107 validity data), refreshed on every index
+    # build when the computed state changes. The default lives under the
+    # generic `tooling/` taxonomy prefix (index._DEFAULT_PATH_RULES maps it to
+    # tier "tooling"); a deployment using a custom KB_TAXONOMY_PATH must make
+    # sure this path still resolves inside an INDEXED prefix, or the ledger is
+    # committed but never searchable/gettable. Not to be confused with
+    # ``ledger_path`` above (the unrelated ConsultationLedger JSON state file).
+    maintenance_ledger_path: str = "tooling/maintenance-ledger.md"
+    # Window sizes (days) for the "recently expired" / "expiring soon" buckets.
+    maintenance_recently_expired_days: int = 30
+    maintenance_expiring_soon_days: int = 30
     # Streamable-http session reaping: terminate transports idle beyond this many
     # seconds to bound _server_instances (see session_metrics). 0 disables the
     # reaper (observability-only). The scan runs every session_reap_interval_sec.
@@ -198,6 +211,15 @@ def load_config() -> Config:
     auth_principals = parse_principals_env(os.getenv("KB_AUTH_PRINCIPALS", ""))
     consult_ttl_sec = int(os.getenv("KB_CONSULT_TTL_SEC", "300"))
     ledger_path = os.getenv("KB_LEDGER_PATH", "/state/ledger.json")
+    maintenance_ledger_path = os.getenv(
+        "KB_MAINTENANCE_LEDGER_PATH", "tooling/maintenance-ledger.md"
+    )
+    maintenance_recently_expired_days = int(
+        os.getenv("KB_MAINTENANCE_RECENTLY_EXPIRED_DAYS", "30")
+    )
+    maintenance_expiring_soon_days = int(
+        os.getenv("KB_MAINTENANCE_EXPIRING_SOON_DAYS", "30")
+    )
     session_idle_timeout_sec = int(os.getenv("KB_SESSION_IDLE_TIMEOUT_SEC", "300"))
     session_reap_interval_sec = int(os.getenv("KB_SESSION_REAP_INTERVAL_SEC", "60"))
     session_touch_interval_sec = int(os.getenv("KB_SESSION_TOUCH_INTERVAL_SEC", "30"))
@@ -260,6 +282,9 @@ def load_config() -> Config:
         auth_principals=auth_principals,
         consult_ttl_sec=consult_ttl_sec,
         ledger_path=ledger_path,
+        maintenance_ledger_path=maintenance_ledger_path,
+        maintenance_recently_expired_days=maintenance_recently_expired_days,
+        maintenance_expiring_soon_days=maintenance_expiring_soon_days,
         session_idle_timeout_sec=session_idle_timeout_sec,
         session_reap_interval_sec=session_reap_interval_sec,
         session_touch_interval_sec=session_touch_interval_sec,

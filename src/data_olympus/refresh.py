@@ -107,6 +107,33 @@ async def git_pull_loop(state: ServerState, interval_sec: int) -> None:
                 state.last_index_error_at = None
                 state.last_index_conflicts = []
                 log.info("kb refreshed to %s", outcome.get("sha"))
+            # Maintenance ledger (issue #113): checked on EVERY tick, not only
+            # a "rebuilt" outcome. A fresh deployment whose remote never
+            # changes would otherwise get "no_change" forever and the ledger
+            # would never be created. maybe_update_ledger is a cheap no-op
+            # comparison when the state has not changed (idx.maintenance_state
+            # vs. the state parsed back out of the currently-indexed ledger
+            # doc), so checking every tick is inexpensive. Only attempted when
+            # the write pipeline is initialised (not a read-only replica /
+            # no remote configured); best-effort, never raises.
+            if (
+                state.worktrees is not None
+                and state.push_queue is not None
+                and state.pending is not None
+            ):
+                from data_olympus.maintenance import maybe_update_ledger
+                try:
+                    fn2 = functools.partial(
+                        maybe_update_ledger,
+                        idx=state.idx, worktrees=state.worktrees,
+                        push_queue=state.push_queue, pending=state.pending,
+                        serializer=state.write_serializer,
+                        audit_log=state.audit_log,
+                        ledger_path=state.config.maintenance_ledger_path,
+                    )
+                    await asyncio.get_event_loop().run_in_executor(None, fn2)
+                except Exception:
+                    log.exception("maintenance ledger update failed")
         except asyncio.CancelledError:
             log.info("git_pull_loop cancelled")
             raise
