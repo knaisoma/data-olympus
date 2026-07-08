@@ -663,7 +663,12 @@ def kb_propose_memory_fn(
     full-postimage secret scan below -- see ``_render_memory``), and persisted
     (redacted copy) in pending meta / audit events / ``kb_pending``.
     """
-    evidence = evidence or []
+    # Normalize ONLY the None "not supplied" sentinel (codex re-review
+    # blocker): `evidence or []` also coerced falsy non-lists ('' / {} /
+    # False / 0) from raw REST JSON to [] BEFORE validation, silently
+    # accepting them instead of rejecting rejected_invalid_evidence.
+    if evidence is None:
+        evidence = []
     evidence_error = _validate_evidence(evidence)
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     # issue #71: the slug is derived VERBATIM from the caller's free text (no
@@ -954,7 +959,11 @@ def kb_propose_edit_fn(
     content -- it is redacted (same treatment as ``reason``) and persisted only
     in pending meta / audit events / ``kb_pending``.
     """
-    evidence = evidence or []
+    # Normalize ONLY the None sentinel; see the matching comment in
+    # kb_propose_memory_fn (codex re-review blocker: falsy non-lists must
+    # reject, not silently coerce to []).
+    if evidence is None:
+        evidence = []
     evidence_error = _validate_evidence(evidence)
     # issue #71 (codex round-3 Blocker 2): scan the caller-supplied path
     # BEFORE anything echoes it. A credential-shaped filename would otherwise

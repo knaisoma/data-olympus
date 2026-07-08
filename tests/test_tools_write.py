@@ -928,6 +928,42 @@ def test_propose_memory_evidence_rejects_non_string_item(tmp_path) -> None:
     assert resp.status == "rejected_invalid_evidence"
 
 
+def test_propose_memory_evidence_rejects_falsy_non_list_types(tmp_path) -> None:
+    """Codex re-review blocker: `evidence = evidence or []` coerced FALSY
+    non-list values ('' / {} / False / 0) to [] before validation, silently
+    accepting them. Only None (the "not supplied" sentinel) may normalize to
+    []; every other non-list value must reject."""
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    for bad in ("", {}, False, 0):
+        resp = kb_propose_memory_fn(
+            text="x", tags=[], source_session="s", agent_identity="claude",
+            confidence=0.9, confidence_threshold=0.85, worktrees=reg,
+            push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+            remote_addr="1.2.3.4",
+            evidence=bad,  # type: ignore[arg-type]
+        )
+        assert resp.status == "rejected_invalid_evidence", repr(bad)
+    assert pq.size() == 0
+    assert pen.size() == 0
+
+
+def test_propose_edit_evidence_rejects_falsy_non_list_types(tmp_path) -> None:
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    repo = git._repo
+    target, blob = _seed_t1_file(repo)
+    for bad in ("", {}, False, 0):
+        resp = kb_propose_edit_fn(
+            target_path=target, postimage="new body\n", base_commit="HEAD",
+            base_blob_sha=blob, target_file_hash=None, reason="x",
+            source_session="s", agent_identity="claude",
+            confidence=0.9, confidence_threshold=0.85,
+            worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl,
+            blocklist=bl, remote_addr="1.2.3.4",
+            evidence=bad,  # type: ignore[arg-type]
+        )
+        assert resp.status == "rejected_invalid_evidence", repr(bad)
+
+
 def test_propose_edit_evidence_rejects_non_list_outer_type(tmp_path) -> None:
     git, reg, pq, pen, rl, bl = _state(tmp_path)
     repo = git._repo
