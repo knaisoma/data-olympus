@@ -168,6 +168,57 @@ def in_force_sql_fragment(param: str = "?") -> str:
     )
 
 
+# --- supersession-graph exclusion (issue #110 slice 2) -----------------------
+#
+# Edges become executable retrieval policy: an ``in_force=true`` query
+# additionally excludes any doc that is the TARGET of a `supersedes` edge
+# whose SOURCE doc is itself in-force (the full single-sourced :func:`is_in_force`
+# predicate -- status class AND validity window -- so a draft, expired, or
+# already-retired source can never retire its target; this is the
+# "in-force-source guard" from the accepted decision). A mutually-supersessive
+# in-force cycle is NOT special-cased: both docs satisfy the rule independently
+# (each is the target of a supersedes edge from an in-force source), so both are
+# excluded.
+
+
+def graph_excluded_ids_sql(status_placeholders: str) -> str:
+    """Bare ``SELECT`` (no enclosing parens) of doc ids graph-excluded from
+    in-force retrieval (issue #110 slice 2).
+
+    This is the SINGLE definition of the graph-exclusion rule, consulted by
+    both the retrieval-time filter (wrapped in ``docs.id NOT IN (...)`` by
+    ``Index._facet_filters``) and the ``graph_excluded_docs`` health counter
+    (wrapped in ``SELECT COUNT(DISTINCT target_id) FROM (...)`` by
+    ``Index.graph_excluded_count``, evaluated LIVE at health-read time: the
+    in-force-source guard is wall-clock-relative, so a counter frozen at
+    build time would drift from per-query retrieval whenever a source's
+    validity window opens or closes between rebuilds). This module has no
+    schema dependency of its own; it only builds SQL text against the
+    caller's ``edges``/``docs`` table names.
+
+    The subquery JOINs ``edges`` to ``docs`` on BOTH the source and target id
+    (never trusting ``edges.source_id`` / ``edges.target_id`` verbatim: a
+    dangling edge -- either end missing from ``docs`` -- excludes nothing and
+    is not counted).
+
+    ``status_placeholders`` is the caller-built ``"?, ?, ..."`` string sized to
+    ``len(IN_FORCE_STATUSES)`` (the same placeholder string the caller already
+    builds for its own status-class ``IN (...)`` fragment). Bind params, in
+    order: the sorted ``IN_FORCE_STATUSES`` list, then ``today`` twice (the
+    source doc's ``valid_from`` and ``valid_until`` window bounds) -- the same
+    three-group param shape ``in_force_sql_fragment`` uses for a single doc.
+    """
+    return (
+        "SELECT edges.target_id AS target_id FROM edges "
+        "JOIN docs AS src ON src.id = edges.source_id "
+        "JOIN docs AS tgt ON tgt.id = edges.target_id "
+        "WHERE edges.rel = 'supersedes' "
+        f"AND src.status IN ({status_placeholders}) "
+        "AND (src.valid_from IS NULL OR src.valid_from <= ?) "
+        "AND (src.valid_until IS NULL OR src.valid_until >= ?)"
+    )
+
+
 TIERS = frozenset({"T1", "T2", "T3", "T4", "meta"})
 RESERVED = frozenset({"index.md", "log.md", "template.md"})
 REQUIRED = ("id", "type", "status", "tier")

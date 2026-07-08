@@ -82,6 +82,57 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in-force graph exclusion, `kb_get`/`kb_search` surfacing, and a health
   counter.
 
+- **Supersession edges become executable retrieval policy (issue #110,
+  slice 2).** `in_force=true` now ADDITIONALLY excludes any document that is
+  the TARGET of a `supersedes` edge whose SOURCE document is itself in force
+  (the full status-class-AND-validity-window predicate, not merely
+  `status: superseded`): a `draft`, expired, or already-retired document can
+  never retire another document just by naming it in `supersedes`.
+  - **Behavior change: a document superseded only via an edge (its own
+    `status` was never flipped) is now excluded from `in_force=true`
+    results, even though its own status class would otherwise qualify it.**
+    It remains visible in a default (non-`in_force`) `kb_search`, same as an
+    `upcoming` document. This closes the "forgotten status flip" gap.
+  - A mutually-supersessive in-force cycle (already a `kb lint` ERROR at
+    parse time) is NOT special-cased: every member independently satisfies
+    the exclusion rule, so ALL members of the cycle are excluded from
+    `in_force=true`.
+  - A dangling edge (source or target id with no corresponding document)
+    excludes nothing and is not counted; the exclusion query joins `edges`
+    to `docs` on both ends, never trusting either raw id.
+  - **`kb_consult` now queries with `in_force=true`** (previously it ran a
+    plain default search), so it never returns a not-yet-in-force, retired,
+    or graph-excluded document as a "governing rule". The unconditional
+    not-expired exclusion already gave this guarantee for expired docs; this
+    closes the same gap for status/graph exclusion.
+  - New `graph_excluded_docs` health counter (`kb_health` / `/api/v1/health`,
+    alongside `malformed_frontmatter` / `malformed_validity`): the count of
+    documents currently excluded by this rule, evaluated LIVE at health-read
+    time against the current date from the same SQL definition
+    (`format.validate.graph_excluded_ids_sql`) the retrieval-time filter
+    uses, so the counter can never drift from the filter it reports on, even
+    across a date boundary where an in-force source's validity window opens
+    or closes between index rebuilds. Exposed on the Index as
+    `graph_excluded_count(today=...)` (injectable date for deterministic
+    tests; health reads the real wall clock, bounded by the short health
+    cache).
+  - **Retirement is explainable.** `kb_get` (regardless of in-force/graph-
+    exclusion status, same as it already ignores expiry) gains
+    `superseded_by`: the sorted UNION of the document's own frontmatter
+    `superseded_by` claim and any reverse `supersedes` edge naming it -- ONE
+    consistent computed shape covering both the honest self-declared case
+    and the forgotten-status-flip case. `kb_get` also gains `contradicts`
+    (the document's own frontmatter list) and the computed reverse
+    `contradicted_by`. All three are omitted from the compact response when
+    empty. `contradicts` is annotation only: it has NO filtering or ranking
+    effect anywhere in the retrieval path.
+  - Compact `kb_search` hits gain a deviation-only `superseded_by` (the same
+    computed union above), omitted when the document is not superseded;
+    computed and attached to every hit regardless of `in_force`, so a plain
+    search result still explains why a hit is historically superseded.
+  - `SPEC.md` section 4.2 documents the graph-exclusion rule, the health
+    counter, and the surfacing contract.
+
 - **Secret-scanning gate on the write path (issue #71).** Every commit path
   (`kb_propose_memory` / `kb_propose_edit` auto-commit, `kb_resolve_pending`
   approve, including a resolved `edited_text`, and onboarding bootstrap) now

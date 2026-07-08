@@ -78,7 +78,18 @@ def kb_consult_fn(
     rules = []
     rule_ids: list[str] = []
     if result.is_governed_decision:
-        search = kb_search_fn(idx=idx, query=intent, limit=limit)
+        # in_force=True (issue #110 slice 2): a consult must surface only
+        # CURRENTLY GOVERNING rules. Without this, a draft/superseded/
+        # deprecated/rejected doc -- or one graph-excluded via a supersedes
+        # edge from an in-force source -- could still rank well enough on bm25
+        # to reach the agent as "the rule to follow"; the status reranker only
+        # soft-downranks those, it does not exclude them. The unconditional
+        # not-expired filter already gave this invariant for free ("kb_consult
+        # never returns an expired document"); the graph-exclusion rule is
+        # scoped to in_force=True only (see format.validate.
+        # graph_excluded_ids_sql), so consult must opt in explicitly to get
+        # the same guarantee for a graph-excluded doc.
+        search = kb_search_fn(idx=idx, query=intent, limit=limit, in_force=True)
         rules = list(search.hits)
         rule_ids = [h.id for h in search.hits]
     ledger.record(

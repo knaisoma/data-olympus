@@ -108,6 +108,7 @@ def kb_health_fn(
         live_sessions=state.live_sessions,
         malformed_frontmatter=state.malformed_frontmatter,
         malformed_validity=state.malformed_validity,
+        graph_excluded_docs=state.graph_excluded_docs,
         pending_actions=pending_actions_for(getattr(idx, "maintenance_state", None)),
     )
 
@@ -195,6 +196,7 @@ def kb_search_fn(
                     valid_from=h.valid_from, valid_until=h.valid_until,
                     recheck_by=h.recheck_by, today=today,
                 ) or "",
+                superseded_by=list(h.superseded_by),
             )
             for h in hits
         ],
@@ -251,6 +253,9 @@ def kb_get_fn(*, idx: Index, id: str, today: str | None = None) -> GetResponse:
         git_remote_url=doc.git_remote_url,
         validity=validity,
         freshness=freshness,
+        superseded_by=list(doc.superseded_by),
+        contradicts=list(doc.contradicts),
+        contradicted_by=list(doc.contradicted_by),
     )
 
 

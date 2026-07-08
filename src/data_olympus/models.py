@@ -53,6 +53,9 @@ class HealthResponse(BaseModel):
     # Docs with a present-but-malformed ``validity`` block at the last index
     # build (issue #107). Same WARNING-only rationale as malformed_frontmatter.
     malformed_validity: int = 0
+    # Docs excluded from in-force retrieval by the supersession-graph rule at
+    # the last index build (issue #110 slice 2). Same WARNING-only rationale.
+    graph_excluded_docs: int = 0
     # Maintenance-ledger CTA (issue #113): short structured items
     # ({kind, message, count}) an agent should surface to the operator and act
     # on only with operator confirmation. None (field omitted in compact mode)
@@ -143,6 +146,13 @@ class SearchHitModel(BaseModel):
     # or the validity_state facet); default kb_search never returns an
     # expired doc at all.
     freshness: str = ""
+    # Lifecycle-relationship surfacing (issue #110 slice 2): deviation-only,
+    # sorted list of ids that supersede this doc (the UNION of its own
+    # frontmatter `superseded_by` and any reverse `supersedes` edge -- see
+    # index._superseded_by_map), empty when not superseded. Computed and
+    # attached to EVERY hit regardless of `in_force` (same as `freshness`);
+    # carries no ranking or filtering effect of its own.
+    superseded_by: list[str] = []
 
     def compact_dump(self) -> dict[str, object]:
         """Token-lean hit shape (issue #65).
@@ -155,8 +165,10 @@ class SearchHitModel(BaseModel):
             to an agent. Array order already conveys rank.
         Emits ``status`` only when it deviates from the in-force default (i.e. a
         superseded/deprecated/rejected hit an agent must NOT treat as current),
-        ``type`` only when present, and ``freshness`` only when non-empty
-        (issue #107: a fresh/absent-validity hit omits it entirely).
+        ``type`` only when present, ``freshness`` only when non-empty
+        (issue #107: a fresh/absent-validity hit omits it entirely), and
+        ``superseded_by`` only when non-empty (issue #110 slice 2: same
+        deviation-only pattern -- a doc nobody supersedes omits it entirely).
         ``verbose=True`` restores the full shape.
         """
         snippet = self.snippet
@@ -169,6 +181,8 @@ class SearchHitModel(BaseModel):
             d["type"] = self.type
         if self.freshness:
             d["freshness"] = self.freshness
+        if self.superseded_by:
+            d["superseded_by"] = list(self.superseded_by)
         return d
 
 
@@ -241,6 +255,18 @@ class GetResponse(BaseModel):
     # shows when explicitly included.
     validity: dict[str, str] | None = None
     freshness: str = ""
+    # Lifecycle-relationship surfacing (issue #110 slice 2), always resolved
+    # (kb_get by id ignores in-force/graph-exclusion filtering entirely, same
+    # as it already ignores expiry). ``superseded_by`` is the UNION of this
+    # doc's own frontmatter claim and any reverse `supersedes` edge naming it
+    # (see index._superseded_by_map: ONE consistent shape for both the
+    # honest self-declared case and the "forgotten status flip" case).
+    # ``contradicts`` is this doc's own frontmatter list (never affects
+    # filtering/ranking); ``contradicted_by`` is the computed reverse: every
+    # other doc whose `contradicts` names this one.
+    superseded_by: list[str] = []
+    contradicts: list[str] = []
+    contradicted_by: list[str] = []
 
     def compact_dump(self) -> dict[str, object]:
         """Token-lean kb_get response (issue #65).
@@ -254,7 +280,9 @@ class GetResponse(BaseModel):
         provenance *label* like ``git``/``mtime-fallback``, not the timestamp).
         Omits empty ``status`` / ``type`` / ``applies_when`` / ``description`` /
         ``validity`` / ``freshness`` (issue #107: a doc with no validity
-        metadata omits both entirely). ``verbose=True`` restores the full shape.
+        metadata omits both entirely) and ``superseded_by`` / ``contradicts`` /
+        ``contradicted_by`` (issue #110 slice 2: omitted when empty, same
+        deviation-only pattern). ``verbose=True`` restores the full shape.
         """
         d: dict[str, object] = {
             "id": self.id,
@@ -278,6 +306,12 @@ class GetResponse(BaseModel):
             d["validity"] = dict(self.validity)
         if self.freshness:
             d["freshness"] = self.freshness
+        if self.superseded_by:
+            d["superseded_by"] = list(self.superseded_by)
+        if self.contradicts:
+            d["contradicts"] = list(self.contradicts)
+        if self.contradicted_by:
+            d["contradicted_by"] = list(self.contradicted_by)
         return d
 
 
