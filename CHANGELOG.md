@@ -12,6 +12,20 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`data-olympus init <dir>` bundle scaffold command** (issue #66). Creates a
+  new knowledge bundle: the tier directories (`--tiers`, default `universal,
+  tech-stacks,projects,decisions,workflows,tooling`), a root `index.md`
+  carrying the `spec_version`/`okf_version` frontmatter, a `template.md`
+  authoring scaffold, and one example concept document per SPEC-supported
+  `type` (`standard`, `decision`, `workflow`, `project`, `memory`,
+  `reference`), including a real `superseded`/`superseded_by`/`supersedes`
+  pair and `applies_when` trigger metadata. The generated bundle passes
+  `data-olympus lint` with zero errors and zero warnings and builds cleanly
+  under `data-olympus index`. Refuses to scaffold into a non-empty directory
+  (no `--force` in this slice).
+
 ## [0.3.5] - 2026-07-06
 
 ### Fixed
