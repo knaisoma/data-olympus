@@ -256,8 +256,17 @@ semantics an operator needs at serving time.
   demoted with the distinct `demotion_reason: "governed_target_unverified"`
   rather than auto-committed on the strength of a broken lookup -- an
   unhealthy index can never be used to slip an edit past this rule. A
-  target with no entry in a HEALTHY index is definitive (a brand-new file
-  cannot already be in force) and auto-commits as before.
+  target with no entry in a HEALTHY index is definitive at the tool layer
+  (a brand-new file cannot already be in force), and an authoritative
+  IN-WORKTREE BACKSTOP closes the residual index-lag window: inside the
+  serialized commit section, after every hard gate passes and after the
+  worktree base is refreshed onto `origin/main`, the target's CURRENT bytes
+  on that refreshed base are re-judged (`status` + validity window from its
+  own frontmatter, `is_inbox` from the path, graph exclusion from the live
+  index when available). A doc pushed as in-force but not yet re-indexed is
+  therefore still demoted (`demotion_reason: "governed_target"`) -- the
+  decision is made against the same content the commit would replace, so
+  index staleness cannot bypass the rule.
 - **Injection-pattern annotation.** Every postimage evaluated by the two
   rules above is also scanned for agent-directed injection patterns
   ("ignore previous instructions", "disregard ... policy", an imperative

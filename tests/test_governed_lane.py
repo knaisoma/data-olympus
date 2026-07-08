@@ -9,6 +9,7 @@ from data_olympus.governed_lane import (
     evaluate_governed_lane,
     governed_lane_protection_enabled,
     governed_target_state,
+    is_base_content_in_force,
     is_target_in_force,
     scan_for_injection_patterns,
 )
@@ -171,6 +172,45 @@ def test_is_target_in_force_false_for_inbox_doc() -> None:
         "memory/inbox/x.md": _FakeDoc(id="x", status="active", is_inbox=True),
     })
     assert is_target_in_force(idx, "memory/inbox/x.md", today="2026-06-01") is False
+
+
+def test_base_content_in_force_active_doc() -> None:
+    content = "---\nid: DEC-1\nstatus: active\ntier: T1\n---\nbody\n"
+    assert is_base_content_in_force(content, "decisions/DEC-1.md", None) is True
+
+
+def test_base_content_in_force_draft_doc() -> None:
+    content = "---\nid: DEC-1\nstatus: draft\ntier: T1\n---\nbody\n"
+    assert is_base_content_in_force(content, "decisions/DEC-1.md", None) is False
+
+
+def test_base_content_in_force_expired_doc() -> None:
+    content = (
+        "---\nid: DEC-1\nstatus: active\ntier: T1\n"
+        "validity:\n  valid_until: 2020-01-01\n---\nbody\n"
+    )
+    assert is_base_content_in_force(
+        content, "decisions/DEC-1.md", None, today="2026-06-01",
+    ) is False
+
+
+def test_base_content_in_force_inbox_path_never_in_force() -> None:
+    content = "---\nid: x\nstatus: active\n---\nbody\n"
+    assert is_base_content_in_force(content, "memory/inbox/x.md", None) is False
+
+
+def test_base_content_in_force_malformed_frontmatter_not_in_force() -> None:
+    assert is_base_content_in_force(
+        "---\nunterminated: [\n", "decisions/DEC-1.md", None,
+    ) is False
+
+
+def test_base_content_in_force_graph_excluded_via_index() -> None:
+    content = "---\nid: DEC-1\nstatus: active\ntier: T1\n---\nbody\n"
+    idx = _FakeIndex({}, excluded={"DEC-1"})
+    assert is_base_content_in_force(
+        content, "decisions/DEC-1.md", idx, today="2026-06-01",
+    ) is False
 
 
 def test_injection_scan_clean_postimage_no_matches() -> None:

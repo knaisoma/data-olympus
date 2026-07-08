@@ -294,6 +294,22 @@ class _WriteRejected(Exception):
         super().__init__(response.status)
 
 
+class _WriteDemoted(Exception):
+    """Internal control-flow signal (issue #112, codex round-2 blocker): the
+    in-worktree governed-target backstop found the edit's target IN FORCE on
+    the refreshed commit base, so the write must be DEMOTED to pending
+    instead of committed. Raised only from :func:`_commit_in_worktree` when
+    ``governed_target_check=True`` (the propose-edit auto-commit path);
+    :func:`kb_propose_edit_fn` catches it and parks the proposal. Never
+    escapes the module. Deliberately raised AFTER the hard gates (secret
+    scan, content validation), preserving the reject-before-demote ordering
+    authoritatively rather than by prediction."""
+
+    def __init__(self, demotion_reason: str) -> None:
+        self.demotion_reason = demotion_reason
+        super().__init__(demotion_reason)
+
+
 def _commit_in_worktree(
     *,
     worktrees: WorktreeRegistry,
@@ -317,6 +333,7 @@ def _commit_in_worktree(
     lock_owner: str | None = None,
     hold_path_lock: bool = False,
     secret_scan_override: bool = False,
+    governed_target_check: bool = False,
 ) -> tuple[str, str, SecretMatch | None]:
     """Serialized write -> git add -> commit -> enqueue critical section.
 
@@ -344,6 +361,18 @@ def _commit_in_worktree(
     ``claim_for_resolve``), so this does not re-acquire it. Re-acquiring the same
     file-based lock would self-deadlock / raise PathLockBusyError (Codex round-2
     Blocker B). When False (the propose path) the lock is acquired here.
+
+    ``governed_target_check`` (issue #112, codex round-2 blocker): passed True
+    ONLY by :func:`kb_propose_edit_fn`'s auto-commit path when governed-lane
+    protection is enabled. After every hard gate passes, the target's
+    CURRENT content on the refreshed base is checked with
+    ``governed_lane.is_base_content_in_force``; an in-force target raises
+    :class:`_WriteDemoted` so the caller parks the proposal as pending. This
+    closes the index-lag window the index-based tool-layer check cannot see
+    (a doc pushed as in-force but not yet re-indexed), because it judges the
+    SAME bytes the commit would sit on. Never set by the resolve path
+    (operator resolve IS the promotion), the memory path (a brand-new inbox
+    file), or bootstrap (absent/partial workspaces only).
 
     Order of operations, all under the process-wide write lock AND the per-path
     advisory lock (shared with the pending queue):
@@ -494,6 +523,21 @@ def _commit_in_worktree(
                 raise _WriteRejected(ProposeResponse(
                     status="rejected_invalid_document", target_path=target_path,
                     reason="; ".join(e["message"] for e in vr.errors)))
+
+            # 5b. Governed-target backstop (issue #112, codex round-2
+            # blocker): judge the target's in-force state from its CURRENT
+            # bytes on the refreshed base -- the exact content this commit
+            # would replace -- so an index that lags origin/main can never
+            # be used to slip an edit past the governed-target rule.
+            # Deliberately AFTER the hard gates above (reject-before-demote,
+            # enforced authoritatively here rather than predicted at the
+            # tool layer) and BEFORE any disk side effect.
+            if governed_target_check and os.path.isfile(full_path):
+                from data_olympus.governed_lane import is_base_content_in_force
+                with open(full_path, encoding="utf-8") as bf:
+                    base_content = bf.read()
+                if is_base_content_in_force(base_content, target_path, idx):
+                    raise _WriteDemoted("governed_target")
 
             # 6. Write + add + commit + enqueue; reset on any post-add failure.
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
@@ -1193,7 +1237,12 @@ def kb_propose_edit_fn(
     demotion_reason = governed_verdict.demotion_reason
     injection_matches = governed_verdict.injection_matches
 
-    if confidence < confidence_threshold or not can_auto_commit or demotion_reason is not None:
+    def _park(park_demotion_reason: str | None) -> ProposeResponse:
+        """Enqueue this proposal as pending (a plain low-confidence park, a
+        governed-lane demotion decided at the tool layer, or one raised by
+        the in-worktree backstop) and shape the response. Extracted so the
+        pre-commit branch and the post-backstop ``_WriteDemoted`` handler
+        share one enqueue/audit/response path."""
         # Scan BEFORE enqueueing (issue #71): see the matching comment in
         # kb_propose_memory_fn for the rationale (never reject here -- that
         # would remove the operator-override path at resolve time -- but
@@ -1217,7 +1266,7 @@ def kb_propose_edit_fn(
                       "secret_scan_flagged": flagged_pattern is not None,
                       "matching_pattern": flagged_pattern,
                       "evidence": safe_evidence or None,
-                      "demotion_reason": demotion_reason,
+                      "demotion_reason": park_demotion_reason,
                       "injection_suspect": bool(injection_matches),
                       "injection_patterns": (
                           governed_verdict.injection_pattern_names() or None
@@ -1234,14 +1283,14 @@ def kb_propose_edit_fn(
         _emit_audit(audit_log, **{**audit_base, "status": "pending_confirmation",
                                    "pending_id": pid, "matching_pattern": flagged_pattern,
                                    "evidence": safe_evidence or None,
-                                   "demotion_reason": demotion_reason,
+                                   "demotion_reason": park_demotion_reason,
                                    "injection_suspect": bool(injection_matches) or None})
         if flagged_pattern is not None:
             return ProposeResponse(
                 status="pending_confirmation",
                 pending_id=pid,
                 matching_pattern=flagged_pattern,
-                demotion_reason=demotion_reason,
+                demotion_reason=park_demotion_reason,
                 operator_prompt=(
                     f"Proposed edit to {target_path} was FLAGGED by the secret "
                     f"scanner (pattern: {flagged_pattern}). Review it via "
@@ -1250,15 +1299,15 @@ def kb_propose_edit_fn(
                     f"only if this is a confirmed false positive."
                 ),
             )
-        if demotion_reason is not None:
+        if park_demotion_reason is not None:
             return ProposeResponse(
                 status="pending_confirmation",
                 pending_id=pid,
-                demotion_reason=demotion_reason,
+                demotion_reason=park_demotion_reason,
                 operator_prompt=(
                     f"Proposed edit to {target_path} (pending_id={pid}) was "
                     f"DEMOTED to pending review by governed-lane write "
-                    f"protection (reason: {demotion_reason}). Agents can "
+                    f"protection (reason: {park_demotion_reason}). Agents can "
                     f"propose; only a human can promote this write. Inform the "
                     f"operator that it awaits review -- do not attempt to "
                     f"bypass it. Run `kb pending` to inspect it, then "
@@ -1272,7 +1321,15 @@ def kb_propose_edit_fn(
             operator_prompt=f"Proposed edit to {target_path}. Accept (y), edit, or reject (n)?",
         )
 
+    if confidence < confidence_threshold or not can_auto_commit or demotion_reason is not None:
+        return _park(demotion_reason)
+
     # Serialized commit + CAS + validation + enqueue (items 1, 3, 4, 8).
+    # governed_target_check (issue #112, codex round-2 blocker): the
+    # in-worktree backstop re-judges the target's in-force state from its
+    # CURRENT bytes on the refreshed base, closing the index-lag window the
+    # tool-layer check above cannot see. Enabled exactly when protection is
+    # on; a _WriteDemoted raised there parks the proposal below.
     try:
         sha, push_state, _secret_override = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
@@ -1286,7 +1343,10 @@ def kb_propose_edit_fn(
             target_file_hash=target_file_hash,
             push_meta={"source_session": source_session,
                        "agent_identity": agent_identity, "reason": reason},
+            governed_target_check=governed_lane_protection_enabled(),
         )
+    except _WriteDemoted as dem:
+        return _park(dem.demotion_reason)
     except _WriteRejected as rej:
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,

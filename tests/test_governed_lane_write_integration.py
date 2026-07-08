@@ -229,6 +229,124 @@ def test_high_conf_edit_without_index_demoted_unverified(
 
 
 # ============================================================================
+# Bootstrap audit emission (codex round-2 concern): bootstrap outcomes must
+# be visible to the session recap / kb_consult feedback loop.
+# ============================================================================
+
+
+def test_bootstrap_demotion_visible_in_session_recap(tmp_path, monkeypatch) -> None:
+    _set_git_env(monkeypatch)
+    from data_olympus.tools_onboarding import kb_bootstrap_project_fn
+    from data_olympus.tools_recap import kb_session_recap_fn
+
+    repo, git, reg, pq, pen, rl, bl = _state(tmp_path)
+    idx = _build_index(repo, today="2026-06-01")
+    audit = AuditLog(log_path=str(tmp_path / "audit.log"), hmac_key="")
+    files = [
+        {"target_path": "projects/recapproj/README.md",
+         "postimage": (
+             "---\nid: projects-recapproj-README\ntype: project\nstatus: active\n"
+             "tier: T3\n---\n# Recap Project\n"
+         )},
+    ]
+    resp = kb_bootstrap_project_fn(
+        idx=idx, workspace="recapproj", component=None,
+        workspace_remote_url=None, component_remote_url=None,
+        files=files, source_session="bootstrap-recap-session",
+        agent_identity="claude", confidence=0.99, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        audit_log=audit,
+    )
+    assert resp.status == "pending_confirmation"
+    assert resp.demotion_reason == "status_promotion"
+    events = list(audit.iter_filtered())
+    bootstrap_events = [e for e in events if e.get("event_type") == "bootstrap"]
+    assert len(bootstrap_events) == 1
+    assert bootstrap_events[0]["status"] == "pending_confirmation"
+    assert bootstrap_events[0]["demotion_reason"] == "status_promotion"
+    recap = kb_session_recap_fn(
+        audit_log=audit, source_session="bootstrap-recap-session",
+    )
+    assert recap.demoted_to_pending == 1
+
+
+# ============================================================================
+# Stale-index window (codex round-2 blocker): an in-force doc that exists in
+# git but is NOT yet in the index must still be protected -- the in-worktree
+# backstop judges the refreshed commit base itself.
+# ============================================================================
+
+
+def test_stale_index_in_force_target_still_demoted(tmp_path, monkeypatch) -> None:
+    """Index built BEFORE the accepted doc lands in git: the index-based
+    lookup sees 'path absent -> not in force', but the in-worktree backstop
+    reads the doc's actual bytes on the commit base and demotes."""
+    _set_git_env(monkeypatch)
+    repo, git, reg, pq, pen, rl, bl = _state(tmp_path)
+    # Build the index over the repo BEFORE the governing doc exists.
+    idx = _build_index(repo, today="2026-06-01")
+    # Now land an ACCEPTED doc in git (origin/main equivalent); the index is
+    # stale and knows nothing about it.
+    p = repo / "decisions" / "DEC-STALE.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        "---\nid: DEC-STALE\ntype: decision\nstatus: accepted\ntier: meta\n"
+        "---\ngoverning body\n"
+    )
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=_env())
+    subprocess.run(["git", "commit", "-m", "land accepted doc"], cwd=repo,
+                   check=True, env=_env())
+
+    resp = kb_propose_edit_fn(
+        target_path="decisions/DEC-STALE.md",
+        postimage="---\nid: DEC-STALE\ntype: decision\ntier: meta\n---\nrewritten\n",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason="rewrite", source_session="s", agent_identity="claude",
+        confidence=0.99, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4", idx=idx,
+    )
+    assert resp.status == "pending_confirmation"
+    assert resp.demotion_reason == "governed_target"
+    assert pq.size() == 0  # nothing committed
+    assert pen.size() == 1
+
+
+def test_stale_index_expired_target_still_commits(tmp_path, monkeypatch) -> None:
+    """Backstop counterpart regression: a git-landed doc the index has not
+    seen whose own frontmatter is EXPIRED is not in force, so the edit
+    auto-commits (the backstop applies the full composed predicate, not a
+    blanket file-exists demotion)."""
+    _set_git_env(monkeypatch)
+    repo, git, reg, pq, pen, rl, bl = _state(tmp_path)
+    idx = _build_index(repo, today="2026-06-01")
+    p = repo / "decisions" / "DEC-STALE-EXP.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        "---\nid: DEC-STALE-EXP\ntype: decision\nstatus: accepted\ntier: meta\n"
+        "validity:\n  valid_until: 2020-01-01\n---\nexpired body\n"
+    )
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=_env())
+    subprocess.run(["git", "commit", "-m", "land expired doc"], cwd=repo,
+                   check=True, env=_env())
+
+    resp = kb_propose_edit_fn(
+        target_path="decisions/DEC-STALE-EXP.md",
+        postimage=(
+            "---\nid: DEC-STALE-EXP\ntype: decision\ntier: meta\n"
+            "validity:\n  valid_until: 2020-01-01\n---\nnew body\n"
+        ),
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason="update expired", source_session="s", agent_identity="claude",
+        confidence=0.99, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4", idx=idx,
+    )
+    assert resp.status == "committed"
+    assert resp.demotion_reason is None
+
+
+# ============================================================================
 # Scenario 3 (regression): edit to a non-in-force doc without a status
 # promotion auto-commits exactly as today.
 # ============================================================================

@@ -90,7 +90,7 @@ def kb_bootstrap_project_fn(
     pending: PendingQueue,
     rate_limiter: SlidingWindowLimiter,
     blocklist: PathBlocklist,
-    audit_log: AuditLog | None = None,  # noqa: ARG001  reserved for future audit emission
+    audit_log: AuditLog | None = None,
     remote_addr: str = "mcp",
     can_auto_commit: bool = True,
     max_postimage_bytes: int = 0,
@@ -173,6 +173,31 @@ def kb_bootstrap_project_fn(
             serializer=serializer,
         )
         committed = resp.status == "committed"
+        # Audit emission (issue #112 feedback loop, codex round-2 concern):
+        # bootstrap outcomes were previously invisible to the audit log and
+        # therefore to kb_session_recap / kb_consult's demoted-writes item.
+        # One event per bootstrap call, mirroring the propose paths' shape
+        # (best-effort; never fails the bootstrap).
+        if audit_log is not None:
+            import contextlib as _contextlib
+            import time as _time
+            with _contextlib.suppress(Exception):
+                audit_log.append({
+                    "ts": _time.time(),
+                    "event_type": "bootstrap",
+                    "status": resp.status,
+                    "agent_identity": agent_identity,
+                    "source_session": source_session,
+                    "target_path": (
+                        f"projects/{workspace}/"
+                        + (f"components/{component}/" if component else "")
+                    ),
+                    "confidence": confidence,
+                    "pending_id": resp.pending_id,
+                    "commit_sha": resp.commit_sha,
+                    "remote_addr": remote_addr,
+                    "demotion_reason": resp.demotion_reason,
+                })
         return resp
     finally:
         if not committed:

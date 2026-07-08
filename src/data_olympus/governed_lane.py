@@ -177,6 +177,75 @@ def is_target_in_force(
     return governed_target_state(idx, target_path, today=today) == TARGET_IN_FORCE
 
 
+def is_base_content_in_force(
+    content: str,
+    target_path: str,
+    idx: Index | None,
+    *,
+    today: str | None = None,
+) -> bool:
+    """Is the CURRENT base content of ``target_path`` in force, judged from
+    the actual bytes on the refreshed commit base (rule 2's authoritative
+    in-worktree backstop; codex round-2 security review blocker)?
+
+    The index-based :func:`governed_target_state` lookup can lag
+    ``origin/main``: a doc pushed as in-force but not yet re-indexed reads as
+    "path absent -> definitively not in force" there, opening a window where
+    a high-confidence edit to a governing doc auto-commits. This helper runs
+    INSIDE the serialized commit section, against the SAME refreshed base
+    the commit will sit on, so no index-lag window exists: it parses the
+    base file's own frontmatter and applies the composed predicate directly.
+
+    - ``status`` / validity window come from the base file's frontmatter
+      (``normalize_validity_date``, the same normalization the indexer
+      applies). Malformed frontmatter parses to "no status", which is not in
+      force -- identical to how the indexer classifies the same bytes.
+    - ``is_inbox`` comes from the path (``is_inbox_path``), same as the
+      indexer's build-time column.
+    - Graph exclusion still consults the LIVE index when available (edges
+      are only computable from the index). A stale edge set errs toward
+      keeping protection (over-demotion, fail closed), never dropping it.
+    """
+    from data_olympus.format.validate import is_inbox_path, normalize_validity_date
+
+    try:
+        fm, _body = parse_frontmatter(content)
+    except ValueError:
+        fm = {}
+    if not isinstance(fm, dict):
+        fm = {}
+    status = fm.get("status")
+    if not isinstance(status, str):
+        status = ""
+    validity = fm.get("validity")
+    valid_from = valid_until = ""
+    if isinstance(validity, dict):
+        valid_from, _bad = normalize_validity_date(validity.get("valid_from"))
+        valid_until, _bad = normalize_validity_date(validity.get("valid_until"))
+    today = today if today is not None else today_iso()
+    if not is_in_force(
+        status, valid_from or None, valid_until or None, today,
+        is_inbox=is_inbox_path(target_path),
+    ):
+        return False
+    # Graph exclusion (removes protection): mirror _effective_doc_id's id
+    # derivation so the id checked here is the one the index assigns.
+    raw_id = fm.get("id")
+    if isinstance(raw_id, str) and raw_id and ":" not in raw_id:
+        doc_id = raw_id
+    else:
+        from pathlib import Path as _Path
+
+        from data_olympus.index import _derive_id_from_path
+        doc_id = _derive_id_from_path(_Path(target_path))
+    graph_excluded_fn = getattr(idx, "graph_excluded_ids", None)
+    try:
+        excluded = graph_excluded_fn(today=today) if graph_excluded_fn is not None else set()
+    except Exception:  # noqa: BLE001 - keep protection on this failure
+        excluded = set()
+    return doc_id not in excluded
+
+
 @dataclass(frozen=True, slots=True)
 class InjectionMatch:
     """One detected agent-directed injection pattern occurrence. Carries ONLY

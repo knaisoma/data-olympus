@@ -68,7 +68,11 @@ system write path and the operator resolve path are untouched):
   completed (no index, or an index read failure), the edit is demoted with
   the distinct reason `governed_target_unverified` instead of
   auto-committing -- an unhealthy index cannot be leveraged to bypass this
-  rule.
+  rule. An authoritative in-worktree backstop re-judges the target's
+  CURRENT bytes on the refreshed commit base inside the serialized commit
+  section (after the hard gates), so an in-force doc that exists in git
+  but is not yet re-indexed is still demoted -- index lag cannot bypass
+  the rule either.
 - **Injection-pattern annotation.** Advisory only: a postimage matching an
   agent-directed injection heuristic (imperative instruction-override
   phrasing, exfiltration-shaped URLs, base64-looking blobs, "do not tell the

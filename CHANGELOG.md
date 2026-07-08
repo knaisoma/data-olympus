@@ -64,7 +64,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     rule. The lookup FAILS CLOSED: an edit whose target's in-force state
     cannot be verified (no index, or an index read failure) is demoted with
     the distinct `demotion_reason: "governed_target_unverified"` rather than
-    auto-committed on the strength of a broken lookup.
+    auto-committed on the strength of a broken lookup. An authoritative
+    in-worktree backstop additionally re-judges the target's CURRENT bytes
+    on the refreshed commit base (inside the serialized commit section,
+    after the hard gates), so an in-force doc that exists in git but is not
+    yet re-indexed is still demoted -- index lag cannot bypass the rule.
   - **Injection-pattern annotation (advisory only).** Postimages are scanned
     for agent-directed injection patterns ("ignore previous instructions",
     exfiltration-shaped imperatives, base64-looking blobs, "do not tell the
