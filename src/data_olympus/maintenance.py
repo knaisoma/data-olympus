@@ -372,6 +372,29 @@ def pending_actions_for(
     return items
 
 
+def _last_committed_in_worktree(
+    worktrees: WorktreeRegistry, ledger_path: str,
+) -> str | None:
+    """The ledger doc's content at the system worktree's HEAD, or None.
+
+    The system worktree is where every ledger commit lands, so its HEAD is the
+    authoritative last-committed copy even BEFORE that commit is pushed,
+    merged to main, and re-indexed. Consulted as the restart-safe half of the
+    duplicate-commit guard (the in-process memo covers the common case without
+    a git call; this covers a fresh process whose memo is empty). Best-effort:
+    any error reads as "nothing committed yet"."""
+    try:
+        wt = worktrees.get_or_create(
+            source_session=_MAINTENANCE_SOURCE_SESSION,
+            agent_identity=_MAINTENANCE_AGENT_IDENTITY,
+        )
+        return worktrees.git.file_at_commit(
+            "HEAD", ledger_path, worktree_path=wt.path,
+        )
+    except Exception:  # noqa: BLE001 - guard read must never break the caller
+        return None
+
+
 def maybe_update_ledger(
     *,
     idx: Index,
@@ -388,19 +411,65 @@ def maybe_update_ledger(
     last committed copy. Returns the new commit sha, or None when no commit was
     needed or attempted.
 
+    Duplicate-commit guard: a freshly committed ledger is not visible in the
+    INDEX until it is pushed, merged to main, and re-indexed, so comparing
+    against the index alone would re-commit the same state on every pull-loop
+    tick during that window. Three checks, cheapest first, all comparing the
+    STRUCTURED state (never the rendered markdown, whose ``computed_at``
+    timestamp changes every render):
+
+    1. ``idx.maintenance_last_committed_state`` -- the in-process memo set
+       after each successful commit.
+    2. The state parsed from the ledger doc in the live index.
+    3. The state parsed from the system worktree's HEAD copy -- the worktree
+       survives process restarts (unpushed commits block its GC), so this
+       closes the restart window the memo cannot.
+
     NEVER raises: a commit failure (gate rejection, lock contention, git
     error, ...) is logged (and audited, best-effort) and swallowed, so a
     maintenance-ledger hiccup can never break index refresh or serving
-    (issue #113). Reuses the SAME serialized write/commit machinery every other
-    write goes through (``tools_write.commit_multifile_in_worktree``) rather
-    than forking a second git-writing path.
+    (issue #113); the memo is NOT set on failure, so the next tick retries.
+    Reuses the SAME serialized write/commit machinery every other write goes
+    through (``tools_write.commit_multifile_in_worktree``) rather than forking
+    a second git-writing path.
     """
     state = idx.maintenance_state
     if state is None:
         return None
+    # Guard 1: in-process memo (no I/O).
+    if idx.maintenance_last_committed_state == state:
+        return None
+    # Guard 2: the indexed ledger copy.
     existing = idx.get(LEDGER_ID)
     old_state = parse_ledger_state(existing.content_markdown if existing is not None else None)
     if old_state == state:
+        idx.maintenance_last_committed_state = state
+        return None
+    # Structural path check: the ledger must land inside an indexed prefix or
+    # it is committed but never served; a misconfigured
+    # KB_MAINTENANCE_LEDGER_PATH is refused loudly instead.
+    from data_olympus.auth import is_writable_path, path_rejection_reason
+    if not is_writable_path(ledger_path):
+        reason = path_rejection_reason(ledger_path)
+        _log.warning(
+            "maintenance ledger path %r is not a writable indexed path (%s); "
+            "skipping the ledger commit -- fix KB_MAINTENANCE_LEDGER_PATH "
+            "(and KB_INDEXED_PREFIXES if using a custom taxonomy)",
+            ledger_path, reason,
+        )
+        if audit_log is not None:
+            with contextlib.suppress(Exception):
+                audit_log.append({
+                    "ts": _time.time(), "event_type": "maintenance_ledger",
+                    "status": "skipped_bad_path", "target_path": ledger_path,
+                    "agent_identity": _MAINTENANCE_AGENT_IDENTITY,
+                    "reason": reason,
+                })
+        return None
+    # Guard 3: the system worktree's HEAD copy (restart-safe).
+    wt_state = parse_ledger_state(_last_committed_in_worktree(worktrees, ledger_path))
+    if wt_state == state:
+        idx.maintenance_last_committed_state = state
         return None
     computed_at = datetime.datetime.fromtimestamp(
         now if now is not None else _time.time(), tz=datetime.UTC
@@ -426,10 +495,10 @@ def maybe_update_ledger(
                        "agent_identity": _MAINTENANCE_AGENT_IDENTITY},
         )
     except Exception as exc:  # noqa: BLE001 - best-effort; never break refresh/serving
-        _log.warning(
-            "maintenance ledger commit failed (will retry once a future index "
-            "build recomputes a changed state): %s", exc,
-        )
+        # The memo is deliberately NOT set here, so the next pull-loop tick
+        # retries the commit while the state still differs from the last
+        # committed copy.
+        _log.warning("maintenance ledger commit failed (retried next tick): %s", exc)
         if audit_log is not None:
             with contextlib.suppress(Exception):
                 audit_log.append({
@@ -439,6 +508,9 @@ def maybe_update_ledger(
                     "reason": str(exc)[:400],
                 })
         return None
+    # Commit landed: arm the in-process memo so subsequent ticks are no-ops
+    # until the state genuinely changes again.
+    idx.maintenance_last_committed_state = state
     if audit_log is not None:
         with contextlib.suppress(Exception):
             audit_log.append({

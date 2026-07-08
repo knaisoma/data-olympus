@@ -211,3 +211,124 @@ def test_commit_failure_is_logged_and_does_not_break_serving(
     # exactly as before the failed commit attempt.
     resp = kb_health_fn(idx=idx, last_git_pull_at=None, staleness_degraded_sec=600)
     assert resp.kb_commit == "seed"
+
+
+def _dirty_main(tmp_path: Path):
+    """A harness whose main checkout carries one status-less doc (dirty corpus),
+    pushed to origin, plus a built Index over it."""
+    remote, main, git, worktrees, push_queue, pending, serializer = _harness(tmp_path)
+    workflows = main / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "WF-001.md").write_text("# Ship something\n\nno front matter.\n")
+    _run("git", "add", "-A", cwd=str(main))
+    _run("git", "commit", "-m", "add dirty doc", cwd=str(main))
+    _run("git", "push", "origin", "main", cwd=str(main))
+    idx = Index(tmp_path / "idx.db", maintenance_ledger_path=LEDGER_PATH)
+    idx.build(main, source_commit="c1", today="2026-07-08")
+    assert idx.maintenance_state is not None
+    assert idx.maintenance_state.is_dirty is True
+    return remote, main, git, worktrees, push_queue, pending, serializer, idx
+
+
+def test_no_duplicate_commit_before_publication(tmp_path: Path, monkeypatch) -> None:
+    """Codex review blocker: two consecutive maybe_update_ledger calls on the
+    SAME dirty index, with the first ledger commit NOT yet pushed / merged /
+    re-indexed (the pull loop's steady state between publication ticks), must
+    produce exactly ONE commit. Before the in-process last-committed memo, the
+    second call saw a still-stale index copy, decided 'state changed', and
+    committed a duplicate on every tick."""
+    for k, v in _env().items():
+        if k.startswith("GIT_"):
+            monkeypatch.setenv(k, v)
+    (_remote, _main, _git, worktrees, push_queue, pending, serializer, idx) = (
+        _dirty_main(tmp_path)
+    )
+    al = AuditLog(log_path=str(tmp_path / "audit.log"))
+
+    sha1 = maybe_update_ledger(
+        idx=idx, worktrees=worktrees, push_queue=push_queue, pending=pending,
+        serializer=serializer, ledger_path=LEDGER_PATH, audit_log=al,
+    )
+    assert sha1 is not None
+
+    # NO push, NO merge into main, NO index rebuild: the very next tick.
+    sha2 = maybe_update_ledger(
+        idx=idx, worktrees=worktrees, push_queue=push_queue, pending=pending,
+        serializer=serializer, ledger_path=LEDGER_PATH, audit_log=al,
+    )
+    assert sha2 is None
+
+    committed = [
+        e for e in al.iter_filtered()
+        if e.get("event_type") == "maintenance_ledger" and e.get("status") == "committed"
+    ]
+    assert len(committed) == 1
+
+
+def test_no_duplicate_commit_after_restart_before_publication(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Restart window: a NEW process (fresh Index, empty in-process memo) whose
+    index still predates the ledger's publication must NOT re-commit an
+    identical state -- the system worktree's HEAD already carries it (the
+    worktree survives restarts; unpushed commits block its GC)."""
+    for k, v in _env().items():
+        if k.startswith("GIT_"):
+            monkeypatch.setenv(k, v)
+    (_remote, main, _git, worktrees, push_queue, pending, serializer, idx) = (
+        _dirty_main(tmp_path)
+    )
+    al = AuditLog(log_path=str(tmp_path / "audit.log"))
+    sha1 = maybe_update_ledger(
+        idx=idx, worktrees=worktrees, push_queue=push_queue, pending=pending,
+        serializer=serializer, ledger_path=LEDGER_PATH, audit_log=al,
+    )
+    assert sha1 is not None
+
+    # Simulate a process restart: a brand-new Index (memo lost), rebuilt from
+    # the same main checkout (the ledger commit has not been merged into it).
+    idx2 = Index(tmp_path / "idx2.db", maintenance_ledger_path=LEDGER_PATH)
+    idx2.build(main, source_commit="c1", today="2026-07-08")
+    sha2 = maybe_update_ledger(
+        idx=idx2, worktrees=worktrees, push_queue=push_queue, pending=pending,
+        serializer=serializer, ledger_path=LEDGER_PATH, audit_log=al,
+    )
+    assert sha2 is None
+
+    committed = [
+        e for e in al.iter_filtered()
+        if e.get("event_type") == "maintenance_ledger" and e.get("status") == "committed"
+    ]
+    assert len(committed) == 1
+
+
+def test_unindexable_ledger_path_is_skipped(tmp_path: Path, monkeypatch, caplog) -> None:
+    """Codex review concern: a KB_MAINTENANCE_LEDGER_PATH outside every indexed
+    prefix must be refused (logged, audited, no commit) rather than committing
+    a doc the index will never serve."""
+    for k, v in _env().items():
+        if k.startswith("GIT_"):
+            monkeypatch.setenv(k, v)
+    (_remote, _main, _git, worktrees, push_queue, pending, serializer, idx) = (
+        _dirty_main(tmp_path)
+    )
+    al = AuditLog(log_path=str(tmp_path / "audit.log"))
+    caplog.set_level(logging.WARNING, logger="data_olympus.maintenance")
+
+    sha = maybe_update_ledger(
+        idx=idx, worktrees=worktrees, push_queue=push_queue, pending=pending,
+        serializer=serializer, ledger_path="outside/ledger.md", audit_log=al,
+    )
+    assert sha is None
+    assert "not_in_indexed_prefixes" in caplog.text
+
+    events = list(al.iter_filtered())
+    assert not any(
+        e.get("event_type") == "maintenance_ledger" and e.get("status") == "committed"
+        for e in events
+    )
+    skipped = [
+        e for e in events
+        if e.get("event_type") == "maintenance_ledger" and e.get("status") == "skipped_bad_path"
+    ]
+    assert len(skipped) == 1

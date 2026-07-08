@@ -622,6 +622,17 @@ class Index:
         self._maintenance_recently_expired_days = maintenance_recently_expired_days
         self._maintenance_expiring_soon_days = maintenance_expiring_soon_days
         self._maintenance_state: MaintenanceState | None = None
+        # In-process memo of the last MaintenanceState the maintenance-ledger
+        # commit hook successfully committed (set by
+        # maintenance.maybe_update_ledger, never by build()). This is the loop
+        # guard for the window between a ledger commit and its publication
+        # (push -> merge to main -> re-index): during that window the INDEX
+        # still holds the pre-commit ledger copy, so without this memo every
+        # pull-loop tick would look like "state changed" and commit a
+        # duplicate. Not persisted: after a restart the system worktree's HEAD
+        # (which survives restarts; unpushed commits block its GC) covers the
+        # same window (see maybe_update_ledger's worktree check).
+        self.maintenance_last_committed_state: MaintenanceState | None = None
 
     @property
     def maintenance_state(self) -> MaintenanceState | None:

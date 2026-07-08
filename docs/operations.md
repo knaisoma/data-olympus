@@ -371,10 +371,17 @@ since the last committed copy, it is committed through the same serialized
 write/commit machinery every other write uses (system agent identity
 `data-olympus-system`, a normal `maintenance_ledger` audit event). A commit
 failure is logged and audited but never breaks index refresh or serving; it is
-retried on the next index build that recomputes a changed state. Recomputation
-is checked on every `git_pull_loop` tick, not only when a new remote commit
-arrives, so a fresh deployment gets its first ledger commit promptly even
-before anyone else ever pushes to the KB.
+retried on the next `git_pull_loop` tick. Recomputation is checked on every
+tick, not only when a new remote commit arrives, so a fresh deployment gets
+its first ledger commit promptly even before anyone else ever pushes to the
+KB. Duplicate commits are guarded three ways, all comparing the structured
+state (never the rendered markdown, whose `computed_at` timestamp changes
+every render): an in-process last-committed memo, the ledger copy in the live
+index, and the system worktree's HEAD copy (which survives restarts), so a
+slow push or short sync interval can never re-commit an unchanged state. A
+`KB_MAINTENANCE_LEDGER_PATH` outside the configured indexed prefixes is
+refused with a `skipped_bad_path` audit event instead of committing a doc the
+index would never serve.
 
 The same computed state also drives a `pending_actions` field on `kb_consult`
 and `kb_health` responses (never `kb_search` — per-hit noise trains agents to
