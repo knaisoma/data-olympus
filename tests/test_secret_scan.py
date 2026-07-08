@@ -671,3 +671,180 @@ def test_extra_pattern_redos_variants_all_skipped() -> None:
     for bad in ("(a+)+", "(a*)*", "([a-z]+)*", "(\\d*)+"):
         extra = load_extra_secret_patterns(bad)
         assert extra == [], f"{bad!r} should have been skipped as ReDoS-prone"
+
+
+# ============================================================================
+# Codex round-3 blockers: metadata redaction, target_path bypass, regex timeout
+# ============================================================================
+
+
+def test_extra_pattern_timeout_bounds_catastrophic_backtracking() -> None:
+    """A catastrophic pattern the load-time heuristic cannot recognize
+    (overlapping alternation: ``(a|aa)+x``) must not hang the scan: it is
+    executed through the ``regex`` engine with a hard timeout and skipped."""
+    import time
+    extra = load_extra_secret_patterns("(a|aa)+x")
+    assert len(extra) == 1, "overlapping alternation passes the load heuristic"
+    adversarial = "a" * 64 + "b"  # exponential blowup in a backtracking engine
+    t0 = time.monotonic()
+    result = scan_postimage_for_secrets(postimage=adversarial, extra_patterns=extra)
+    elapsed = time.monotonic() - t0
+    assert result.ok, "timed-out pattern is skipped, not treated as a match"
+    assert elapsed < 5.0, f"scan must be bounded by the timeout, took {elapsed:.1f}s"
+
+
+def test_edit_secret_shaped_target_path_is_rejected_and_redacted(
+    tmp_path, monkeypatch,
+) -> None:
+    """A credential-shaped FILENAME on propose_edit is rejected even with a
+    clean postimage, and the path itself is never echoed in the response or
+    the audit event (it would otherwise land in responses, commit subjects,
+    and the git tree)."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    audit = AuditLog(log_path=str(tmp_path / "audit.log"), hmac_key="")
+    evil_path = f"decisions/{AWS_ACCESS_KEY}.md"
+    resp = kb_propose_edit_fn(
+        target_path=evil_path,
+        postimage="---\nid: DEC-x\ntype: decision\nstatus: accepted\n"
+                  "tier: meta\n---\nperfectly clean body\n",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason="clean reason", source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4", audit_log=audit,
+    )
+    assert resp.status == "rejected_secret_detected"
+    assert resp.matching_pattern == "aws_access_key_id"
+    assert AWS_ACCESS_KEY not in str(resp)
+    assert pq.size() == 0
+    assert pen.size() == 0
+    events = list(audit.iter_filtered())
+    assert len(events) == 1
+    assert AWS_ACCESS_KEY not in str(events[0])
+    assert events[0].get("matching_pattern") == "aws_access_key_id"
+
+
+def test_bootstrap_secret_shaped_target_path_is_rejected_and_redacted(
+    tmp_path, monkeypatch,
+) -> None:
+    reg, pq, pen, rl, bl = _bootstrap_pieces(tmp_path, monkeypatch)
+    idx = MagicMock()
+    idx.list_by_prefix.return_value = []
+    idx.list_with_remote_url.return_value = []
+    idx.id_to_path_map.return_value = {}
+    files = [
+        {"target_path": f"projects/p/{GITHUB_TOKEN}.md",
+         "postimage": "---\nid: projects-p-x\ntype: project\nstatus: active\n"
+                      "tier: T3\n---\nclean\n"},
+    ]
+    resp = kb_bootstrap_project_fn(
+        idx=idx, workspace="p", component=None,
+        workspace_remote_url=None, component_remote_url=None,
+        files=files, source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+    )
+    assert resp.status == "rejected_secret_detected"
+    assert GITHUB_TOKEN not in str(resp)
+    assert pq.size() == 0
+    assert pen.size() == 0
+
+
+def test_edit_reason_with_secret_is_redacted_everywhere(tmp_path, monkeypatch) -> None:
+    """A secret in the advisory ``reason`` field must never reach the audit
+    log or push metadata; the write itself proceeds (reason is metadata, not
+    committed content) with the reason replaced by a redacted note."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    audit = AuditLog(log_path=str(tmp_path / "audit.log"), hmac_key="")
+    resp = kb_propose_edit_fn(
+        target_path="decisions/DEC-reason.md",
+        postimage="---\nid: DEC-reason\ntype: decision\nstatus: accepted\n"
+                  "tier: meta\n---\nclean body\n",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason=f"rotating creds, old one was {SLACK_TOKEN}",
+        source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4", audit_log=audit,
+    )
+    assert resp.status == "committed"
+    for ev in audit.iter_filtered():
+        assert SLACK_TOKEN not in str(ev)
+    # The push-queue entry's meta must not carry the raw reason either.
+    import pathlib
+    for p in pathlib.Path(str(tmp_path / "push-q")).rglob("*"):
+        if p.is_file():
+            assert SLACK_TOKEN not in p.read_text(errors="ignore")
+
+
+def test_edit_reason_with_secret_low_conf_pending_meta_redacted(
+    tmp_path, monkeypatch,
+) -> None:
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_edit_fn(
+        target_path="decisions/DEC-reason2.md",
+        postimage="---\nid: DEC-reason2\ntype: decision\nstatus: accepted\n"
+                  "tier: meta\n---\nclean body\n",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason=f"context: {GENERIC_CRED}",
+        source_session="s", agent_identity="claude",
+        confidence=0.3, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    assert resp.status == "pending_confirmation"
+    entry = pen.get(resp.pending_id)
+    assert GENERIC_CRED.split("=", 1)[1] not in str(entry["meta"])
+
+
+def test_memory_tag_with_secret_is_redacted_in_pending_meta(
+    tmp_path, monkeypatch,
+) -> None:
+    """A tag that itself matches a secret pattern is stored redacted in the
+    pending entry's meta (the postimage is the single reviewed artifact and
+    unavoidably carries the flagged content; meta is treated as loggable)."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_memory_fn(
+        text="clean body", tags=[f"token-{GITHUB_TOKEN}", "normal-tag"],
+        source_session="s", agent_identity="claude",
+        confidence=0.3, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    assert resp.status == "pending_confirmation"
+    entry = pen.get(resp.pending_id)
+    assert GITHUB_TOKEN not in str(entry["meta"])
+    assert "normal-tag" in entry["meta"]["tags"]
+
+
+def test_resolve_of_legacy_pending_entry_with_secret_path_rejected(
+    tmp_path, monkeypatch,
+) -> None:
+    """Defense in depth: a pending entry whose target_path carries a
+    credential-shaped value (e.g. created before this gate existed) is
+    rejected at resolve-commit time, without echoing the path."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    # Enqueue a poisoned entry directly (bypassing the propose gate, as a
+    # legacy entry would have).
+    pid = pen.enqueue(
+        proposal_type="edit",
+        target_path=f"decisions/{AWS_ACCESS_KEY}.md",
+        postimage="---\nid: legacy\ntype: decision\nstatus: accepted\n"
+                  "tier: meta\n---\nclean\n",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        meta={"agent_identity": "claude", "source_session": "s",
+              "confidence": 0.3},
+    )
+    resp = kb_resolve_pending_fn(
+        pending_id=pid, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=pq, pending=pen,
+        source_session="s", agent_identity="operator",
+    )
+    assert resp.status == "rejected_secret_detected"
+    assert AWS_ACCESS_KEY not in (resp.reason or "")
+    assert pen.size() == 1  # entry restored, not consumed

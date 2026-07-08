@@ -53,6 +53,13 @@ _DEFAULT_SERIALIZER = WriteSerializer()
 
 _log = logging.getLogger("data_olympus.tools_write")
 
+# Placeholder used wherever a caller-supplied target_path matched a secret
+# pattern (issue #71, codex round-3 Blocker 2): the path is echoed in
+# responses, audit events, commit subjects/trailers, and would be committed
+# as a git path, so a credential-shaped FILENAME is itself a leak and must
+# never be repeated back anywhere once flagged.
+_REDACTED_PATH = "[target_path redacted: matched a secret pattern]"
+
 
 def _slugify(text: str) -> str:
     s = re.sub(r"[^a-z0-9-]+", "-", text.lower()).strip("-")
@@ -290,11 +297,33 @@ def _commit_in_worktree(
             # rejected as the redacted ``rejected_secret_detected``, never as
             # ``rejected_invalid_document``.
             secret_override: SecretMatch | None = None
+            # 5-pre. Defense-in-depth path scan (codex round-3 Blocker 2):
+            # the propose paths already reject a credential-shaped
+            # target_path before it reaches here, but the RESOLVE path
+            # commits pending entries that may predate that check (or were
+            # demoted from a push conflict), and the path lands in the commit
+            # subject, trailers, and the git tree. The rejection deliberately
+            # does NOT echo the path. The operator resolve override applies
+            # here exactly as it does to a flagged postimage.
+            path_scan = scan_postimage_for_secrets(postimage=target_path)
+            if not path_scan.ok:
+                assert path_scan.match is not None
+                if secret_scan_override:
+                    secret_override = path_scan.match
+                else:
+                    raise _WriteRejected(ProposeResponse(
+                        status="rejected_secret_detected",
+                        reason=(
+                            f"secret pattern '{path_scan.match.pattern_name}' "
+                            f"detected in target_path"
+                        ),
+                        matching_pattern=path_scan.match.pattern_name,
+                    ))
             secret_result = scan_postimage_for_secrets(postimage=postimage)
             if not secret_result.ok:
                 assert secret_result.match is not None
                 if secret_scan_override:
-                    secret_override = secret_result.match
+                    secret_override = secret_override or secret_result.match
                 else:
                     raise _WriteRejected(ProposeResponse(
                         status="rejected_secret_detected", target_path=target_path,
@@ -473,6 +502,21 @@ def commit_multifile_in_worktree(
             if full is None:
                 raise _WriteRejected(ProposeResponse(
                     status="rejected_symlink_escape", target_path=tp))
+            # Path scan first (codex round-3 Blocker 2): a credential-shaped
+            # filename would land in the commit and be echoed in
+            # responses/audit; the rejection must not echo it either.
+            path_scan = scan_postimage_for_secrets(postimage=tp)
+            if not path_scan.ok:
+                assert path_scan.match is not None
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_secret_detected",
+                    target_path=_REDACTED_PATH,
+                    reason=(
+                        f"secret pattern '{path_scan.match.pattern_name}' "
+                        f"detected in a bundle target_path"
+                    ),
+                    matching_pattern=path_scan.match.pattern_name,
+                ))
             secret_result = scan_postimage_for_secrets(postimage=pi)
             if not secret_result.ok:
                 assert secret_result.match is not None
@@ -625,6 +669,21 @@ def kb_propose_memory_fn(
         flagged_pattern = (
             secret_result.match.pattern_name if secret_result.match is not None else None
         )
+        # Pending META must never carry a raw credential value (codex round-3
+        # Blocker 1): the postimage field is the single reviewed artifact and
+        # unavoidably holds the flagged content, but meta is treated as
+        # loggable, so a tag that itself matches a secret pattern is stored
+        # redacted (pattern name only).
+        safe_tags: list[str] = []
+        for t in tags:
+            tag_scan = scan_postimage_for_secrets(postimage=str(t))
+            if tag_scan.match is not None:
+                safe_tags.append(
+                    f"[tag redacted: secret pattern "
+                    f"'{tag_scan.match.pattern_name}' detected]"
+                )
+            else:
+                safe_tags.append(str(t))
         try:
             pid = pending.enqueue(
                 proposal_type="memory",
@@ -637,7 +696,7 @@ def kb_propose_memory_fn(
                     "agent_identity": agent_identity,
                     "source_session": source_session,
                     "confidence": confidence,
-                    "tags": tags,
+                    "tags": safe_tags,
                     "secret_scan_flagged": flagged_pattern is not None,
                     "matching_pattern": flagged_pattern,
                 },
@@ -766,6 +825,41 @@ def kb_propose_edit_fn(
 
     ``can_auto_commit=False`` clamps the proposal to pending regardless of
     confidence (see kb_propose_memory_fn for the rationale)."""
+    # issue #71 (codex round-3 Blocker 2): scan the caller-supplied path
+    # BEFORE anything echoes it. A credential-shaped filename would otherwise
+    # surface in this function's responses and audit events, in the commit
+    # subject/trailers, and as a committed git path, even with a clean
+    # postimage. The rejection deliberately does NOT echo the path.
+    path_scan = scan_postimage_for_secrets(postimage=target_path)
+    if not path_scan.ok:
+        assert path_scan.match is not None
+        path_reason = (f"secret pattern '{path_scan.match.pattern_name}' "
+                       f"detected in target_path")
+        _emit_audit(audit_log, event_type="propose_edit",
+                    status="rejected_secret_detected",
+                    agent_identity=agent_identity,
+                    source_session=source_session,
+                    target_path=_REDACTED_PATH, confidence=confidence,
+                    remote_addr=remote_addr, reason=path_reason,
+                    matching_pattern=path_scan.match.pattern_name)
+        return ProposeResponse(
+            status="rejected_secret_detected",
+            reason=path_reason,
+            matching_pattern=path_scan.match.pattern_name,
+        )
+
+    # issue #71 (codex round-3 Blocker 1): ``reason`` is persisted into
+    # pending meta, push metadata, and audit events, none of which may carry
+    # a raw credential value. A flagged reason is REPLACED with a redacted
+    # note rather than rejecting the write: reason is advisory metadata, not
+    # committed content, so redaction preserves the operation while keeping
+    # every downstream surface clean.
+    reason_scan = scan_postimage_for_secrets(postimage=reason)
+    if not reason_scan.ok:
+        assert reason_scan.match is not None
+        reason = (f"[reason redacted: secret pattern "
+                  f"'{reason_scan.match.pattern_name}' detected]")
+
     audit_base: dict[str, Any] = {
         "event_type": "propose_edit",
         "agent_identity": agent_identity,

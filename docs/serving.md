@@ -61,8 +61,10 @@ trigram, auth, audit rotation):
 - `KB_SECRET_SCAN_EXTRA_PATTERNS`: comma-separated additional regexes the
   secret-scanning gate (issue #71) checks alongside its built-in pattern set
   (see "Write serialization and integrity gates" above). Each entry is scanned
-  as its own named pattern (`custom_1`, `custom_2`, ...); an invalid regex is
-  logged and skipped rather than raised. Empty by default (no extra patterns).
+  as its own named pattern (`custom_1`, `custom_2`, ...); an invalid regex, or
+  one with the classic nested-quantifier ReDoS shape, is logged and skipped
+  rather than raised, and every accepted pattern runs with a hard 1-second
+  match timeout. Empty by default (no extra patterns).
 
 ## Read-only mirrors may scale horizontally
 
@@ -201,13 +203,22 @@ section so concurrent writes cannot corrupt each other:
   name), the pending entry is tagged `secret_scan_flagged`/`matching_pattern`
   (names only) so `kb pending` surfaces the warning, and a flagged memory
   proposal's filename falls back to a neutral slug instead of embedding the
-  flagged text. `kb_resolve_pending` accepts an operator-only
+  flagged text. The gate also covers the fields AROUND the postimage: a
+  credential-shaped `target_path` (filename) is rejected on edit, bootstrap,
+  and resolve without ever echoing the path back (it would otherwise land in
+  responses, audit events, commit subjects, and the git tree); a flagged edit
+  `reason` is replaced with a redacted note before it reaches pending meta,
+  push metadata, or audit events; and a flagged memory tag is stored redacted
+  in pending meta. `kb_resolve_pending` accepts an operator-only
   `override_secret_scan` boolean (`kb resolve --override-secret-scan` on the
   CLI) to consciously commit a false positive anyway (recorded in the audit
   event); no auto-commit or bootstrap path exposes this override, so an agent
   can never self-authorize past a flagged write. An extra pattern with the
   classic nested-quantifier ReDoS shape is rejected at load time alongside an
-  invalid regex.
+  invalid regex, and every accepted custom pattern executes through the
+  `regex` engine with a hard 1-second match timeout, so a catastrophic
+  pattern the load-time check misses is bounded at scan time (logged and
+  skipped) instead of hanging the single-writer write path.
 
 ## Push queue and write-path visibility
 

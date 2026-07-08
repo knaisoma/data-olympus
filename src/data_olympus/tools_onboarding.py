@@ -262,6 +262,8 @@ def _bootstrap_admitted(
     # operate on the same value that passed validation (item 4). Without this a
     # backslash path like ``decisions\\x.md`` validated as ``decisions/x.md`` yet
     # committed a literal root-level backslash file outside every indexed prefix.
+    from data_olympus.write_gate import scan_postimage_for_secrets
+
     rejected: list[str] = []
     canonical_files: list[dict[str, str]] = []
     for f in files:
@@ -269,6 +271,21 @@ def _bootstrap_admitted(
         if canonical is None or not is_writable_path(canonical):
             rejected.append(f["target_path"])
             continue
+        # issue #71 (codex round-3 Blocker 2): a credential-shaped FILENAME
+        # is itself a leak (it would be echoed in responses/audit, used in
+        # the commit subject, and committed as a git path even with clean
+        # postimages), so a flagged path rejects the whole bundle
+        # immediately, and the rejection must not echo the path back.
+        path_scan = scan_postimage_for_secrets(postimage=canonical)
+        if not path_scan.ok:
+            assert path_scan.match is not None
+            return BootstrapResponse(
+                status="rejected_secret_detected",
+                rejected_paths=[
+                    f"[target_path redacted: secret pattern "
+                    f"'{path_scan.match.pattern_name}' detected]"
+                ],
+            )
         target_tier, _ = _classify_by_path(canonical)
         if blocklist.blocks(canonical, target_tier):
             rejected.append(f["target_path"])
@@ -332,7 +349,6 @@ def _bootstrap_admitted(
                 with contextlib.suppress(Exception):
                     pending.reject(pid)
 
-        from data_olympus.write_gate import scan_postimage_for_secrets
         any_flagged = False
         for f in files:
             # Scan BEFORE enqueueing (issue #71), same rationale as the

@@ -72,9 +72,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the memory filename slug itself falls back to a neutral placeholder instead
   of embedding the flagged text. The scan runs before the content-validation
   gate on every commit path so an invalid-document rejection can never echo a
-  credential value through its own error message. Extra patterns
+  credential value through its own error message. The gate also covers the
+  fields around the postimage: a credential-shaped `target_path` (filename)
+  is rejected on edit/bootstrap/resolve without echoing the path back, a
+  flagged edit `reason` is replaced with a redacted note before reaching
+  pending meta / push metadata / audit events, and a flagged memory tag is
+  stored redacted in pending meta. Extra patterns
   (`KB_SECRET_SCAN_EXTRA_PATTERNS`) with the classic nested-quantifier ReDoS
-  shape are rejected at load time alongside invalid regexes.
+  shape are rejected at load time alongside invalid regexes, and every
+  accepted custom pattern executes through the `regex` engine (a new runtime
+  dependency) with a hard 1-second match timeout so a catastrophic pattern
+  cannot hang the single-writer write path.
 
 ### Fixed
 

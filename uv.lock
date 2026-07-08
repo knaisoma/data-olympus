@@ -471,6 +471,7 @@ dependencies = [
     { name = "fastmcp" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "regex" },
 ]
 
 [package.optional-dependencies]
@@ -488,6 +489,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "types-pyyaml" },
+    { name = "types-regex" },
 ]
 embeddings = [
     { name = "fastembed" },
@@ -506,10 +508,12 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "regex", specifier = ">=2024.5" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.20" },
     { name = "sentence-transformers", marker = "extra == 'bench'", specifier = ">=3.0" },
     { name = "tiktoken", marker = "extra == 'bench'", specifier = ">=0.8" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "types-regex", marker = "extra == 'dev'", specifier = ">=2024.5" },
 ]
 provides-extras = ["embeddings", "dev", "bench"]
 
@@ -2516,6 +2520,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/b8/83/4a1afc3fbfcf5b8d46fc390cd95ed6b0dc9010a265f4e9f46314efffa37a/types_pyyaml-6.0.12.20260518.tar.gz", hash = "sha256:d917f83fb38462550338c1297faedd860b3ec83912b96b1e3d73255f7473e466", size = 17850, upload-time = "2026-05-18T06:01:58.675Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/06/a2/c01db32be2ae7d6a1689972f3c492b149ee4e164b12fdfd9f64b50888215/types_pyyaml-6.0.12.20260518-py3-none-any.whl", hash = "sha256:d2150f75a231c9fe9c7463bd29487d93e60bac90400287351384bc2284eba7cd", size = 20312, upload-time = "2026-05-18T06:01:57.368Z" },
+]
+
+[[package]]
+name = "types-regex"
+version = "2026.6.28.20260630"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a1/36/88aac7af6d8943f5c744daa49eec4a31d81396a10a551372ecf78fb7cb05/types_regex-2026.6.28.20260630.tar.gz", hash = "sha256:5fafe434b578d3d77640aab948a3ebfc9efea723412bfae5551b3f55086ab6a7", size = 13428, upload-time = "2026-06-30T06:00:04.144Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/04/9d/454dfccb80909ce841b5f814c57e06957c787cf1e8db1213c82de8f6b14d/types_regex-2026.6.28.20260630-py3-none-any.whl", hash = "sha256:69b72cd53de57afd1d20f9c13ebc2e769b7254d5c600ce5604340d4636b0c0b6", size = 11152, upload-time = "2026-06-30T06:00:03.129Z" },
 ]
 
 [[package]]
