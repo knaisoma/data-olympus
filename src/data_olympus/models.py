@@ -146,6 +146,14 @@ class SearchHitModel(BaseModel):
     # or the validity_state facet); default kb_search never returns an
     # expired doc at all.
     freshness: str = ""
+    # Computed in-force boolean (issue #109): the single-sourced predicate
+    # (status class AND validity window AND not-inbox AND not-graph-excluded,
+    # composing issue #110 slice 2), NEVER stored in frontmatter. Always
+    # present verbose; compact emits it deviation-only (`in_force: false`,
+    # see compact_dump). Exposed so a caller reading a hit that was NOT
+    # retrieved via in_force=True (e.g. a default kb_search) can still tell
+    # whether it may govern now.
+    in_force: bool = True
     # Lifecycle-relationship surfacing (issue #110 slice 2): deviation-only,
     # sorted list of ids that supersede this doc (the UNION of its own
     # frontmatter `superseded_by` and any reverse `supersedes` edge -- see
@@ -170,6 +178,14 @@ class SearchHitModel(BaseModel):
         ``superseded_by`` only when non-empty (issue #110 slice 2: same
         deviation-only pattern -- a doc nobody supersedes omits it entirely).
         ``verbose=True`` restores the full shape.
+
+        ``in_force`` is emitted deviation-only, i.e. ONLY when False (issue
+        #109, codex review blocker). The status/freshness emissions above key
+        off the RAW frontmatter status, so a memory-inbox doc with a forged
+        ``status: active`` would otherwise render as an ordinary current rule
+        in compact hits with no deviation signal at all -- the floor made it
+        not-in-force, but nothing said so. An in-force hit stays byte-for-byte
+        unchanged (no key).
         """
         snippet = self.snippet
         if len(snippet) > COMPACT_SNIPPET_CHARS:
@@ -183,6 +199,8 @@ class SearchHitModel(BaseModel):
             d["freshness"] = self.freshness
         if self.superseded_by:
             d["superseded_by"] = list(self.superseded_by)
+        if not self.in_force:
+            d["in_force"] = False
         return d
 
 
@@ -255,6 +273,14 @@ class GetResponse(BaseModel):
     # shows when explicitly included.
     validity: dict[str, str] | None = None
     freshness: str = ""
+    # Computed in-force boolean (issue #109): see SearchHitModel.in_force for
+    # the rationale (full predicate: status class AND validity window AND
+    # not-inbox AND not-graph-excluded). Always present verbose; compact emits
+    # it deviation-only (`in_force: false`, see compact_dump). kb_get always
+    # resolves regardless of expiry, so this is the caller's single signal for
+    # "may this doc govern now", independent of status/validity/inbox/edges
+    # being read apart.
+    in_force: bool = True
     # Lifecycle-relationship surfacing (issue #110 slice 2), always resolved
     # (kb_get by id ignores in-force/graph-exclusion filtering entirely, same
     # as it already ignores expiry). ``superseded_by`` is the UNION of this
@@ -283,6 +309,13 @@ class GetResponse(BaseModel):
         metadata omits both entirely) and ``superseded_by`` / ``contradicts`` /
         ``contradicted_by`` (issue #110 slice 2: omitted when empty, same
         deviation-only pattern). ``verbose=True`` restores the full shape.
+
+        ``in_force`` is emitted deviation-only, i.e. ONLY when False (issue
+        #109, codex review blocker): compact kb_get shows the RAW frontmatter
+        ``status``, so a memory-inbox doc with a forged ``status: active``
+        would otherwise read as an ordinary current rule with no signal that
+        the in-force floor disqualified it. An in-force doc's compact shape is
+        byte-for-byte unchanged (no key).
         """
         d: dict[str, object] = {
             "id": self.id,
@@ -312,6 +345,8 @@ class GetResponse(BaseModel):
             d["contradicts"] = list(self.contradicts)
         if self.contradicted_by:
             d["contradicted_by"] = list(self.contradicted_by)
+        if not self.in_force:
+            d["in_force"] = False
         return d
 
 
@@ -355,6 +390,7 @@ class ProposeMemoryRequest(BaseModel):
     source_session: str
     agent_identity: str
     confidence: float
+    evidence: list[str] = []
 
 
 class ProposeEditRequest(BaseModel):
@@ -367,6 +403,7 @@ class ProposeEditRequest(BaseModel):
     source_session: str
     agent_identity: str
     confidence: float
+    evidence: list[str] = []
 
 
 class ProposeResponse(BaseModel):
@@ -423,6 +460,18 @@ class PendingEntry(BaseModel):
     # raw postimage; the matched value itself is never included here.
     secret_scan_flagged: bool = False
     matching_pattern: str | None = None
+    # Provenance (issue #109): already persisted in pending meta at enqueue
+    # time (source_session on both proposal types, reason on edit proposals),
+    # simply not surfaced by kb_pending until now. None when the entry
+    # predates this field or the proposal type does not carry it (e.g. a
+    # memory proposal has no `reason`).
+    source_session: str | None = None
+    reason: str | None = None
+    # Optional supporting evidence the proposer supplied (kb_propose_memory /
+    # kb_propose_edit `evidence` param), redacted item-by-item by the same
+    # secret scanner as `tags` before it ever reaches pending meta. None when
+    # no evidence was supplied.
+    evidence: list[str] | None = None
 
 
 class PendingListResponse(BaseModel):
@@ -449,6 +498,10 @@ class AuditEvent(BaseModel):
     # True only on a resolve that committed a postimage the scanner flagged,
     # via an explicit operator override (never set by an auto-commit path).
     secret_scan_override: bool | None = None
+    # Provenance (issue #109): the redacted evidence list echoed on
+    # propose_memory / propose_edit audit events, when supplied. Never the raw
+    # value if a scan flagged an item (see tools_write._redact_evidence).
+    evidence: list[str] | None = None
     # Tamper-evident chain fields (present on events appended with chaining).
     event_id: str | None = None
     prev_hash: str | None = None

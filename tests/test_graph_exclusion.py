@@ -436,3 +436,58 @@ def test_example_bundle_std_u_003_excluded_via_status_and_graph(
     ids = {h.id for h in idx.search("commit message", limit=20, in_force=True)}
     assert "STD-U-003" not in ids
     assert "STD-U-004" in ids
+
+
+# ---------------------------------------------------------------------------
+# Scenario 10 (issue #109 + #110 composition): the computed per-doc `in_force`
+# boolean on kb_get / kb_search hits reflects the FULL predicate -- status
+# class AND validity window AND not-inbox AND not-graph-excluded -- matching
+# the in_force=true retrieval filter exactly. The forgotten-flip doc (raw
+# status active, graph-excluded via a reverse in-force supersedes edge) must
+# report in_force=False even though its own status/window/inbox checks pass.
+# ---------------------------------------------------------------------------
+
+
+def test_computed_in_force_reflects_graph_exclusion_on_kb_get(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    kb = _forgotten_flip_kb(tmp_path)
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="x")
+    excluded = kb_get_fn(idx=idx, id="DOC-B", today=TODAY)
+    assert excluded.status == "active"  # raw status alone would qualify it
+    assert excluded.in_force is False   # ...but the graph rule composes in
+    source = kb_get_fn(idx=idx, id="DOC-A", today=TODAY)
+    assert source.in_force is True
+
+
+def test_computed_in_force_reflects_graph_exclusion_on_search_hits(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    kb = _forgotten_flip_kb(tmp_path)
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="x")
+    resp = kb_search_fn(idx=idx, query="widget", today=TODAY)
+    by_id = {h.id: h for h in resp.hits}
+    assert by_id["DOC-B"].in_force is False
+    assert by_id["DOC-A"].in_force is True
+    # Compact deviation-only emission: the graph-excluded doc carries the
+    # explicit in_force: false signal (its raw status is hidden as in-force
+    # class), the in-force doc omits the key.
+    compact = {h["id"]: h for h in resp.compact_dump()["hits"]}
+    assert compact["DOC-B"]["in_force"] is False
+    assert "in_force" not in compact["DOC-A"]
+
+
+def test_graph_excluded_ids_matches_counter(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    """Index.graph_excluded_ids (the set the computed boolean consumes) and
+    Index.graph_excluded_count (the health counter) come from the same SQL
+    definition and must agree."""
+    kb = _forgotten_flip_kb(tmp_path)
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="x")
+    ids = idx.graph_excluded_ids(today=TODAY)
+    assert ids == {"DOC-B"}
+    assert len(ids) == idx.graph_excluded_count(today=TODAY)

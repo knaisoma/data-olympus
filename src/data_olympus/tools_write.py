@@ -84,10 +84,76 @@ def _memory_inbox_prefix() -> str:
 
     Defaults to the generic ``memory/inbox/``; a deployment with a different
     layout overrides it via KB_MEMORY_INBOX_PREFIX (a trailing slash is
-    normalized in).
+    normalized in). Delegates to format.validate.memory_inbox_prefix, the
+    single source shared with index.py's memory-inbox in-force floor (issue
+    #109) -- this wrapper is kept only so existing callers/tests importing
+    ``tools_write._memory_inbox_prefix`` are unaffected.
     """
-    prefix = os.environ.get("KB_MEMORY_INBOX_PREFIX", "memory/inbox/").strip()
-    return prefix if prefix.endswith("/") else prefix + "/"
+    from data_olympus.format.validate import memory_inbox_prefix
+    return memory_inbox_prefix()
+
+
+# ``evidence`` validation (issue #109): optional supporting-context list on
+# kb_propose_memory / kb_propose_edit. Fixed limits (not config-driven, unlike
+# max_text_bytes/max_postimage_bytes): a small, cheap-to-review list of short
+# strings, not a payload-sizing concern.
+_MAX_EVIDENCE_ITEMS = 10
+_MAX_EVIDENCE_ITEM_CHARS = 500
+
+
+def _validate_evidence(evidence: object) -> str | None:
+    """Return a rejection reason string if ``evidence`` is invalid, else None.
+
+    Rejects (rather than truncating/coercing) so a caller sees exactly why its
+    proposal did not go through, instead of a silently-shortened evidence list.
+
+    The OUTER type is checked first (codex review blocker): the REST routes
+    pass ``body.get("evidence", ...)`` straight through, and a JSON string is
+    itself iterable (every char a 1-char str), so without this check a short
+    string would silently pass the per-item validation below as a "list" of
+    characters. MCP is schema-validated upstream, but this function is the
+    single authoritative gate for every surface.
+    """
+    if not isinstance(evidence, list):
+        return (
+            f"evidence must be a list of strings "
+            f"(got {type(evidence).__name__})"
+        )
+    if len(evidence) > _MAX_EVIDENCE_ITEMS:
+        return (
+            f"evidence exceeds max {_MAX_EVIDENCE_ITEMS} items "
+            f"(got {len(evidence)})"
+        )
+    for item in evidence:
+        if not isinstance(item, str):
+            return "evidence items must be strings"
+        if len(item) > _MAX_EVIDENCE_ITEM_CHARS:
+            return (
+                f"evidence item exceeds max {_MAX_EVIDENCE_ITEM_CHARS} chars "
+                f"(got {len(item)})"
+            )
+    return None
+
+
+def _redact_evidence(evidence: list[str]) -> list[str]:
+    """Scan each evidence item for a secret pattern, replacing a flagged item
+    with a redacted placeholder (pattern name only) before it is persisted to
+    pending meta or echoed in an audit event -- the same treatment `tags`
+    already gets in kb_propose_memory_fn. For a memory proposal the RAW
+    evidence still reaches the committed/reviewed postimage via `_render_memory`
+    (needed for operator review, same rationale as tags in the body); only this
+    separate meta/audit copy is redacted."""
+    out: list[str] = []
+    for item in evidence:
+        scan = scan_postimage_for_secrets(postimage=str(item))
+        if scan.match is not None:
+            out.append(
+                f"[evidence redacted: secret pattern '{scan.match.pattern_name}' "
+                f"detected]"
+            )
+        else:
+            out.append(str(item))
+    return out
 
 
 def _classify(target_path: str) -> tuple[str, str]:
@@ -112,6 +178,7 @@ def _emit_audit(
     remote_addr: str | None = None,
     matching_pattern: str | None = None,
     secret_scan_override: bool | None = None,
+    evidence: list[str] | None = None,
 ) -> None:
     if audit_log is None:
         return
@@ -132,6 +199,7 @@ def _emit_audit(
             "remote_addr": remote_addr,
             "matching_pattern": matching_pattern,
             "secret_scan_override": secret_scan_override,
+            "evidence": evidence,
         })
 
 
@@ -576,6 +644,7 @@ def kb_propose_memory_fn(
     max_text_bytes: int = 0,
     serializer: WriteSerializer | None = None,
     idx: Index | None = None,
+    evidence: list[str] | None = None,
 ) -> ProposeResponse:
     """Propose a new memory file under the memory inbox prefix as
     <date>-<slug>-<uniq>.md.
@@ -587,7 +656,20 @@ def kb_propose_memory_fn(
     when False (an authenticated principal lacking the auto_commit capability, or
     an untrusted caller) the proposal is parked as pending regardless of the
     client-asserted confidence. This is the confidence clamp.
+
+    ``evidence`` (issue #109, optional): supporting-context strings validated
+    by ``_validate_evidence`` (max 10 items, 500 chars each), rendered into the
+    memory's frontmatter (so a credential-shaped item is caught by the SAME
+    full-postimage secret scan below -- see ``_render_memory``), and persisted
+    (redacted copy) in pending meta / audit events / ``kb_pending``.
     """
+    # Normalize ONLY the None "not supplied" sentinel (codex re-review
+    # blocker): `evidence or []` also coerced falsy non-lists ('' / {} /
+    # False / 0) from raw REST JSON to [] BEFORE validation, silently
+    # accepting them instead of rejecting rejected_invalid_evidence.
+    if evidence is None:
+        evidence = []
+    evidence_error = _validate_evidence(evidence)
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     # issue #71: the slug is derived VERBATIM from the caller's free text (no
     # redaction -- `_slugify` only lowercases and normalizes separators), so a
@@ -611,6 +693,14 @@ def kb_propose_memory_fn(
         "confidence": confidence,
         "remote_addr": remote_addr,
     }
+
+    # 0. Evidence validation (issue #109): a cheap client-input check, run
+    # before any path/blocklist/rate-limit work.
+    if evidence_error is not None:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_invalid_evidence",
+                                   "reason": evidence_error})
+        return ProposeResponse(status="rejected_invalid_evidence",
+                               reason=evidence_error, target_path=target_path)
 
     # 1. Structural rule (cheap).
     if not is_writable_path(target_path):
@@ -646,7 +736,9 @@ def kb_propose_memory_fn(
     # server prepends (tags, agent identity, ISO timestamp) is part of what gets
     # written and pushed, and an unbounded tags list would otherwise slip past a
     # body-only check (item 3).
-    postimage = _render_memory(text=text, tags=tags, agent_identity=agent_identity)
+    postimage = _render_memory(
+        text=text, tags=tags, agent_identity=agent_identity, evidence=evidence,
+    )
 
     # 4b. Payload size cap (reject before any disk side effect).
     if max_text_bytes > 0 and len(postimage.encode("utf-8")) > max_text_bytes:
@@ -684,6 +776,10 @@ def kb_propose_memory_fn(
                 )
             else:
                 safe_tags.append(str(t))
+        # Evidence (issue #109): same redaction treatment as tags above, so a
+        # secret-shaped evidence item never reaches pending meta / audit / the
+        # kb_pending response in the clear.
+        safe_evidence = _redact_evidence(evidence)
         try:
             pid = pending.enqueue(
                 proposal_type="memory",
@@ -699,6 +795,7 @@ def kb_propose_memory_fn(
                     "tags": safe_tags,
                     "secret_scan_flagged": flagged_pattern is not None,
                     "matching_pattern": flagged_pattern,
+                    "evidence": safe_evidence or None,
                 },
             )
         except PathLockBusyError:
@@ -714,7 +811,8 @@ def kb_propose_memory_fn(
                 target_path=target_path,
             )
         _emit_audit(audit_log, **{**audit_base, "status": "pending_confirmation",
-                                   "pending_id": pid, "matching_pattern": flagged_pattern})
+                                   "pending_id": pid, "matching_pattern": flagged_pattern,
+                                   "evidence": safe_evidence or None})
         if flagged_pattern is not None:
             return ProposeResponse(
                 status="pending_confirmation",
@@ -765,11 +863,18 @@ def kb_propose_memory_fn(
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
         return ProposeResponse(status="rejected_path_lock_busy",
                                target_path=target_path)
-    _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
+    _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha,
+                               "evidence": _redact_evidence(evidence) or None})
     return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state)
 
 
-def _render_memory(*, text: str, tags: list[str], agent_identity: str) -> str:
+def _render_memory(
+    *,
+    text: str,
+    tags: list[str],
+    agent_identity: str,
+    evidence: list[str] | None = None,
+) -> str:
     """Render a memory file: YAML frontmatter block + body.
 
     The frontmatter is built as a dict and serialized with ``yaml.safe_dump``
@@ -781,16 +886,36 @@ def _render_memory(*, text: str, tags: list[str], agent_identity: str) -> str:
     ``id`` breaks every index rebuild. ``safe_dump`` quotes and escapes any value
     that would otherwise change the document structure, so newline/bracket
     payloads survive only as data inside the intended key.
+
+    ``type: memory`` / ``status: proposed`` (issue #109, memory stamping): every
+    server-rendered memory is stamped with the concept schema's real vocabulary
+    (SPEC.md 4.2), so the EXISTING status filter (``in_force``), the status
+    rerank, and the compact deviating-status emission all apply to it with zero
+    new code paths -- an agent-written memory is retrievable but never
+    presented as a governing rule (``kb_consult`` hard-filters to in-force)
+    until an operator promotes it out of ``proposed`` at review time. Promotion
+    itself is out of scope here.
+
+    ``evidence`` (optional, issue #109) is rendered into frontmatter the same
+    safe_dump way as ``tags``: a list of caller-supplied supporting strings the
+    proposer already validated (see ``_validate_evidence``). Because it lands in
+    the SAME postimage this function returns, it passes through the existing
+    full-postimage secret scan the propose path already runs -- no separate
+    scan is needed here.
     """
     import yaml
 
     fm: dict[str, Any] = {
+        "type": "memory",
+        "status": "proposed",
         "created_by": agent_identity,
         "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
     }
     if tags:
         # Coerce to plain str so a non-str element can't smuggle a YAML tag.
         fm["tags"] = [str(t) for t in tags]
+    if evidence:
+        fm["evidence"] = [str(e) for e in evidence]
     dumped = yaml.safe_dump(
         fm, sort_keys=False, default_flow_style=False, allow_unicode=True
     )
@@ -820,11 +945,26 @@ def kb_propose_edit_fn(
     max_postimage_bytes: int = 0,
     serializer: WriteSerializer | None = None,
     idx: Index | None = None,
+    evidence: list[str] | None = None,
 ) -> ProposeResponse:
     """Propose an edit to an existing (or new) file under target_path.
 
     ``can_auto_commit=False`` clamps the proposal to pending regardless of
-    confidence (see kb_propose_memory_fn for the rationale)."""
+    confidence (see kb_propose_memory_fn for the rationale).
+
+    ``evidence`` (issue #109, optional): supporting-context strings validated
+    by ``_validate_evidence`` (max 10 items, 500 chars each). Unlike
+    kb_propose_memory_fn, ``postimage`` here is caller-supplied verbatim (no
+    server-rendered template), so evidence is never injected into committed
+    content -- it is redacted (same treatment as ``reason``) and persisted only
+    in pending meta / audit events / ``kb_pending``.
+    """
+    # Normalize ONLY the None sentinel; see the matching comment in
+    # kb_propose_memory_fn (codex re-review blocker: falsy non-lists must
+    # reject, not silently coerce to []).
+    if evidence is None:
+        evidence = []
+    evidence_error = _validate_evidence(evidence)
     # issue #71 (codex round-3 Blocker 2): scan the caller-supplied path
     # BEFORE anything echoes it. A credential-shaped filename would otherwise
     # surface in this function's responses and audit events, in the commit
@@ -869,6 +1009,20 @@ def kb_propose_edit_fn(
         "reason": reason,
         "remote_addr": remote_addr,
     }
+
+    # 0. Evidence validation (issue #109): a cheap client-input check, run
+    # before any path/blocklist/rate-limit work.
+    if evidence_error is not None:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_invalid_evidence",
+                                   "reason": evidence_error})
+        return ProposeResponse(status="rejected_invalid_evidence",
+                               reason=evidence_error, target_path=target_path)
+
+    # Redacted copy for pending meta / audit events (never the raw value if a
+    # scan flagged an item -- postimage here is caller-supplied verbatim, so
+    # unlike kb_propose_memory_fn there is no template to render evidence into).
+    safe_evidence = _redact_evidence(evidence)
+
     canonical = normalize_target_path(target_path)
     if canonical is None or not is_writable_path(canonical):
         # audit_base["reason"] otherwise carries the caller's edit rationale;
@@ -927,7 +1081,8 @@ def kb_propose_edit_fn(
                       "confidence": confidence,
                       "reason": reason,
                       "secret_scan_flagged": flagged_pattern is not None,
-                      "matching_pattern": flagged_pattern},
+                      "matching_pattern": flagged_pattern,
+                      "evidence": safe_evidence or None},
             )
         except PathLockBusyError:
             _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
@@ -938,7 +1093,8 @@ def kb_propose_edit_fn(
             return ProposeResponse(status="rejected_pending_queue_full",
                                    target_path=target_path)
         _emit_audit(audit_log, **{**audit_base, "status": "pending_confirmation",
-                                   "pending_id": pid, "matching_pattern": flagged_pattern})
+                                   "pending_id": pid, "matching_pattern": flagged_pattern,
+                                   "evidence": safe_evidence or None})
         if flagged_pattern is not None:
             return ProposeResponse(
                 status="pending_confirmation",
@@ -984,7 +1140,8 @@ def kb_propose_edit_fn(
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
         return ProposeResponse(status="rejected_path_lock_busy",
                                target_path=target_path)
-    _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha})
+    _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha,
+                               "evidence": safe_evidence or None})
     return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state)
 
 
@@ -1148,6 +1305,11 @@ def kb_list_pending_fn(*, pending: PendingQueue) -> PendingListResponse:
                 created_at=e["created_at"],
                 secret_scan_flagged=e.get("secret_scan_flagged", False),
                 matching_pattern=e.get("matching_pattern"),
+                # issue #109: provenance kb_pending already persisted but did
+                # not surface until now.
+                source_session=e.get("source_session"),
+                reason=e.get("reason"),
+                evidence=e.get("evidence"),
             )
             for e in pending.list()
         ]

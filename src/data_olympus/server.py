@@ -538,9 +538,15 @@ def build_app(
         (superseded/deprecated), `type` when set, and `freshness` only when a
         hit deviates (`stale`/`expired`/`upcoming`); the `query` echo, per-hit
         `path`, and `score` are dropped (fetch a hit's full metadata with
-        kb_get(id); array order conveys rank). verbose=True restores the full
-        legacy shape with query, path, score, status, type, and freshness on
-        every hit.
+        kb_get(id); array order conveys rank). A compact hit additionally
+        carries `in_force: false` when the computed in-force predicate (the
+        single-sourced status + validity-window + not-inbox rule; never
+        stored in frontmatter) says the doc does NOT currently govern --
+        emitted deviation-only, so an in-force hit's compact shape is
+        unchanged. verbose=True restores the full legacy shape with query,
+        path, score, status, type, freshness, and the computed
+        `in_force: bool` on every hit, so a hit retrieved WITHOUT
+        `in_force=true` can still be checked for whether it may govern now.
         """
         resp = kb_search_fn(
             idx=state.idx, query=query, limit=limit, tier=tier, category=category,
@@ -562,8 +568,13 @@ def build_app(
         exists to read the doc) with a trimmed envelope: `path`,
         `git_remote_url`, and `last_modified_source` are dropped and empty
         status/type/applies_when/description/validity/freshness are omitted;
-        `source_commit` and `last_modified` provenance are kept. verbose=True
-        returns the full legacy envelope with every field."""
+        `source_commit` and `last_modified` provenance are kept, and
+        `in_force: false` is emitted when the computed in-force predicate says
+        the doc does NOT currently govern (deviation-only; an in-force doc
+        omits the key). verbose=True returns the full legacy envelope with
+        every field plus the computed `in_force: bool` (the single-sourced
+        status + validity-window + not-inbox predicate; never stored in
+        frontmatter)."""
         from data_olympus.tools_read import KbNotFoundError, kb_get_fn
         try:
             resp = kb_get_fn(idx=state.idx, id=id)
@@ -650,10 +661,15 @@ def build_app(
         def kb_propose_memory(
             text: str, tags: list[str], source_session: str,
             agent_identity: str, confidence: float,
+            evidence: list[str] | None = None,
         ) -> dict[str, object]:
             """Propose a new memory file. High confidence auto-commits and
             enqueues for push; low confidence enters the pending queue for operator
-            review."""
+            review.
+
+            evidence: optional supporting-context strings (max 10 items, 500
+            chars each), rendered into the memory's frontmatter and surfaced by
+            kb_pending."""
             if state.worktrees is None or state.push_queue is None or state.pending is None:
                 return {"status": "write_pipeline_disabled"}
             assert state.worktrees is not None
@@ -673,6 +689,7 @@ def build_app(
                 can_auto_commit=_current_principal.get().can_auto_commit,
                 max_text_bytes=state.config.max_text_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                evidence=evidence,
             )
             return resp.model_dump()
 
@@ -681,10 +698,16 @@ def build_app(
             target_path: str, postimage: str, base_commit: str,
             base_blob_sha: str | None, target_file_hash: str | None,
             reason: str, source_session: str, agent_identity: str, confidence: float,
+            evidence: list[str] | None = None,
         ) -> dict[str, object]:
             """Propose an edit to an existing (or new) markdown file under an
             indexed tier. High confidence auto-commits + queues for push; low
-            confidence enters the pending queue for operator review."""
+            confidence enters the pending queue for operator review.
+
+            evidence: optional supporting-context strings (max 10 items, 500
+            chars each), persisted in pending meta / audit events and surfaced
+            by kb_pending (not rendered into the postimage: unlike
+            kb_propose_memory, the postimage here is caller-supplied verbatim)."""
             if state.worktrees is None or state.push_queue is None or state.pending is None:
                 return {"status": "write_pipeline_disabled"}
             assert state.worktrees is not None
@@ -706,6 +729,7 @@ def build_app(
                 can_auto_commit=_current_principal.get().can_auto_commit,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                evidence=evidence,
             )
             return resp.model_dump()
 
@@ -813,6 +837,12 @@ def build_app(
             governing rules for the intent. Call before code/architectural work.
             trigger is 'explicit' (default: a deliberate consult, clears the gate)
             or 'prompt_hook' (an installer auto-consult: audited, never clears).
+
+            Retrieval is hard-filtered to the in-force class (active/accepted/
+            approved, within its validity window, and never a memory-inbox
+            doc): an unreviewed proposed memory, a retired/superseded decision,
+            an expired doc, or a legacy/forged inbox file is never returned as
+            a governing rule.
 
             pending_actions, when present, lists open maintenance items (missing
             `status` fields, recently-expired/expiring-soon docs); omitted when

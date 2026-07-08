@@ -510,6 +510,7 @@ def register_routes(
                 can_auto_commit=principal.can_auto_commit,
                 max_text_bytes=state.config.max_text_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                evidence=body.get("evidence", []),
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)
@@ -558,6 +559,7 @@ def register_routes(
                 can_auto_commit=principal.can_auto_commit,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                evidence=body.get("evidence", []),
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)

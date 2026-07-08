@@ -43,6 +43,18 @@ def shape_response(resp: _CompactDumpable, *, verbose: bool) -> dict[str, object
     return resp.model_dump() if verbose else resp.compact_dump()
 
 
+def _graph_excluded_ids(idx: Index, today: str) -> set[str]:
+    """The graph-excluded doc-id set for the computed ``in_force`` boolean.
+
+    Duck-typed via ``getattr`` (same pattern tools_enforce uses for
+    ``maintenance_state``) so a minimal test double exposing only
+    ``.search``/``.health``/``.get`` keeps working: absent the method, nothing
+    is graph-excluded.
+    """
+    fn = getattr(idx, "graph_excluded_ids", None)
+    return fn(today=today) if fn is not None else set()
+
+
 def kb_health_fn(
     *,
     idx: Index,
@@ -144,7 +156,7 @@ def kb_search_fn(
     validity_state: str | None = None,
     today: str | None = None,
 ) -> SearchResponse:
-    from data_olympus.format.validate import compute_freshness, today_iso
+    from data_olympus.format.validate import compute_freshness, is_in_force, today_iso
     from data_olympus.search_gate import abstain_gate
 
     # Clamp to 1..100. Clamping only the upper bound let a negative
@@ -181,6 +193,11 @@ def kb_search_fn(
     else:
         hits = idx.search(query, limit=limit, **search_kwargs)  # type: ignore[arg-type]
     health = idx.health()
+    # Graph-exclusion half of the computed per-hit `in_force` (issues #109 +
+    # #110 slice 2): the full predicate is status class AND validity window
+    # AND not-inbox AND not-graph-excluded, matching the in_force=True SQL
+    # filter exactly. Fetched ONCE per search (not per hit).
+    graph_excluded = _graph_excluded_ids(idx, today) if hits else set()
     return SearchResponse(
         query=query,
         hits=[
@@ -196,6 +213,13 @@ def kb_search_fn(
                     valid_from=h.valid_from, valid_until=h.valid_until,
                     recheck_by=h.recheck_by, today=today,
                 ) or "",
+                in_force=(
+                    h.id not in graph_excluded
+                    and is_in_force(
+                        h.status, h.valid_from, h.valid_until, today,
+                        is_inbox=h.is_inbox,
+                    )
+                ),
                 superseded_by=list(h.superseded_by),
             )
             for h in hits
@@ -212,7 +236,7 @@ class KbNotFoundError(Exception):
 
 
 def kb_get_fn(*, idx: Index, id: str, today: str | None = None) -> GetResponse:
-    from data_olympus.format.validate import compute_freshness, today_iso
+    from data_olympus.format.validate import compute_freshness, is_in_force, today_iso
 
     doc = idx.get(id)
     if doc is None:
@@ -235,6 +259,12 @@ def kb_get_fn(*, idx: Index, id: str, today: str | None = None) -> GetResponse:
         valid_from=doc.valid_from, valid_until=doc.valid_until,
         recheck_by=doc.recheck_by, today=today,
     ) or ""
+    # Full computed in-force predicate (issues #109 + #110 slice 2): status
+    # class AND validity window AND not-inbox AND not-graph-excluded, matching
+    # the in_force=True retrieval filter exactly.
+    in_force = doc.id not in _graph_excluded_ids(idx, today) and is_in_force(
+        doc.status, doc.valid_from, doc.valid_until, today, is_inbox=doc.is_inbox,
+    )
     return GetResponse(
         id=doc.id,
         path=doc.path,
@@ -253,6 +283,7 @@ def kb_get_fn(*, idx: Index, id: str, today: str | None = None) -> GetResponse:
         git_remote_url=doc.git_remote_url,
         validity=validity,
         freshness=freshness,
+        in_force=in_force,
         superseded_by=list(doc.superseded_by),
         contradicts=list(doc.contradicts),
         contradicted_by=list(doc.contradicted_by),

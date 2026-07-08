@@ -39,7 +39,9 @@ from data_olympus.format.validate import (
     RESERVED,
     graph_excluded_ids_sql,
     in_force_sql_fragment,
+    is_inbox_path,
     not_expired_sql_fragment,
+    not_inbox_sql_fragment,
     today_iso,
 )
 from data_olympus.maintenance import (
@@ -84,7 +86,8 @@ CREATE TABLE IF NOT EXISTS docs (
     valid_until TEXT,
     last_verified TEXT,
     recheck_by TEXT,
-    verification_source TEXT
+    verification_source TEXT,
+    is_inbox INTEGER NOT NULL DEFAULT 0
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
     id UNINDEXED,
@@ -128,7 +131,11 @@ CREATE INDEX IF NOT EXISTS edges_target_idx ON edges (target_id);
 # graph exclusion and retrieval surfacing; this slice only populates it.
 # v10 adds the validity/freshness columns (issue #107): valid_from, valid_until,
 # last_verified, recheck_by, verification_source.
-_SCHEMA_VERSION = "10"
+# v11 adds the is_inbox column (issue #109): 1 when the doc's path falls under
+# the memory-inbox prefix (format.validate.is_inbox_path), computed once at
+# build time so the memory-inbox in-force floor is a plain column check
+# (format.validate.not_inbox_sql_fragment) rather than a per-query prefix scan.
+_SCHEMA_VERSION = "11"
 
 logger = logging.getLogger(__name__)
 
@@ -366,6 +373,10 @@ class SearchHit:
     valid_from: str = ""
     valid_until: str = ""
     recheck_by: str = ""
+    # Memory-inbox in-force floor (issue #109): 1:1 with the `docs.is_inbox`
+    # column, carried so a caller (kb_search_fn) can compute the single-sourced
+    # `is_in_force(..., is_inbox=...)` predicate without a second doc lookup.
+    is_inbox: bool = False
     # Lifecycle-relationship surfacing (issue #110 slice 2): the SORTED list of
     # ids that supersede this doc, computed as the UNION of the doc's own
     # frontmatter `superseded_by` claim and any reverse `supersedes` edge
@@ -457,6 +468,8 @@ class IndexedDoc:
     last_verified: str = ""
     recheck_by: str = ""
     verification_source: str = ""
+    # Memory-inbox in-force floor (issue #109): see SearchHit.is_inbox.
+    is_inbox: bool = False
     # Lifecycle-relationship surfacing (issue #110 slice 2), computed at read
     # time from the `edges` table (see _superseded_by_map / _edges_from /
     # _edges_targeting). `superseded_by` is the UNION of this doc's own
@@ -797,6 +810,36 @@ class Index:
             conn.close()
         return int(row[0]) if row else 0
 
+    def graph_excluded_ids(self, *, today: str | None = None) -> set[str]:
+        """The doc ids CURRENTLY graph-excluded from in-force retrieval.
+
+        Same live SQL definition as :meth:`graph_excluded_count` (single
+        source: :func:`data_olympus.format.validate.graph_excluded_ids_sql`),
+        returned as a set so a response-shaping caller (the computed per-doc
+        ``in_force`` boolean on kb_get / kb_search hits, issue #109) can
+        compose the graph rule into the full in-force predicate -- status
+        class AND validity window AND not-inbox AND not-graph-excluded --
+        with ONE query per request instead of one per hit. Returns the empty
+        set when the index file or the ``edges`` table does not exist.
+        """
+        if not self._db_path.exists():
+            return set()
+        resolved_today = today if today is not None else today_iso()
+        placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT target_id FROM "
+                f"({graph_excluded_ids_sql(placeholders)})",
+                [*_IN_FORCE_STATUS_LIST, resolved_today, resolved_today],
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # edges table absent (index predates schema v9): nothing excluded.
+            return set()
+        finally:
+            conn.close()
+        return {r["target_id"] for r in rows}
+
     def _resolve_embedder(self) -> Embedder | None:
         """Return the embedder to use, loading it from the threaded config once.
 
@@ -1063,18 +1106,24 @@ class Index:
                     kb_root, rel, git_mtimes,
                 )
                 content_markdown = pf.raw_text
+                # Memory-inbox in-force floor (issue #109): derived from the
+                # RELATIVE PATH via the single-sourced is_inbox_path, not from
+                # final_category (a taxonomy override could reclassify the same
+                # path under a different category and the floor must still hold).
+                is_inbox = is_inbox_path(str(rel))
                 conn.execute(
                     "INSERT INTO docs (id, path, tier, category, status, type, "
                     "applies_when, description, title, tags, "
                     "content_markdown, last_modified, last_modified_source, git_remote_url, "
-                    "valid_from, valid_until, last_verified, recheck_by, verification_source) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "valid_from, valid_until, last_verified, recheck_by, verification_source, "
+                    "is_inbox) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (doc_id, str(rel), final_tier, final_category, doc.status, doc.doc_type,
                      applies_when_str, doc.description, doc.title, tags_str, content_markdown,
                      last_modified, lm_source, doc.git_remote_url,
                      doc.valid_from or None, doc.valid_until or None,
                      doc.last_verified or None, doc.recheck_by or None,
-                     doc.verification_source or None),
+                     doc.verification_source or None, int(is_inbox)),
                 )
                 conn.execute(
                     "INSERT INTO fts (id, title, tags, applies_when, description, body) "
@@ -1535,7 +1584,14 @@ class Index:
         Validity/freshness (issue #107): ``in_force`` ANDs the status-class
         filter with the validity-WINDOW fragment (:func:`in_force_sql_fragment`
         from format.validate), so an in-force query also excludes expired and
-        upcoming docs. Independent of ``in_force``, ``validity_state`` (an
+        upcoming docs. It ALSO ANDs the memory-inbox floor
+        (:func:`not_inbox_sql_fragment`, issue #109): a doc under the memory
+        inbox is never in force regardless of claimed status, so it is excluded
+        here rather than only downstream at response-shaping time (this is the
+        hard filter every ``in_force=True`` caller -- kb_search, kb_consult,
+        the dense candidate source -- shares).
+
+        Independent of ``in_force``, ``validity_state`` (an
         explicit audit-query facet: ``"expired"``, ``"stale"``, or
         ``"expiring_within:N"``) takes over the validity filtering entirely and
         DISABLES the default not-expired exclusion below (an audit query for
@@ -1572,6 +1628,11 @@ class Index:
             params.extend(_IN_FORCE_STATUS_LIST)
             where.append(in_force_sql_fragment())
             params.extend([today, today])
+            # Memory-inbox floor (issue #109): no bind params, see docstring.
+            where.append(not_inbox_sql_fragment())
+            # Supersession-graph exclusion (issue #110 slice 2): composes with
+            # the fragments above -- the full in-force predicate is status
+            # class AND validity window AND not-inbox AND not-graph-excluded.
             where.append(f"docs.id NOT IN ({graph_excluded_ids_sql(placeholders)})")
             params.extend(_IN_FORCE_STATUS_LIST)
             params.extend([today, today])
@@ -1630,6 +1691,7 @@ class Index:
                 COALESCE(docs.valid_from, '') AS valid_from,
                 COALESCE(docs.valid_until, '') AS valid_until,
                 COALESCE(docs.recheck_by, '') AS recheck_by,
+                COALESCE(docs.is_inbox, 0) AS is_inbox,
                 snippet(fts, 5, '[', ']', '...', 16) AS snippet,
                 {bm25_expr} AS score
             FROM fts
@@ -1651,6 +1713,7 @@ class Index:
                 valid_from=r["valid_from"],
                 valid_until=r["valid_until"],
                 recheck_by=r["recheck_by"],
+                is_inbox=bool(r["is_inbox"]),
             )
             for r in rows
         ]
@@ -1766,6 +1829,7 @@ class Index:
                 COALESCE(docs.valid_from, '') AS valid_from,
                 COALESCE(docs.valid_until, '') AS valid_until,
                 COALESCE(docs.recheck_by, '') AS recheck_by,
+                COALESCE(docs.is_inbox, 0) AS is_inbox,
                 bm25(fts_trigram) AS tscore
             FROM fts_trigram
             JOIN docs ON docs.id = fts_trigram.id
@@ -1796,6 +1860,7 @@ class Index:
                     valid_from=r["valid_from"],
                     valid_until=r["valid_until"],
                     recheck_by=r["recheck_by"],
+                    is_inbox=bool(r["is_inbox"]),
                 )
             )
             offset += 1.0
@@ -1960,7 +2025,8 @@ class Index:
                 COALESCE(docs.description, '') AS description,
                 COALESCE(docs.valid_from, '') AS valid_from,
                 COALESCE(docs.valid_until, '') AS valid_until,
-                COALESCE(docs.recheck_by, '') AS recheck_by
+                COALESCE(docs.recheck_by, '') AS recheck_by,
+                COALESCE(docs.is_inbox, 0) AS is_inbox
             FROM doc_vectors dv
             JOIN docs ON docs.id = dv.id
             WHERE {' AND '.join(where)}
@@ -1995,6 +2061,7 @@ class Index:
                         valid_from=r["valid_from"],
                         valid_until=r["valid_until"],
                         recheck_by=r["recheck_by"],
+                        is_inbox=bool(r["is_inbox"]),
                     ),
                 )
             )
@@ -2030,7 +2097,7 @@ class Index:
                        applies_when, description, content_markdown,
                        last_modified, last_modified_source, git_remote_url,
                        valid_from, valid_until, last_verified, recheck_by,
-                       verification_source
+                       verification_source, is_inbox
                 FROM docs WHERE id = ?
                 """,
                 (id,),
@@ -2072,6 +2139,7 @@ class Index:
             last_verified=row["last_verified"] or "",
             recheck_by=row["recheck_by"] or "",
             verification_source=row["verification_source"] or "",
+            is_inbox=bool(row["is_inbox"]),
             superseded_by=tuple(superseded_by),
             contradicts=tuple(contradicts),
             contradicted_by=tuple(contradicted_by),

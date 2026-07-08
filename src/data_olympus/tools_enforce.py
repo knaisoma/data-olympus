@@ -66,6 +66,14 @@ def kb_consult_fn(
     Old clients that omit the field are treated as explicit, since a bare consult
     call is always a real agent action.
 
+    Retrieval is HARD-filtered to the in-force class (issue #109:
+    ``in_force=True`` on the internal search), so this enforcement surface can
+    never present an unreviewed, proposed, retired, expired, upcoming, or
+    memory-inbox document as a governing rule. Previously this ran an
+    unfiltered search, so e.g. a server-rendered agent memory (before it is
+    reviewed) or a superseded decision could be handed back as "the" rule for
+    an intent.
+
     The response's ``pending_actions`` (issue #113) surfaces open maintenance
     items (missing ``status`` fields, recently-expired/expiring-soon docs)
     ONLY when the computed corpus state is dirty; it is omitted entirely on a
@@ -78,7 +86,7 @@ def kb_consult_fn(
     rules = []
     rule_ids: list[str] = []
     if result.is_governed_decision:
-        # in_force=True (issue #110 slice 2): a consult must surface only
+        # in_force=True (issues #109 + #110 slice 2): a consult must surface only
         # CURRENTLY GOVERNING rules. Without this, a draft/superseded/
         # deprecated/rejected doc -- or one graph-excluded via a supersedes
         # edge from an in-force source -- could still rank well enough on bm25
@@ -88,7 +96,9 @@ def kb_consult_fn(
         # never returns an expired document"); the graph-exclusion rule is
         # scoped to in_force=True only (see format.validate.
         # graph_excluded_ids_sql), so consult must opt in explicitly to get
-        # the same guarantee for a graph-excluded doc.
+        # the same guarantee for a graph-excluded doc. The same flag also
+        # applies the issue #109 memory-inbox floor, so an unreviewed
+        # agent-written memory (or forged inbox frontmatter) is excluded too.
         search = kb_search_fn(idx=idx, query=intent, limit=limit, in_force=True)
         rules = list(search.hits)
         rule_ids = [h.id for h in search.hits]

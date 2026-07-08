@@ -269,3 +269,71 @@ def test_lint_validity_findings_are_never_errors(tmp_path: Path):
     )
     findings = validate_document(doc, today="2026-06-01")
     assert all(f.severity != "error" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# Memory-inbox in-force floor (issue #109): a doc under the memory-inbox
+# prefix is never in force, regardless of claimed status. Single-sourced
+# inside is_in_force via the `is_inbox` keyword, NOT a forked predicate.
+# ---------------------------------------------------------------------------
+
+
+def test_is_in_force_inbox_floor_overrides_active_status():
+    from data_olympus.format.validate import is_in_force
+    # Without the inbox floor this would be in force (active, clean window).
+    assert is_in_force("active", None, None, today="2026-01-02") is True
+    # The SAME status/window, but flagged is_inbox=True, is never in force.
+    assert is_in_force(
+        "active", None, None, today="2026-01-02", is_inbox=True,
+    ) is False
+
+
+def test_is_in_force_inbox_floor_wins_even_with_clean_validity_window():
+    from data_olympus.format.validate import is_in_force
+    assert is_in_force(
+        "accepted", "2026-01-01", "2026-12-31", today="2026-01-02", is_inbox=True,
+    ) is False
+
+
+def test_is_in_force_default_is_inbox_false_is_backward_compatible():
+    from data_olympus.format.validate import is_in_force
+    assert is_in_force("active", None, None, today="2026-01-02") == (
+        is_in_force("active", None, None, today="2026-01-02", is_inbox=False)
+    )
+
+
+def test_memory_inbox_prefix_default():
+    from data_olympus.format.validate import memory_inbox_prefix
+    assert memory_inbox_prefix() == "memory/inbox/"
+
+
+def test_memory_inbox_prefix_override(monkeypatch):
+    from data_olympus.format.validate import memory_inbox_prefix
+    monkeypatch.setenv("KB_MEMORY_INBOX_PREFIX", "operator/memory/inbox")
+    # Trailing slash normalized in even when the override omits it.
+    assert memory_inbox_prefix() == "operator/memory/inbox/"
+
+
+def test_is_inbox_path_matches_default_prefix():
+    from data_olympus.format.validate import is_inbox_path
+    assert is_inbox_path("memory/inbox/2026-06-01-x.md") is True
+    assert is_inbox_path("memory/accepted/x.md") is False
+    assert is_inbox_path("universal/foundation/x.md") is False
+
+
+def test_is_inbox_path_normalizes_backslashes():
+    from data_olympus.format.validate import is_inbox_path
+    assert is_inbox_path("memory\\inbox\\x.md") is True
+
+
+def test_is_inbox_path_respects_prefix_override(monkeypatch):
+    from data_olympus.format.validate import is_inbox_path
+    monkeypatch.setenv("KB_MEMORY_INBOX_PREFIX", "operator/memory/inbox/")
+    assert is_inbox_path("operator/memory/inbox/x.md") is True
+    # The default prefix no longer applies once overridden.
+    assert is_inbox_path("memory/inbox/x.md") is False
+
+
+def test_not_inbox_sql_fragment_is_a_static_no_param_condition():
+    from data_olympus.format.validate import not_inbox_sql_fragment
+    assert not_inbox_sql_fragment() == "docs.is_inbox = 0"

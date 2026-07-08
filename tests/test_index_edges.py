@@ -80,6 +80,7 @@ def test_schema_version_bumped_for_edges_table(tmp_kb: Path, tmp_index_path: Pat
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     conn.close()
     assert row is not None
-    assert row[0] == "10", (
-        f"schema_version must be '10' (v9 edges table, v10 validity columns); got {row[0]!r}"
+    assert row[0] == "11", (
+        f"schema_version must be '11' (v9 edges table, v10 validity columns, "
+        f"v11 is_inbox column); got {row[0]!r}"
     )

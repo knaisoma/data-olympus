@@ -255,6 +255,14 @@ class PendingQueue:
                 # `kb pending` without inspecting the raw postimage.
                 "secret_scan_flagged": bool(entry["meta"].get("secret_scan_flagged", False)),
                 "matching_pattern": entry["meta"].get("matching_pattern"),
+                # issue #109: provenance already persisted in meta at enqueue
+                # time, simply not surfaced until now. `.get(...)` defaults to
+                # None so an entry from before this field existed (or a
+                # proposal type that doesn't carry it, e.g. memory has no
+                # `reason`) omits it cleanly rather than raising KeyError.
+                "source_session": entry["meta"].get("source_session"),
+                "reason": entry["meta"].get("reason"),
+                "evidence": entry["meta"].get("evidence"),
             })
         return out
 

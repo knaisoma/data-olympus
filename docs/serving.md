@@ -412,6 +412,37 @@ requires a doc match `status` AND be in-force (so `status=superseded` with
 (embedding) candidate source, so a hybrid deployment never leaks an out-of-force
 doc through the semantic path.
 
+The predicate also applies a memory-inbox floor (issue #109): a document
+under the memory-inbox prefix (`KB_MEMORY_INBOX_PREFIX`, default
+`memory/inbox/`) is never in force regardless of claimed status, so a legacy
+inbox file or forged frontmatter on an agent-written memory cannot satisfy
+`in_force=true` no matter what `status` it declares. This is a plain `is_inbox`
+column derived once at index build time, not a per-query prefix scan. Together
+with the supersession-graph exclusion below, the full in-force predicate is:
+status class AND validity window AND not-inbox AND not-graph-excluded.
+
+`kb_consult` passes `in_force=true` on its internal retrieval unconditionally
+(not a caller-facing parameter): the enforcement surface must never present an
+unreviewed, retired, expired/upcoming, memory-inbox, or graph-excluded
+document as a governing rule for a code/architectural decision. See
+`docs/enforcement.md`.
+
+**Computed `in_force` on served responses.** A verbose (`verbose=true`)
+`kb_get` response and each verbose `kb_search` hit carry a computed
+`in_force: bool`: the same single-sourced predicate evaluated against the
+doc's actual status/validity/inbox-membership/graph-exclusion, independent of
+whether the query itself passed `in_force=true`. This lets a caller retrieve
+a doc via a default (unfiltered) `kb_get`/`kb_search` and still tell whether
+it currently governs, without a second `in_force=true` round trip. It is a
+serving-layer derivation only, never written to frontmatter (see SPEC.md's
+"runtime envelope" note). Compact responses emit it deviation-only:
+`in_force: false` appears ONLY when the doc is not in force, and an in-force
+doc's compact shape is byte-for-byte unchanged. The deviation emission is
+required because the compact `status`/`freshness` fields key off the RAW
+frontmatter status: a memory-inbox doc with a forged `status: active` would
+otherwise render as an ordinary current rule with no signal that the in-force
+floor disqualified it.
+
 ## Supersession-graph exclusion (issue #110 slice 2)
 
 `in_force=true` ALSO excludes any document that is the TARGET of a
@@ -497,10 +528,10 @@ and `GET /api/v1/search`):
 
 `kb_get` by id always resolves regardless of expiry, returning the full
 `validity` object plus the computed `freshness` indicator. `kb_consult` never
-returns an expired doc: the unconditional not-expired exclusion above already
-covers it, and (issue #110 slice 2) `kb_consult` also runs with
-`in_force=true`, so it never returns a not-yet-in-force, retired, or
-graph-excluded document either -- see "Supersession-graph exclusion" above.
+returns an expired (or upcoming, proposed/retired, memory-inbox, or
+graph-excluded) doc, via its unconditional `in_force=true` retrieval (see the
+`in_force` and "Supersession-graph exclusion" sections above), not merely by
+reusing the default search path's own expired-exclusion.
 The `data-olympus validity-report` CLI subcommand lists expired and
 soon-to-expire docs from a bundle directory.
 
