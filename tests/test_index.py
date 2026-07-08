@@ -127,8 +127,8 @@ def test_index_records_schema_version(tmp_kb: Path, tmp_index_path: Path) -> Non
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     conn.close()
     assert row is not None
-    assert row[0] == "8", (
-        f"schema_version must be '8' after the doc_vectors embeddings table; "
+    assert row[0] == "9", (
+        f"schema_version must be '9' after the edges table (issue #110); "
         f"got {row[0]!r}"
     )
 

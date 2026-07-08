@@ -27,10 +27,31 @@ class ParsedDoc:
     doc_type: str = ""
     applies_when: list[str] = field(default_factory=list)
     description: str = ""
+    supersedes: list[str] = field(default_factory=list)
+    superseded_by: str | None = None
+    contradicts: list[str] = field(default_factory=list)
 
 
 def _as_str_list(value: object) -> list[str]:
     return [str(v) for v in value] if isinstance(value, list) else []
+
+
+def _as_id_list(value: object) -> list[str]:
+    """Normalize a decision-chain reference field (``supersedes``,
+    ``contradicts``) authored as either a single scalar ID or a list of IDs
+    into a list of strings (issue #110).
+
+    This is the lenient, index-time normalization: any shape that isn't
+    exactly "absent", "a string", or "a list" is treated as empty here (never
+    raises). Precise shape validation (e.g. a non-string entry inside the
+    list) is a `kb lint` concern (`data_olympus.format.lint`), which inspects
+    the raw frontmatter value directly rather than this coerced form.
+    """
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    if isinstance(value, str) and value.strip():
+        return [value]
+    return []
 
 
 def parse_file(path: Path) -> ParsedDoc:
@@ -86,6 +107,10 @@ def parse_text_checked(path: Path, text: str) -> tuple[ParsedDoc, bool]:
     if not isinstance(git_remote_url, str) or not git_remote_url.strip():
         git_remote_url = None
 
+    superseded_by = fm.get("superseded_by")
+    if not isinstance(superseded_by, str) or not superseded_by.strip():
+        superseded_by = None
+
     doc = ParsedDoc(
         path=path,
         id=id_value,
@@ -99,5 +124,8 @@ def parse_text_checked(path: Path, text: str) -> tuple[ParsedDoc, bool]:
         doc_type=str(fm.get("type", "")),
         applies_when=_as_str_list(fm.get("applies_when", [])),
         description=str(fm.get("description", "")) if fm.get("description") is not None else "",
+        supersedes=_as_id_list(fm.get("supersedes")),
+        superseded_by=superseded_by,
+        contradicts=_as_id_list(fm.get("contradicts")),
     )
     return doc, malformed

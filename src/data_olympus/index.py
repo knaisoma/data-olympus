@@ -78,6 +78,13 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS edges (
+    source_id TEXT NOT NULL,
+    rel TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    PRIMARY KEY (source_id, rel, target_id)
+);
+CREATE INDEX IF NOT EXISTS edges_target_idx ON edges (target_id);
 """ + RELATED_TERMS_SCHEMA + EMBEDDINGS_SCHEMA
 
 # The trigram secondary index (issue #41) is a SECOND full copy of every indexed
@@ -94,7 +101,11 @@ CREATE TABLE IF NOT EXISTS meta (
 # v6 adds the related_terms co-occurrence table (issue #40).
 # v7 adds the fts_trigram fuzzy-match table (issue #41).
 # v8 adds the doc_vectors table (issue #42, populated only when embeddings on).
-_SCHEMA_VERSION = "8"
+# v9 adds the edges table (issue #110 slice 1: typed lifecycle relationships
+# supersedes/superseded_by/contradicts, parsed from front matter into
+# (source_id, rel, target_id) rows). Slice 2 consumes this table for in-force
+# graph exclusion and retrieval surfacing; this slice only populates it.
+_SCHEMA_VERSION = "9"
 
 logger = logging.getLogger(__name__)
 
@@ -721,6 +732,14 @@ class Index:
             # walk; only populated when co-occurrence expansion is enabled.
             build_cooccurrence = cooccurrence_enabled()
             doc_token_sets: list[set[str]] = []
+            # Lifecycle-relationship edges (issue #110 slice 1). Collected during
+            # the single indexing pass and written into the edges table in one
+            # batch after the walk, same pattern as embed_inputs below, so the
+            # edges table is part of the same atomic tmp-DB swap. Deduplicated via
+            # a set: a doc listing the same target twice in one field (e.g. a
+            # repeated id in `supersedes`) must not raise on the edges table's
+            # composite primary key.
+            edge_rows: set[tuple[str, str, str]] = set()
             # Embedding vectors (issue #42). Whether/what to embed is decided from
             # the threaded ``self._embeddings`` config (reviewer concern 2), NOT
             # from an env re-read: Config is the single source of truth. Only when
@@ -792,6 +811,18 @@ class Index:
                     doc_token_sets.append(
                         tokenize_doc(doc.title, tags_str, doc.description, doc.body)
                     )
+                # Lifecycle-relationship edges (issue #110 slice 1): extract both
+                # directions of the supersession field pair plus `contradicts`
+                # into (source_id, rel, target_id) rows, stored verbatim (a
+                # dangling or malformed target is a `kb lint` concern, not an
+                # index-build concern; the index just records what the front
+                # matter declared).
+                for target in doc.supersedes:
+                    edge_rows.add((doc_id, "supersedes", target))
+                if doc.superseded_by:
+                    edge_rows.add((doc_id, "superseded_by", doc.superseded_by))
+                for target in doc.contradicts:
+                    edge_rows.add((doc_id, "contradicts", target))
                 if build_embeddings:
                     # Embed title + applies_when + tags + description + body: the
                     # retrievable semantic content PLUS the curated intent
@@ -814,6 +845,15 @@ class Index:
                     )[:_EMBED_TEXT_MAX_CHARS]
                     embed_inputs.append((doc_id, embed_text))
                 count += 1
+            # Lifecycle-relationship edges (issue #110 slice 1): one batched
+            # insert into the SAME tmp DB, so the edges table swaps atomically
+            # with the rest of the index below.
+            if edge_rows:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO edges (source_id, rel, target_id) "
+                    "VALUES (?, ?, ?)",
+                    sorted(edge_rows),
+                )
             # Embedding vectors (issue #42): one batched embed of all docs, then
             # persist into the tmp DB. Kept inside the build so vectors are part
             # of the same atomic swap and a query never sees a half-built table.
