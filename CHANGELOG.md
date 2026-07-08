@@ -43,6 +43,64 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     lint-error + still-served + never-in-force + ledger flag + the
     `pending_actions` CTA together as one tested contract.
 
+- **Governed-lane write protection (issue #112) -- BREAKING DEFAULT-BEHAVIOR
+  CHANGE.** "Agents can propose, only humans can promote." Behind
+  `KB_GOVERNED_LANE_PROTECTION` (**default ON**; set to `off` to restore the
+  exact pre-#112 behavior). No write is ever rejected by this feature --
+  affected writes land as a PENDING entry instead of auto-committing:
+  - **Status clamp.** Any non-operator-confirmed write (the auto-commit path
+    of `kb_propose_memory` / `kb_propose_edit`, and `kb_bootstrap_project`
+    files) whose postimage sets or changes `status` INTO the in-force class
+    (`active`/`accepted`/`approved`, single-sourced from
+    `format.validate.IN_FORCE_STATUSES`) is demoted to pending with
+    `demotion_reason: "status_promotion"`. An operator-confirmed resolve of
+    that entry commits it -- the human step IS the promotion.
+  - **Governed-target edit demotion.** Any `kb_propose_edit` whose target
+    document is CURRENTLY in force (the full composed predicate: status class
+    AND validity window AND not-inbox AND not-graph-excluded, evaluated
+    against the live index) is demoted with `demotion_reason:
+    "governed_target"`, regardless of confidence. An expired or
+    superseded-out target is NOT in force and so is not protected by this
+    rule. The lookup FAILS CLOSED: an edit whose target's in-force state
+    cannot be verified (no index, or an index read failure) is demoted with
+    the distinct `demotion_reason: "governed_target_unverified"` rather than
+    auto-committed on the strength of a broken lookup. An authoritative
+    in-worktree backstop additionally re-judges the target's CURRENT bytes
+    on the refreshed commit base (inside the serialized commit section,
+    after the hard gates), consulting nothing from the index (a stale
+    graph-exclusion edge could otherwise remove protection the base's own
+    bytes assert), so an in-force doc that exists in git but is not yet
+    re-indexed is still demoted -- index lag cannot bypass the rule in
+    either direction.
+  - **Injection-pattern annotation (advisory only).** Postimages are scanned
+    for agent-directed injection patterns ("ignore previous instructions",
+    exfiltration-shaped imperatives, base64-looking blobs, "do not tell the
+    operator", ...); a match annotates the pending entry (`injection_suspect`,
+    `injection_patterns`: pattern names + line numbers, never the matched
+    text) but never blocks or demotes by itself.
+  - **Ordering:** the issue #71 secret-scanning gate (and the content-
+    validation / duplicate-id gate) always run BEFORE this feature's
+    demotion decision -- a postimage that would be rejected outright is
+    REJECTED, never silently demoted.
+  - **Feedback loop, so a demotion is never silent:** every demotion response
+    carries the `pending_id`, `demotion_reason`, and an `operator_prompt`
+    instructing the model to inform the operator; a new read-only
+    `kb_session_recap(source_session)` MCP tool / `GET /api/v1/session-recap`
+    REST route / `kb session-recap SOURCE_SESSION` CLI subcommand reports N
+    committed / M demoted-to-pending / K rejected for a session; `kb_consult`
+    surfaces a `demoted_writes` item in its `pending_actions` envelope when
+    the calling session has open demotions; and `bin/kb-session-recap-hook`
+    is a ready-to-wire SessionEnd/Stop hook script (documented for Claude
+    Code / Codex) that prints the recap one-liner automatically.
+  - **CLI review gate:** `bin/kb propose` never flows a demoted
+    (`demotion_reason`) or secret-flagged (`matching_pattern`) proposal into
+    its same-command interactive resolve (which defaults to accept without a
+    TTY); it prints the operator prompt and requires an explicit later
+    `kb resolve`. The MCP `kb_session_recap` tool requires an authenticated
+    principal when auth is configured, matching the REST route.
+  - Unaffected: the maintenance-ledger system write path (issue #113) and the
+    operator pending-resolve path (which IS the promotion).
+
 - **Provenance surfacing + consult hardening (issue #109).** Revised decision:
   no `authority_state`/`allowed_use` enum (rejected as a parallel vocabulary
   that could drift from `status`); the real gaps are fixed at the root

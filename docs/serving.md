@@ -65,6 +65,9 @@ trigram, auth, audit rotation):
   one with the classic nested-quantifier ReDoS shape, is logged and skipped
   rather than raised, and every accepted pattern runs with a hard 1-second
   match timeout. Empty by default (no extra patterns).
+- `KB_GOVERNED_LANE_PROTECTION`: governed-lane write protection (issue #112),
+  default `on`; set `off` to restore the exact pre-#112 behavior (see
+  "Governed-lane write protection" below).
 
 ## Read-only mirrors may scale horizontally
 
@@ -219,6 +222,90 @@ section so concurrent writes cannot corrupt each other:
   `regex` engine with a hard 1-second match timeout, so a catastrophic
   pattern the load-time check misses is bounded at scan time (logged and
   skipped) instead of hanging the single-writer write path.
+
+## Governed-lane write protection (`KB_GOVERNED_LANE_PROTECTION`, issue #112)
+
+`KB_GOVERNED_LANE_PROTECTION` (default `on`; case-insensitive `off`/`0`/
+`false`/`no` disables it and restores the exact pre-#112 behavior) gates a
+demotion-only feature on top of the write path above: "agents can propose,
+only humans can promote." No write is ever REJECTED by this feature; an
+affected write is DEMOTED to the pending queue instead of auto-committing.
+See `SECURITY.md`'s "Governed-lane write protection" section for the full
+threat-model rationale; this section covers the mechanics and the demotion
+semantics an operator needs at serving time.
+
+- **Status clamp.** Checked on the auto-commit path of `kb_propose_memory`
+  / `kb_propose_edit`, and on every `kb_bootstrap_project` file. If the
+  postimage's `status` field is being set/changed to a value in the
+  in-force class (`active`/`accepted`/`approved` --
+  `format.validate.IN_FORCE_STATUSES`, single-sourced, never a local copy),
+  the write is demoted with `demotion_reason: "status_promotion"` instead of
+  committed. Unconditional on the PRIOR status: a brand-new file, a
+  promotion from a non-in-force status, and an unreviewed re-claim of an
+  already in-force status all clamp the same way.
+- **Governed-target edit demotion.** Checked only on `kb_propose_edit`. If
+  the edit's `target_path` currently resolves to an IN-FORCE document in the
+  live index (the full composed predicate: status class AND validity window
+  AND not-inbox AND not-graph-excluded -- the same predicate
+  `Index.search(in_force=True)` and `kb_get`'s computed `in_force` field
+  use), the write is demoted with `demotion_reason: "governed_target"`,
+  REGARDLESS of confidence. A target that is expired or has been superseded
+  out of force is not currently governing anything and so is not protected
+  by this rule. The lookup FAILS CLOSED: when the target's in-force state
+  cannot be verified (no index wired, or an index read fails), the edit is
+  demoted with the distinct `demotion_reason: "governed_target_unverified"`
+  rather than auto-committed on the strength of a broken lookup -- an
+  unhealthy index can never be used to slip an edit past this rule. A
+  target with no entry in a HEALTHY index is definitive at the tool layer
+  (a brand-new file cannot already be in force), and an authoritative
+  IN-WORKTREE BACKSTOP closes the residual index-lag window: inside the
+  serialized commit section, after every hard gate passes and after the
+  worktree base is refreshed onto `origin/main`, the target's CURRENT bytes
+  on that refreshed base are re-judged (`status` + validity window from its
+  own frontmatter, `is_inbox` from the path). The backstop deliberately
+  consults NOTHING from the index -- in particular not graph exclusion,
+  whose stale edges could otherwise REMOVE protection the base's own bytes
+  assert (a target still carrying an in-force `status` under a live
+  supersedes edge is over-demoted for operator review rather than
+  auto-committed; a target properly flipped to `superseded` is not in force
+  by its own bytes and stays unprotected). A doc pushed as in-force but not
+  yet re-indexed is therefore still demoted (`demotion_reason:
+  "governed_target"`) -- the decision is made against the same content the
+  commit would replace, so index staleness cannot bypass the rule in
+  either direction.
+- **Injection-pattern annotation.** Every postimage evaluated by the two
+  rules above is also scanned for agent-directed injection patterns
+  ("ignore previous instructions", "disregard ... policy", an imperative
+  paired with an http(s) URL, a long base64-looking run, "do not tell the
+  operator"). A match sets `injection_suspect: true` and populates
+  `injection_patterns` (a list of `"pattern_name:line"` strings, mirroring
+  the issue #71 secret-scan redaction discipline -- never the matched text)
+  on the pending entry. This is ADVISORY ONLY: it never blocks a write and
+  never causes a demotion by itself; it exists so the human reviewer sees
+  the signal alongside the demoted content.
+- **Ordering.** The issue #71 secret-scanning gate and the content-
+  validation / duplicate-id gate are evaluated FIRST for any write that
+  would otherwise auto-commit. A postimage that would be rejected outright
+  by either of those gates IS rejected (`rejected_secret_detected` /
+  `rejected_invalid_document`), never silently demoted -- a demotion cannot
+  be used as a side door around a hard rejection.
+- **Unaffected paths.** The maintenance-ledger system write
+  (`maintenance.maybe_update_ledger`, which stamps its own doc
+  `status: active`) commits through the shared multi-file write primitive
+  DIRECTLY, bypassing the tool-function layer these checks live in, so it is
+  never gated by this feature. The operator resolve path
+  (`kb_resolve_pending` / `kb resolve`) is likewise never gated: an
+  operator-confirmed resolve IS the promotion this feature exists to
+  require.
+- **Per-write feedback.** A demoted response carries the same
+  `pending_id` shape as a plain low-confidence park, plus `demotion_reason`
+  and an `operator_prompt` that explicitly instructs the calling model to
+  inform the operator that the write awaits review rather than proceeding
+  silently.
+- **Per-session feedback.** See `docs/operations.md` for `kb_session_recap`
+  / `kb session-recap` / `GET /api/v1/session-recap`, the `kb_consult`
+  `pending_actions` surfacing, and the `bin/kb-session-recap-hook`
+  SessionEnd/Stop hook wiring.
 
 ## Push queue and write-path visibility
 

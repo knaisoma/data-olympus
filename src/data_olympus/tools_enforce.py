@@ -113,10 +113,32 @@ def kb_consult_fn(
             "target_path": workspace, "trigger": trigger,
             "reason": ",".join(result.signals) if result.signals else "",
         })
+    pending_actions = pending_actions_for(getattr(idx, "maintenance_state", None))
+    # Governed-lane feedback loop (issue #112): when THIS session has demoted
+    # writes on record, surface a CTA item alongside the maintenance-ledger
+    # items above so a demotion is never silent even if the agent never
+    # thinks to run kb_session_recap on its own. Omitted (no item added) when
+    # the session has no demotions, or there is no audit log to query.
+    if audit_log is not None:
+        from data_olympus.tools_recap import kb_session_recap_fn
+        recap = kb_session_recap_fn(audit_log=audit_log, source_session=source_session)
+        if recap.demoted_to_pending > 0:
+            item = {
+                "kind": "demoted_writes",
+                "message": (
+                    f"{recap.demoted_to_pending} write(s) in this session are "
+                    f"awaiting operator review (governed-lane write "
+                    f"protection or low confidence). Surface this to the "
+                    f"operator; run `kb pending` / kb_session_recap for "
+                    f"details. Act only on operator confirmation."
+                ),
+                "count": recap.demoted_to_pending,
+            }
+            pending_actions = [*(pending_actions or []), item]
     return ConsultResponse(
         is_governed_decision=result.is_governed_decision,
         rules=rules, consulted_at=now, ttl_seconds=int(ttl_sec),
-        pending_actions=pending_actions_for(getattr(idx, "maintenance_state", None)),
+        pending_actions=pending_actions,
     )
 
 

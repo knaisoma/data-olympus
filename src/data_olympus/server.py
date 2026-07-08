@@ -791,6 +791,20 @@ def build_app(
             return resp.model_dump()
 
         @app.tool()
+        def kb_session_recap(source_session: str) -> dict[str, object]:
+            """Read-only per-session write summary (issue #112 feedback loop):
+            N committed, M demoted-to-pending, K rejected for source_session.
+            Call this (or `kb pending`) whenever a write response indicated a
+            demotion, to confirm the current tally before informing the
+            operator."""
+            if state.audit_log is None:
+                from data_olympus.models import SessionRecapResponse
+                return SessionRecapResponse(source_session=source_session).model_dump()
+            from data_olympus.tools_recap import kb_session_recap_fn
+            resp = kb_session_recap_fn(audit_log=state.audit_log, source_session=source_session)
+            return resp.model_dump()
+
+        @app.tool()
         def kb_bootstrap_project(
             workspace: str, files: list[dict[str, str]],
             source_session: str, agent_identity: str, confidence: float,

@@ -737,6 +737,32 @@ def register_routes(
                 kb_compliance_fn, audit_log=state.audit_log, since=since, agent=agent)
             return JSONResponse(resp.model_dump())
 
+        @app.custom_route("/api/v1/session-recap", methods=["GET"])
+        async def session_recap(request: Request) -> JSONResponse:
+            # Observability route (issue #112 feedback loop): same auth posture
+            # as /pending, /audit, /compliance.
+            _principal, denied = _authorize(request, registry)
+            if denied is not None:
+                return denied
+            qp = request.query_params
+            source_session = qp.get("source_session", "")
+            if not source_session:
+                return JSONResponse(
+                    {"error": "missing_field", "message": "source_session is required"},
+                    status_code=400,
+                )
+            if state.audit_log is None:
+                from data_olympus.models import SessionRecapResponse
+                return JSONResponse(
+                    SessionRecapResponse(source_session=source_session).model_dump()
+                )
+            from data_olympus.tools_recap import kb_session_recap_fn
+            resp = await _offload(
+                kb_session_recap_fn, audit_log=state.audit_log,
+                source_session=source_session,
+            )
+            return JSONResponse(resp.model_dump())
+
         @app.custom_route("/api/v1/audit/event", methods=["POST"])
         async def record_event(request: Request) -> JSONResponse:
             _principal, denied = _authorize(request, registry, CAP_RECORD_EVENT)

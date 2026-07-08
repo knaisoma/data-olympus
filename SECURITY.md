@@ -41,6 +41,70 @@ The single-writer write pipeline (propose, pending, resolve) is the primary atta
 - **Single writer.** The server runs a single writer with advisory locking and a durable push queue. Concurrent write races from multiple agent sessions are serialised rather than silently merged.
 - **Secret-scanning gate (issue #71).** Every commit path (`kb_propose_memory` / `kb_propose_edit` auto-commit, `kb_resolve_pending` approve, including an edited postimage, and onboarding bootstrap) scans the final postimage for credential-shaped content (PEM private-key blocks, GitHub/Slack tokens, AWS access key ids, generic `password=`/`secret=` assignments including env-style prefixed keys like `DB_PASSWORD=`, and connection strings with an inline password) BEFORE the content-validation gate and before anything is written to disk or committed, so a validation-error message can never echo a credential value. A match on an auto-commit or bootstrap path rejects the write `rejected_secret_detected`. The gate also covers the fields AROUND the postimage: a credential-shaped `target_path` (filename) is rejected on edit/bootstrap/resolve without ever echoing the path back; a flagged edit `reason` is replaced with a redacted note before it reaches pending meta, push metadata, or audit events; a flagged memory tag is stored redacted in pending meta. A low-confidence proposal containing a secret still enters pending (so the operator keeps the override workflow below), but the scan runs at propose time too: the response never echoes the raw text (only the pattern name), and the pending entry is tagged `secret_scan_flagged`/`matching_pattern` (names only) so `kb pending` surfaces the warning without exposing the value; a memory proposal's filename falls back to a neutral slug instead of embedding flagged text. Only the pattern name and an approximate line number are ever surfaced anywhere, never the matched value. Operators can extend the pattern set with `KB_SECRET_SCAN_EXTRA_PATTERNS` (comma-separated regexes; an invalid regex, or one with the classic nested-quantifier ReDoS shape, is logged and skipped, never crashes the server). Custom patterns execute through the `regex` engine with a hard 1-second match timeout, so even a catastrophic-backtracking pattern the load-time heuristic misses cannot hang the single-writer write path; a timed-out pattern is logged and skipped for that scan. A human resolving a pending entry may pass `override_secret_scan: true` (`kb resolve --override-secret-scan` on the CLI) to consciously commit content the scanner flagged as a false positive; the override is recorded in the audit event and is not available on any auto-commit or bootstrap path (an agent cannot self-authorize past the gate).
 
+### Governed-lane write protection: propose vs promote (issue #112)
+
+Forged authority is the residual hole after the write-pipeline controls above:
+under allow-by-default, a high-confidence `kb_propose_edit` could commit a
+postimage claiming `status: accepted` straight into an indexed prefix, or an
+edit to an already-accepted doc could change its governing content while
+keeping the accepted status -- and rules propagate to the whole team via
+`git pull` + index refresh, so one poisoned write spreads fast.
+
+**The model: agents can propose, only humans can promote.** Behind
+`KB_GOVERNED_LANE_PROTECTION` (default ON; `off` restores the exact
+pre-#112 behavior), three mechanisms compose at the tool-function layer
+(never inside the shared commit primitives, so the maintenance-ledger
+system write path and the operator resolve path are untouched):
+
+- **Status clamp.** A non-operator-confirmed write whose postimage sets or
+  changes `status` INTO the in-force class (`active`/`accepted`/`approved`)
+  is demoted to a pending entry, never committed and never rejected.
+- **Governed-target edit demotion.** An edit whose target document is
+  CURRENTLY in force (status class AND validity window AND not-inbox AND
+  not-graph-excluded -- the same composed predicate every other in-force
+  surface uses) is always demoted to pending, regardless of confidence. An
+  expired or superseded-out target is not protected (it does not currently
+  govern anything). The in-force lookup FAILS CLOSED: when it cannot be
+  completed (no index, or an index read failure), the edit is demoted with
+  the distinct reason `governed_target_unverified` instead of
+  auto-committing -- an unhealthy index cannot be leveraged to bypass this
+  rule. An authoritative in-worktree backstop re-judges the target's
+  CURRENT bytes on the refreshed commit base inside the serialized commit
+  section (after the hard gates), consulting nothing from the index (a
+  stale graph-exclusion edge could otherwise remove protection the base's
+  own bytes assert), so an in-force doc that exists in git but is not yet
+  re-indexed is still demoted -- index lag cannot bypass the rule in
+  either direction.
+- **Injection-pattern annotation.** Advisory only: a postimage matching an
+  agent-directed injection heuristic (imperative instruction-override
+  phrasing, exfiltration-shaped URLs, base64-looking blobs, "do not tell the
+  operator", ...) is tagged on the pending entry for the reviewer, but never
+  blocks or demotes by itself.
+
+Ordering: the issue #71 secret-scanning gate and the content-validation /
+duplicate-id gate always run FIRST. A postimage that would be rejected
+outright by either is rejected, never silently demoted -- a demotion cannot
+be used to smuggle a secret or a corrupt document past those gates by
+disguising it as a governance question.
+
+Forging a governing rule now requires getting a human to approve it in
+pending review, where provenance (agent identity, session, confidence,
+commit trailers, the tamper-evident audit chain) is already in front of
+them. The feedback loop makes a demotion hard to miss: every demotion
+response carries `pending_id` + `demotion_reason` + an instruction to
+inform the operator; `kb_session_recap` / `kb session-recap` / `GET
+/api/v1/session-recap` reports the committed/demoted/rejected tally for a
+session; `kb_consult`'s `pending_actions` envelope surfaces open demotions
+for the calling session; and `bin/kb-session-recap-hook` is a ready-to-wire
+SessionEnd/Stop hook. See `docs/serving.md` for the env var and demotion
+semantics and `docs/operations.md` for the recap tooling and hook wiring.
+
+**Explicit non-goals.** This is not protection against a malicious human
+reviewer (the operator-resolve path is, by design, the trusted promotion
+step) or against a git push to the remote outside this server's MCP/REST
+surface (branch protection and commit signing on the remote are ops-level
+controls, out of scope here).
+
 ### Audit log
 
 Every write and enforcement decision is appended to a JSONL audit log. The log is **tamper-evident**: each event carries an `event_id`, the `prev_hash` of the previous event, and its own `hash` over the canonical event body (SHA-256, or keyed HMAC-SHA256 when `KB_AUDIT_HMAC_KEY` is set). Any later edit, deletion, or reordering breaks the chain; recompute it with `GET /api/v1/audit/verify` or `kb audit --verify`.

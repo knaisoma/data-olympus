@@ -76,6 +76,10 @@ def test_two_session_interleaved_writes_both_publish(tmp_path, monkeypatch) -> N
     for k, v in _env().items():
         if k.startswith("GIT_"):
             monkeypatch.setenv(k, v)
+    # This test is about rebase-recovery publishing, not governance; the
+    # postimages' status: accepted would otherwise trip the issue #112
+    # governed-lane status clamp and demote instead of commit.
+    monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     remote, main = _bare_remote_with_clone(tmp_path)
     git, reg, pq, pen, rl, bl = _server_pieces(tmp_path, main)
     serializer = WriteSerializer()
@@ -148,6 +152,11 @@ def test_rebase_conflict_demotes_to_pending(tmp_path, monkeypatch) -> None:
     for k, v in _env().items():
         if k.startswith("GIT_"):
             monkeypatch.setenv(k, v)
+    # This test is about rebase-conflict demotion, not governance; the
+    # postimage's status: active would otherwise trip the issue #112
+    # governed-lane status clamp and demote for a DIFFERENT reason than the
+    # one under test.
+    monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     remote, main = _bare_remote_with_clone(tmp_path)
     git, reg, pq, pen, rl, bl = _server_pieces(tmp_path, main)
     audit = AuditLog(log_path=str(tmp_path / "audit.log"), hmac_key="")
@@ -210,6 +219,10 @@ def test_threaded_concurrent_writes_one_path_no_interleave(
     for k, v in _env().items():
         if k.startswith("GIT_"):
             monkeypatch.setenv(k, v)
+    # This test is about the path-lock/serializer race, not governance; the
+    # postimages' status: active would otherwise trip the issue #112
+    # governed-lane status clamp and demote instead of commit.
+    monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     _remote, main = _bare_remote_with_clone(tmp_path)
     git, reg, pq, pen, rl, bl = _server_pieces(tmp_path, main)
     serializer = WriteSerializer()

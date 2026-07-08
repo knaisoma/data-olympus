@@ -417,6 +417,10 @@ def test_clean_propose_memory_commits_unchanged(tmp_path, monkeypatch) -> None:
 
 def test_clean_propose_edit_commits_unchanged(tmp_path, monkeypatch) -> None:
     _set_git_env(monkeypatch)
+    # This test is about secret-scan behavior, not governance; the postimage's
+    # status: accepted would otherwise trip the issue #112 governed-lane
+    # status clamp and demote instead of commit.
+    monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     git, reg, pq, pen, rl, bl = _state(tmp_path)
     resp = kb_propose_edit_fn(
         target_path="decisions/DEC-clean.md",
@@ -448,6 +452,10 @@ def test_clean_resolve_approve_commits_unchanged(tmp_path, monkeypatch) -> None:
 
 
 def test_clean_bootstrap_commits_unchanged(tmp_path, monkeypatch) -> None:
+    # This test is about secret-scan behavior, not governance; the bootstrap
+    # files' status: active would otherwise trip the issue #112 governed-lane
+    # status clamp and demote instead of commit.
+    monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     reg, pq, pen, rl, bl = _bootstrap_pieces(tmp_path, monkeypatch)
     idx = MagicMock()
     idx.list_by_prefix.return_value = []
@@ -756,6 +764,10 @@ def test_edit_reason_with_secret_is_redacted_everywhere(tmp_path, monkeypatch) -
     log or push metadata; the write itself proceeds (reason is metadata, not
     committed content) with the reason replaced by a redacted note."""
     _set_git_env(monkeypatch)
+    # This test is about reason redaction, not governance; the postimage's
+    # status: accepted would otherwise trip the issue #112 governed-lane
+    # status clamp and demote instead of commit.
+    monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     git, reg, pq, pen, rl, bl = _state(tmp_path)
     audit = AuditLog(log_path=str(tmp_path / "audit.log"), hmac_key="")
     resp = kb_propose_edit_fn(

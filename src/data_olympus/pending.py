@@ -263,6 +263,14 @@ class PendingQueue:
                 "source_session": entry["meta"].get("source_session"),
                 "reason": entry["meta"].get("reason"),
                 "evidence": entry["meta"].get("evidence"),
+                # Governed-lane write protection (issue #112): surfaced the
+                # same way as secret_scan_flagged above -- already persisted
+                # in meta at enqueue time, simply not read until now. None/
+                # False for any entry that predates this field or parked for
+                # a plain low-confidence reason rather than a demotion.
+                "demotion_reason": entry["meta"].get("demotion_reason"),
+                "injection_suspect": bool(entry["meta"].get("injection_suspect", False)),
+                "injection_patterns": entry["meta"].get("injection_patterns"),
             })
         return out
 

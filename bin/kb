@@ -13,6 +13,7 @@
 #   kb pending [-o json|plain]
 #   kb audit [--since EPOCH] [--agent A] [--status S] [--limit N] [-o json|plain]
 #   kb audit --verify   (recompute the tamper-evident hash chain)
+#   kb session-recap SOURCE_SESSION [-o json|plain]
 #   kb onboarding-check [--workspace W] [--component C] [--workspace-remote-url U] [--component-remote-url U]
 #   kb onboard status <workspace> [<component>]
 #   kb onboard project <workspace>
@@ -226,6 +227,27 @@ handle_propose_response() {
     pending_confirmation)
       pid=$(echo "$REST_BODY" | jq -r '.pending_id // ""')
       proposal=$(echo "$REST_BODY" | jq -r '.proposal_text // ""')
+      # Governed-lane / secret-scan review gate (issue #112, codex security
+      # review blocker): a DEMOTED proposal (demotion_reason set), a
+      # secret-FLAGGED proposal (matching_pattern set), or any response the
+      # server deliberately shipped WITHOUT proposal_text must NEVER flow
+      # into the same-command interactive resolve below -- that flow
+      # defaults to "accept" when no TTY is available, which would let the
+      # very command that triggered the demotion immediately self-approve
+      # it. Print the server's operator_prompt and stop; the human promotes
+      # (or rejects) later via an explicit `kb resolve`.
+      local demotion pattern prompt
+      demotion=$(echo "$REST_BODY" | jq -r '.demotion_reason // ""')
+      pattern=$(echo "$REST_BODY" | jq -r '.matching_pattern // ""')
+      prompt=$(echo "$REST_BODY" | jq -r '.operator_prompt // ""')
+      if [[ -n "$demotion" || -n "$pattern" || -z "$proposal" ]]; then
+        if [[ -n "$prompt" ]]; then
+          echo "$prompt"
+        else
+          echo "Pending $pid awaits explicit operator review; run \`kb pending\` then \`kb resolve $pid --decision approve|reject\`."
+        fi
+        return 0
+      fi
       if [[ "$non_interactive" == "1" ]]; then
         echo "Pending $pid; run \`kb resolve $pid --decision approve\` to act."
       else
@@ -689,6 +711,40 @@ cmd_audit() {
   fi
 }
 
+# Subcommand: kb session-recap SOURCE_SESSION [-o json|plain]
+# Issue #112 feedback loop: N committed / M demoted-to-pending / K rejected
+# for one session, read from the server's audit log.
+cmd_session_recap() {
+  local fmt="json" session=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -o|--output) need_value "$1" "${2:-}"; fmt="$2"; shift 2 ;;
+      -h|--help) usage ;;
+      -*) echo "kb: unknown flag $1" >&2; exit 64 ;;
+      *) [[ -z "$session" ]] && session="$1" || { echo "kb: too many positional args" >&2; exit 64; }; shift ;;
+    esac
+  done
+  [[ -z "$session" ]] && { echo "kb: session-recap requires SOURCE_SESSION" >&2; exit 64; }
+  local auth_k_arg=()
+  if [[ -n "$KB_AUTH_TOKEN" ]]; then
+    auth_k_arg=(-K <(printf 'header = "Authorization: Bearer %s"\n' "$KB_AUTH_TOKEN"))
+  fi
+  local tmpfile
+  tmpfile=$(mktemp)
+  if ! curl --silent --max-time 10 --output "$tmpfile" \
+        ${auth_k_arg[@]+"${auth_k_arg[@]}"} \
+        "$KB_ENDPOINT/api/v1/session-recap?source_session=$(url_encode "$session")" 2>/dev/null; then
+    rm -f "$tmpfile"
+    echo "kb: data-olympus-mcp unreachable at $KB_ENDPOINT" >&2; exit 1
+  fi
+  REST_BODY=$(cat "$tmpfile"); rm -f "$tmpfile"
+  if [[ "$fmt" == "plain" ]] && command -v jq >/dev/null 2>&1; then
+    echo "$REST_BODY" | jq -r '"committed: \(.committed) | demoted_to_pending: \(.demoted_to_pending) | rejected: \(.rejected)"'
+  else
+    format_json
+  fi
+}
+
 # Early dispatch for write-side subcommands. These have their own argument
 # parsing (different flags than the read-side commands) so route them BEFORE
 # the generic flag loop below. format_json + url_encode are defined later;
@@ -706,6 +762,7 @@ case "$SUBCMD" in
   resolve) cmd_resolve "$@"; exit $? ;;
   pending) cmd_pending "$@"; exit $? ;;
   audit) cmd_audit "$@"; exit $? ;;
+  session-recap) cmd_session_recap "$@"; exit $? ;;
   enforce)
     [[ $# -ge 1 ]] || { echo "kb: enforce requires subcommand (install|uninstall|status|doctor|report)" >&2; exit 64; }
     if [[ "$1" == "report" ]]; then

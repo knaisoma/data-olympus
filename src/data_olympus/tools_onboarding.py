@@ -90,7 +90,7 @@ def kb_bootstrap_project_fn(
     pending: PendingQueue,
     rate_limiter: SlidingWindowLimiter,
     blocklist: PathBlocklist,
-    audit_log: AuditLog | None = None,  # noqa: ARG001  reserved for future audit emission
+    audit_log: AuditLog | None = None,
     remote_addr: str = "mcp",
     can_auto_commit: bool = True,
     max_postimage_bytes: int = 0,
@@ -114,6 +114,51 @@ def kb_bootstrap_project_fn(
     claimed once the request is admitted and held across a committed outcome
     (item 2); the marker self-expires so a crash cannot wedge the workspace.
     """
+    def _audited(resp: BootstrapResponse) -> BootstrapResponse:
+        """Audit emission (issue #112 feedback loop, codex round-2 concern +
+        round-3 note): bootstrap outcomes were previously invisible to the
+        audit log and therefore to kb_session_recap / kb_consult's
+        demoted-writes item. One event per bootstrap call -- INCLUDING the
+        early rejections before the admitted path -- mirroring the propose
+        paths' shape (best-effort; never fails the bootstrap).
+
+        The synthesized ``target_path`` is built from the RAW caller-supplied
+        ``workspace``/``component``, which for the early rejections has not
+        passed any canonicalization or secret scan yet, so it gets the same
+        issue #71 path discipline every file ``target_path`` gets before it
+        may be echoed into a persisted/loggable surface: a credential-shaped
+        value is replaced with a redacted placeholder, never written to the
+        audit log verbatim (codex round-4 blocker)."""
+        if audit_log is not None:
+            import contextlib as _contextlib
+            import time as _time
+
+            from data_olympus.write_gate import scan_postimage_for_secrets
+            synthesized = (
+                f"projects/{workspace}/"
+                + (f"components/{component}/" if component else "")
+            )
+            path_scan = scan_postimage_for_secrets(postimage=synthesized)
+            audit_target = (
+                synthesized if path_scan.ok
+                else "[target_path redacted: matched a secret pattern]"
+            )
+            with _contextlib.suppress(Exception):
+                audit_log.append({
+                    "ts": _time.time(),
+                    "event_type": "bootstrap",
+                    "status": resp.status,
+                    "agent_identity": agent_identity,
+                    "source_session": source_session,
+                    "target_path": audit_target,
+                    "confidence": confidence,
+                    "pending_id": resp.pending_id,
+                    "commit_sha": resp.commit_sha,
+                    "remote_addr": remote_addr,
+                    "demotion_reason": resp.demotion_reason,
+                })
+        return resp
+
     # Server-side re-check that status is absent OR partial. `partial` is a valid
     # entry point: it means the workspace exists in the KB but is missing some
     # canonical file(s), and this bootstrap completes it (item 1).
@@ -124,10 +169,10 @@ def kb_bootstrap_project_fn(
         idx=idx,
     )
     if s.state not in ("absent", "partial"):
-        return BootstrapResponse(
+        return _audited(BootstrapResponse(
             status="rejected_already_onboarded",
             rejected_paths=[],
-        )
+        ))
 
     # Lazily materialize the in-flight guard on the same durable state volume as
     # the pending queue, unless the caller injected one (tests). Both entry points
@@ -144,10 +189,10 @@ def kb_bootstrap_project_fn(
     # already in the convergence window) rejects this one as in-progress and
     # closes the double-bootstrap race the absent-recheck cannot (item 2).
     if not in_flight.claim(workspace, component):
-        return BootstrapResponse(
+        return _audited(BootstrapResponse(
             status="rejected_already_in_progress",
             rejected_paths=[f["target_path"] for f in files],
-        )
+        ))
     # From here on, any outcome that did NOT commit must release the claim so a
     # legitimate retry is not blocked for the full TTL. Only a committed outcome
     # holds the claim across the convergence window. A pre-commit exception (git
@@ -173,7 +218,7 @@ def kb_bootstrap_project_fn(
             serializer=serializer,
         )
         committed = resp.status == "committed"
-        return resp
+        return _audited(resp)
     finally:
         if not committed:
             in_flight.release(workspace, component)
@@ -321,8 +366,85 @@ def _bootstrap_admitted(
             rejected_paths=oversized,
         )
 
-    if confidence < confidence_threshold or not can_auto_commit:
-        # Low confidence (or caller not authorized to auto-commit): enqueue ALL
+    # Governed-lane write protection (issue #112): a bootstrap file only ever
+    # targets a NEW or currently-missing canonical path (never an already
+    # in-force document -- see the `partial`-state narrowing above), so only
+    # rule 1 (status clamp) applies; check_governed_target=False. The bundle
+    # is atomic, so ANY file whose postimage sets/changes status into the
+    # in-force class demotes the WHOLE bundle to pending review (it is
+    # reviewed/approved as a unit, same as the existing low-confidence bundle
+    # path). Same secret-scan/content-validation precedence rule as the
+    # propose paths: a bundle that would otherwise be REJECTED outright by a
+    # hard gate is never silently demoted instead.
+    from data_olympus.governed_lane import (
+        GovernedLaneVerdict,
+        evaluate_governed_lane,
+        governed_lane_protection_enabled,
+    )
+    per_file_verdict: dict[str, GovernedLaneVerdict] = {}
+    bundle_demotion_reason: str | None = None
+    if governed_lane_protection_enabled():
+        for f in files:
+            v = evaluate_governed_lane(
+                postimage=f["postimage"], target_path=f["target_path"], idx=idx,
+                check_governed_target=False,
+            )
+            per_file_verdict[f["target_path"]] = v
+            if v.demoted and bundle_demotion_reason is None:
+                bundle_demotion_reason = v.demotion_reason
+        would_auto_commit = confidence >= confidence_threshold and can_auto_commit
+        if bundle_demotion_reason is not None and would_auto_commit:
+            from data_olympus.format.frontmatter import parse_frontmatter
+            from data_olympus.write_gate import (
+                _effective_doc_id,
+                scan_postimage_for_secrets,
+                validate_postimage,
+            )
+            gates_clean = True
+            seen_ids: dict[str, str] = {}
+            for f in files:
+                tp, pi = f["target_path"], f["postimage"]
+                # The cancel decision must be a sound prediction of the
+                # commit path's own gates (see tools_write._governed_lane_check
+                # for the full rationale): ``missing_status`` is excluded
+                # because its new-vs-existing classification can differ
+                # between this index-only pre-check and the commit path's
+                # worktree-aware check; when in doubt the demotion stands.
+                vr = validate_postimage(target_path=tp, postimage=pi, idx=idx)
+                validation_would_reject = (not vr.ok) and any(
+                    e.get("code") != "missing_status" for e in vr.errors
+                )
+                if (
+                    not scan_postimage_for_secrets(postimage=tp).ok
+                    or not scan_postimage_for_secrets(postimage=pi).ok
+                    or validation_would_reject
+                ):
+                    gates_clean = False
+                    break
+                # Intra-bundle duplicate-id check (mirrors
+                # commit_multifile_in_worktree's own check): neither file is
+                # in the index/tree yet, so the per-file validate_postimage
+                # call above cannot catch two bundle files claiming the same
+                # effective id.
+                try:
+                    bfm, _body = parse_frontmatter(pi)
+                except ValueError:
+                    bfm = {}
+                eid = _effective_doc_id(bfm, tp)
+                if eid and eid in seen_ids and seen_ids[eid] != tp:
+                    gates_clean = False
+                    break
+                if eid:
+                    seen_ids[eid] = tp
+            if not gates_clean:
+                bundle_demotion_reason = None
+
+    if (
+        confidence < confidence_threshold or not can_auto_commit
+        or bundle_demotion_reason is not None
+    ):
+        # Low confidence (or caller not authorized to auto-commit, or a
+        # governed-lane demotion): enqueue ALL
         # files as a single pending bundle. The pending queue stores per-file
         # entries; every entry of one bootstrap shares a `bundle_id` in its meta
         # so the operator (and a future bundle-aware resolve UX) can treat them as
@@ -362,6 +484,13 @@ def _bootstrap_admitted(
                 secret_result.match.pattern_name if secret_result.match is not None else None
             )
             any_flagged = any_flagged or flagged_pattern is not None
+            file_verdict = per_file_verdict.get(f["target_path"])
+            file_demotion_reason = (
+                file_verdict.demotion_reason if file_verdict is not None else None
+            )
+            file_injection_matches = (
+                file_verdict.injection_matches if file_verdict is not None else ()
+            )
             try:
                 pid = pending.enqueue(
                     proposal_type="edit",
@@ -376,7 +505,15 @@ def _bootstrap_admitted(
                           "workspace": workspace,
                           "component": component,
                           "secret_scan_flagged": flagged_pattern is not None,
-                          "matching_pattern": flagged_pattern},
+                          "matching_pattern": flagged_pattern,
+                          "demotion_reason": (
+                              file_demotion_reason or bundle_demotion_reason
+                          ),
+                          "injection_suspect": bool(file_injection_matches),
+                          "injection_patterns": (
+                              [f"{m.pattern_name}:{m.line}" for m in file_injection_matches]
+                              or None
+                          )},
                 )
                 pending_ids.append(pid)
             except PathLockBusyError:
@@ -403,13 +540,21 @@ def _bootstrap_admitted(
             "before resolving (see `kb pending` for the matched pattern name)."
             if any_flagged else ""
         )
+        demotion_note = (
+            f" This bundle was DEMOTED to pending review by governed-lane "
+            f"write protection (reason: {bundle_demotion_reason}). Agents can "
+            f"propose; only a human can promote this write. Inform the "
+            f"operator that it awaits review -- do not attempt to bypass it."
+            if bundle_demotion_reason is not None else ""
+        )
         return BootstrapResponse(
             status="pending_confirmation",
             pending_id=pending_ids[0] if pending_ids else None,
+            demotion_reason=bundle_demotion_reason,
             operator_prompt=(
                 f"Bootstrap of {workspace} pending ({len(pending_ids)} files, "
                 f"bundle {bundle_id}); run `kb pending` to see entries."
-                f"{flagged_note}"
+                f"{flagged_note}{demotion_note}"
             ),
         )
 
