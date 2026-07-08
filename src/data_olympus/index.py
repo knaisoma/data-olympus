@@ -35,6 +35,7 @@ from data_olympus.embeddings import (
 )
 from data_olympus.format.validate import (
     IN_FORCE_STATUSES,
+    graph_excluded_ids_sql,
     in_force_sql_fragment,
     not_expired_sql_fragment,
     today_iso,
@@ -355,6 +356,15 @@ class SearchHit:
     valid_from: str = ""
     valid_until: str = ""
     recheck_by: str = ""
+    # Lifecycle-relationship surfacing (issue #110 slice 2): the SORTED list of
+    # ids that supersede this doc, computed as the UNION of the doc's own
+    # frontmatter `superseded_by` claim and any reverse `supersedes` edge
+    # targeting it (see index._superseded_by_map). Deviation-only: emitted by
+    # SearchHitModel.compact_dump only when non-empty, same pattern as
+    # `status`/`freshness`. Purely informational -- carries NO ranking or
+    # filtering effect on its own (a hit's presence/absence is governed by the
+    # `in_force` graph-exclusion filter, not by this field).
+    superseded_by: tuple[str, ...] = ()
 
 
 def make_status_reranker(
@@ -437,6 +447,21 @@ class IndexedDoc:
     last_verified: str = ""
     recheck_by: str = ""
     verification_source: str = ""
+    # Lifecycle-relationship surfacing (issue #110 slice 2), computed at read
+    # time from the `edges` table (see _superseded_by_map / _edges_from /
+    # _edges_targeting). `superseded_by` is the UNION of this doc's own
+    # frontmatter `superseded_by` claim and any reverse `supersedes` edge
+    # targeting it -- ONE consistent shape covering both the honest
+    # self-declared case and the "forgotten status flip" case where the
+    # superseding doc names this one in its `supersedes` list but this doc's
+    # own frontmatter never got a matching `superseded_by`. `contradicts` is
+    # this doc's own frontmatter list (direct, never affects filtering or
+    # ranking); `contradicted_by` is the computed reverse: every other doc
+    # whose `contradicts` names this one. All three are dangling-safe: an edge
+    # whose other end has no `docs` row is never surfaced.
+    superseded_by: tuple[str, ...] = ()
+    contradicts: tuple[str, ...] = ()
+    contradicted_by: tuple[str, ...] = ()
 
 
 class DuplicateIdError(ValueError):
@@ -501,6 +526,82 @@ def _parse_validity_state(value: str) -> tuple[str, int | None]:
 def _add_days_iso(today: str, days: int) -> str:
     """Return ``today`` (ISO YYYY-MM-DD) plus ``days`` calendar days, as ISO."""
     return (datetime.date.fromisoformat(today) + datetime.timedelta(days=days)).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle-relationship surfacing helpers (issue #110 slice 2)
+# ---------------------------------------------------------------------------
+#
+# Shared by Index.get() (single id) and Index.search() (batched over the
+# current hit pool). Both directions JOIN edges to docs on the OTHER end (the
+# end NOT already constrained by the caller's id filter) so a dangling edge
+# (either end missing a `docs` row) is never surfaced -- the same
+# never-trust-edges-verbatim discipline the graph-exclusion SQL uses.
+
+
+def _edges_from(
+    conn: sqlite3.Connection, rel: str, source_ids: builtins.list[str],
+) -> dict[str, builtins.list[str]]:
+    """``{source_id: [target_id, ...]}`` for ``rel`` edges FROM each of
+    ``source_ids``, restricted to targets that exist as real docs."""
+    if not source_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in source_ids)
+    rows = conn.execute(
+        "SELECT DISTINCT edges.source_id AS src, edges.target_id AS tgt "
+        "FROM edges JOIN docs ON docs.id = edges.target_id "
+        f"WHERE edges.rel = ? AND edges.source_id IN ({placeholders})",
+        [rel, *source_ids],
+    ).fetchall()
+    out: dict[str, builtins.list[str]] = {}
+    for r in rows:
+        out.setdefault(r["src"], []).append(r["tgt"])
+    return out
+
+
+def _edges_targeting(
+    conn: sqlite3.Connection, rel: str, target_ids: builtins.list[str],
+) -> dict[str, builtins.list[str]]:
+    """``{target_id: [source_id, ...]}`` for ``rel`` edges TARGETING each of
+    ``target_ids``, restricted to sources that exist as real docs."""
+    if not target_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in target_ids)
+    rows = conn.execute(
+        "SELECT DISTINCT edges.target_id AS tgt, edges.source_id AS src "
+        "FROM edges JOIN docs ON docs.id = edges.source_id "
+        f"WHERE edges.rel = ? AND edges.target_id IN ({placeholders})",
+        [rel, *target_ids],
+    ).fetchall()
+    out: dict[str, builtins.list[str]] = {}
+    for r in rows:
+        out.setdefault(r["tgt"], []).append(r["src"])
+    return out
+
+
+def _superseded_by_map(
+    conn: sqlite3.Connection, ids: builtins.list[str],
+) -> dict[str, builtins.list[str]]:
+    """``{doc_id: [superseder_id, ...]}`` (sorted, deduped) for every id in
+    ``ids`` that is superseded, by ONE consistent rule (issue #110 slice 2):
+    the UNION of the doc's own frontmatter ``superseded_by`` claim (the
+    ``superseded_by`` rel, edge FROM the doc) and any reverse ``supersedes``
+    edge targeting it (the ``supersedes`` rel, edge TO the doc). The union
+    covers both the honest self-declared case and the "forgotten status flip"
+    case where only the superseding doc's own ``supersedes`` list names this
+    one. An id with neither is omitted from the returned dict entirely (never
+    an empty-list entry), so callers can use a plain ``.get(id, [])``.
+    """
+    if not ids:
+        return {}
+    own = _edges_from(conn, "superseded_by", ids)
+    reverse = _edges_targeting(conn, "supersedes", ids)
+    out: dict[str, builtins.list[str]] = {}
+    for doc_id in ids:
+        combined = sorted(set(own.get(doc_id, [])) | set(reverse.get(doc_id, [])))
+        if combined:
+            out[doc_id] = combined
+    return out
 
 
 class Index:
@@ -600,6 +701,12 @@ class Index:
         # malformed at the last build (issue #107). Updated by build(); surfaced
         # via health() and the ``malformed_validity_count`` property.
         self._malformed_validity_count = 0
+        # Health-visible count of docs excluded from in-force retrieval by the
+        # supersession-graph rule at the last build (issue #110 slice 2).
+        # Updated by build(); surfaced via health() and the
+        # ``graph_excluded_docs_count`` property, same pattern as the two
+        # malformed-* counters above.
+        self._graph_excluded_docs_count = 0
 
     @property
     def malformed_frontmatter_count(self) -> int:
@@ -621,6 +728,17 @@ class Index:
         logged at WARN per doc during build) makes that condition observable.
         """
         return self._malformed_validity_count
+
+    @property
+    def graph_excluded_docs_count(self) -> int:
+        """Docs excluded from in-force retrieval by the supersession-graph rule
+        at the last build (issue #110 slice 2): the TARGET of a `supersedes`
+        edge whose SOURCE is itself in-force. Computed and persisted at build
+        time from the same SQL definition the retrieval-time filter uses
+        (:func:`data_olympus.format.validate.graph_excluded_ids_sql`), so the
+        counter can never drift from the filter it reports on.
+        """
+        return self._graph_excluded_docs_count
 
     def _resolve_embedder(self) -> Embedder | None:
         """Return the embedder to use, loading it from the threaded config once.
@@ -745,8 +863,17 @@ class Index:
             "mtime",
         )
 
-    def build(self, kb_root: Path, *, source_commit: str) -> IndexBuildResult:
-        """Walk kb_root for .md files and (re)build the FTS index using atomic swap."""
+    def build(
+        self, kb_root: Path, *, source_commit: str, today: str | None = None,
+    ) -> IndexBuildResult:
+        """Walk kb_root for .md files and (re)build the FTS index using atomic swap.
+
+        ``today`` (ISO ``YYYY-MM-DD``) drives the ``graph_excluded_docs`` health
+        counter (issue #110 slice 2), the only build-time computation that is
+        wall-clock-relative (an in-force source's validity window); it defaults
+        to :func:`today_iso` (the real wall clock) but is injectable so tests
+        get a deterministic count without depending on the actual calendar day.
+        """
         if not kb_root.is_dir():
             raise NotADirectoryError(f"KB root not a directory: {kb_root}")
 
@@ -948,6 +1075,22 @@ class Index:
                     "VALUES (?, ?, ?)",
                     sorted(edge_rows),
                 )
+            # graph_excluded_docs (issue #110 slice 2): the count of DISTINCT
+            # docs excluded from in-force retrieval by the supersession-graph
+            # rule, computed from the SAME SQL definition the retrieval-time
+            # filter uses (graph_excluded_ids_sql) so the counter can never
+            # drift from the filter it reports on. A mutually-supersessive
+            # in-force cycle is NOT special-cased here either: both members
+            # independently satisfy the rule, so both are counted (see
+            # tests/test_graph_exclusion.py).
+            resolved_today = today if today is not None else today_iso()
+            status_placeholders = ", ".join("?" for _ in _IN_FORCE_STATUS_LIST)
+            graph_excluded_row = conn.execute(
+                "SELECT COUNT(DISTINCT target_id) FROM "
+                f"({graph_excluded_ids_sql(status_placeholders)})",
+                [*_IN_FORCE_STATUS_LIST, resolved_today, resolved_today],
+            ).fetchone()
+            graph_excluded_docs = int(graph_excluded_row[0]) if graph_excluded_row else 0
             # Embedding vectors (issue #42): one batched embed of all docs, then
             # persist into the tmp DB. Kept inside the build so vectors are part
             # of the same atomic swap and a query never sees a half-built table.
@@ -1005,6 +1148,13 @@ class Index:
                 "VALUES ('malformed_validity', ?)",
                 (str(malformed_validity),),
             )
+            # graph_excluded_docs (issue #110 slice 2): same persisted-meta
+            # rationale as the two malformed-* counters above.
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) "
+                "VALUES ('graph_excluded_docs', ?)",
+                (str(graph_excluded_docs),),
+            )
             # Integrity check before swap
             check = conn.execute("PRAGMA integrity_check").fetchone()
             if check[0] != "ok":
@@ -1030,6 +1180,7 @@ class Index:
         # (finding (j)); the persisted meta row covers a fresh process.
         self._malformed_frontmatter_count = malformed_frontmatter
         self._malformed_validity_count = malformed_validity
+        self._graph_excluded_docs_count = graph_excluded_docs
         # Invalidate the health cache so the next health() reflects the rebuild
         # immediately rather than serving the pre-swap commit for up to the TTL.
         with self._health_lock:
@@ -1078,6 +1229,17 @@ class Index:
         be in-force (an empty result if `status` is not itself in-force). The
         filter is applied to both the FTS candidate pool and the dense
         (embedding) candidate source so neither leaks an out-of-force doc.
+
+        `in_force=True` ALSO excludes any doc that is the TARGET of a
+        `supersedes` edge whose SOURCE doc is itself in-force (issue #110
+        slice 2; see format.validate.graph_excluded_ids_sql, the single
+        definition shared with the `graph_excluded_docs` health counter). This
+        closes the "forgotten status flip" gap: a doc superseded only via an
+        edge, whose own `status` was never updated, is excluded from
+        `in_force=True` results but stays visible in a default search (same as
+        an upcoming doc). A mutually-supersessive in-force cycle is not
+        special-cased: every member independently satisfies the rule and all
+        are excluded. A dangling edge excludes nothing.
 
         `include_expired` (default False, issue #107): by default a doc past
         its `valid_until` is EXCLUDED from every result, not just from
@@ -1217,7 +1379,29 @@ class Index:
         # and that truncation must happen whether or not a reranker is installed:
         # doing it only inside the reranker branch let search() return more than
         # ``limit`` hits when embeddings were configured but no reranker was set.
-        return hits[:limit]
+        final_hits = hits[:limit]
+        # Stage 4 (surface, issue #110 slice 2): decorate the FINAL (already
+        # truncated) hits with `superseded_by`, purely informational and
+        # computed AFTER ranking/truncation since it has no ranking or
+        # filtering effect (unconditional -- applied regardless of
+        # ``in_force``, same as `freshness`, so a plain search still explains
+        # why a hit is historically superseded).
+        return self._attach_superseded_by(final_hits)
+
+    def _attach_superseded_by(self, hits: list[SearchHit]) -> list[SearchHit]:
+        if not hits:
+            return hits
+        conn = self._connect()
+        try:
+            by_id = _superseded_by_map(conn, [h.id for h in hits])
+        finally:
+            conn.close()
+        if not by_id:
+            return hits
+        return [
+            replace(h, superseded_by=tuple(by_id[h.id])) if h.id in by_id else h
+            for h in hits
+        ]
 
     def _union_dense_candidates(
         self,
@@ -1299,6 +1483,15 @@ class Index:
         default (``include_expired=False``) applies
         :func:`not_expired_sql_fragment` so a doc past ``valid_until`` never
         appears in an ordinary search; ``include_expired=True`` lifts that.
+
+        Supersession-graph exclusion (issue #110 slice 2): ``in_force`` ALSO
+        excludes any doc that is the TARGET of a `supersedes` edge whose
+        SOURCE is itself in-force (:func:`graph_excluded_ids_sql` from
+        format.validate is the single source of this rule, shared with the
+        `graph_excluded_docs` health counter computed at build time). This is
+        scoped to ``in_force`` only, exactly like the ``upcoming`` half of the
+        validity window above: a graph-excluded doc stays visible in a plain
+        (non-``in_force``) search, same as an upcoming doc does.
         """
         where: list[str] = []
         params: list[object] = []
@@ -1316,6 +1509,9 @@ class Index:
             where.append(f"docs.status IN ({placeholders})")
             params.extend(_IN_FORCE_STATUS_LIST)
             where.append(in_force_sql_fragment())
+            params.extend([today, today])
+            where.append(f"docs.id NOT IN ({graph_excluded_ids_sql(placeholders)})")
+            params.extend(_IN_FORCE_STATUS_LIST)
             params.extend([today, today])
         if doc_type:
             where.append("docs.type = ?")
@@ -1783,6 +1979,12 @@ class Index:
                 "SELECT value FROM meta WHERE key='source_commit'"
             ).fetchone()
             source_commit = commit_row[0] if commit_row else ""
+            # Lifecycle-relationship surfacing (issue #110 slice 2): computed
+            # from the `edges` table so "retirement is explainable" -- see
+            # _superseded_by_map / _edges_from / _edges_targeting.
+            superseded_by = _superseded_by_map(conn, [id]).get(id, [])
+            contradicts = _edges_from(conn, "contradicts", [id]).get(id, [])
+            contradicted_by = _edges_targeting(conn, "contradicts", [id]).get(id, [])
         finally:
             conn.close()
         tags = [t for t in (row["tags"] or "").split() if t]
@@ -1808,6 +2010,9 @@ class Index:
             last_verified=row["last_verified"] or "",
             recheck_by=row["recheck_by"] or "",
             verification_source=row["verification_source"] or "",
+            superseded_by=tuple(superseded_by),
+            contradicts=tuple(contradicts),
+            contradicted_by=tuple(contradicted_by),
         )
 
     def id_to_path_map(self) -> dict[str, str]:
@@ -1939,6 +2144,9 @@ class Index:
             # Issue #107: present-but-malformed ``validity`` block count, same
             # persisted-meta rationale as malformed_frontmatter above.
             "malformed_validity": int(meta.get("malformed_validity", "0")),
+            # Issue #110 slice 2: docs excluded from in-force retrieval by the
+            # supersession-graph rule, same persisted-meta rationale as above.
+            "graph_excluded_docs": int(meta.get("graph_excluded_docs", "0")),
         }
 
     def list_by_prefix(

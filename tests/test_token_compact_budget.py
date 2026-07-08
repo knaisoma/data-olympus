@@ -10,6 +10,14 @@ Measured compact totals (simple tokenizer, example-bundle) at authoring time:
   kb_search(20)=921  kb_search(100)=1451  kb_get(STD-U-004)=541  kb_get(ADR-002)=489
   kb_get(MEM...)=667  kb_list(T1)=192  kb_outline=369  kb_health=81  aggregate=4711
 The compact aggregate saved 24.7% (simple) / 26.1% (tiktoken cl100k) vs verbose.
+
+Re-measured (issue #110 slice 2): the STD-U-003 example-bundle fixture's
+compact search hit now carries a deviation-only `superseded_by` field (it is
+superseded by STD-U-004), and `kb_health` gains the always-present
+`graph_excluded_docs` counter (same pattern as `malformed_frontmatter` /
+`malformed_validity`). New measured totals:
+  kb_search(20)=935  kb_search(100)=1465  kb_get(STD-U-004)=541  kb_get(ADR-002)=489
+  kb_get(MEM...)=667  kb_list(T1)=192  kb_outline=369  kb_health=99  aggregate=4757
 """
 from __future__ import annotations
 
@@ -19,16 +27,16 @@ from benchmarks.token_compact import measure
 
 # Per-scenario compact budgets (simple tokenizer). ~15% headroom over measured.
 _BUDGETS = {
-    "kb_search (limit 20, 'commit message format')": 1060,
-    "kb_search (limit 100, 'module standard commit secret')": 1670,
+    "kb_search (limit 20, 'commit message format')": 1075,
+    "kb_search (limit 100, 'module standard commit secret')": 1685,
     "kb_get (STD-U-004)": 625,
     "kb_get (ADR-002)": 565,
     "kb_get (MEM-2026-06-20-nestjs-module-naming-collision)": 770,
     "kb_list (T1)": 225,
     "kb_outline": 425,
-    "kb_health": 95,
+    "kb_health": 115,
 }
-_AGGREGATE_BUDGET = 5420  # ~15% over 4711
+_AGGREGATE_BUDGET = 5470  # ~15% over 4757
 
 
 def test_compact_defaults_under_budget() -> None:

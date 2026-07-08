@@ -412,6 +412,65 @@ requires a doc match `status` AND be in-force (so `status=superseded` with
 (embedding) candidate source, so a hybrid deployment never leaks an out-of-force
 doc through the semantic path.
 
+## Supersession-graph exclusion (issue #110 slice 2)
+
+`in_force=true` ALSO excludes any document that is the TARGET of a
+`supersedes` edge whose SOURCE document is itself in force (the full
+status-class-AND-validity-window predicate above, not merely
+`status: superseded`). This is the in-force-source guard: a `draft`, expired,
+or already-retired document can never retire another document just by naming
+it in `supersedes`. It closes the "forgotten status flip" gap -- A (active)
+supersedes B, but B's own `status` was never updated to `superseded` -- B is
+excluded from `in_force=true` results even though its own status class would
+otherwise qualify it. Like the `upcoming` half of the validity window, graph
+exclusion is scoped to `in_force=true` only: a plain (default) search still
+returns the excluded document.
+
+A mutually-supersessive in-force cycle (already a `kb lint` ERROR at parse
+time) is NOT special-cased at retrieval time: every member independently
+satisfies the exclusion rule (each is the target of an in-force source's
+`supersedes` edge), so `in_force=true` excludes ALL of them. A dangling edge
+(source or target id with no corresponding document) excludes nothing; the
+exclusion query joins `edges` to `docs` on both ends.
+
+`kb_consult` runs its search with `in_force=true` (see "Enforcement
+endpoints" below), so it never returns a graph-excluded, not-yet-in-force, or
+retired document -- the same guarantee the unconditional expired-doc exclusion
+already gave it, made explicit for the graph rule since that rule is scoped to
+`in_force=true` rather than applying unconditionally.
+
+A `graph_excluded_docs` health counter (in `kb_health` / `/api/v1/health`,
+alongside `malformed_frontmatter` and `malformed_validity`) reports the count
+of documents currently excluded by this rule, computed at index-build time
+from the same SQL definition the retrieval-time filter uses
+(`format.validate.graph_excluded_ids_sql`), so the counter can never drift
+from the filter it reports on. It is a WARNING signal only and does not flip
+`degraded`.
+
+### Retirement is explainable
+
+`kb_get` by id always resolves regardless of in-force or graph-exclusion
+status (same as it already ignores expiry) and returns:
+
+- `superseded_by`: the sorted, deduped UNION of the document's own
+  frontmatter `superseded_by` claim and any reverse `supersedes` edge naming
+  it. This ONE consistent computed shape covers both the honest self-declared
+  case and the forgotten-status-flip case above, where only the superseding
+  document's own `supersedes` list names this one.
+- `contradicts`: the document's own frontmatter list (unchanged from the
+  frontmatter, never affects filtering or ranking anywhere in the retrieval
+  path).
+- `contradicted_by`: the computed reverse -- every other document whose
+  `contradicts` names this one.
+
+All three are omitted from the compact `kb_get` response when empty (same
+deviation-only pattern as `freshness`). Compact `kb_search` hits carry a
+deviation-only `superseded_by` (the same computed union above), omitted when
+the document is not superseded; it is computed and attached to EVERY hit
+regardless of `in_force`, so a plain search result still explains why a hit is
+historically superseded. `kb_search` hits do NOT carry `contradicts` /
+`contradicted_by`; those are kb_get-only.
+
 ## Validity: expired docs leave default results
 
 Independent of `in_force`, a doc past its `validity.valid_until` date is
@@ -433,8 +492,11 @@ and `GET /api/v1/search`):
   `recheck_by`) stays in force and visible.
 
 `kb_get` by id always resolves regardless of expiry, returning the full
-`validity` object plus the computed `freshness` indicator. `kb_consult`
-reuses the default search path and therefore never returns an expired doc.
+`validity` object plus the computed `freshness` indicator. `kb_consult` never
+returns an expired doc: the unconditional not-expired exclusion above already
+covers it, and (issue #110 slice 2) `kb_consult` also runs with
+`in_force=true`, so it never returns a not-yet-in-force, retired, or
+graph-excluded document either -- see "Supersession-graph exclusion" above.
 The `data-olympus validity-report` CLI subcommand lists expired and
 soon-to-expire docs from a bundle directory.
 

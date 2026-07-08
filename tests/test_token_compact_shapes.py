@@ -47,7 +47,7 @@ def test_search_compact_drops_query_path_score(status_kb: Path, tmp_index_path: 
     assert compact["source_commit"] == "x"
     assert compact["total_returned"] == len(resp.hits)
     for hit in compact["hits"]:
-        assert set(hit) <= {"id", "title", "snippet", "status", "type"}
+        assert set(hit) <= {"id", "title", "snippet", "status", "type", "superseded_by"}
         assert "path" not in hit, "compact drops per-hit path (fetch via kb_get)"
         assert "score" not in hit, "compact drops the raw bm25 score"
 
