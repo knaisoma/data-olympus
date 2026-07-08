@@ -9,7 +9,7 @@ data-olympus is a governance-grade knowledge-base format and server for agent wo
 
 It governs *decisions*, not code. When an agent is about to make a choice (a library, a pattern, a migration), data-olympus surfaces the established standard or decision that should govern that choice. It is deliberately **not** a code-search, reference-finding, or "where is X used" tool: LSP, grep, and Sourcegraph already do that well. The retrieval task it targets is coding-intent to governing-rule, and it helps where current model interaction during vibe-coding is weakest: keeping the model aligned to patterns the team has already established as correct.
 
-**Status: pre-1.0 beta. Latest release: v0.4.0.**
+**Status: pre-1.0 beta. Latest release: v0.4.1.**
 
 ## Why
 

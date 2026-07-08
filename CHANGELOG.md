@@ -12,6 +12,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-08
+
+### Changed
+
+- Dependency refresh from the post-0.4.0 Dependabot queue: runtime
+  dependencies `fastmcp` 3.4.2 -> 3.4.3 and `numpy` 2.5.0 -> 2.5.1; dev
+  dependency `mypy` 2.1.0 -> 2.2.0 (strict run clean); CI actions
+  `actions/upload-artifact` v4 -> v7 and `actions/download-artifact`
+  v4 -> v8 (exercised together on the packaging dry-run and by this
+  release's own publish chain). Full test suite green on the combined
+  set.
+
 ## [0.4.0] - 2026-07-08
 
 ### Fixed
@@ -1500,7 +1512,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/knaisoma/data-olympus/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/knaisoma/data-olympus/compare/v0.3.5...v0.4.0
 [0.3.5]: https://github.com/knaisoma/data-olympus/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/knaisoma/data-olympus/compare/v0.3.3...v0.3.4
