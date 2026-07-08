@@ -21,6 +21,25 @@ command in this guide works with either approach; the examples below use
 A bundle is a directory of markdown files with YAML frontmatter. The layout
 mirrors `example-bundle/` in this repo.
 
+### Scaffolding a fresh bundle
+
+Instead of copying `example-bundle/` by hand, scaffold a new bundle with:
+
+```bash
+uv run data-olympus init <dir>
+```
+
+This creates the tier directories (`--tiers`, default `universal,tech-stacks,
+projects,decisions,workflows,tooling`), a root `index.md` carrying the
+`spec_version`/`okf_version` frontmatter, a `template.md` authoring scaffold,
+and one example document per supported `type` (`standard`, `decision`,
+`workflow`, `project`, `memory`, `reference`) — including a real
+`superseded`/`superseded_by`/`supersedes` pair and `applies_when` trigger
+metadata, so `data-olympus lint`, `data-olympus index`, and `kb search` all
+have something to demo against immediately. The command refuses to write into
+a non-empty directory. Scaffold a subset of tiers with, for example,
+`--tiers decisions,workflows`.
+
 ### Required frontmatter fields
 
 Every concept file (every `.md` file that is not `index.md`, `log.md`, or
