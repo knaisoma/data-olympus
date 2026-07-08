@@ -55,6 +55,37 @@ def test_init_into_nonexistent_dir_creates_conformant_bundle(tmp_path):
     assert index_code == 0
 
 
+def test_init_under_skip_named_ancestor_still_generates_indexes(tmp_path):
+    # Regression (companion review, issue #66 branch): regenerate_indexes
+    # matched skip-dir names against the ABSOLUTE path components, so a
+    # bundle whose ancestor path passed through e.g. `.venv` silently
+    # generated zero per-directory indexes. Skip matching must be relative
+    # to the bundle root, exactly like discover_bundle_files in lint.py.
+    dest = tmp_path / ".venv" / "kb"
+
+    code = main(["init", str(dest)])
+    assert code == 0
+
+    tier_indexes = [p for p in dest.rglob("index.md") if p.parent != dest]
+    assert tier_indexes, "no per-directory index.md was generated"
+    assert (dest / "decisions" / "index.md").is_file()
+    assert (dest / "universal" / "foundation" / "index.md").is_file()
+
+
+def test_index_command_under_skip_named_ancestor_regenerates(tmp_path):
+    # Same root cause, pre-existing `index` subcommand path: `data-olympus
+    # index <dir>` must regenerate indexes even when <dir>'s absolute path
+    # passes through a skip-named ancestor.
+    dest = tmp_path / "node_modules" / "kb"
+    assert main(["init", str(dest)]) == 0
+    for stale in dest.rglob("index.md"):
+        if stale.parent != dest:
+            stale.unlink()
+
+    assert main(["index", str(dest)]) == 0
+    assert (dest / "decisions" / "index.md").is_file()
+
+
 def test_init_into_existing_empty_dir_succeeds(tmp_path):
     dest = tmp_path / "already-here"
     dest.mkdir()

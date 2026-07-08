@@ -26,6 +26,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   under `data-olympus index`. Refuses to scaffold into a non-empty directory
   (no `--force` in this slice).
 
+### Fixed
+
+- **`data-olympus index` silently regenerated zero indexes for a bundle whose
+  absolute path passes through a skip-named ancestor** (found in companion
+  review of the `init` scaffold). `regenerate_indexes` matched skip-directory
+  names (`.git`, `.venv`, `node_modules`, ...) against the bundle's absolute
+  path components instead of the bundle-relative ones, so a bundle located
+  under e.g. a `.venv/` or `node_modules/` parent produced "wrote 0 index.md
+  file(s)" with no error. Skip matching is now relative to the bundle root,
+  matching `discover_bundle_files` in the lint pipeline.
+
 ## [0.3.5] - 2026-07-06
 
 ### Fixed
