@@ -217,3 +217,25 @@ def test_init_missing_path_argument_returns_nonzero():
     # module as the other init error-handling tests for discoverability.
     with pytest.raises(SystemExit):
         main(["init"])
+
+
+def test_scaffold_spec_version_tracks_current_format() -> None:
+    """The scaffold's SPEC_VERSION must match both SPEC.md's header and
+    example-bundle/index.md, so `data-olympus init` never generates a fresh
+    bundle declaring a stale format version (v0.4.0 release-gate blocker:
+    the scaffold shipped stamping 0.1 after the format moved to 0.2)."""
+    import re
+    from pathlib import Path
+
+    from data_olympus.scaffold import SPEC_VERSION
+
+    root = Path(__file__).resolve().parents[1]
+    spec_header = re.search(
+        r"^\*\*Version:\*\*\s+(\S+)$", (root / "SPEC.md").read_text(), re.MULTILINE
+    )
+    assert spec_header is not None
+    assert SPEC_VERSION == spec_header.group(1)
+    bundle_index = (root / "example-bundle" / "index.md").read_text()
+    m = re.search(r'^spec_version:\s*"([^"]+)"', bundle_index, re.MULTILINE)
+    assert m is not None
+    assert SPEC_VERSION == m.group(1)
