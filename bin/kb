@@ -227,6 +227,27 @@ handle_propose_response() {
     pending_confirmation)
       pid=$(echo "$REST_BODY" | jq -r '.pending_id // ""')
       proposal=$(echo "$REST_BODY" | jq -r '.proposal_text // ""')
+      # Governed-lane / secret-scan review gate (issue #112, codex security
+      # review blocker): a DEMOTED proposal (demotion_reason set), a
+      # secret-FLAGGED proposal (matching_pattern set), or any response the
+      # server deliberately shipped WITHOUT proposal_text must NEVER flow
+      # into the same-command interactive resolve below -- that flow
+      # defaults to "accept" when no TTY is available, which would let the
+      # very command that triggered the demotion immediately self-approve
+      # it. Print the server's operator_prompt and stop; the human promotes
+      # (or rejects) later via an explicit `kb resolve`.
+      local demotion pattern prompt
+      demotion=$(echo "$REST_BODY" | jq -r '.demotion_reason // ""')
+      pattern=$(echo "$REST_BODY" | jq -r '.matching_pattern // ""')
+      prompt=$(echo "$REST_BODY" | jq -r '.operator_prompt // ""')
+      if [[ -n "$demotion" || -n "$pattern" || -z "$proposal" ]]; then
+        if [[ -n "$prompt" ]]; then
+          echo "$prompt"
+        else
+          echo "Pending $pid awaits explicit operator review; run \`kb pending\` then \`kb resolve $pid --decision approve|reject\`."
+        fi
+        return 0
+      fi
       if [[ "$non_interactive" == "1" ]]; then
         echo "Pending $pid; run \`kb resolve $pid --decision approve\` to act."
       else

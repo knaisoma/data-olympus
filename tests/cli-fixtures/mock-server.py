@@ -25,7 +25,10 @@ Read routes:
 
 Write routes:
     POST /api/v1/propose/memory         -> committed if confidence>=0.85,
-                                            pending_confirmation otherwise
+                                            pending_confirmation otherwise;
+                                            a payload containing "status: active"
+                                            returns a governed-lane demotion
+                                            (demotion_reason, no proposal_text)
     POST /api/v1/propose/edit           -> same shape as memory
     POST /api/v1/resolve/<pending_id>   -> committed (approve) / rejected (reject)
 """
@@ -227,7 +230,30 @@ class Handler(BaseHTTPRequestHandler):
             )
         elif path in ("/api/v1/propose/memory", "/api/v1/propose/edit"):
             confidence = float(body.get("confidence", 0.0))
-            if confidence >= 0.85:
+            payload_text = body.get("text") or body.get("postimage", "")
+            if "status: active" in payload_text:
+                # Governed-lane demotion (issue #112): the real server demotes
+                # a status-promoting write to pending with demotion_reason and
+                # NO proposal_text; the CLI must print the prompt and stop --
+                # never flow into interactive resolve (codex security review
+                # blocker: same-command self-approval).
+                self._send(
+                    202,
+                    json.dumps(
+                        {
+                            "status": "pending_confirmation",
+                            "pending_id": "demoted-abc",
+                            "demotion_reason": "status_promotion",
+                            "operator_prompt": (
+                                "DEMOTED to pending review by governed-lane "
+                                "write protection (reason: status_promotion); "
+                                "run `kb resolve demoted-abc "
+                                "--decision approve|reject`."
+                            ),
+                        }
+                    ),
+                )
+            elif confidence >= 0.85:
                 self._send(
                     200,
                     json.dumps(

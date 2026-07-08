@@ -64,7 +64,11 @@ system write path and the operator resolve path are untouched):
   not-graph-excluded -- the same composed predicate every other in-force
   surface uses) is always demoted to pending, regardless of confidence. An
   expired or superseded-out target is not protected (it does not currently
-  govern anything).
+  govern anything). The in-force lookup FAILS CLOSED: when it cannot be
+  completed (no index, or an index read failure), the edit is demoted with
+  the distinct reason `governed_target_unverified` instead of
+  auto-committing -- an unhealthy index cannot be leveraged to bypass this
+  rule.
 - **Injection-pattern annotation.** Advisory only: a postimage matching an
   agent-directed injection heuristic (imperative instruction-override
   phrasing, exfiltration-shaped URLs, base64-looking blobs, "do not tell the

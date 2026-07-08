@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 from data_olympus.governed_lane import (
+    TARGET_IN_FORCE,
+    TARGET_NOT_IN_FORCE,
+    TARGET_UNKNOWN,
     check_status_clamp,
     evaluate_governed_lane,
     governed_lane_protection_enabled,
+    governed_target_state,
     is_target_in_force,
     scan_for_injection_patterns,
 )
@@ -75,13 +79,66 @@ class _FakeIndex:
         return self._excluded
 
 
-def test_is_target_in_force_none_index() -> None:
+def test_governed_target_state_none_index_is_unknown() -> None:
+    # Fail closed (codex security review blocker): no index wired means the
+    # in-force state cannot be verified.
+    assert governed_target_state(None, "decisions/DEC-1.md") == TARGET_UNKNOWN
     assert is_target_in_force(None, "decisions/DEC-1.md") is False
 
 
-def test_is_target_in_force_unknown_path() -> None:
+def test_governed_target_state_unknown_path_is_definitively_not_in_force() -> None:
+    # A healthy index with no entry for the path is DEFINITIVE: a brand-new
+    # file cannot already be in force, so no demotion.
     idx = _FakeIndex({})
+    assert governed_target_state(idx, "decisions/DEC-1.md") == TARGET_NOT_IN_FORCE
     assert is_target_in_force(idx, "decisions/DEC-1.md") is False
+
+
+class _BrokenMapIndex:
+    def id_to_path_map(self):
+        raise RuntimeError("index unavailable")
+
+
+class _NonDictMapIndex:
+    def id_to_path_map(self):
+        return None
+
+
+class _BrokenGetIndex:
+    def id_to_path_map(self):
+        return {"DEC-1": "decisions/DEC-1.md"}
+
+    def get(self, doc_id):  # noqa: ARG002
+        raise RuntimeError("index read failed")
+
+
+class _VanishedDocIndex:
+    def id_to_path_map(self):
+        return {"DEC-1": "decisions/DEC-1.md"}
+
+    def get(self, doc_id):  # noqa: ARG002
+        return None
+
+
+def test_governed_target_state_lookup_failures_are_unknown() -> None:
+    # Every index read failure fails CLOSED as unknown, never open as
+    # not-in-force (codex security review blocker).
+    for idx in (_BrokenMapIndex(), _NonDictMapIndex(), _BrokenGetIndex(),
+                _VanishedDocIndex()):
+        assert governed_target_state(idx, "decisions/DEC-1.md") == TARGET_UNKNOWN
+
+
+def test_graph_exclusion_lookup_failure_keeps_protection() -> None:
+    """Graph exclusion can only REMOVE protection, so a failure of that one
+    lookup keeps the doc protected (treated as not excluded)."""
+    class _BrokenGraphIndex(_FakeIndex):
+        def graph_excluded_ids(self, *, today: str) -> set[str]:  # noqa: ARG002
+            raise RuntimeError("edges query failed")
+
+    idx = _BrokenGraphIndex({"decisions/DEC-1.md": _FakeDoc(id="DEC-1", status="active")})
+    assert governed_target_state(
+        idx, "decisions/DEC-1.md", today="2026-06-01",
+    ) == TARGET_IN_FORCE
 
 
 def test_is_target_in_force_true_for_active_doc() -> None:
@@ -192,6 +249,20 @@ def test_evaluate_governed_lane_check_governed_target_false_skips_rule_2() -> No
         today="2026-06-01",
     )
     assert verdict.demotion_reason is None
+
+
+def test_evaluate_governed_lane_unverified_target_fails_closed() -> None:
+    """No index (or a broken one): the governed-target state cannot be
+    verified, so the edit is demoted with the distinct
+    governed_target_unverified reason instead of auto-committing (codex
+    security review blocker: previously failed open)."""
+    for idx in (None, _BrokenMapIndex()):
+        verdict = evaluate_governed_lane(
+            postimage="---\nid: DEC-1\ntier: T1\n---\nbody, no status\n",
+            target_path="decisions/DEC-1.md", idx=idx, check_governed_target=True,
+            today="2026-06-01",
+        )
+        assert verdict.demotion_reason == "governed_target_unverified"
 
 
 def test_evaluate_governed_lane_expired_target_not_demoted() -> None:

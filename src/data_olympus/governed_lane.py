@@ -94,10 +94,24 @@ def check_status_clamp(postimage: str) -> StatusClampResult:
     return StatusClampResult(demoted=False)
 
 
-def is_target_in_force(
+# Tristate outcome of the governed-target lookup (rule 2). ``unknown`` means
+# the lookup could not be completed (no index wired, or an index read
+# failed); the caller treats it as FAIL CLOSED -- an edit whose target's
+# in-force state cannot be verified is demoted to pending, never
+# auto-committed on the strength of a broken lookup (codex security review
+# blocker: the earlier fail-open version let an unhealthy index bypass the
+# governed-target rule entirely).
+TARGET_IN_FORCE = "in_force"
+TARGET_NOT_IN_FORCE = "not_in_force"
+TARGET_UNKNOWN = "unknown"
+
+
+def governed_target_state(
     idx: Index | None, target_path: str, *, today: str | None = None,
-) -> bool:
-    """Is ``target_path`` CURRENTLY in force in the LIVE index (rule 2)?
+) -> str:
+    """Classify ``target_path``'s CURRENT in-force state in the LIVE index
+    (rule 2): :data:`TARGET_IN_FORCE`, :data:`TARGET_NOT_IN_FORCE`, or
+    :data:`TARGET_UNKNOWN`.
 
     Uses the SAME composed predicate every other in-force surface uses
     (status class AND validity window AND not-inbox AND not-graph-excluded --
@@ -106,41 +120,61 @@ def is_target_in_force(
     expired or graph-excluded (superseded-out) target is correctly NOT
     protected by this rule -- it is not currently governing anything.
 
-    Returns False (not protected) when ``idx`` is None, the target has no
-    entry in the live index yet (a brand-new file cannot already be in
-    force), or any index read fails -- fail OPEN on this diagnostic lookup
-    since the alternative (fail closed) would demote every edit whenever the
-    index is temporarily unavailable, which is not this rule's job (that is
-    what confidence / can_auto_commit already gate).
+    Definitive vs unknown:
+
+    - A target with NO entry in a healthy index map is definitively
+      :data:`TARGET_NOT_IN_FORCE` (a brand-new file cannot already be in
+      force).
+    - ``idx is None`` (no index wired at all) and ANY index read failure
+      (``id_to_path_map``/``get`` raising, a non-dict map, a map entry whose
+      doc vanished between the two reads) are :data:`TARGET_UNKNOWN` -- the
+      caller fails CLOSED on it (demote, never auto-commit unverified).
+    - The graph-exclusion lookup is the one place a failure stays lenient in
+      the PROTECTIVE direction: graph exclusion can only REMOVE protection
+      (an excluded doc is not in force), so when that lookup fails the doc is
+      treated as NOT excluded and the status/window verdict stands --
+      protection is kept, never dropped, on that failure.
     """
     if idx is None:
-        return False
+        return TARGET_UNKNOWN
     today = today if today is not None else today_iso()
     try:
         id_to_path = idx.id_to_path_map()
-    except Exception:  # noqa: BLE001 - diagnostic lookup must never raise
-        return False
+    except Exception:  # noqa: BLE001 - classified as unknown (fail closed)
+        return TARGET_UNKNOWN
     if not isinstance(id_to_path, dict):
-        return False
+        return TARGET_UNKNOWN
     doc_id = next((i for i, p in id_to_path.items() if p == target_path), None)
     if doc_id is None:
-        return False
+        return TARGET_NOT_IN_FORCE
     try:
         doc = idx.get(doc_id)
-    except Exception:  # noqa: BLE001 - diagnostic lookup must never raise
-        return False
+    except Exception:  # noqa: BLE001 - classified as unknown (fail closed)
+        return TARGET_UNKNOWN
     if doc is None:
-        return False
+        return TARGET_UNKNOWN
     graph_excluded_fn = getattr(idx, "graph_excluded_ids", None)
     try:
         excluded = graph_excluded_fn(today=today) if graph_excluded_fn is not None else set()
-    except Exception:  # noqa: BLE001 - diagnostic lookup must never raise
+    except Exception:  # noqa: BLE001 - keep protection on this failure (see docstring)
         excluded = set()
     if doc.id in excluded:
-        return False
-    return is_in_force(
+        return TARGET_NOT_IN_FORCE
+    in_force = is_in_force(
         doc.status, doc.valid_from, doc.valid_until, today, is_inbox=doc.is_inbox,
     )
+    return TARGET_IN_FORCE if in_force else TARGET_NOT_IN_FORCE
+
+
+def is_target_in_force(
+    idx: Index | None, target_path: str, *, today: str | None = None,
+) -> bool:
+    """Back-compat boolean wrapper over :func:`governed_target_state`: True
+    ONLY on a definitive :data:`TARGET_IN_FORCE`. Enforcement callers must
+    use :func:`governed_target_state` directly -- the boolean cannot
+    distinguish ``not_in_force`` from ``unknown`` and so cannot implement
+    the fail-closed contract."""
+    return governed_target_state(idx, target_path, today=today) == TARGET_IN_FORCE
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +250,12 @@ class GovernedLaneVerdict:
     """Combined verdict from evaluating all three governed-lane rules against
     one candidate write."""
 
-    demotion_reason: str | None  # "status_promotion" | "governed_target" | None
+    # "status_promotion" | "governed_target" | "governed_target_unverified"
+    # | None. The _unverified variant is the FAIL-CLOSED outcome: the
+    # governed-target lookup could not be completed (no index / index read
+    # failure), so the write is demoted rather than auto-committed on the
+    # strength of a broken lookup.
+    demotion_reason: str | None
     injection_matches: tuple[InjectionMatch, ...] = ()
 
     @property
@@ -252,6 +291,14 @@ def evaluate_governed_lane(
     in-force status, the target's PRIOR in-force state is irrelevant to the
     demotion decision (it demotes either way), and skipping the extra index
     lookup is a modest efficiency win.
+
+    Rule 2 fails CLOSED (codex security review blocker): a lookup that
+    cannot be completed (:data:`TARGET_UNKNOWN` -- no index wired, or an
+    index read failure) demotes with the distinct machine-readable reason
+    ``governed_target_unverified``, so an unhealthy index can never be used
+    to slip an edit past the governed-target rule, and the audit trail
+    truthfully distinguishes "target verified in force" from "target could
+    not be verified".
     """
     injection_matches = tuple(scan_for_injection_patterns(postimage))
     clamp = check_status_clamp(postimage)
@@ -259,8 +306,15 @@ def evaluate_governed_lane(
         return GovernedLaneVerdict(
             demotion_reason="status_promotion", injection_matches=injection_matches,
         )
-    if check_governed_target and is_target_in_force(idx, target_path, today=today):
-        return GovernedLaneVerdict(
-            demotion_reason="governed_target", injection_matches=injection_matches,
-        )
+    if check_governed_target:
+        state = governed_target_state(idx, target_path, today=today)
+        if state == TARGET_IN_FORCE:
+            return GovernedLaneVerdict(
+                demotion_reason="governed_target", injection_matches=injection_matches,
+            )
+        if state == TARGET_UNKNOWN:
+            return GovernedLaneVerdict(
+                demotion_reason="governed_target_unverified",
+                injection_matches=injection_matches,
+            )
     return GovernedLaneVerdict(demotion_reason=None, injection_matches=injection_matches)

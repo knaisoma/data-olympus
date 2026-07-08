@@ -241,9 +241,23 @@ def _governed_lane_check(
     HARD rejection always takes precedence over a SOFT demotion. A
     low-confidence proposal is unaffected (its secret/validation decision is
     already deferred to operator resolve time, unchanged by this feature).
-    The duplicate-id half of content-validation here checks only the live
-    index (``worktree_path=None``); the authoritative check with the full
-    worktree tree still runs inside ``_commit_in_worktree``.
+
+    The cancel decision must be a SOUND prediction of the commit path's own
+    gates -- cancelling on a pre-check failure the commit path will NOT
+    reproduce would turn the cancel into a demotion bypass (the write would
+    sail through ``_commit_in_worktree`` and commit). Secret-scan results
+    are deterministic (same pure function, same inputs) and the
+    frontmatter/enum/duplicate-id validation errors are stable between this
+    pre-check and the commit path (the commit path's extra worktree scan
+    only ever finds MORE collisions, never fewer). The one exception is the
+    issue #114 ``missing_status`` code: its new-vs-existing classification
+    consults the index/worktree, and this pre-check runs WITHOUT the
+    worktree (``worktree_path=None``), so with a missing/unhealthy index an
+    EXISTING doc can be misclassified as new here while the commit path
+    (which sees the worktree) passes it. ``missing_status`` is therefore
+    excluded from the cancel decision: when in doubt the demotion STANDS
+    (fail closed), and a genuinely status-less NEW document parked this way
+    is still rejected by the full gate at operator resolve time.
     """
     if not governed_lane_protection_enabled():
         return GovernedLaneVerdict(demotion_reason=None)
@@ -253,14 +267,17 @@ def _governed_lane_check(
     )
     would_auto_commit = confidence >= confidence_threshold and can_auto_commit
     if verdict.demoted and would_auto_commit:
-        gates_clean = (
-            scan_postimage_for_secrets(postimage=target_path).ok
-            and scan_postimage_for_secrets(postimage=postimage).ok
-            and validate_postimage(
-                target_path=target_path, postimage=postimage, idx=idx,
-            ).ok
+        vr = validate_postimage(
+            target_path=target_path, postimage=postimage, idx=idx,
         )
-        if not gates_clean:
+        validation_would_reject = (not vr.ok) and any(
+            e.get("code") != "missing_status" for e in vr.errors
+        )
+        secret_flagged = (
+            not scan_postimage_for_secrets(postimage=target_path).ok
+            or not scan_postimage_for_secrets(postimage=postimage).ok
+        )
+        if secret_flagged or validation_would_reject:
             return GovernedLaneVerdict(
                 demotion_reason=None, injection_matches=verdict.injection_matches,
             )

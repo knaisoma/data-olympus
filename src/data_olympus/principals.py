@@ -66,12 +66,15 @@ WRITE_TOOL_CAPABILITY: dict[str, str] = {
 
 # Non-write MCP tools that expose pending/audit/enforcement state and so require
 # an authenticated principal when auth is configured, mirroring the REST gating of
-# /pending, /audit, /audit/verify, /consult, /gate/check, and /cleanup-plan.
-# ``kb_cleanup_plan`` is included (item 6) so the MCP enforcement plane matches the
-# REST one: with auth configured, anonymous callers cannot reach it.
+# /pending, /audit, /audit/verify, /consult, /gate/check, /cleanup-plan, and
+# /session-recap. ``kb_cleanup_plan`` is included (item 6) so the MCP enforcement
+# plane matches the REST one: with auth configured, anonymous callers cannot
+# reach it. ``kb_session_recap`` (issue #112) is audit-derived per-session
+# activity metadata, gated the same way as ``kb_audit`` (codex security review
+# concern: it previously diverged from the REST /session-recap posture).
 AUTH_REQUIRED_TOOLS: frozenset[str] = frozenset({
     "kb_list_pending", "kb_audit", "kb_consult", "kb_gate_check", "kb_compliance",
-    "kb_cleanup_plan",
+    "kb_cleanup_plan", "kb_session_recap",
 })
 
 

@@ -61,7 +61,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     against the live index) is demoted with `demotion_reason:
     "governed_target"`, regardless of confidence. An expired or
     superseded-out target is NOT in force and so is not protected by this
-    rule.
+    rule. The lookup FAILS CLOSED: an edit whose target's in-force state
+    cannot be verified (no index, or an index read failure) is demoted with
+    the distinct `demotion_reason: "governed_target_unverified"` rather than
+    auto-committed on the strength of a broken lookup.
   - **Injection-pattern annotation (advisory only).** Postimages are scanned
     for agent-directed injection patterns ("ignore previous instructions",
     exfiltration-shaped imperatives, base64-looking blobs, "do not tell the
@@ -82,6 +85,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     the calling session has open demotions; and `bin/kb-session-recap-hook`
     is a ready-to-wire SessionEnd/Stop hook script (documented for Claude
     Code / Codex) that prints the recap one-liner automatically.
+  - **CLI review gate:** `bin/kb propose` never flows a demoted
+    (`demotion_reason`) or secret-flagged (`matching_pattern`) proposal into
+    its same-command interactive resolve (which defaults to accept without a
+    TTY); it prints the operator prompt and requires an explicit later
+    `kb resolve`. The MCP `kb_session_recap` tool requires an authenticated
+    principal when auth is configured, matching the REST route.
   - Unaffected: the maintenance-ledger system write path (issue #113) and the
     operator pending-resolve path (which IS the promotion).
 

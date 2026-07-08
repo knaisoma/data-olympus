@@ -195,6 +195,40 @@ def test_bootstrap_file_claiming_accepted_demoted_status_promotion(
 
 
 # ============================================================================
+# Fail-closed: an edit whose target's in-force state cannot be verified
+# (no index wired / index read failure) is demoted, never auto-committed.
+# ============================================================================
+
+
+def test_high_conf_edit_without_index_demoted_unverified(
+    tmp_path, monkeypatch,
+) -> None:
+    """Codex security review blocker: with no live index the governed-target
+    rule must fail CLOSED (demote as governed_target_unverified), not open
+    (auto-commit an edit whose target might be in force)."""
+    _set_git_env(monkeypatch)
+    repo, git, reg, pq, pen, rl, bl = _state(tmp_path, seed_files={
+        "decisions/DEC-U.md": (
+            "---\nid: DEC-U\ntype: decision\nstatus: accepted\ntier: meta\n"
+            "---\noriginal body\n"
+        ),
+    })
+    resp = kb_propose_edit_fn(
+        target_path="decisions/DEC-U.md",
+        postimage="---\nid: DEC-U\ntype: decision\ntier: meta\n---\nnew body\n",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason="update", source_session="s", agent_identity="claude",
+        confidence=0.99, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4", idx=None,
+    )
+    assert resp.status == "pending_confirmation"
+    assert resp.demotion_reason == "governed_target_unverified"
+    assert pq.size() == 0
+    assert pen.size() == 1
+
+
+# ============================================================================
 # Scenario 3 (regression): edit to a non-in-force doc without a status
 # promotion auto-commits exactly as today.
 # ============================================================================

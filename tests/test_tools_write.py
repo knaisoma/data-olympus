@@ -180,6 +180,10 @@ def test_kb_propose_edit_rejects_symlink_escape(tmp_path, monkeypatch) -> None:
         agent_identity="claude", confidence=0.95, confidence_threshold=0.85,
         worktrees=reg, push_queue=pq, pending=pen,
         rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+        # A live index so the issue #112 governed-target lookup resolves
+        # definitively (fail-closed would otherwise demote to pending before
+        # this test's subject -- the symlink containment gate -- is reached).
+        idx=_build_index(repo),
     )
     assert resp.status == "rejected_symlink_escape"
     assert list(evil.iterdir()) == []
@@ -236,6 +240,11 @@ def test_kb_propose_edit_high_conf_commits(tmp_path, monkeypatch) -> None:
         confidence_threshold=0.85,
         worktrees=reg, push_queue=pq, pending=pen,
         rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+        # A live index so the issue #112 governed-target lookup resolves
+        # definitively: the seeded doc carries no status, so it is NOT in
+        # force and the edit auto-commits as before (fail-closed would
+        # otherwise demote it as governed_target_unverified).
+        idx=_build_index(repo),
     )
     assert resp.status == "committed"
     assert pq.size() == 1
@@ -562,6 +571,10 @@ def test_propose_edit_stale_base_rejected(tmp_path, monkeypatch) -> None:
         source_session="s", agent_identity="claude", confidence=0.95,
         confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
         rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+        # Live index: the status-less seeded doc is definitively not in
+        # force, so the issue #112 fail-closed lookup does not demote before
+        # this test's subject (CAS) is reached.
+        idx=_build_index(repo),
     )
     assert resp.status == "rejected_stale_base"
     assert pq.size() == 0
@@ -581,6 +594,8 @@ def test_propose_edit_correct_base_commits(tmp_path, monkeypatch) -> None:
         source_session="s", agent_identity="claude", confidence=0.95,
         confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
         rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+        # Live index: see test_propose_edit_stale_base_rejected.
+        idx=_build_index(repo),
     )
     assert resp.status == "committed"
     assert pq.size() == 1
@@ -838,6 +853,7 @@ def test_cas_marker_with_refresh_failure_rejects_stale_base(tmp_path, monkeypatc
     git, reg, pq, pen, rl, bl = _state(tmp_path)
     repo = git._repo
     target, blob = _seed_t1_file(repo)
+    idx = _build_index(repo)
 
     # Force refresh_base to fail (e.g. network/fetch error) for this registry.
     def boom(_wt, **_kw):
@@ -851,6 +867,8 @@ def test_cas_marker_with_refresh_failure_rejects_stale_base(tmp_path, monkeypatc
         agent_identity="claude", confidence=0.95, confidence_threshold=0.85,
         worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
         remote_addr="1.2.3.4",
+        # Live index: see test_propose_edit_stale_base_rejected.
+        idx=idx,
     )
     assert resp.status == "rejected_stale_base"
     assert "refreshed" in (resp.reason or "")

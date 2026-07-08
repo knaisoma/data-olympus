@@ -251,7 +251,13 @@ semantics an operator needs at serving time.
   use), the write is demoted with `demotion_reason: "governed_target"`,
   REGARDLESS of confidence. A target that is expired or has been superseded
   out of force is not currently governing anything and so is not protected
-  by this rule.
+  by this rule. The lookup FAILS CLOSED: when the target's in-force state
+  cannot be verified (no index wired, or an index read fails), the edit is
+  demoted with the distinct `demotion_reason: "governed_target_unverified"`
+  rather than auto-committed on the strength of a broken lookup -- an
+  unhealthy index can never be used to slip an edit past this rule. A
+  target with no entry in a HEALTHY index is definitive (a brand-new file
+  cannot already be in force) and auto-commits as before.
 - **Injection-pattern annotation.** Every postimage evaluated by the two
   rules above is also scanned for agent-directed injection patterns
   ("ignore previous instructions", "disregard ... policy", an imperative

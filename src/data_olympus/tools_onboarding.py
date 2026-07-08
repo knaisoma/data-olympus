@@ -359,10 +359,20 @@ def _bootstrap_admitted(
             seen_ids: dict[str, str] = {}
             for f in files:
                 tp, pi = f["target_path"], f["postimage"]
+                # The cancel decision must be a sound prediction of the
+                # commit path's own gates (see tools_write._governed_lane_check
+                # for the full rationale): ``missing_status`` is excluded
+                # because its new-vs-existing classification can differ
+                # between this index-only pre-check and the commit path's
+                # worktree-aware check; when in doubt the demotion stands.
+                vr = validate_postimage(target_path=tp, postimage=pi, idx=idx)
+                validation_would_reject = (not vr.ok) and any(
+                    e.get("code") != "missing_status" for e in vr.errors
+                )
                 if (
                     not scan_postimage_for_secrets(postimage=tp).ok
                     or not scan_postimage_for_secrets(postimage=pi).ok
-                    or not validate_postimage(target_path=tp, postimage=pi, idx=idx).ok
+                    or validation_would_reject
                 ):
                     gates_clean = False
                     break

@@ -157,6 +157,26 @@ teardown() {
   [[ "$output" == *"committed"* ]]
 }
 
+@test "kb propose never auto-resolves a governed-lane demotion (no TTY)" {
+  # issue #112 / codex security review blocker: a demoted proposal must NOT
+  # flow into the same-command interactive resolve (which defaults to accept
+  # when no TTY is available). The CLI prints the operator prompt and stops.
+  run "$KB" propose memory "note claiming status: active here" --confidence 0.95
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DEMOTED"* ]]
+  [[ "$output" == *"demoted-abc"* ]]
+  # No same-command resolve happened: the resolve route's committed sha never
+  # appears in the output.
+  [[ "$output" != *"resolved-sha"* ]]
+}
+
+@test "kb propose --non-interactive on a demotion prints the operator prompt" {
+  run "$KB" propose memory "note claiming status: active here" --confidence 0.95 --non-interactive
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DEMOTED"* ]]
+  [[ "$output" != *"resolved-sha"* ]]
+}
+
 @test "kb session-recap prints the per-session tally" {
   run "$KB" session-recap my-session
   [ "$status" -eq 0 ]

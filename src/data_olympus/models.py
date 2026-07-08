@@ -421,9 +421,11 @@ class ProposeResponse(BaseModel):
     # Governed-lane write protection (issue #112): set when a pending_confirmation
     # outcome was NOT a plain low-confidence park but a demotion under
     # KB_GOVERNED_LANE_PROTECTION -- "status_promotion" (the postimage sets/
-    # changes status into the in-force class) or "governed_target" (the edit
-    # target is currently in force). None on every other outcome (including a
-    # plain low-confidence pending_confirmation).
+    # changes status into the in-force class), "governed_target" (the edit
+    # target is verified currently in force), or "governed_target_unverified"
+    # (the target's in-force state could NOT be verified -- no index / index
+    # read failure -- and the rule fails closed). None on every other outcome
+    # (including a plain low-confidence pending_confirmation).
     demotion_reason: str | None = None
 
 
@@ -521,10 +523,11 @@ class AuditEvent(BaseModel):
     # value if a scan flagged an item (see tools_write._redact_evidence).
     evidence: list[str] | None = None
     # Governed-lane write protection (issue #112): the demotion reason
-    # ("status_promotion" | "governed_target") when a pending_confirmation
-    # event was a governed-lane demotion rather than a plain low-confidence
-    # park; and whether the postimage matched an advisory injection-pattern
-    # heuristic (never blocks/demotes by itself -- see governed_lane.py).
+    # ("status_promotion" | "governed_target" | "governed_target_unverified")
+    # when a pending_confirmation event was a governed-lane demotion rather
+    # than a plain low-confidence park; and whether the postimage matched an
+    # advisory injection-pattern heuristic (never blocks/demotes by itself --
+    # see governed_lane.py).
     demotion_reason: str | None = None
     injection_suspect: bool | None = None
     # Tamper-evident chain fields (present on events appended with chaining).
