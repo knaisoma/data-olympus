@@ -27,9 +27,11 @@ from data_olympus.models import (
 )
 from data_olympus.pending import PathLockBusyError, PendingQueue, PendingQueueFullError
 from data_olympus.write_gate import (
+    SecretMatch,
     WriteSerializer,
     check_cas,
     reset_worktree,
+    scan_postimage_for_secrets,
     validate_postimage,
 )
 
@@ -101,6 +103,8 @@ def _emit_audit(
     commit_sha: str | None = None,
     reason: str | None = None,
     remote_addr: str | None = None,
+    matching_pattern: str | None = None,
+    secret_scan_override: bool | None = None,
 ) -> None:
     if audit_log is None:
         return
@@ -119,6 +123,8 @@ def _emit_audit(
             "commit_sha": commit_sha,
             "reason": reason,
             "remote_addr": remote_addr,
+            "matching_pattern": matching_pattern,
+            "secret_scan_override": secret_scan_override,
         })
 
 
@@ -154,15 +160,28 @@ def _commit_in_worktree(
     push_meta: dict[str, Any] | None = None,
     lock_owner: str | None = None,
     hold_path_lock: bool = False,
-) -> tuple[str, str]:
+    secret_scan_override: bool = False,
+) -> tuple[str, str, SecretMatch | None]:
     """Serialized write -> git add -> commit -> enqueue critical section.
 
     Shared by the auto-commit (propose) path and the operator-resolve path so both
-    honor identical integrity gates (scope items 1, 3, 4, 8). Returns
-    ``(commit_sha, push_state)`` where push_state is ``"queued"`` or
-    ``"enqueue_failed_recovery_pending"`` (see _enqueue_after_commit). Raises
-    :class:`_WriteRejected` (carrying the ProposeResponse) when a gate rejects, or
-    :class:`PathLockBusyError` when the per-path advisory lock is held.
+    honor identical integrity gates (scope items 1, 3, 4, 8, and the issue #71
+    secret-scanning gate). Returns ``(commit_sha, push_state, secret_override)``
+    where push_state is ``"queued"`` or ``"enqueue_failed_recovery_pending"``
+    (see _enqueue_after_commit), and ``secret_override`` is the
+    :class:`~data_olympus.write_gate.SecretMatch` the scanner found IF
+    ``secret_scan_override`` was True and a pattern actually matched (else
+    ``None``) -- so the resolve caller can audit that an override was
+    exercised, without this shared helper needing to know about audit at all.
+    Raises :class:`_WriteRejected` (carrying the ProposeResponse) when a gate
+    rejects, or :class:`PathLockBusyError` when the per-path advisory lock is
+    held.
+
+    ``secret_scan_override`` is ONLY ever passed True by the operator
+    resolve path (:func:`kb_resolve_pending_fn`). Neither
+    :func:`kb_propose_memory_fn` nor :func:`kb_propose_edit_fn` expose a
+    parameter that can reach it, so an agent can never self-authorize past a
+    flagged auto-commit -- only a human resolving a pending entry can.
 
     ``hold_path_lock`` (resolve path): when True the caller ALREADY holds the
     per-path advisory lock (the one acquired at ``enqueue`` time and kept through
@@ -264,6 +283,30 @@ def _commit_in_worktree(
                     status="rejected_invalid_document", target_path=target_path,
                     reason="; ".join(e["message"] for e in vr.errors)))
 
+            # 5b. Secret-scanning gate (issue #71): reject a postimage carrying
+            # credential-shaped content BEFORE it is committed. Only the
+            # pattern name + an approximate line number are ever surfaced (see
+            # write_gate.scan_postimage_for_secrets); the matched value itself
+            # never reaches the response, a log line, or (below) the audit
+            # event. ``secret_scan_override`` lets the operator resolve path
+            # consciously commit anyway; it is never available here from the
+            # auto-commit paths (see the docstring above).
+            secret_override: SecretMatch | None = None
+            secret_result = scan_postimage_for_secrets(postimage=postimage)
+            if not secret_result.ok:
+                assert secret_result.match is not None
+                if secret_scan_override:
+                    secret_override = secret_result.match
+                else:
+                    raise _WriteRejected(ProposeResponse(
+                        status="rejected_secret_detected", target_path=target_path,
+                        reason=(
+                            f"secret pattern '{secret_result.match.pattern_name}' "
+                            f"detected near line {secret_result.match.line}"
+                        ),
+                        matching_pattern=secret_result.match.pattern_name,
+                    ))
+
             # 6. Write + add + commit + enqueue; reset on any post-add failure.
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as f:
@@ -291,7 +334,7 @@ def _commit_in_worktree(
             # pass on THIS worktree re-enqueues the orphan so the running push loop
             # picks it up without waiting for a restart.
             push_state = _enqueue_after_commit(push_queue, sha, wt.path, push_meta)
-            return sha, push_state
+            return sha, push_state, secret_override
 
 
 def _enqueue_after_commit(
@@ -418,6 +461,21 @@ def commit_multifile_in_worktree(
                 raise _WriteRejected(ProposeResponse(
                     status="rejected_invalid_document", target_path=tp,
                     reason="; ".join(e["message"] for e in vr.errors)))
+            # Secret-scanning gate (issue #71): bootstrap has no operator
+            # override at all (it always commits atomically with no human in
+            # the loop), so a single flagged file rejects the whole bundle
+            # before any file in it is written.
+            secret_result = scan_postimage_for_secrets(postimage=pi)
+            if not secret_result.ok:
+                assert secret_result.match is not None
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_secret_detected", target_path=tp,
+                    reason=(
+                        f"secret pattern '{secret_result.match.pattern_name}' "
+                        f"detected near line {secret_result.match.line}"
+                    ),
+                    matching_pattern=secret_result.match.pattern_name,
+                ))
 
         # Write + add every file, then one commit; reset on any failure.
         try:
@@ -568,7 +626,7 @@ def kb_propose_memory_fn(
 
     # High confidence: serialized commit + enqueue push (items 1, 4, 8).
     try:
-        sha, push_state = _commit_in_worktree(
+        sha, push_state, _secret_override = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
             source_session=source_session, agent_identity=agent_identity,
@@ -582,7 +640,8 @@ def kb_propose_memory_fn(
     except _WriteRejected as rej:
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
-                                   "reason": resp.reason})
+                                   "reason": resp.reason,
+                                   "matching_pattern": resp.matching_pattern})
         return resp
     except PathLockBusyError:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
@@ -726,7 +785,7 @@ def kb_propose_edit_fn(
 
     # Serialized commit + CAS + validation + enqueue (items 1, 3, 4, 8).
     try:
-        sha, push_state = _commit_in_worktree(
+        sha, push_state, _secret_override = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
             source_session=source_session, agent_identity=agent_identity,
@@ -742,7 +801,8 @@ def kb_propose_edit_fn(
     except _WriteRejected as rej:
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
-                                   "reason": resp.reason or reason})
+                                   "reason": resp.reason or reason,
+                                   "matching_pattern": resp.matching_pattern})
         return resp
     except PathLockBusyError:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
@@ -766,7 +826,17 @@ def kb_resolve_pending_fn(
     max_postimage_bytes: int = 0,
     serializer: WriteSerializer | None = None,
     idx: Index | None = None,
+    override_secret_scan: bool = False,
 ) -> ResolvePendingResponse:
+    """Resolve a pending proposal. ``override_secret_scan`` (default False) is
+    the operator's explicit, conscious override of the issue #71 secret-
+    scanning gate: when True and the resolved postimage (the original or, if
+    supplied, ``edited_text``) matches a credential pattern, the commit
+    proceeds anyway instead of being rejected ``rejected_secret_detected``, and
+    the resulting audit event records that the override was used. This
+    parameter exists ONLY on the operator resolve path -- neither
+    ``kb_propose_memory_fn`` nor ``kb_propose_edit_fn`` accept it, so an agent
+    can never self-authorize past a flagged auto-commit."""
     from data_olympus.pending import PendingAlreadyResolvedError
 
     audit_base: dict[str, Any] = {
@@ -826,7 +896,7 @@ def kb_resolve_pending_fn(
     # hold_path_lock=True: the lock is already held from enqueue via the claim, so
     # _commit_in_worktree must not re-acquire it (would deadlock / raise busy).
     try:
-        sha, push_state = _commit_in_worktree(
+        sha, push_state, secret_override = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
             source_session=resolved.meta.get("source_session", source_session),
@@ -843,6 +913,7 @@ def kb_resolve_pending_fn(
             push_meta={},
             lock_owner=f"resolve:{pending_id}",
             hold_path_lock=True,
+            secret_scan_override=override_secret_scan,
         )
     except _WriteRejected as rej:
         # Gate rejected AFTER the claim: put the entry back so the operator can
@@ -850,7 +921,8 @@ def kb_resolve_pending_fn(
         pending.restore_resolve(pending_id)
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
-                                   "reason": resp.reason})
+                                   "reason": resp.reason,
+                                   "matching_pattern": resp.matching_pattern})
         return ResolvePendingResponse(status=resp.status, reason=resp.reason)
     except Exception:
         # A git/enqueue failure after the claim: restore the entry rather than
@@ -864,8 +936,16 @@ def kb_resolve_pending_fn(
     # republished by in-process/startup recovery, so re-resolving would duplicate
     # it -- the entry must be consumed, not restored (Codex round-4).
     pending.finalize_resolve(pending_id, resolved.target_path)
+    # secret_override is only non-None when the operator explicitly passed
+    # override_secret_scan=True AND the scanner actually flagged something, so
+    # the audit trail truthfully distinguishes "override requested but nothing
+    # to override" from "a flagged write was consciously approved anyway".
+    audit_extra: dict[str, Any] = {}
+    if secret_override is not None:
+        audit_extra["secret_scan_override"] = True
+        audit_extra["matching_pattern"] = secret_override.pattern_name
     _emit_audit(audit_log, **{**audit_base, "status": "committed",
-                               "commit_sha": sha})
+                               "commit_sha": sha, **audit_extra})
     return ResolvePendingResponse(status="committed", commit_sha=sha,
                                   push_state=push_state)
 

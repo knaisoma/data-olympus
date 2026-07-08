@@ -23,7 +23,9 @@ so both surfaces share one policy.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
+import re
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -34,7 +36,11 @@ from data_olympus.format.frontmatter import parse_frontmatter
 from data_olympus.format.validate import RESERVED, TIERS, TYPES
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from data_olympus.index import Index
+
+_log = logging.getLogger("data_olympus.write_gate")
 
 # The status vocabulary the write gate enforces. Mirrors validate.STATUSES but
 # includes ``approved`` (the real KB uses it for accepted decisions; see
@@ -379,4 +385,175 @@ def reset_worktree(worktree_path: str) -> None:
     subprocess.run(
         ["git", "-C", worktree_path, "reset", "--hard", "HEAD"],
         check=True, capture_output=True,
+    )
+
+
+# --- secret-scanning gate (issue #71) --------------------------------------
+#
+# Scans a postimage for credential-shaped content BEFORE it is committed, so a
+# leaked credential in an agent-captured memory/edit/bootstrap file never
+# becomes a permanent git object on the hosted remote. Every regex below is a
+# bounded, non-backtracking character-class match (no nested quantifiers over
+# overlapping alternatives), so a large postimage cannot trigger catastrophic
+# backtracking (ReDoS).
+#
+# REDACTION IS THE POINT of this module: callers must only ever surface
+# ``SecretMatch.pattern_name`` and ``SecretMatch.line`` (an approximate,
+# 1-indexed line number) to a tool response, pending meta, audit event, or log
+# line. The matched substring itself never leaves ``scan_postimage_for_secrets``.
+
+
+@dataclass(frozen=True, slots=True)
+class SecretMatch:
+    """One detected secret occurrence. Carries ONLY the pattern name and an
+    approximate line number, never the matched text."""
+
+    pattern_name: str
+    line: int
+
+
+@dataclass(frozen=True, slots=True)
+class SecretScanResult:
+    """Outcome of scanning a postimage for credential-shaped content."""
+
+    ok: bool
+    match: SecretMatch | None = None
+
+
+_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN (?:(?:RSA|EC|OPENSSH|DSA|PGP) )?PRIVATE KEY-----"
+)
+# gh[oprs]_ covers ghp_/gho_/ghs_/ghr_ in one alternation; github_pat_ is a
+# distinct, longer-lived token format introduced later. Both are grouped under
+# one pattern name since the issue treats them as a single "GitHub tokens"
+# class.
+_GITHUB_TOKEN_RE = re.compile(
+    r"\b(?:gh[oprs]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})\b"
+)
+_AWS_ACCESS_KEY_RE = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+_SLACK_TOKEN_RE = re.compile(r"\bxox[bpars]-[A-Za-z0-9-]{10,200}\b")
+# Generic key=value / key: value credential assignment. Matches both a bare
+# key (``password=``) and a prefixed key (``DB_PASSWORD=``, ``API_SECRET:``) --
+# real leaks are far more often an env-style prefixed key than a bare word, so
+# requiring a leading word boundary on ``password``/``secret`` itself (which
+# ``\b`` would, since ``_`` is a word character with no boundary before
+# ``PASSWORD`` in ``DB_PASSWORD``) would miss the common case. The value is
+# captured so obvious placeholders (``password=changeme``,
+# ``password=<your password>``) can be excluded below rather than flagged as a
+# real leak.
+_GENERIC_CRED_RE = re.compile(
+    r"""(?:^|[^A-Za-z0-9_])[A-Za-z0-9_]{0,40}(?:password|passwd|secret)"""
+    r"""\s*[:=]\s*(['"]?)(?P<value>[^\s'"]{1,200})\1""",
+    re.IGNORECASE,
+)
+# scheme://user:password@host -- a connection string carrying an inline
+# password. Every segment is a bounded negated-character-class match.
+_CONN_STRING_RE = re.compile(
+    r"\b[A-Za-z][A-Za-z0-9+.-]{1,20}://"
+    r"[^\s:/@'\"]{1,200}:[^\s@/'\"]{1,200}@[^\s/'\"]{1,200}"
+)
+
+_BUILTIN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("private_key_block", _PRIVATE_KEY_RE),
+    ("github_token", _GITHUB_TOKEN_RE),
+    ("aws_access_key_id", _AWS_ACCESS_KEY_RE),
+    ("slack_token", _SLACK_TOKEN_RE),
+    ("generic_credential_assignment", _GENERIC_CRED_RE),
+    ("connection_string_password", _CONN_STRING_RE),
+)
+
+_PLACEHOLDER_VALUES = frozenset({
+    "", "changeme", "change_me", "change-me", "placeholder", "example",
+    "redacted", "xxx", "xxxx", "todo", "fixme", "password", "secret",
+    "test", "null", "none", "n/a", "your_password", "yourpassword",
+})
+
+
+def _is_placeholder_value(value: str) -> bool:
+    """True when a matched credential VALUE is an obvious non-secret
+    placeholder (docs/templates commonly write ``password=changeme`` or
+    ``password=<your password>``). Reduces false positives on the generic
+    key=value pattern without weakening detection of a real-looking value."""
+    v = value.strip().strip("'\"")
+    if not v:
+        return True
+    if v.lower() in _PLACEHOLDER_VALUES:
+        return True
+    return v[0] in "<{$" or set(v.lower()) <= {"x"} or set(v) <= {"*"}
+
+
+def _line_of(content: str, index: int) -> int:
+    """1-indexed line number of ``index`` within ``content``."""
+    return content.count("\n", 0, index) + 1
+
+
+def load_extra_secret_patterns(
+    env_value: str | None = None,
+) -> list[tuple[str, re.Pattern[str]]]:
+    """Parse ``KB_SECRET_SCAN_EXTRA_PATTERNS``: a comma-separated list of extra
+    regexes an operator wants scanned in addition to the built-in set. Each
+    entry becomes its own named pattern (``custom_1``, ``custom_2``, ...). An
+    invalid regex is logged and SKIPPED, never raised, so one operator typo in
+    the env var cannot crash the write path."""
+    raw = (
+        env_value if env_value is not None
+        else os.environ.get("KB_SECRET_SCAN_EXTRA_PATTERNS", "")
+    )
+    out: list[tuple[str, re.Pattern[str]]] = []
+    for piece in raw.split(","):
+        pattern_src = piece.strip()
+        if not pattern_src:
+            continue
+        try:
+            compiled = re.compile(pattern_src)
+        except re.error as exc:
+            _log.warning(
+                "KB_SECRET_SCAN_EXTRA_PATTERNS entry %r is not a valid regex "
+                "and will be skipped: %s", pattern_src, exc,
+            )
+            continue
+        out.append((f"custom_{len(out) + 1}", compiled))
+    return out
+
+
+def scan_postimage_for_secrets(
+    *,
+    postimage: str,
+    extra_patterns: Sequence[tuple[str, re.Pattern[str]]] | None = None,
+) -> SecretScanResult:
+    """Scan ``postimage`` for credential-shaped content (issue #71).
+
+    Checks the built-in pattern set plus ``extra_patterns`` (default: parsed
+    fresh from ``KB_SECRET_SCAN_EXTRA_PATTERNS`` on every call, so a changed env
+    var takes effect without threading config through every caller). Returns
+    the EARLIEST match across all patterns. Only the pattern NAME and an
+    approximate 1-indexed line number are returned in the result -- never the
+    matched substring -- so a caller can safely put it in a tool response,
+    audit event, or log line without leaking the secret value itself."""
+    patterns = list(_BUILTIN_PATTERNS)
+    patterns.extend(
+        extra_patterns if extra_patterns is not None
+        else load_extra_secret_patterns()
+    )
+
+    best: tuple[int, str] | None = None  # (start_index, pattern_name)
+    for name, pattern in patterns:
+        match_start: int | None = None
+        for m in pattern.finditer(postimage):
+            if name == "generic_credential_assignment" and _is_placeholder_value(
+                m.group("value")
+            ):
+                continue
+            match_start = m.start()
+            break
+        if match_start is None:
+            continue
+        if best is None or match_start < best[0]:
+            best = (match_start, name)
+
+    if best is None:
+        return SecretScanResult(ok=True)
+    start, name = best
+    return SecretScanResult(
+        ok=False, match=SecretMatch(pattern_name=name, line=_line_of(postimage, start))
     )

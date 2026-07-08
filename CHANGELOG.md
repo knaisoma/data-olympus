@@ -47,6 +47,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in-force graph exclusion, `kb_get`/`kb_search` surfacing, and a health
   counter.
 
+- **Secret-scanning gate on the write path (issue #71).** Every commit path
+  (`kb_propose_memory` / `kb_propose_edit` auto-commit, `kb_resolve_pending`
+  approve, including a resolved `edited_text`, and onboarding bootstrap) now
+  scans the final postimage for credential-shaped content (PEM private-key
+  blocks, GitHub/Slack tokens, AWS access key ids, generic `password=`/
+  `secret=` assignments with a non-placeholder value, and connection strings
+  with an inline password) before anything is written to disk. A match rejects
+  the write with a distinct `rejected_secret_detected` status; nothing is
+  committed and no pending entry is created on the auto-commit/bootstrap
+  paths. Only the pattern name and an approximate line number are ever
+  surfaced in the response, the audit event, or a log line, never the
+  matched secret value. Operators can extend the built-in pattern set with
+  `KB_SECRET_SCAN_EXTRA_PATTERNS` (comma-separated regexes; an invalid entry
+  is logged and skipped, never crashes the server). `kb_resolve_pending` gains
+  an operator-only `override_secret_scan` flag to consciously commit a
+  flagged postimage that is a confirmed false positive; the override is
+  recorded on the resulting audit event, and no auto-commit or bootstrap path
+  exposes it.
+
 ### Fixed
 
 - **`data-olympus index` silently regenerated zero indexes for a bundle whose

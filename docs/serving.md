@@ -58,6 +58,11 @@ trigram, auth, audit rotation):
 - `KB_PENDING_TIMEOUT_SEC`: age after which an unresolved pending proposal is
   auto-expired by the pending GC loop (default `86400`, i.e. 24h). Each expiry
   emits an audit event.
+- `KB_SECRET_SCAN_EXTRA_PATTERNS`: comma-separated additional regexes the
+  secret-scanning gate (issue #71) checks alongside its built-in pattern set
+  (see "Write serialization and integrity gates" above). Each entry is scanned
+  as its own named pattern (`custom_1`, `custom_2`, ...); an invalid regex is
+  logged and skipped rather than raised. Empty by default (no extra patterns).
 
 ## Read-only mirrors may scale horizontally
 
@@ -173,6 +178,23 @@ section so concurrent writes cannot corrupt each other:
   BEFORE the file is written and `git add`-ed, and on any failure after the add
   the worktree is hard-reset, so a rejected write never leaves a staged leftover
   for the session's next commit to sweep in.
+- A **secret-scanning gate** (issue #71) runs on the postimage right after the
+  content-validation gate, on every commit path (auto-commit propose, resolve
+  approve, including a resolved `edited_text`, and onboarding bootstrap). It
+  checks a built-in pattern set (PEM private-key blocks; GitHub `ghp_`/`gho_`/
+  `ghs_`/`ghr_`/`github_pat_` tokens; AWS `AKIA...` access key ids; Slack
+  `xox[bpars]-` tokens; generic `password=`/`passwd=`/`secret=` assignments
+  with a non-placeholder value; and `scheme://user:pass@host` connection
+  strings) plus any operator-supplied `KB_SECRET_SCAN_EXTRA_PATTERNS`. A match
+  rejects the write `rejected_secret_detected` before anything is written to
+  disk. Only the pattern name and an approximate line number are ever surfaced
+  in the response, the audit event, or a log line, never the matched value.
+  A low-confidence proposal parked as pending is not scanned at enqueue time
+  (so an operator can still see and edit it); the gate applies when it is
+  resolved. `kb_resolve_pending` accepts an operator-only `override_secret_scan`
+  boolean to consciously commit a false positive anyway (recorded in the audit
+  event); no auto-commit or bootstrap path exposes this override, so an agent
+  can never self-authorize past a flagged write.
 
 ## Push queue and write-path visibility
 

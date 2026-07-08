@@ -226,8 +226,9 @@ def _propose_status(status: str) -> int:
         # The target path is held by an advisory lock; retry after it clears.
         # 423 Locked.
         return 423
-    if status == "rejected_invalid_document":
-        # The postimage failed the content-validation gate. 422 Unprocessable.
+    if status in ("rejected_invalid_document", "rejected_secret_detected"):
+        # The postimage failed the content-validation or secret-scanning gate
+        # (issue #71). 422 Unprocessable.
         return 422
     return 400
 
@@ -243,7 +244,7 @@ def _resolve_status(status: str) -> int:
         return 409
     if status == "rejected_stale_base":
         return 409
-    if status == "rejected_invalid_document":
+    if status in ("rejected_invalid_document", "rejected_secret_detected"):
         return 422
     if status in ("rejected", "rejected_symlink_escape"):
         return 200
@@ -580,6 +581,7 @@ def register_routes(
                     audit_log=state.audit_log,
                     max_postimage_bytes=state.config.max_postimage_bytes,
                     serializer=state.write_serializer, idx=state.idx,
+                    override_secret_scan=bool(body.get("override_secret_scan", False)),
                 )
             except PendingNotFoundError:
                 # Unknown or already-resolved/expired pending_id: a client-side
