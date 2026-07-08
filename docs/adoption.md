@@ -105,12 +105,16 @@ Reference other concepts with bundle-relative paths (absolute from the bundle
 root, e.g. `/universal/foundation/STD-U-001.md`). This applies to markdown
 links in the document body.
 
-The `supersedes` and `superseded_by` frontmatter fields are different: they
-hold a concept **ID** (or list of IDs), not a path (e.g. `supersedes: ADR-002`,
-not `supersedes: /decisions/ADR-002.md`). These fields are not resolved or
-validated by the current tooling; they are a documented convention for human
-and agent readers tracing decision history, not a machine-checked chain. See
-`SPEC.md` section 4.2.
+The `supersedes`, `superseded_by`, and `contradicts` frontmatter fields are
+different: they hold concept **IDs**, not paths (e.g. `supersedes: ADR-002`,
+not `supersedes: /decisions/ADR-002.md`). Shapes per field: `supersedes` and
+`contradicts` accept a single ID or a list of IDs (both normalize to a list);
+`superseded_by` is a single scalar ID only, never a list. `kb lint`
+cross-checks these fields across the bundle (malformed shapes, self-references,
+supersession cycles, dangling/asymmetric targets, path-shaped values, and
+in-force `contradicts` pairs are all reported; see `SPEC.md` section 4.2 for
+the exact error/warning list). The reference implementation's indexer also
+extracts them into an edges table consumed by later retrieval features.
 
 ### Directory structure
 

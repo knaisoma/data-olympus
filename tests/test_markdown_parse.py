@@ -124,3 +124,59 @@ def test_parse_file_multiline_description(tmp_path: Path) -> None:
     )
     doc = parse_file(p)
     assert "First line second line." in doc.description
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle relationship fields (issue #110, slice 1): supersedes,
+# superseded_by, contradicts.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_supersedes_scalar_normalizes_to_list(tmp_path: Path) -> None:
+    p = tmp_path / "a.md"
+    p.write_text("---\nid: STD-2\ntier: T1\nsupersedes: STD-1\n---\n# B\n")
+    doc = parse_file(p)
+    assert doc.supersedes == ["STD-1"]
+
+
+def test_parse_supersedes_list_stays_a_list(tmp_path: Path) -> None:
+    p = tmp_path / "a.md"
+    p.write_text(
+        "---\nid: STD-3\ntier: T1\nsupersedes:\n  - STD-1\n  - STD-2\n---\n# B\n"
+    )
+    doc = parse_file(p)
+    assert doc.supersedes == ["STD-1", "STD-2"]
+
+
+def test_parse_superseded_by_scalar(tmp_path: Path) -> None:
+    p = tmp_path / "a.md"
+    p.write_text("---\nid: STD-1\ntier: T1\nsuperseded_by: STD-2\n---\n# B\n")
+    doc = parse_file(p)
+    assert doc.superseded_by == "STD-2"
+
+
+def test_parse_contradicts_list(tmp_path: Path) -> None:
+    p = tmp_path / "a.md"
+    p.write_text(
+        "---\nid: STD-1\ntier: T1\ncontradicts:\n  - STD-9\n  - STD-8\n---\n# B\n"
+    )
+    doc = parse_file(p)
+    assert doc.contradicts == ["STD-9", "STD-8"]
+
+
+def test_parse_contradicts_scalar_normalizes_to_list(tmp_path: Path) -> None:
+    """A scalar `contradicts` normalizes to a one-element list: the same
+    scalar-or-list normalization as `supersedes` (SPEC.md section 4.2)."""
+    p = tmp_path / "a.md"
+    p.write_text("---\nid: STD-1\ntier: T1\ncontradicts: STD-9\n---\n# B\n")
+    doc = parse_file(p)
+    assert doc.contradicts == ["STD-9"]
+
+
+def test_parse_lifecycle_fields_absent_default_empty(tmp_path: Path) -> None:
+    p = tmp_path / "a.md"
+    p.write_text("---\nid: STD-1\ntier: T1\n---\n# B\n")
+    doc = parse_file(p)
+    assert doc.supersedes == []
+    assert doc.superseded_by is None
+    assert doc.contradicts == []

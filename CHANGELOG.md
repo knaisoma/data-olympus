@@ -26,6 +26,27 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   under `data-olympus index`. Refuses to scaffold into a non-empty directory
   (no `--force` in this slice).
 
+- **Typed lifecycle relationships: parsed, indexed, and lint-validated
+  (issue #110, slice 1).** `supersedes` (scalar ID or list of IDs, normalized
+  to a list at parse time so both shapes the ADR importer emits lint clean),
+  `superseded_by` (scalar ID), and a new `contradicts` field (scalar ID or
+  list of IDs, normalized to a list the same way as `supersedes`;
+  unresolved-conflict evidence that never affects retrieval ranking) are now
+  parsed into `ParsedDoc` and extracted into a new `edges` table
+  (`source_id`, `rel`, `target_id`) at index-build time (schema version
+  bumped 8 -> 9). `kb lint` gained a cross-file pass (an in-memory id map
+  over the discovered bundle, no database) that reports: **errors** for a
+  malformed field shape, self-supersession, or a supersession cycle of any
+  length; **warnings** for a dangling target id, an asymmetric
+  supersedes/superseded_by pair, a path-shaped target value (concept ids are
+  the only stable target, never paths), `superseded_by` set on an in-force
+  document, `status: superseded` with no `superseded_by`, and an in-force
+  `contradicts` pair. `SPEC.md` section 4.2 documents the normalized shapes
+  and the full lint severity list; the "not validated today" note is
+  removed. Slice 2 (a separate change) will consume the edges table for
+  in-force graph exclusion, `kb_get`/`kb_search` surfacing, and a health
+  counter.
+
 ### Fixed
 
 - **`data-olympus index` silently regenerated zero indexes for a bundle whose
