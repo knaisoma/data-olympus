@@ -12,6 +12,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Documented the fastmcp 3.4.3 host allowlist requirement behind
+  proxies/ingress** (docs/serving.md, docs/operations.md section 3.4).
+  v0.4.1's fastmcp bump enables DNS-rebinding protection that answers 421
+  Misdirected Request for undeclared public hostnames while health probes
+  keep passing; deployments behind a reverse proxy must set
+  `FASTMCP_HTTP_ALLOWED_HOSTS`. First-class handling tracked in #139.
+
 ## [0.4.1] - 2026-07-08
 
 ### Changed

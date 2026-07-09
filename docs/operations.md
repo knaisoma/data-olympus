@@ -205,6 +205,26 @@ an empty index.
 
 ---
 
+### 3.4 Reverse proxy / ingress host allowlist (v0.4.1+, fastmcp >= 3.4.3)
+
+fastmcp 3.4.3 enables DNS-rebinding protection on streamable HTTP: it
+validates the `Host` (and `Origin`) header and answers **421 Misdirected
+Request** for any hostname outside its allowlist. Localhost and direct
+pod-IP requests pass, so kubelet probes and local smoke tests stay green
+while EVERY request through a reverse proxy or ingress fails. If you serve
+data-olympus behind any public hostname, declare it:
+
+```yaml
+# ConfigMap (JSON list, parsed by fastmcp's pydantic-settings)
+FASTMCP_HTTP_ALLOWED_HOSTS: '["kb.example.com"]'
+```
+
+Symptom checklist for a missed allowlist after upgrading to v0.4.1+:
+readiness green, `421 Misdirected Request` in the pod log for every
+ingress-sourced request, agents' enforcement hooks failing open. A
+first-class data-olympus knob plus a startup warning is tracked in
+issue #139.
+
 ## 4. Recovery playbooks
 
 ### 4.1 Degraded / `fetch_failed`
