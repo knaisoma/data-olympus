@@ -12,6 +12,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Glama registry score support.** Added the Glama score badge to the README
+  and documented the claimed server listing, sandbox release settings, and
+  score-maintenance checklist in `docs/glama.md`.
+
+### Changed
+
+- **Improved MCP tool schema metadata for registry introspection.** MCP tools
+  now expose meaningful titles, MCP annotations, and per-parameter JSON Schema
+  descriptions so registries such as Glama can score the running server's tool
+  definitions more accurately.
+
 ### Fixed
 
 - **Documented the fastmcp 3.4.3 host allowlist requirement behind

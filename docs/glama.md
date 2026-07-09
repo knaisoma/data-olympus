@@ -1,0 +1,59 @@
+# Glama registry notes
+
+Data Olympus is listed on Glama at:
+
+- <https://glama.ai/mcp/servers/knaisoma/data-olympus>
+- <https://glama.ai/mcp/servers/knaisoma/data-olympus/schema>
+- <https://glama.ai/mcp/servers/knaisoma/data-olympus/score>
+
+## Claim metadata
+
+Repository ownership is declared in the root [`glama.json`](../glama.json).
+For an organization-owned repository, Glama requires this file so a GitHub user
+with repository access can claim and manage the server listing.
+
+## Release setup
+
+Glama only scores the tool surface after it can build, start, and introspect the
+MCP server. The Data Olympus production image is built from the repository root
+with a non-root Dockerfile path:
+
+- Build context: repository root
+- Dockerfile path: `deploy/docker/Dockerfile`
+- HTTP port: `8080`
+- MCP endpoint: `/mcp`
+
+For Glama introspection, do not point the release at a real operator knowledge
+base. An empty `/kb-main` directory is enough for `tools/list`: the server still
+registers every MCP tool before any corpus content exists.
+
+Suggested sandbox environment:
+
+```text
+KB_MAIN_PATH=/kb-main
+KB_INDEX_PATH=/index/kb.db
+KB_REMOTE_URL=
+KB_GIT_REMOTE_URL=
+KB_HTTP_PORT=8080
+```
+
+Leave `KB_AUTH_TOKEN` and `KB_AUTH_PRINCIPALS` unset for the public sandbox so
+Glama can introspect the schema. Do not mount deploy keys or production state
+into the Glama release.
+
+## Score maintenance
+
+Glama derives the score from the running server, not from README prose alone.
+The highest-impact repo-side checks are:
+
+- Keep `glama.json` valid and merged to `main`.
+- Keep the Glama score badge in the README so downstream catalog PRs can link
+  the canonical server entry.
+- Keep MCP tool annotations accurate: read-only tools must be marked read-only,
+  write/proposal tools must not be.
+- Keep every MCP parameter schema described. Glama's TDQS rubric uses schema
+  description coverage when scoring parameter semantics.
+- Keep tool descriptions concise and sibling-aware: say when to use a tool and
+  which neighboring tool to use instead.
+- After changing MCP tool descriptions, titles, annotations, or parameter
+  schemas, trigger a new Glama release or rescan so the public score updates.
