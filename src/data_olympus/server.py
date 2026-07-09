@@ -6,10 +6,11 @@ import contextlib
 import contextvars
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
+from pydantic import Field
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -60,6 +61,170 @@ log = logging.getLogger("data_olympus")
 _current_principal: contextvars.ContextVar[Principal] = contextvars.ContextVar(
     "current_principal", default=LOCAL_TRUSTED
 )
+
+READ_ONLY_TOOL = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
+STATEFUL_NONDESTRUCTIVE_TOOL = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "idempotentHint": False,
+    "openWorldHint": False,
+}
+PROPOSAL_WRITE_TOOL = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "idempotentHint": False,
+    "openWorldHint": True,
+}
+PROPOSAL_EDIT_TOOL = {
+    "readOnlyHint": False,
+    "destructiveHint": True,
+    "idempotentHint": False,
+    "openWorldHint": True,
+}
+DESTRUCTIVE_WRITE_TOOL = {
+    "readOnlyHint": False,
+    "destructiveHint": True,
+    "idempotentHint": False,
+    "openWorldHint": True,
+}
+
+VerboseParam = Annotated[
+    bool,
+    Field(description="False returns the compact response; true includes all fields."),
+]
+QueryParam = Annotated[str, Field(description="Natural-language search query.")]
+LimitParam = Annotated[int, Field(description="Maximum number of results, clamped to 1..100.")]
+TierParam = Annotated[
+    str | None,
+    Field(description="Optional tier filter such as T1, T2, T3, or T4."),
+]
+RequiredTierParam = Annotated[
+    str,
+    Field(description="Required tier such as T1, T2, T3, or T4."),
+]
+CategoryParam = Annotated[
+    str | None,
+    Field(description="Optional category filter within a tier."),
+]
+StatusParam = Annotated[str | None, Field(description="Optional frontmatter status filter.")]
+InForceParam = Annotated[
+    bool,
+    Field(description="True returns only currently governing documents."),
+]
+DocTypeParam = Annotated[str | None, Field(description="Optional document type filter.")]
+AbstainParam = Annotated[
+    bool,
+    Field(description="True returns an explicit abstention when the query has no KB signal."),
+]
+IncludeExpiredParam = Annotated[
+    bool,
+    Field(description="True allows expired documents in search results."),
+]
+ValidityStateParam = Annotated[
+    str | None,
+    Field(description="Optional validity facet: expired, stale, or expiring_within:N."),
+]
+DocumentIdParam = Annotated[str, Field(description="Stable KB document id to retrieve.")]
+WorkspaceParam = Annotated[str, Field(description="Project or workspace key in the KB.")]
+ComponentParam = Annotated[
+    str | None,
+    Field(description="Optional component key under the workspace."),
+]
+RemoteUrlParam = Annotated[
+    str | None,
+    Field(description="Optional git remote URL used for matching."),
+]
+LocalFilesParam = Annotated[
+    list[dict[str, str]],
+    Field(description="Local docs to compare, each with path and content keys."),
+]
+JaccardParam = Annotated[
+    float,
+    Field(description="Similarity threshold above which a local doc is treated as duplicate."),
+]
+TextParam = Annotated[str, Field(description="Markdown memory text to propose.")]
+TagsParam = Annotated[list[str], Field(description="Short tags for the proposed memory.")]
+SourceSessionParam = Annotated[
+    str,
+    Field(description="Stable id of the agent session making the call."),
+]
+AgentIdentityParam = Annotated[
+    str,
+    Field(description="Human-readable agent identity for audit events."),
+]
+ConfidenceParam = Annotated[
+    float,
+    Field(description="Caller confidence in the proposal, from 0.0 to 1.0."),
+]
+EvidenceParam = Annotated[
+    list[str] | None,
+    Field(description="Optional supporting evidence strings, max 10 items of 500 chars each."),
+]
+TargetPathParam = Annotated[
+    str,
+    Field(description="KB-relative markdown path to create or edit."),
+]
+PostimageParam = Annotated[
+    str,
+    Field(description="Complete markdown file content after the proposed edit."),
+]
+BaseCommitParam = Annotated[str, Field(description="Git commit the proposal was based on.")]
+BaseBlobShaParam = Annotated[
+    str | None,
+    Field(description="Optional git blob sha for compare-and-swap protection."),
+]
+TargetFileHashParam = Annotated[
+    str | None,
+    Field(description="Optional content hash for compare-and-swap protection."),
+]
+ReasonParam = Annotated[str, Field(description="Short reason for the proposed change.")]
+PendingIdParam = Annotated[str, Field(description="Pending proposal id to resolve.")]
+DecisionParam = Annotated[
+    str,
+    Field(description="Resolution decision: approve or reject."),
+]
+EditedTextParam = Annotated[
+    str | None,
+    Field(description="Optional replacement postimage used when approving."),
+]
+OverrideSecretScanParam = Annotated[
+    bool,
+    Field(description="Operator override for false-positive secret-scan matches."),
+]
+SinceParam = Annotated[float | None, Field(description="Optional Unix timestamp lower bound.")]
+AgentParam = Annotated[str | None, Field(description="Optional agent_identity filter.")]
+EventStatusParam = Annotated[str | None, Field(description="Optional audit event status filter.")]
+AuditLimitParam = Annotated[int, Field(description="Maximum audit events to return.")]
+BootstrapFilesParam = Annotated[
+    list[dict[str, str]],
+    Field(description="Bootstrap files, each with target_path and postimage keys."),
+]
+TriggerParam = Annotated[
+    str,
+    Field(description="Consult trigger: explicit or prompt_hook."),
+]
+SessionIdParam = Annotated[
+    str,
+    Field(description="Agent session id checked against consult history."),
+]
+ToolNameParam = Annotated[str, Field(description="Name of the tool or command about to run.")]
+ActionPathParam = Annotated[
+    str | None,
+    Field(description="Optional path or URL affected by the pending action."),
+]
+ActionDiffParam = Annotated[
+    str,
+    Field(description="Short description or diff summary of the pending action."),
+]
+EventTypeParam = Annotated[
+    str,
+    Field(description="Client-reported event type: gate_bypass or gate_degraded."),
+]
 
 
 class MCPAuthMiddleware(Middleware):
@@ -444,8 +609,8 @@ def build_app(
 
     app: FastMCP = FastMCP(name="data-olympus-mcp")
 
-    @app.tool()
-    def kb_health(verbose: bool = False) -> dict[str, object]:
+    @app.tool(title="KB Health", annotations=READ_ONLY_TOOL)
+    def kb_health(verbose: VerboseParam = False) -> dict[str, object]:
         """Return service health: kb_commit, index_built_at, staleness, degraded flag,
         and write-side state (pending_count, push_queue_size, last_index_*).
 
@@ -480,8 +645,8 @@ def build_app(
         )
         return shape_response(resp, verbose=verbose)
 
-    @app.tool()
-    def kb_outline(verbose: bool = False) -> dict[str, object]:
+    @app.tool(title="KB Outline", annotations=READ_ONLY_TOOL)
+    def kb_outline(verbose: VerboseParam = False) -> dict[str, object]:
         """Return the tree of tiers and categories with doc counts.
 
         verbose: kb_outline is already lean, so compact and full modes return the
@@ -489,19 +654,19 @@ def build_app(
         resp = kb_outline_fn(idx=state.idx)
         return shape_response(resp, verbose=verbose)
 
-    @app.tool()
+    @app.tool(title="KB Search", annotations=READ_ONLY_TOOL)
     def kb_search(
-        query: str,
-        limit: int = 20,
-        tier: str | None = None,
-        category: str | None = None,
-        status: str | None = None,
-        in_force: bool = False,
-        doc_type: str | None = None,
-        abstain: bool = False,
-        include_expired: bool = False,
-        validity_state: str | None = None,
-        verbose: bool = False,
+        query: QueryParam,
+        limit: LimitParam = 20,
+        tier: TierParam = None,
+        category: CategoryParam = None,
+        status: StatusParam = None,
+        in_force: InForceParam = False,
+        doc_type: DocTypeParam = None,
+        abstain: AbstainParam = False,
+        include_expired: IncludeExpiredParam = False,
+        validity_state: ValidityStateParam = None,
+        verbose: VerboseParam = False,
     ) -> dict[str, object]:
         """Full-text search across the KB.
 
@@ -555,8 +720,8 @@ def build_app(
         )
         return shape_response(resp, verbose=verbose)
 
-    @app.tool()
-    def kb_get(id: str, verbose: bool = False) -> dict[str, object]:
+    @app.tool(title="KB Get Document", annotations=READ_ONLY_TOOL)
+    def kb_get(id: DocumentIdParam, verbose: VerboseParam = False) -> dict[str, object]:
         """Retrieve a document by id (STD-U-001, ADR-002, T-NNN, etc.).
         Returns the full content markdown plus metadata.
 
@@ -582,8 +747,11 @@ def build_app(
             return {"error": "not_found", "message": str(e)}
         return shape_response(resp, verbose=verbose)
 
-    @app.tool()
-    def kb_list(tier: str, category: str | None = None, verbose: bool = False) -> dict[str, object]:
+    @app.tool(title="KB List Documents", annotations=READ_ONLY_TOOL)
+    def kb_list(
+        tier: RequiredTierParam, category: CategoryParam = None,
+        verbose: VerboseParam = False,
+    ) -> dict[str, object]:
         """List doc ids in the given tier (and optional category), ordered by id.
 
         verbose: False (default) drops per-entry `path` (fetch via kb_get(id)) and
@@ -592,11 +760,11 @@ def build_app(
         resp = kb_list_fn(idx=state.idx, tier=tier, category=category)
         return shape_response(resp, verbose=verbose)
 
-    @app.tool()
+    @app.tool(title="KB Onboarding Status", annotations=READ_ONLY_TOOL)
     def kb_onboarding_status(
-        workspace: str, component: str | None = None,
-        workspace_remote_url: str | None = None,
-        component_remote_url: str | None = None,
+        workspace: WorkspaceParam, component: ComponentParam = None,
+        workspace_remote_url: RemoteUrlParam = None,
+        component_remote_url: RemoteUrlParam = None,
     ) -> dict[str, object]:
         """Compute onboarding status for a workspace + optional component.
         State is one of: absent, partial, onboarded, rename_candidate."""
@@ -632,10 +800,10 @@ def build_app(
                     "error": "too many requests; retry later"}
         return None
 
-    @app.tool()
+    @app.tool(title="KB Cleanup Plan", annotations=READ_ONLY_TOOL)
     def kb_cleanup_plan(
-        workspace: str, local_files: list[dict[str, str]],
-        component: str | None = None, jaccard_threshold: float = 0.6,
+        workspace: WorkspaceParam, local_files: LocalFilesParam,
+        component: ComponentParam = None, jaccard_threshold: JaccardParam = 0.6,
     ) -> dict[str, object]:
         """Read-only. Classify local project-repo docs against KB content for this
         workspace/component and return thin-pointer replacements for duplicates.
@@ -657,11 +825,11 @@ def build_app(
     if not read_only:
         # Write + enforcement-write surface. A read-only replica
         # (issue #44) exposes none of these tools.
-        @app.tool()
+        @app.tool(title="KB Propose Memory", annotations=PROPOSAL_WRITE_TOOL)
         def kb_propose_memory(
-            text: str, tags: list[str], source_session: str,
-            agent_identity: str, confidence: float,
-            evidence: list[str] | None = None,
+            text: TextParam, tags: TagsParam, source_session: SourceSessionParam,
+            agent_identity: AgentIdentityParam, confidence: ConfidenceParam,
+            evidence: EvidenceParam = None,
         ) -> dict[str, object]:
             """Propose a new memory file. High confidence auto-commits and
             enqueues for push; low confidence enters the pending queue for operator
@@ -693,12 +861,13 @@ def build_app(
             )
             return resp.model_dump()
 
-        @app.tool()
+        @app.tool(title="KB Propose Edit", annotations=PROPOSAL_EDIT_TOOL)
         def kb_propose_edit(
-            target_path: str, postimage: str, base_commit: str,
-            base_blob_sha: str | None, target_file_hash: str | None,
-            reason: str, source_session: str, agent_identity: str, confidence: float,
-            evidence: list[str] | None = None,
+            target_path: TargetPathParam, postimage: PostimageParam,
+            base_commit: BaseCommitParam, base_blob_sha: BaseBlobShaParam,
+            target_file_hash: TargetFileHashParam, reason: ReasonParam,
+            source_session: SourceSessionParam, agent_identity: AgentIdentityParam,
+            confidence: ConfidenceParam, evidence: EvidenceParam = None,
         ) -> dict[str, object]:
             """Propose an edit to an existing (or new) markdown file under an
             indexed tier. High confidence auto-commits + queues for push; low
@@ -733,11 +902,13 @@ def build_app(
             )
             return resp.model_dump()
 
-        @app.tool()
+        @app.tool(title="KB Resolve Pending", annotations=DESTRUCTIVE_WRITE_TOOL)
         def kb_resolve_pending(
-            pending_id: str, decision: str, edited_text: str | None = None,
-            source_session: str = "operator-resolve", agent_identity: str = "operator",
-            override_secret_scan: bool = False,
+            pending_id: PendingIdParam, decision: DecisionParam,
+            edited_text: EditedTextParam = None,
+            source_session: SourceSessionParam = "operator-resolve",
+            agent_identity: AgentIdentityParam = "operator",
+            override_secret_scan: OverrideSecretScanParam = False,
         ) -> dict[str, object]:
             """Resolve a pending proposal: approve (optionally with edited text) or
             reject. Approval commits + enqueues for push.
@@ -769,7 +940,7 @@ def build_app(
             )
             return resp.model_dump()
 
-        @app.tool()
+        @app.tool(title="KB List Pending", annotations=READ_ONLY_TOOL)
         def kb_list_pending() -> dict[str, object]:
             """List currently pending proposals awaiting operator decision."""
             assert state.pending is not None
@@ -777,10 +948,10 @@ def build_app(
             resp = kb_list_pending_fn(pending=state.pending)
             return resp.model_dump()
 
-        @app.tool()
+        @app.tool(title="KB Audit", annotations=READ_ONLY_TOOL)
         def kb_audit(
-            since: float | None = None, agent: str | None = None,
-            status: str | None = None, limit: int = 100,
+            since: SinceParam = None, agent: AgentParam = None,
+            status: EventStatusParam = None, limit: AuditLimitParam = 100,
         ) -> dict[str, object]:
             """Return recent audit events, most-recent first. Optional filters:
             since (unix ts), agent (agent_identity), status (event status)."""
@@ -790,8 +961,8 @@ def build_app(
                               agent=agent, status=status, limit=limit)
             return resp.model_dump()
 
-        @app.tool()
-        def kb_session_recap(source_session: str) -> dict[str, object]:
+        @app.tool(title="KB Session Recap", annotations=READ_ONLY_TOOL)
+        def kb_session_recap(source_session: SourceSessionParam) -> dict[str, object]:
             """Read-only per-session write summary (issue #112 feedback loop):
             N committed, M demoted-to-pending, K rejected for source_session.
             Call this (or `kb pending`) whenever a write response indicated a
@@ -804,13 +975,13 @@ def build_app(
             resp = kb_session_recap_fn(audit_log=state.audit_log, source_session=source_session)
             return resp.model_dump()
 
-        @app.tool()
+        @app.tool(title="KB Bootstrap Project", annotations=PROPOSAL_WRITE_TOOL)
         def kb_bootstrap_project(
-            workspace: str, files: list[dict[str, str]],
-            source_session: str, agent_identity: str, confidence: float,
-            component: str | None = None,
-            workspace_remote_url: str | None = None,
-            component_remote_url: str | None = None,
+            workspace: WorkspaceParam, files: BootstrapFilesParam,
+            source_session: SourceSessionParam, agent_identity: AgentIdentityParam,
+            confidence: ConfidenceParam, component: ComponentParam = None,
+            workspace_remote_url: RemoteUrlParam = None,
+            component_remote_url: RemoteUrlParam = None,
         ) -> dict[str, object]:
             """Bootstrap a new workspace/component. Only valid when status=absent
             or partial. High confidence commits atomically; low confidence
@@ -842,10 +1013,11 @@ def build_app(
             )
             return resp.model_dump()
 
-        @app.tool()
+        @app.tool(title="KB Consult", annotations=STATEFUL_NONDESTRUCTIVE_TOOL)
         def kb_consult(
-            workspace: str, intent: str, source_session: str,
-            agent_identity: str, trigger: str = "explicit",
+            workspace: WorkspaceParam, intent: QueryParam,
+            source_session: SourceSessionParam,
+            agent_identity: AgentIdentityParam, trigger: TriggerParam = "explicit",
         ) -> dict[str, object]:
             """Record a consultation for (source_session, workspace) and return the
             governing rules for the intent. Call before code/architectural work.
@@ -876,10 +1048,11 @@ def build_app(
             )
             return resp.model_dump(exclude_none=True)
 
-        @app.tool()
+        @app.tool(title="KB Gate Check", annotations=STATEFUL_NONDESTRUCTIVE_TOOL)
         def kb_gate_check(
-            workspace: str, session_id: str, tool_name: str,
-            action_path: str | None = None, action_diff: str = "",
+            workspace: WorkspaceParam, session_id: SessionIdParam,
+            tool_name: ToolNameParam, action_path: ActionPathParam = None,
+            action_diff: ActionDiffParam = "",
         ) -> dict[str, object]:
             """Return a verdict (allow | consult_required) for a pending code action.
             Governed actions require a fresh consultation on record."""
@@ -897,9 +1070,9 @@ def build_app(
             )
             return resp.model_dump()
 
-        @app.tool()
+        @app.tool(title="KB Compliance", annotations=READ_ONLY_TOOL)
         def kb_compliance(
-            since: float | None = None, agent: str | None = None,
+            since: SinceParam = None, agent: AgentParam = None,
         ) -> dict[str, object]:
             """Aggregate enforcement events (consult / gate_*) overall and per agent."""
             if state.audit_log is None:
@@ -908,10 +1081,11 @@ def build_app(
             resp = kb_compliance_fn(audit_log=state.audit_log, since=since, agent=agent)
             return resp.model_dump()
 
-        @app.tool()
+        @app.tool(title="KB Record Event", annotations=STATEFUL_NONDESTRUCTIVE_TOOL)
         def kb_record_event(
-            event_type: str, workspace: str, agent_identity: str,
-            source_session: str, reason: str = "",
+            event_type: EventTypeParam, workspace: WorkspaceParam,
+            agent_identity: AgentIdentityParam, source_session: SourceSessionParam,
+            reason: ReasonParam = "",
         ) -> dict[str, object]:
             """Record a gate_bypass or gate_degraded enforcement event in the audit."""
             if state.audit_log is None:
