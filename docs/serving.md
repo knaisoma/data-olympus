@@ -798,6 +798,23 @@ reverse proxy (terminate TLS there). See `SECURITY.md` for the full threat model
 the route/capability table, payload limits, the tamper-evident audit log, and the
 git sync-failure health fields.
 
+### Host allowlist behind a proxy (`FASTMCP_HTTP_ALLOWED_HOSTS`, v0.4.1+)
+
+fastmcp >= 3.4.3 validates the `Host` header on streamable HTTP
+(DNS-rebinding protection) and returns `421 Misdirected Request` for
+hostnames outside its allowlist. When data-olympus is served behind a
+reverse proxy or ingress, set the public hostname explicitly:
+
+```bash
+FASTMCP_HTTP_ALLOWED_HOSTS='["kb.example.com"]'
+```
+
+Direct localhost/pod requests are always allowed, so health probes pass
+while proxied traffic fails: check the server log for 421 lines if agents
+suddenly cannot reach the endpoint after an upgrade. Operational details
+in docs/operations.md section 3.4; a first-class knob is tracked in
+issue #139.
+
 ### Proxy headers and the rate limiter (`KB_TRUSTED_PROXIES`)
 
 The rate limiter keys on the client remote address (plus principal). Behind an
