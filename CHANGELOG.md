@@ -12,6 +12,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-11
+
+### Added
+
+- **Update-available detection (first slice of #146).** `update_available()` /
+  `update_notice()` compare the installed version to the latest published one
+  and produce a one-line "a newer version is available" notice, fail-safe when
+  the latest is unknown. Wiring this into a runtime surface (health / MCP
+  annotation) is the remainder of #146.
+
 ## [0.4.2] - 2026-07-11
 
 ### Added
