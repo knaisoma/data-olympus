@@ -4,7 +4,7 @@ import json
 
 import httpx
 
-from data_olympus.cli.verify_cmd import CheckResult, check_health
+from data_olympus.cli.verify_cmd import CheckResult, check_health, check_readiness
 
 
 def _client(handler) -> httpx.Client:
@@ -29,3 +29,20 @@ def test_check_health_fails_on_503_degraded() -> None:
     result = check_health(_client(handler))
     assert result.ok is False
     assert "degraded" in result.detail.lower() or "503" in result.detail
+
+
+def test_check_readiness_ok_on_200() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/readyz"
+        return httpx.Response(200, text="ok")
+
+    assert check_readiness(_client(handler)).ok is True
+
+
+def test_check_readiness_fails_on_503() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:  # unused arg: _ prefix satisfies ruff ARG001
+        return httpx.Response(503, text="not ready")
+
+    r = check_readiness(_client(handler))
+    assert r.ok is False
+    assert r.name == "readiness"

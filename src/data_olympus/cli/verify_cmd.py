@@ -40,3 +40,13 @@ def check_health(client: httpx.Client) -> CheckResult:
     if degraded:
         return CheckResult("health", False, "health reports degraded")
     return CheckResult("health", True, "healthy")
+
+
+def check_readiness(client: httpx.Client) -> CheckResult:
+    """GET /readyz: the k8s readiness probe target; pass on 200."""
+    try:
+        resp = client.get("/readyz")
+    except httpx.HTTPError as exc:
+        return CheckResult("readiness", False, f"request failed: {exc}")
+    ok = resp.status_code == 200
+    return CheckResult("readiness", ok, "ready" if ok else f"status {resp.status_code}")
