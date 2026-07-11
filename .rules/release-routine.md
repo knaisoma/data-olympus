@@ -45,8 +45,11 @@ it does not merge or publish before that approval.
    per-feature commit and the `chore(release)` version-cut commit must reach `main`
    individually so `compute_release.py` (which walks `git log --no-merges`) and
    `tag-release.yml` see them). `tag-release.yml` then cuts tag `vX.Y.Z`, builds the
-   stable image, publishes PyPI, and creates the GitHub Release. Then
-   `gh workflow run set-channel.yml -f source=vX.Y.Z` so kn-dev runs the promoted stable.
+   stable image, publishes PyPI, and creates the GitHub Release. Because a verified
+   `X.Y.Z-rc.N` image exists in ghcr, `tag-release.yml` promotes it by re-tagging that
+   exact digest to `vX.Y.Z` + `:latest` (byte-identical to what passed kn-dev verification),
+   rather than building fresh. Then `gh workflow run set-channel.yml -f source=vX.Y.Z` so
+   kn-dev runs the promoted stable.
 10. Post-release verify: `data-olympus verify --target <kn-dev ingress>` green. If
     red, roll back per `.rules/release-rollback.md` (post-release path) and notify.
 11. Release note into the Paperclip task: post the `docs/releases/vX.Y.Z.md` content

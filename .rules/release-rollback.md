@@ -35,8 +35,9 @@ image, so the channel and its source share one digest.
 
 ## Note
 
-Stable image promotion currently builds fresh from the verified commit via
-`tag-release.yml` (digest-pinned base + frozen `uv.lock` = functionally identical
-to the verified RC), rather than a byte-identical digest re-tag. True byte-identical
-promotion is a documented future hardening (would require `tag-release.yml` to
-re-tag the RC digest instead of building).
+Stable image promotion is byte-identical: `tag-release.yml` re-tags the verified
+`X.Y.Z-rc.N` digest to `vX.Y.Z` (it builds fresh only as a manual-tag fallback when
+no RC exists). The PyPI wheel is built fresh from the tagged commit (the RC is
+image-only). The promoted image carries the RC build's OCI labels
+(`org.opencontainers.image.version` reads the rc tag); this is a cosmetic
+provenance detail, not a content difference.
