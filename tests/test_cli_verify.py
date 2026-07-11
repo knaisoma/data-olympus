@@ -23,7 +23,7 @@ def test_check_health_ok_when_200_and_not_degraded() -> None:
 
 
 def test_check_health_fails_on_503_degraded() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, json={"degraded": True})
 
     result = check_health(_client(handler))
