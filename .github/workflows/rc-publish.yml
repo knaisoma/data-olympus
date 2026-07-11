@@ -36,12 +36,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="$(python3 -c 'import sys; from scripts.should_tag import project_version; print(project_version(open("pyproject.toml").read()))')"
+          VERSION="$(python3 -c 'from scripts.should_tag import project_version; print(project_version(open("pyproject.toml").read()))')"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          # List existing ghcr tags for this package; empty on first RC (jq -e guards the 404/empty case).
-          gh api --paginate \
-            "/orgs/knaisoma/packages/container/data-olympus/versions" \
-            --jq '.[].metadata.container.tags[]' > /tmp/tags.txt 2>/dev/null || true
+          # List existing ghcr tags for this package. A 404 (package has no
+          # versions yet, i.e. the first-ever RC) is tolerated as "no tags"; ANY
+          # other failure (auth, rate-limit, 5xx) must fail loudly, so we never
+          # silently recompute rc.1 and overwrite an already-published RC image.
+          : > /tmp/tags.txt
+          if ! gh api --paginate \
+                "/orgs/knaisoma/packages/container/data-olympus/versions" \
+                --jq '.[].metadata.container.tags[]' > /tmp/tags.txt 2>/tmp/gh-err.log; then
+            if grep -qiE '404|not found' /tmp/gh-err.log; then
+              echo "no existing package versions (first RC); using empty tag list"
+              : > /tmp/tags.txt
+            else
+              echo "gh api failed (non-404):" >&2; cat /tmp/gh-err.log >&2; exit 1
+            fi
+          fi
           RC_TAG="$(python3 scripts/rc_tag.py --base "$VERSION" < /tmp/tags.txt)"
           echo "rc_tag=$RC_TAG" >> "$GITHUB_OUTPUT"
           echo "Computed RC tag: $RC_TAG (base $VERSION)"
