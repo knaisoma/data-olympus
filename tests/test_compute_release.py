@@ -121,3 +121,13 @@ def test_next_rc_number_ignores_non_rc_and_malformed() -> None:
 
 def test_next_rc_tag_composes_base_and_number() -> None:
     assert next_rc_tag("0.5.0", ["0.5.0-rc.1"]) == "0.5.0-rc.2"
+
+
+def test_current_rc_tag_empty_when_none_exist() -> None:
+    from scripts.compute_release import current_rc_tag
+    assert current_rc_tag("0.5.0", ["0.4.0-rc.9", "v0.5.0"]) == ""
+
+
+def test_current_rc_tag_returns_highest_for_base() -> None:
+    from scripts.compute_release import current_rc_tag
+    assert current_rc_tag("0.5.0", ["0.5.0-rc.1", "v0.5.0-rc.3", "0.5.0-rc.2"]) == "0.5.0-rc.3"

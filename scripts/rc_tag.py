@@ -18,7 +18,7 @@ _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from scripts.compute_release import next_rc_tag  # noqa: E402
+from scripts.compute_release import current_rc_tag, next_rc_tag  # noqa: E402
 
 if TYPE_CHECKING:
     from typing import TextIO
@@ -27,10 +27,15 @@ if TYPE_CHECKING:
 def main(argv: list[str] | None = None, stdin: TextIO | None = None) -> int:
     parser = argparse.ArgumentParser(prog="rc_tag")
     parser.add_argument("--base", required=True, help="target base version X.Y.Z")
+    parser.add_argument("--current", action="store_true",
+                        help="print the highest existing X.Y.Z-rc.N (empty if none)")
     args = parser.parse_args(argv)
     src = stdin if stdin is not None else sys.stdin
     existing = [line for line in src.read().splitlines() if line.strip()]
-    print(next_rc_tag(args.base, existing))
+    if args.current:
+        print(current_rc_tag(args.base, existing))
+    else:
+        print(next_rc_tag(args.base, existing))
     return 0
 
 

@@ -96,6 +96,14 @@ def next_rc_tag(base_version: str, existing_refs: Iterable[str]) -> str:
     return f"{base_version}-rc.{next_rc_number(base_version, existing_refs)}"
 
 
+def current_rc_tag(base_version: str, existing_refs: Iterable[str]) -> str:
+    """The highest existing `<base_version>-rc.N` tag, e.g. `0.5.0-rc.2`, or "" if
+    none exist. (next_rc_tag returns one PAST the highest; this returns the highest
+    itself, for promoting an already-built RC.)"""
+    n = next_rc_number(base_version, existing_refs) - 1
+    return f"{base_version}-rc.{n}" if n >= 1 else ""
+
+
 def _git(*args: str) -> str:
     return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
 
