@@ -153,3 +153,28 @@ def test_run_verify_returns_4_when_some_but_not_all_fail() -> None:
 
     client = httpx.Client(base_url="http://kb.test", transport=httpx.MockTransport(handler))
     assert run_verify(target="http://kb.test", client=client) == 4
+
+
+def test_run_verify_checks_selector_runs_only_selected(capsys) -> None:
+    # readiness would fail (503) but we only run health+search, which pass.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/readyz":
+            return httpx.Response(503, text="down")
+        if request.url.path == "/api/v1/health":
+            return httpx.Response(200, json={"degraded": False})
+        return httpx.Response(200, json={"hits": []})
+
+    client = httpx.Client(base_url="http://kb.test", transport=httpx.MockTransport(handler))
+    rc = run_verify(target="http://kb.test", checks=["health", "search"], as_json=True,
+                    client=client)
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert {c["name"] for c in out["checks"]} == {"health", "search"}
+
+
+def test_cli_rejects_unknown_check_name() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["verify", "--checks", "health,bogus"])
+    from data_olympus.cli.verify_cmd import _cmd_verify
+
+    assert _cmd_verify(args) == 2

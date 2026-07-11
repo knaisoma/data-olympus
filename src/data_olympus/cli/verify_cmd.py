@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 # functions only (no new top-level imports), so ruff's E402 never fires.
 # `json` is used by run_verify (Task 4); the argparse annotations are strings.
 
+_ALL_CHECKS = ("health", "readiness", "search")
+
 
 @dataclass(frozen=True)
 class CheckResult:
@@ -81,18 +83,26 @@ def run_verify(
     as_json: bool = False,
     timeout: float = 10.0,
     probe: str = "the",
+    checks: list[str] | None = None,
     client: httpx.Client | None = None,
 ) -> int:
-    """Orchestrate all checks and report results to stdout. Returns 0 or 4."""
+    """Orchestrate selected checks and report results to stdout. Returns 0, 1,
+    or 4."""
     owns_client = client is None
     if client is None:
         client = httpx.Client(base_url=target.rstrip("/"), timeout=timeout)
     try:
-        results = [
-            check_health(client),
-            check_readiness(client),
-            check_search(client, probe),
-        ]
+        selected_checks = checks or list(_ALL_CHECKS)
+        results = []
+        for check_name in _ALL_CHECKS:
+            if check_name not in selected_checks:
+                continue
+            if check_name == "health":
+                results.append(check_health(client))
+            elif check_name == "readiness":
+                results.append(check_readiness(client))
+            elif check_name == "search":
+                results.append(check_search(client, probe))
     finally:
         if owns_client:
             client.close()
@@ -149,17 +159,35 @@ def add_verify_subparser(
         help="per-request timeout seconds",
     )
     p.add_argument("--probe", default="the", help="search probe term (default: the)")
+    p.add_argument(
+        "--checks",
+        default=None,
+        help="comma-separated subset to run (default: all): "
+        "health,readiness,search,enforcement",
+    )
     p.set_defaults(func=_cmd_verify)
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
     """Entry point for the verify subcommand; resolve target and call run_verify."""
     import os
+    import sys
 
     target = args.target or os.environ.get("KB_ENDPOINT") or "http://localhost:8080"
+
+    checks = None
+    if args.checks:
+        checks = [c.strip() for c in args.checks.split(",")]
+        unknown = set(checks) - set(_ALL_CHECKS)
+        if unknown:
+            print(f"error: unknown check(s): {','.join(sorted(unknown))}",
+                  file=sys.stderr)
+            return 2
+
     return run_verify(
         target=target,
         as_json=args.json,
         timeout=args.timeout,
         probe=args.probe,
+        checks=checks,
     )
