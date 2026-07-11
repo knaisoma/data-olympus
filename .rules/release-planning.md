@@ -28,7 +28,7 @@ with implementation tickets, so the Monday cutter has a ready epic.
 6. On approval: create the release parent epic + one implementation sub-ticket per
    selected issue, each with a `Ready for Build` block, a reviewer assigned
    (GDEC-028), and `Branch: feature/<release-epic-id>` (WF-004 section 2.2 epic
-   integration branch). Peer-review-until-clean is inherent to WF-004 section 7.
+   integration branch). The iterative changes-requested and re-review cycle follows WF-004 section 7 (In Review to In Progress until the reviewer approves).
    Create the `feature/<release-epic-id>` branch off `main`.
 
 ## Constraints
@@ -37,6 +37,9 @@ with implementation tickets, so the Monday cutter has a ready epic.
 - One release epic per week; the batch is expected ready by the following Monday
   (strict 1-week pipeline). The Monday cutter (`.rules/release-routine.md`) gates on
   readiness and never ships a batch that is not Done + reviewed + green.
-- The epic uses the WF-004 section 2.2 shared integration branch (squash per
-  feature, one commit per ticket, one integration MR), reconciling the "release
+- The epic uses the WF-004 section 2.2 shared integration branch: each feature is
+  one squashed Conventional Commit per ticket on the branch, each sub-ticket updates
+  the CHANGELOG `[Unreleased]` block, and the single integration MR merges to `main`
+  with a MERGE COMMIT (never a squash), per `.rules/versioning.md`, so
+  `compute_release.py` sees each per-feature commit. This reconciles the "release
   branch" model with STD-U-810 section 2 (no long-lived gitflow release branch).

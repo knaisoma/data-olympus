@@ -14,10 +14,16 @@ it does not merge or publish before that approval.
 2. Readiness gate: all sub-tickets Done and reviewed, the integration branch
    `feature/<release-epic-id>` green (CI). If not ready, post blockers on the epic,
    notify the operator (Telegram, GDEC-007), and STOP. Never cut a red release.
-3. Sync + releasability: on the integration branch, run
+3. Sync + prepare the release commit (the cutter owns the version cut; no other
+   step performs it): on the integration branch, run
    `uv run python scripts/compute_release.py`; if `releasable` is false, exit
-   quietly. The branch must already carry the final `X.Y.Z` in `pyproject.toml`
-   (bumped during the epic), plus the CHANGELOG entry and `docs/releases/vX.Y.Z.md`.
+   quietly. Read `next_version` = X.Y.Z. Set the `[project]` version in
+   `pyproject.toml` to `X.Y.Z`; rename the topmost CHANGELOG `[Unreleased]` block to
+   `[X.Y.Z] - <UTC date>` and open a fresh empty `[Unreleased]`; write
+   `docs/releases/vX.Y.Z.md` (two H2 sections `## New features` and `## Fixed`, plain
+   language). Commit to the integration branch as `chore(release): vX.Y.Z`. Per-feature
+   `[Unreleased]` CHANGELOG entries were already added by each sub-ticket
+   (`.rules/versioning.md`). The RC built next therefore carries the final X.Y.Z.
 4. Quality gates (all must pass, else open a `release blocked: <reason>` issue and
    stop): `uv run pytest -q`, `uv run ruff check .`, `uv run mypy src`,
    `bats -r tests`, a security review over `git diff <lasttag>..HEAD`, and `kb_health`.
@@ -34,10 +40,13 @@ it does not merge or publish before that approval.
 8. Approval-to-ship: request a Paperclip approval on the epic and notify the
    operator (Telegram). The operator may exercise the RC live on kn-dev, then
    approves or rejects. On rejection, roll back and stop.
-9. Promote (on approval): merge the release PR / integration MR to `main`.
-   `tag-release.yml` cuts tag `vX.Y.Z`, builds the stable image, publishes PyPI, and
-   creates the GitHub Release. Then `gh workflow run set-channel.yml -f source=vX.Y.Z`
-   so kn-dev runs the promoted stable.
+9. Promote (on approval): merge the integration MR (`feature/<release-epic-id>` ->
+   `main`) with a MERGE COMMIT, never a squash (per `.rules/versioning.md`: each
+   per-feature commit and the `chore(release)` version-cut commit must reach `main`
+   individually so `compute_release.py` (which walks `git log --no-merges`) and
+   `tag-release.yml` see them). `tag-release.yml` then cuts tag `vX.Y.Z`, builds the
+   stable image, publishes PyPI, and creates the GitHub Release. Then
+   `gh workflow run set-channel.yml -f source=vX.Y.Z` so kn-dev runs the promoted stable.
 10. Post-release verify: `data-olympus verify --target <kn-dev ingress>` green. If
     red, roll back per `.rules/release-rollback.md` (post-release path) and notify.
 11. Release note into the Paperclip task: post the `docs/releases/vX.Y.Z.md` content
@@ -45,7 +54,8 @@ it does not merge or publish before that approval.
 12. Retro to company-knowledge: run a short retro (what the RC/verify cycle
     surfaced, any gate that fired, any manual fix, kn-dev-vs-stable drift) and
     propose a lessons-learned update to company-knowledge via the data-olympus MCP
-    (`kb_propose_edit` / `kb_propose_memory`, operator-gated). This is how the
+    (`kb_propose_edit` / `kb_propose_memory` targeting a data-olympus-scoped KB path
+    such as a project note or an operator memory, operator-gated). This is how the
     pipeline improves release over release.
 13. Hold open for the operator's external announcement: keep the Paperclip task
     open with a Telegram reminder. The release artifact ships on approval + verify;
