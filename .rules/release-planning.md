@@ -14,20 +14,32 @@ with implementation tickets, so the Monday cutter has a ready epic.
 3. Select + cluster: target 4 (range 3-5) highest-value issues, then pull in
    closely-related ones (shared files, labels, milestone, epic). Produce a Release
    Scope Brief: chosen set with rationale, explicitly-deferred set, projected bump.
-4. Security clearance (mandatory, first phase): query every OPEN Dependabot and
-   CodeQL alert for the repo (`python3 scripts/security_alerts.py` reports them;
-   or `gh api /repos/knaisoma/data-olympus/dependabot/alerts?state=open` and
-   `.../code-scanning/alerts?state=open`). Every open alert MUST be driven to
-   resolution as part of this release, one of:
-   - a fix or dependency update, scoped as an implementation sub-ticket in the
-     release epic; or
-   - a dismissal with a recorded justification (false positive, not exploitable,
-     accepted risk), applied via `gh api ... -f state=dismissed -f
-     dismissed_reason=... -f dismissed_comment=...`.
-   Dismissals are a security judgment and are part of what the operator approves
-   at the approval gate below. The release scope brief must list every open alert
-   and its planned disposition (fix ticket or dismissal + reason). A release is
-   not scoped until the alert list has a disposition for every entry.
+4. Security clearance (MANDATORY, first phase). No release may be prepared while
+   any known weakness is open. Hard rule: by the end of this phase,
+   `python3 scripts/security_alerts.py` MUST exit 0 (zero open Dependabot AND zero
+   open CodeQL alerts) - that is the exact gate the Monday cutter re-checks and
+   blocks on (`.rules/release-routine.md` step 2a).
+
+   Query every OPEN alert (`python3 scripts/security_alerts.py` lists them; or
+   `gh api /repos/knaisoma/data-olympus/dependabot/alerts?state=open` and
+   `.../code-scanning/alerts?state=open`). Drive EVERY open alert to a disposition,
+   one of:
+   - **Fix / dependency update** - scope it as an implementation sub-ticket in the
+     release epic (the fix must land before the cutter runs); or
+   - **Dismissal with a recorded justification** - only after confirming it is a
+     false positive, not exploitable, or an accepted risk. Apply via:
+     `gh api -X PATCH /repos/knaisoma/data-olympus/code-scanning/alerts/<n>
+     -f state=dismissed -f dismissed_reason="false positive" -f
+     dismissed_comment="<why, <=280 chars>"`. Valid `dismissed_reason` values are
+     exactly `"false positive"`, `"won't fix"`, `"used in tests"` (Dependabot uses
+     `tolerable_risk`, `inaccurate`, `not_used`, `no_bandwidth`). The comment is a
+     hard cap of 280 characters.
+
+   Dismissals are a security judgment: the planner PROPOSES each disposition, and
+   the OPERATOR approves them at the approval gate below (step 6) before anything
+   is dismissed. The release scope brief MUST list every open alert with its
+   planned disposition (fix ticket or dismissal + reason). A release is not scoped
+   until every alert has a disposition and the gate exits 0.
 5. Dual-architect review: the routine (Architect, Claude Opus) drafts the scope +
    a per-issue implementation spec. The companion architect is `agy` with
    Gemini 3.5 Flash (High):
