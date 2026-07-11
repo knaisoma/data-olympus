@@ -14,6 +14,13 @@ it does not merge or publish before that approval.
 2. Readiness gate: all sub-tickets Done and reviewed, the integration branch
    `feature/<release-epic-id>` green (CI). If not ready, post blockers on the epic,
    notify the operator (Telegram, GDEC-007), and STOP. Never cut a red release.
+2a. Security readiness gate (hard block): run `python3 scripts/security_alerts.py`.
+    It exits 0 only when there are ZERO open Dependabot and ZERO open CodeQL
+    alerts. On a non-zero exit, post the reported open-alert list on the epic,
+    notify the operator, and STOP: do not build the RC. Every release must be
+    clean of known weaknesses at cut time; the planner phase
+    (`.rules/release-planning.md` step 4) is where they are cleared, and this gate
+    confirms nothing regressed since.
 3. Sync + prepare the release commit (the cutter owns the version cut; no other
    step performs it): on the integration branch, run
    `uv run python scripts/compute_release.py`; if `releasable` is false, exit
