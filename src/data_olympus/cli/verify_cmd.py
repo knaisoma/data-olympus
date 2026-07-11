@@ -124,7 +124,7 @@ def run_verify(
 
 
 def add_verify_subparser(
-    sub: "argparse._SubParsersAction[argparse.ArgumentParser]",  # noqa: UP037
+    sub: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
     """Wire the verify subcommand into the argparse dispatcher."""
     p = sub.add_parser(
@@ -147,7 +147,7 @@ def add_verify_subparser(
     p.set_defaults(func=_cmd_verify)
 
 
-def _cmd_verify(args: "argparse.Namespace") -> int:  # noqa: UP037
+def _cmd_verify(args: argparse.Namespace) -> int:
     """Entry point for the verify subcommand; resolve target and call run_verify."""
     import os
 
