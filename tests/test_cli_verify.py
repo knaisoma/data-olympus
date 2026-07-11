@@ -4,7 +4,13 @@ import json
 
 import httpx
 
-from data_olympus.cli.verify_cmd import CheckResult, check_health, check_readiness, check_search
+from data_olympus.cli.verify_cmd import (
+    CheckResult,
+    check_health,
+    check_readiness,
+    check_search,
+    run_verify,
+)
 
 
 def _client(handler) -> httpx.Client:
@@ -72,3 +78,38 @@ def test_check_search_fails_when_hits_not_a_list() -> None:
 
     r = check_search(_client(handler), "the")
     assert r.ok is False
+
+
+def _all_ok_handler(request: httpx.Request) -> httpx.Response:
+    if request.url.path == "/api/v1/health":
+        return httpx.Response(200, json={"degraded": False})
+    if request.url.path == "/readyz":
+        return httpx.Response(200, text="ok")
+    if request.url.path == "/api/v1/search":
+        return httpx.Response(200, json={"hits": []})
+    return httpx.Response(404)
+
+
+def test_run_verify_returns_0_when_all_pass() -> None:
+    rc = run_verify(target="http://kb.test", client=_client(_all_ok_handler))
+    assert rc == 0
+
+
+def test_run_verify_returns_4_when_a_check_fails() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/health":
+            return httpx.Response(503, json={"degraded": True})
+        return _all_ok_handler(request)
+
+    rc = run_verify(target="http://kb.test", client=_client(handler))
+    assert rc == 4
+
+
+def test_run_verify_json_output_lists_checks(capsys) -> None:
+    rc = run_verify(
+        target="http://kb.test", as_json=True, client=_client(_all_ok_handler)
+    )
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["ok"] is True
+    assert {c["name"] for c in out["checks"]} == {"health", "readiness", "search"}

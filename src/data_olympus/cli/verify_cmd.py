@@ -72,3 +72,52 @@ def check_search(client: httpx.Client, probe: str) -> CheckResult:
     if not isinstance(hits, list):
         return CheckResult("search", False, "response missing 'hits' list")
     return CheckResult("search", True, f"{len(hits)} hit(s) for probe {probe!r}")
+
+
+def run_verify(
+    *,
+    target: str,
+    as_json: bool = False,
+    timeout: float = 10.0,
+    probe: str = "the",
+    client: httpx.Client | None = None,
+) -> int:
+    """Orchestrate all checks and report results to stdout. Returns 0 or 4."""
+    owns_client = client is None
+    if client is None:
+        client = httpx.Client(base_url=target.rstrip("/"), timeout=timeout)
+    try:
+        results = [
+            check_health(client),
+            check_readiness(client),
+            check_search(client, probe),
+        ]
+    finally:
+        if owns_client:
+            client.close()
+
+    all_ok = all(r.ok for r in results)
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "target": target,
+                    "ok": all_ok,
+                    "checks": [
+                        {"name": r.name, "ok": r.ok, "detail": r.detail}
+                        for r in results
+                    ],
+                },
+                indent=2,
+            )
+        )
+    else:
+        for r in results:
+            mark = "PASS" if r.ok else "FAIL"
+            print(f"{mark}  {r.name}: {r.detail}")
+        print(
+            f"{'ok' if all_ok else 'FAILED'}: "
+            f"{sum(r.ok for r in results)}/{len(results)} checks passed "
+            f"against {target}"
+        )
+    return 0 if all_ok else 4
