@@ -23,6 +23,7 @@ class CheckResult:
     name: str
     ok: bool
     detail: str
+    connection_error: bool = False
 
 
 def check_health(client: httpx.Client) -> CheckResult:
@@ -30,7 +31,7 @@ def check_health(client: httpx.Client) -> CheckResult:
     try:
         resp = client.get("/api/v1/health")
     except httpx.HTTPError as exc:
-        return CheckResult("health", False, f"request failed: {exc}")
+        return CheckResult("health", False, f"request failed: {exc}", connection_error=True)
     if resp.status_code != 200:
         return CheckResult("health", False, f"status {resp.status_code} (degraded or down)")
     try:
@@ -49,7 +50,7 @@ def check_readiness(client: httpx.Client) -> CheckResult:
     try:
         resp = client.get("/readyz")
     except httpx.HTTPError as exc:
-        return CheckResult("readiness", False, f"request failed: {exc}")
+        return CheckResult("readiness", False, f"request failed: {exc}", connection_error=True)
     ok = resp.status_code == 200
     return CheckResult("readiness", ok, "ready" if ok else f"status {resp.status_code}")
 
@@ -59,7 +60,7 @@ def check_search(client: httpx.Client, probe: str) -> CheckResult:
     try:
         resp = client.get("/api/v1/search", params={"q": probe, "limit": 1})
     except httpx.HTTPError as exc:
-        return CheckResult("search", False, f"request failed: {exc}")
+        return CheckResult("search", False, f"request failed: {exc}", connection_error=True)
     if resp.status_code != 200:
         return CheckResult("search", False, f"status {resp.status_code}")
     try:
@@ -120,7 +121,11 @@ def run_verify(
             f"{sum(r.ok for r in results)}/{len(results)} checks passed "
             f"against {target}"
         )
-    return 0 if all_ok else 4
+    if all_ok:
+        return 0
+    if results and all(r.connection_error for r in results):
+        return 1
+    return 4
 
 
 def add_verify_subparser(

@@ -123,3 +123,33 @@ def test_cli_parses_verify_subcommand() -> None:
     assert args.target == "http://kb.test"
     assert args.json is True
     assert callable(args.func)
+
+
+def _unreachable_client() -> httpx.Client:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    return httpx.Client(base_url="http://kb.test", transport=httpx.MockTransport(handler))
+
+
+def test_check_health_marks_connection_error() -> None:
+    r = check_health(_unreachable_client())
+    assert r.ok is False
+    assert r.connection_error is True
+
+
+def test_run_verify_returns_1_when_target_unreachable() -> None:
+    assert run_verify(target="http://kb.test", client=_unreachable_client()) == 1
+
+
+def test_run_verify_returns_4_when_some_but_not_all_fail() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/health":
+            # a real failure, not a connection error
+            return httpx.Response(503, json={"degraded": True})
+        if request.url.path == "/readyz":
+            return httpx.Response(200, text="ok")
+        return httpx.Response(200, json={"hits": []})
+
+    client = httpx.Client(base_url="http://kb.test", transport=httpx.MockTransport(handler))
+    assert run_verify(target="http://kb.test", client=client) == 4
