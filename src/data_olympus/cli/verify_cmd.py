@@ -121,3 +121,40 @@ def run_verify(
             f"against {target}"
         )
     return 0 if all_ok else 4
+
+
+def add_verify_subparser(
+    sub: "argparse._SubParsersAction[argparse.ArgumentParser]",  # noqa: UP037
+) -> None:
+    """Wire the verify subcommand into the argparse dispatcher."""
+    p = sub.add_parser(
+        "verify",
+        help="run health + functional round-trip checks against a running instance",
+    )
+    p.add_argument(
+        "--target",
+        default=None,
+        help="base URL (default: $KB_ENDPOINT or http://localhost:8080)",
+    )
+    p.add_argument("--json", action="store_true", help="emit JSON")
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=10.0,
+        help="per-request timeout seconds",
+    )
+    p.add_argument("--probe", default="the", help="search probe term (default: the)")
+    p.set_defaults(func=_cmd_verify)
+
+
+def _cmd_verify(args: "argparse.Namespace") -> int:  # noqa: UP037
+    """Entry point for the verify subcommand; resolve target and call run_verify."""
+    import os
+
+    target = args.target or os.environ.get("KB_ENDPOINT") or "http://localhost:8080"
+    return run_verify(
+        target=target,
+        as_json=args.json,
+        timeout=args.timeout,
+        probe=args.probe,
+    )

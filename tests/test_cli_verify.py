@@ -4,6 +4,7 @@ import json
 
 import httpx
 
+from data_olympus.cli.main import build_parser
 from data_olympus.cli.verify_cmd import (
     CheckResult,
     check_health,
@@ -113,3 +114,12 @@ def test_run_verify_json_output_lists_checks(capsys) -> None:
     assert rc == 0
     assert out["ok"] is True
     assert {c["name"] for c in out["checks"]} == {"health", "readiness", "search"}
+
+
+def test_cli_parses_verify_subcommand() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["verify", "--target", "http://kb.test", "--json"])
+    assert args.command == "verify"
+    assert args.target == "http://kb.test"
+    assert args.json is True
+    assert callable(args.func)
