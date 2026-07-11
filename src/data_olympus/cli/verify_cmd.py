@@ -34,10 +34,12 @@ def check_health(client: httpx.Client) -> CheckResult:
     if resp.status_code != 200:
         return CheckResult("health", False, f"status {resp.status_code} (degraded or down)")
     try:
-        degraded = bool(resp.json().get("degraded"))
+        body = resp.json()
     except ValueError:
         return CheckResult("health", False, "non-JSON health body")
-    if degraded:
+    if not isinstance(body, dict):
+        return CheckResult("health", False, "unexpected non-object health body")
+    if bool(body.get("degraded")):
         return CheckResult("health", False, "health reports degraded")
     return CheckResult("health", True, "healthy")
 
@@ -61,9 +63,12 @@ def check_search(client: httpx.Client, probe: str) -> CheckResult:
     if resp.status_code != 200:
         return CheckResult("search", False, f"status {resp.status_code}")
     try:
-        hits = resp.json().get("hits")
+        body = resp.json()
     except ValueError:
         return CheckResult("search", False, "non-JSON search body")
+    if not isinstance(body, dict):
+        return CheckResult("search", False, "unexpected non-object search body")
+    hits = body.get("hits")
     if not isinstance(hits, list):
         return CheckResult("search", False, "response missing 'hits' list")
     return CheckResult("search", True, f"{len(hits)} hit(s) for probe {probe!r}")

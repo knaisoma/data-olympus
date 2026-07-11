@@ -4,7 +4,7 @@ import json
 
 import httpx
 
-from data_olympus.cli.verify_cmd import CheckResult, check_health, check_readiness
+from data_olympus.cli.verify_cmd import CheckResult, check_health, check_readiness, check_search
 
 
 def _client(handler) -> httpx.Client:
@@ -40,15 +40,12 @@ def test_check_readiness_ok_on_200() -> None:
 
 
 def test_check_readiness_fails_on_503() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:  # unused arg: _ prefix satisfies ruff ARG001
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, text="not ready")
 
     r = check_readiness(_client(handler))
     assert r.ok is False
     assert r.name == "readiness"
-
-
-from data_olympus.cli.verify_cmd import check_search
 
 
 def test_check_search_ok_with_hits_list() -> None:
@@ -61,9 +58,17 @@ def test_check_search_ok_with_hits_list() -> None:
 
 
 def test_check_search_fails_when_hits_missing() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:  # unused arg: _ prefix satisfies ruff ARG001
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"unexpected": 1})
 
     r = check_search(_client(handler), "the")
     assert r.ok is False
     assert r.name == "search"
+
+
+def test_check_search_fails_when_hits_not_a_list() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"hits": "nope"})
+
+    r = check_search(_client(handler), "the")
+    assert r.ok is False
