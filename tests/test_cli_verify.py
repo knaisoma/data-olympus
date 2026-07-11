@@ -7,6 +7,7 @@ import httpx
 from data_olympus.cli.main import build_parser
 from data_olympus.cli.verify_cmd import (
     CheckResult,
+    check_enforcement,
     check_health,
     check_readiness,
     check_search,
@@ -113,7 +114,7 @@ def test_run_verify_json_output_lists_checks(capsys) -> None:
     out = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert out["ok"] is True
-    assert {c["name"] for c in out["checks"]} == {"health", "readiness", "search"}
+    assert {c["name"] for c in out["checks"]} == {"health", "readiness", "search", "enforcement"}
 
 
 def test_cli_parses_verify_subcommand() -> None:
@@ -178,3 +179,44 @@ def test_cli_rejects_unknown_check_name() -> None:
     from data_olympus.cli.verify_cmd import _cmd_verify
 
     assert _cmd_verify(args) == 2
+
+
+def test_enforcement_pass_on_200() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/gate/check"
+        return httpx.Response(200, json={"blocked": False})
+
+    assert check_enforcement(_client(handler)).ok is True
+
+
+def test_enforcement_pass_on_404_not_mounted() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="not found")
+
+    r = check_enforcement(_client(handler))
+    assert r.ok is True
+    assert "not mounted" in r.detail.lower()
+
+
+def test_enforcement_pass_on_401_without_token_is_info() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="unauthorized")
+
+    r = check_enforcement(_client(handler), token=None)
+    assert r.ok is True
+    assert "auth" in r.detail.lower()
+
+
+def test_enforcement_fails_on_401_with_token() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="unauthorized")
+
+    r = check_enforcement(_client(handler), token="t")
+    assert r.ok is False
+
+
+def test_enforcement_fails_on_500() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    assert check_enforcement(_client(handler)).ok is False

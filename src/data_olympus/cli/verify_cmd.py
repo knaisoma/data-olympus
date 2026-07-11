@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 # functions only (no new top-level imports), so ruff's E402 never fires.
 # `json` is used by run_verify (Task 4); the argparse annotations are strings.
 
-_ALL_CHECKS = ("health", "readiness", "search")
+_ALL_CHECKS = ("health", "readiness", "search", "enforcement")
 
 
 @dataclass(frozen=True)
@@ -77,6 +77,40 @@ def check_search(client: httpx.Client, probe: str) -> CheckResult:
     return CheckResult("search", True, f"{len(hits)} hit(s) for probe {probe!r}")
 
 
+def check_enforcement(client: httpx.Client, token: str | None = None) -> CheckResult:
+    """Probe /api/v1/gate/check. Deployment-tolerant: 404 (routes not
+    mounted) and 401/403 without a token are informational passes; a token
+    that is rejected, or a 5xx, fail."""
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    payload = {"workspace": "data-olympus", "session_id": "verify-probe"}
+    try:
+        resp = client.post(
+            "/api/v1/gate/check", json=payload, headers=headers
+        )
+    except httpx.HTTPError as exc:
+        return CheckResult(
+            "enforcement", False, f"request failed: {exc}", connection_error=True
+        )
+    code = resp.status_code
+    if code == 200:
+        return CheckResult("enforcement", True, "enforcement plane responding")
+    if code == 404:
+        return CheckResult(
+            "enforcement", True, "enforcement routes not mounted (open deployment)"
+        )
+    if code in (401, 403):
+        if token:
+            return CheckResult(
+                "enforcement", False, f"enforcement rejected the token ({code})"
+            )
+        return CheckResult(
+            "enforcement",
+            True,
+            "enforcement active (auth required; pass --token to test round-trip)",
+        )
+    return CheckResult("enforcement", False, f"unexpected status {code}")
+
+
 def run_verify(
     *,
     target: str,
@@ -84,6 +118,7 @@ def run_verify(
     timeout: float = 10.0,
     probe: str = "the",
     checks: list[str] | None = None,
+    token: str | None = None,
     client: httpx.Client | None = None,
 ) -> int:
     """Orchestrate selected checks and report results to stdout. Returns 0, 1,
@@ -92,7 +127,9 @@ def run_verify(
     if client is None:
         client = httpx.Client(base_url=target.rstrip("/"), timeout=timeout)
     try:
-        selected_checks = checks or list(_ALL_CHECKS)
+        selected_checks = (
+            checks if checks is not None else list(_ALL_CHECKS)
+        )
         results = []
         for check_name in _ALL_CHECKS:
             if check_name not in selected_checks:
@@ -103,6 +140,8 @@ def run_verify(
                 results.append(check_readiness(client))
             elif check_name == "search":
                 results.append(check_search(client, probe))
+            elif check_name == "enforcement":
+                results.append(check_enforcement(client, token))
     finally:
         if owns_client:
             client.close()
@@ -165,24 +204,36 @@ def add_verify_subparser(
         help="comma-separated subset to run (default: all): "
         "health,readiness,search,enforcement",
     )
+    p.add_argument(
+        "--token",
+        default=None,
+        help="bearer token for enforcement check (default: $KB_AUTH_TOKEN)",
+    )
     p.set_defaults(func=_cmd_verify)
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
-    """Entry point for the verify subcommand; resolve target and call run_verify."""
+    """Entry point for the verify subcommand; resolve target and call
+    run_verify."""
     import os
     import sys
 
-    target = args.target or os.environ.get("KB_ENDPOINT") or "http://localhost:8080"
+    target = args.target or os.environ.get("KB_ENDPOINT") or (
+        "http://localhost:8080"
+    )
 
     checks = None
     if args.checks:
         checks = [c.strip() for c in args.checks.split(",")]
         unknown = set(checks) - set(_ALL_CHECKS)
         if unknown:
-            print(f"error: unknown check(s): {','.join(sorted(unknown))}",
-                  file=sys.stderr)
+            print(
+                f"error: unknown check(s): {','.join(sorted(unknown))}",
+                file=sys.stderr,
+            )
             return 2
+
+    token = args.token or os.environ.get("KB_AUTH_TOKEN")
 
     return run_verify(
         target=target,
@@ -190,4 +241,5 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         timeout=args.timeout,
         probe=args.probe,
         checks=checks,
+        token=token,
     )
