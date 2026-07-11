@@ -6,7 +6,7 @@ import pathlib
 import subprocess
 import sys
 
-from scripts.compute_release import bump_for, classify, next_version
+from scripts.compute_release import bump_for, classify, next_rc_number, next_rc_tag, next_version
 
 _REPO = pathlib.Path(__file__).resolve().parents[1]
 
@@ -100,3 +100,34 @@ def test_script_runs_as_direct_path() -> None:
     )
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout).get("bump") in {"none", "patch", "minor"}
+
+
+def test_next_rc_number_starts_at_1_when_none_exist() -> None:
+    assert next_rc_number("0.5.0", []) == 1
+
+
+def test_next_rc_number_is_one_past_highest_for_that_base() -> None:
+    assert next_rc_number("0.5.0", ["0.5.0-rc.1", "0.5.0-rc.2"]) == 3
+
+
+def test_next_rc_number_ignores_other_bases_and_v_prefix() -> None:
+    # 0.4.0 rc is a different base; the v-prefixed 0.5.0-rc.1 counts.
+    assert next_rc_number("0.5.0", ["0.4.0-rc.9", "v0.5.0-rc.1"]) == 2
+
+
+def test_next_rc_number_ignores_non_rc_and_malformed() -> None:
+    assert next_rc_number("0.5.0", ["0.5.0", "latest", "0.5.0-rc.x", "junk"]) == 1
+
+
+def test_next_rc_tag_composes_base_and_number() -> None:
+    assert next_rc_tag("0.5.0", ["0.5.0-rc.1"]) == "0.5.0-rc.2"
+
+
+def test_current_rc_tag_empty_when_none_exist() -> None:
+    from scripts.compute_release import current_rc_tag
+    assert current_rc_tag("0.5.0", ["0.4.0-rc.9", "v0.5.0"]) == ""
+
+
+def test_current_rc_tag_returns_highest_for_base() -> None:
+    from scripts.compute_release import current_rc_tag
+    assert current_rc_tag("0.5.0", ["0.5.0-rc.1", "v0.5.0-rc.3", "0.5.0-rc.2"]) == "0.5.0-rc.3"

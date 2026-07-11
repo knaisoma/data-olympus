@@ -48,13 +48,73 @@ jobs:
           # and double-build plus double-move latest. Keep it on GITHUB_TOKEN.
           git push origin "$TAG"
 
-  # Build and publish the image BEFORE the GitHub Release is created, so a
-  # published Release always has its image. If this build fails, the tag exists
-  # but no Release is published; a rerun is safe (tag creation and this build are
-  # both idempotent).
-  build-image:
+  # Resolve whether a verified release-candidate image exists for this version.
+  # If it does, promotion re-tags that exact digest (byte-identical to what was
+  # verified on the kn-dev canary). If not (manual-tag / no-RC cut), build fresh.
+  resolve-rc:
     needs: decide
     if: needs.decide.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      rc_tag: ${{ steps.rc.outputs.rc_tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Find the highest existing RC tag for this version
+        id: rc
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.decide.outputs.tag }}
+        run: |
+          VERSION="${TAG#v}"
+          : > /tmp/tags.txt
+          if ! gh api --paginate \
+                "/orgs/knaisoma/packages/container/data-olympus/versions" \
+                --jq '.[].metadata.container.tags[]' > /tmp/tags.txt 2>/tmp/gh-err.log; then
+            if grep -qiE '404|not found' /tmp/gh-err.log; then
+              echo "no existing package versions; will build fresh"
+            else
+              echo "gh api failed (non-404):" >&2; cat /tmp/gh-err.log >&2; exit 1
+            fi
+          fi
+          RC_TAG="$(python3 scripts/rc_tag.py --base "$VERSION" --current < /tmp/tags.txt)"
+          echo "rc_tag=$RC_TAG" >> "$GITHUB_OUTPUT"
+          echo "resolved rc_tag='$RC_TAG' for $VERSION"
+
+  # Byte-identical promotion: re-tag the verified RC digest to vX.Y.Z + :latest.
+  # No rebuild, so the released image is exactly what passed kn-dev verification.
+  promote-image:
+    needs: [decide, resolve-rc]
+    if: needs.decide.outputs.tag != '' && needs.resolve-rc.outputs.rc_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Re-tag verified RC digest to the release tag
+        env:
+          REPO: ghcr.io/knaisoma/data-olympus
+          TAG: ${{ needs.decide.outputs.tag }}
+          RC_TAG: ${{ needs.resolve-rc.outputs.rc_tag }}
+        run: |
+          docker buildx imagetools create \
+            --tag "$REPO:$TAG" --tag "$REPO:latest" "$REPO:$RC_TAG"
+          echo "$REPO:$TAG and :latest now point at the verified $REPO:$RC_TAG digest"
+
+  # Fresh build fallback: only when no verified RC image exists (manual-tag cut).
+  build-image:
+    needs: [decide, resolve-rc]
+    if: needs.decide.outputs.tag != '' && needs.resolve-rc.outputs.rc_tag == ''
     uses: ./.github/workflows/release-image-reusable.yml
     with:
       tag: ${{ needs.decide.outputs.tag }}
@@ -115,8 +175,10 @@ jobs:
           skip-existing: true
 
   release:
-    needs: [decide, build-image]
-    if: needs.decide.outputs.tag != ''
+    needs: [decide, resolve-rc, promote-image, build-image]
+    if: >-
+      always() && needs.decide.outputs.tag != '' &&
+      (needs.promote-image.result == 'success' || needs.build-image.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -12,6 +12,10 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # Allow running as a plain script (python scripts/x.py): put repo root on the
 # path so `scripts.*` imports resolve the same way they do under pytest.
@@ -23,6 +27,7 @@ from scripts.check_changelog import _is_functional  # noqa: E402  # one definiti
 
 _SUBJECT_RE = re.compile(r"^(?P<type>[a-z]+)(?:\([^)]*\))?(?P<bang>!)?:\s")
 _BREAKING_FOOTER = re.compile(r"^BREAKING[ -]CHANGE:", re.MULTILINE)
+_RC_TAG_RE = re.compile(r"^v?(?P<base>\d+\.\d+\.\d+)-rc\.(?P<n>\d+)$")
 _FEATURE = "feat"
 _FIXES = ("fix", "perf")
 _NONE, _PATCH, _MINOR = 0, 1, 2
@@ -69,6 +74,34 @@ def next_version(current: str, bump: str) -> str:
     if bump == "patch":
         return f"{major}.{minor}.{patch + 1}"
     return current
+
+
+def next_rc_number(base_version: str, existing_refs: Iterable[str]) -> int:
+    """One past the highest N among existing `<base_version>-rc.N` refs, else 1.
+
+    Refs may carry a leading `v`; refs for a different base or that are not
+    `X.Y.Z-rc.N` are ignored.
+    """
+    highest = 0
+    for ref in existing_refs:
+        m = _RC_TAG_RE.match(ref.strip())
+        if m is None or m.group("base") != base_version:
+            continue
+        highest = max(highest, int(m.group("n")))
+    return highest + 1
+
+
+def next_rc_tag(base_version: str, existing_refs: Iterable[str]) -> str:
+    """The next release-candidate channel tag, e.g. `0.5.0-rc.3`."""
+    return f"{base_version}-rc.{next_rc_number(base_version, existing_refs)}"
+
+
+def current_rc_tag(base_version: str, existing_refs: Iterable[str]) -> str:
+    """The highest existing `<base_version>-rc.N` tag, e.g. `0.5.0-rc.2`, or "" if
+    none exist. (next_rc_tag returns one PAST the highest; this returns the highest
+    itself, for promoting an already-built RC.)"""
+    n = next_rc_number(base_version, existing_refs) - 1
+    return f"{base_version}-rc.{n}" if n >= 1 else ""
 
 
 def _git(*args: str) -> str:
