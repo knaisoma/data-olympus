@@ -1,0 +1,42 @@
+# data-olympus-release-planner routine
+
+Status: active
+Since: 2026-07-11
+Schedule: cron `0 18 * * 5` (Friday 18:00 Europe/Madrid)
+Purpose: turn open GitHub issues into a scoped, reviewed, operator-approved release
+with implementation tickets, so the Monday cutter has a ready epic.
+
+## What it does each run
+
+1. Hygiene + gh auth: clean `main` checkout, `gh` reachable
+   (`tooling/paperclip-gh-auth-context`).
+2. Gather: `gh issue list --state open --json number,title,labels,milestone,body`.
+3. Select + cluster: target 4 (range 3-5) highest-value issues, then pull in
+   closely-related ones (shared files, labels, milestone, epic). Produce a Release
+   Scope Brief: chosen set with rationale, explicitly-deferred set, projected bump.
+4. Dual-architect review: the routine (Architect, Claude Opus) drafts the scope +
+   a per-issue implementation spec. The companion architect is `agy` with
+   Gemini 3.5 Flash (High):
+   `agy -p '<review prompt + brief>' --model 'Gemini 3.5 Flash (High)'`.
+   Fallback when agy/Gemini is unavailable: codex CLI with gpt-5.6-sol high
+   reasoning: `codex exec --sandbox read-only --skip-git-repo-check -m gpt-5.6-sol
+   -c model_reasoning_effort="high" -C <dir> '<review prompt>'`. Iterate until both
+   agree; record a `## Companion review (<agy | codex>)` evidence block
+   (WF-004 / collaboration protocol).
+5. Operator approval gate: request a Paperclip approval carrying the brief + specs;
+   notify the operator (Telegram, GDEC-007). Wait.
+6. On approval: create the release parent epic + one implementation sub-ticket per
+   selected issue, each with a `Ready for Build` block, a reviewer assigned
+   (GDEC-028), and `Branch: feature/<release-epic-id>` (WF-004 section 2.2 epic
+   integration branch). Peer-review-until-clean is inherent to WF-004 section 7.
+   Create the `feature/<release-epic-id>` branch off `main`.
+
+## Constraints
+
+- No em-dashes.
+- One release epic per week; the batch is expected ready by the following Monday
+  (strict 1-week pipeline). The Monday cutter (`.rules/release-routine.md`) gates on
+  readiness and never ships a batch that is not Done + reviewed + green.
+- The epic uses the WF-004 section 2.2 shared integration branch (squash per
+  feature, one commit per ticket, one integration MR), reconciling the "release
+  branch" model with STD-U-810 section 2 (no long-lived gitflow release branch).
