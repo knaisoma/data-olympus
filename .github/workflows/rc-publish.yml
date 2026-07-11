@@ -1,0 +1,86 @@
+# .github/workflows/rc-publish.yml
+name: Publish release candidate
+
+# Manually dispatched by the release cutter after quality gates pass. Builds the
+# RC image from a ref where pyproject already carries the final X.Y.Z, publishes
+# it to ghcr as X.Y.Z-rc.N plus the moving :rc channel, and cuts a GitHub
+# pre-release. Image-only: RCs are never published to PyPI and never move :latest.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "git ref to build (the release-candidate branch/sha; pyproject must carry the final X.Y.Z)"
+        required: true
+        type: string
+
+concurrency:
+  group: rc-publish-${{ inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      rc_tag: ${{ steps.rc.outputs.rc_tag }}
+      version: ${{ steps.rc.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Compute RC tag
+        id: rc
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="$(python3 -c 'import sys; from scripts.should_tag import project_version; print(project_version(open("pyproject.toml").read()))')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # List existing ghcr tags for this package; empty on first RC (jq -e guards the 404/empty case).
+          gh api --paginate \
+            "/orgs/knaisoma/packages/container/data-olympus/versions" \
+            --jq '.[].metadata.container.tags[]' > /tmp/tags.txt 2>/dev/null || true
+          RC_TAG="$(python3 scripts/rc_tag.py --base "$VERSION" < /tmp/tags.txt)"
+          echo "rc_tag=$RC_TAG" >> "$GITHUB_OUTPUT"
+          echo "Computed RC tag: $RC_TAG (base $VERSION)"
+
+  build-image:
+    needs: decide
+    uses: ./.github/workflows/release-image-reusable.yml
+    with:
+      tag: ${{ needs.decide.outputs.rc_tag }}
+      move_latest: false
+      channel: rc
+    permissions:
+      contents: read
+      packages: write
+
+  prerelease:
+    needs: [decide, build-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Create GitHub pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RC_TAG: ${{ needs.decide.outputs.rc_tag }}
+          VERSION: ${{ needs.decide.outputs.version }}
+        run: |
+          NOTES="docs/releases/v${VERSION}.md"
+          if gh release view "$RC_TAG" >/dev/null 2>&1; then
+            echo "pre-release $RC_TAG already exists, skipping"
+            exit 0
+          fi
+          if [ -f "$NOTES" ]; then
+            gh release create "$RC_TAG" --prerelease --target "${{ inputs.ref }}" \
+              --title "$RC_TAG" --notes-file "$NOTES"
+          else
+            gh release create "$RC_TAG" --prerelease --target "${{ inputs.ref }}" \
+              --title "$RC_TAG" --notes "Release candidate ${RC_TAG} for ${VERSION}."
+          fi
