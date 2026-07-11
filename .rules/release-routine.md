@@ -1,42 +1,63 @@
 # data-olympus-release-cutter routine
 
 Status: active
-Since: 2026-07-01
-Schedule: cron `0 5 * * *` (05:00 UTC daily)
-Human gate: operator merges the release PR this routine opens. The routine never tags.
+Since: 2026-07-01 (rewritten 2026-07-11 for staged promotion)
+Schedule: cron `0 5 * * 1` (Monday 05:00 Europe/Madrid)
+Human gate: a single Paperclip approval-to-ship after the release candidate is
+live on kn-dev and pre-release verification is green. The routine then promotes;
+it does not merge or publish before that approval.
 
-## What it does each run
+## What it does each run (strict 1-week pipeline)
 
-1. Fetch `origin/main`. If HEAD is already on a `v*` tag, exit quietly (no work).
-2. Run `python3 scripts/compute_release.py`. If `releasable` is false, exit quietly.
-3. Quality gates (all must pass, else open a GitHub issue titled
-   "release blocked: <reason>" and stop, do not open a release PR):
-   - `uv run pytest -v`
-   - `uv run ruff check .`
-   - `uv run mypy src`
-   - `bats -r tests`
-   - a security review pass over `git diff <lasttag>..HEAD` (security-review skill)
-   - `kb_health` sanity check
-4. Read `next_version` and the `changes` buckets from the compute step.
-5. On a branch `chore/release-v<next_version>`:
-   - set `pyproject.toml` version to `<next_version>`
-   - in `CHANGELOG.md`, rename the `[Unreleased]` block to `[<next_version>] - <UTC date>`
-     and open a fresh empty `[Unreleased]` block above it
-   - write `docs/releases/v<next_version>.md` with exactly two H2 sections,
-     `## New features` and `## Fixed`, rewritten from the hand-written
-     `[Unreleased]` prose weighed against the commit `changes` buckets, in plain
-     language a non-technical reader understands. Omit a section if empty.
-6. Open a PR `chore/release-v<next_version>` -> `main`, title
-   `chore(release): v<next_version>`, label `release`. The PR body contains the
-   `docs/releases/v<next_version>.md` content followed by an
-   `## Announcement (draft)` block: a short upbeat paragraph, the two most
-   important items, and `<release-url-once-published>` as a placeholder link.
-7. Surface the PR to the operator as a Claude task for review. Stop. Do not merge,
-   do not tag.
+1. Resolve the current release epic (the batch the planner scoped the prior
+   Friday; see `.rules/release-planning.md`). If none is ready, report and exit.
+2. Readiness gate: all sub-tickets Done and reviewed, the integration branch
+   `feature/<release-epic-id>` green (CI). If not ready, post blockers on the epic,
+   notify the operator (Telegram, GDEC-007), and STOP. Never cut a red release.
+3. Sync + releasability: on the integration branch, run
+   `uv run python scripts/compute_release.py`; if `releasable` is false, exit
+   quietly. The branch must already carry the final `X.Y.Z` in `pyproject.toml`
+   (bumped during the epic), plus the CHANGELOG entry and `docs/releases/vX.Y.Z.md`.
+4. Quality gates (all must pass, else open a `release blocked: <reason>` issue and
+   stop): `uv run pytest -q`, `uv run ruff check .`, `uv run mypy src`,
+   `bats -r tests`, a security review over `git diff <lasttag>..HEAD`, and `kb_health`.
+5. Build the RC: `gh workflow run rc-publish.yml -f ref=feature/<release-epic-id>`.
+   This publishes `ghcr.io/knaisoma/data-olympus:X.Y.Z-rc.N` + the `:rc` channel and
+   a GitHub pre-release. Wait for the run to succeed; capture `X.Y.Z-rc.N`.
+6. Canary + record rollback point: read the current `:kndev` source (the stable
+   version kn-dev runs) and record it (`.rules/release-rollback.md` step 0). Then
+   `gh workflow run set-channel.yml -f source=X.Y.Z-rc.N`. Keel rolls the RC onto
+   kn-dev within ~2 minutes.
+7. Pre-release verify: `data-olympus verify --target <kn-dev ingress>` must be
+   green (health, readiness, search, enforcement). If red, roll back
+   (`set-channel source=<rollback point>`) and open a `release blocked` issue.
+8. Approval-to-ship: request a Paperclip approval on the epic and notify the
+   operator (Telegram). The operator may exercise the RC live on kn-dev, then
+   approves or rejects. On rejection, roll back and stop.
+9. Promote (on approval): merge the release PR / integration MR to `main`.
+   `tag-release.yml` cuts tag `vX.Y.Z`, builds the stable image, publishes PyPI, and
+   creates the GitHub Release. Then `gh workflow run set-channel.yml -f source=vX.Y.Z`
+   so kn-dev runs the promoted stable.
+10. Post-release verify: `data-olympus verify --target <kn-dev ingress>` green. If
+    red, roll back per `.rules/release-rollback.md` (post-release path) and notify.
+11. Release note into the Paperclip task: post the `docs/releases/vX.Y.Z.md` content
+    as a comment on the routine's Paperclip issue.
+12. Retro to company-knowledge: run a short retro (what the RC/verify cycle
+    surfaced, any gate that fired, any manual fix, kn-dev-vs-stable drift) and
+    propose a lessons-learned update to company-knowledge via the data-olympus MCP
+    (`kb_propose_edit` / `kb_propose_memory`, operator-gated). This is how the
+    pipeline improves release over release.
+13. Hold open for the operator's external announcement: keep the Paperclip task
+    open with a Telegram reminder. The release artifact ships on approval + verify;
+    the held-open task is the reminder to post the announcement.
 
 ## Constraints
 
-- No em-dashes in any authored prose.
-- Never publish to any external platform; the announcement is a draft in the PR body.
-- Never run `git tag`; tagging is `tag-release.yml`'s job after the operator merges.
-- One open release PR at a time: if `chore/release-v*` is already open, update it.
+- No em-dashes in authored prose.
+- The RC image carries the final `X.Y.Z` (baked from `pyproject.toml`); `-rc.N` is a
+  registry channel tag only. See `.rules/versioning.md` and STD-U-810.
+- ghcr operations run in CI (dispatched via `gh workflow run`); the runtime needs
+  ghcr package-write via CI's token and the `kn-dev` SSH key only for direct
+  cluster inspection/rollback.
+- Exactly one release epic in flight; the pipeline is idempotent (re-running a
+  green step is safe: rc-publish, tag-release, and set-channel are all idempotent).
