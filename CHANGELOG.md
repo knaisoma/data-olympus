@@ -12,6 +12,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-11
+
 ### Added
 
 - **`data-olympus verify` command.** New CLI subcommand that runs pass/fail
