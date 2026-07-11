@@ -1,0 +1,40 @@
+# Rule: release promotion and rollback (kn-dev canary)
+
+Status: active
+Since: 2026-07-11
+Applies to: the data-olympus release train (staged-promotion pipeline)
+
+## Channel model
+
+kn-dev runs whatever the moving ghcr tag `:kndev` points at (Keel `policy: force`,
+`match-tag: true`, poll). The pipeline moves `:kndev` via the `set-channel.yml`
+workflow (`gh workflow run set-channel.yml -f source=<tag>`); it never rebuilds an
+image, so the channel and its source share one digest.
+
+## Promotion sequence (cutter, after approval)
+
+1. Canary: `set-channel source=vX.Y.Z-rc.N` -> Keel rolls the RC onto kn-dev.
+2. Pre-release verify: `data-olympus verify --target <kn-dev ingress>` must be green.
+3. Paperclip approval-to-ship (operator).
+4. Merge the release PR -> `tag-release.yml` cuts tag vX.Y.Z, builds the stable
+   image, publishes PyPI, creates the GitHub Release.
+5. Promote the canary to stable: `set-channel source=vX.Y.Z` -> kn-dev runs stable.
+6. Post-release verify against kn-dev.
+
+## Rollback
+
+- Canary failure (pre-release verify red, or approval rejected): nothing external
+  shipped. `set-channel source=<pre-RC tag recorded in step 1>` -> Keel restores
+  the prior version. Roll a new `-rc.(N+1)` forward if fixable, else block.
+- Post-release failure (stable already shipped): `set-channel source=<previous
+  stable tag>` to restore kn-dev; `pip`-side, `twine`/PyPI `yank` the just-published
+  version (cannot delete); mark the GitHub Release as a draft/prerelease; open a
+  `release blocked: post-release verify failed` issue and notify the operator.
+
+## Note
+
+Stable image promotion currently builds fresh from the verified commit via
+`tag-release.yml` (digest-pinned base + frozen `uv.lock` = functionally identical
+to the verified RC), rather than a byte-identical digest re-tag. True byte-identical
+promotion is a documented future hardening (would require `tag-release.yml` to
+re-tag the RC digest instead of building).
