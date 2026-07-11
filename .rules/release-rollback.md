@@ -13,6 +13,10 @@ image, so the channel and its source share one digest.
 
 ## Promotion sequence (cutter, after approval)
 
+0. Record the rollback point: note the tag `:kndev` currently points at (the stable
+   version kn-dev is running, e.g. the latest non-prerelease GitHub Release, or read
+   it with `docker buildx imagetools inspect ghcr.io/knaisoma/data-olympus:kndev`).
+   The canary and post-release rollbacks below re-point `:kndev` back at this value.
 1. Canary: `set-channel source=vX.Y.Z-rc.N` -> Keel rolls the RC onto kn-dev.
 2. Pre-release verify: `data-olympus verify --target <kn-dev ingress>` must be green.
 3. Paperclip approval-to-ship (operator).
@@ -24,11 +28,9 @@ image, so the channel and its source share one digest.
 ## Rollback
 
 - Canary failure (pre-release verify red, or approval rejected): nothing external
-  shipped. `set-channel source=<pre-RC tag recorded in step 1>` -> Keel restores
+  shipped. `set-channel source=<the rollback-point tag from step 0>` -> Keel restores
   the prior version. Roll a new `-rc.(N+1)` forward if fixable, else block.
-- Post-release failure (stable already shipped): `set-channel source=<previous
-  stable tag>` to restore kn-dev; `pip`-side, `twine`/PyPI `yank` the just-published
-  version (cannot delete); mark the GitHub Release as a draft/prerelease; open a
+- Post-release failure (stable already shipped): `set-channel source=<the rollback-point tag from step 0>` to restore kn-dev; **yank** the just-published version on PyPI (PyPI has no CLI yank: do it in the PyPI web UI, Project -> the release -> Options -> Yank; yank hides it from resolvers, it cannot be deleted or replaced); mark the GitHub Release as a draft/prerelease; open a
   `release blocked: post-release verify failed` issue and notify the operator.
 
 ## Note

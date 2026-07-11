@@ -26,7 +26,6 @@ jobs:
   retag:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
       packages: write
     steps:
       - name: Set up Docker Buildx
@@ -43,6 +42,10 @@ jobs:
           CHANNEL: ${{ inputs.channel }}
           SOURCE: ${{ inputs.source }}
         run: |
+          if [ -z "$CHANNEL" ]; then
+            echo "channel input is empty" >&2
+            exit 1
+          fi
           # Fail if the source tag does not exist (avoid creating a dangling channel).
           if ! docker buildx imagetools inspect "$REPO:$SOURCE" >/dev/null 2>&1; then
             echo "source image $REPO:$SOURCE not found" >&2
@@ -50,4 +53,7 @@ jobs:
           fi
           docker buildx imagetools create --tag "$REPO:$CHANNEL" "$REPO:$SOURCE"
           echo "channel $REPO:$CHANNEL now points at $REPO:$SOURCE"
-          docker buildx imagetools inspect "$REPO:$CHANNEL" | head -5
+          # `|| true`: the re-tag above already succeeded; this is a best-effort
+          # log, and `head` closing the pipe early must not fail the step under
+          # the runner's default `set -o pipefail`.
+          docker buildx imagetools inspect "$REPO:$CHANNEL" | head -n 5 || true
