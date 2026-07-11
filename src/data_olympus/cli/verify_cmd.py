@@ -50,3 +50,20 @@ def check_readiness(client: httpx.Client) -> CheckResult:
         return CheckResult("readiness", False, f"request failed: {exc}")
     ok = resp.status_code == 200
     return CheckResult("readiness", ok, "ready" if ok else f"status {resp.status_code}")
+
+
+def check_search(client: httpx.Client, probe: str) -> CheckResult:
+    """GET /api/v1/search: confirms the index answers reads with a hits list."""
+    try:
+        resp = client.get("/api/v1/search", params={"q": probe, "limit": 1})
+    except httpx.HTTPError as exc:
+        return CheckResult("search", False, f"request failed: {exc}")
+    if resp.status_code != 200:
+        return CheckResult("search", False, f"status {resp.status_code}")
+    try:
+        hits = resp.json().get("hits")
+    except ValueError:
+        return CheckResult("search", False, "non-JSON search body")
+    if not isinstance(hits, list):
+        return CheckResult("search", False, "response missing 'hits' list")
+    return CheckResult("search", True, f"{len(hits)} hit(s) for probe {probe!r}")

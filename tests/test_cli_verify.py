@@ -46,3 +46,24 @@ def test_check_readiness_fails_on_503() -> None:
     r = check_readiness(_client(handler))
     assert r.ok is False
     assert r.name == "readiness"
+
+
+from data_olympus.cli.verify_cmd import check_search
+
+
+def test_check_search_ok_with_hits_list() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/search"
+        assert request.url.params.get("q") == "the"
+        return httpx.Response(200, json={"hits": [], "total_returned": 0})
+
+    assert check_search(_client(handler), "the").ok is True
+
+
+def test_check_search_fails_when_hits_missing() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:  # unused arg: _ prefix satisfies ruff ARG001
+        return httpx.Response(200, json={"unexpected": 1})
+
+    r = check_search(_client(handler), "the")
+    assert r.ok is False
+    assert r.name == "search"
