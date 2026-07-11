@@ -28,6 +28,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Glama registry score support.** Added the Glama score badge to the README
   and documented the claimed server listing, sandbox release settings, and
   score-maintenance checklist in `docs/glama.md`.
+- **Release security-clearance gate.** `scripts/security_alerts.py` fails a
+  release when any Dependabot or CodeQL alert is open; the release planner clears
+  every alert (fix or justified dismissal) and the cutter verifies zero open
+  before building the release candidate.
 
 ### Changed
 
