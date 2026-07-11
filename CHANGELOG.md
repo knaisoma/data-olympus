@@ -14,6 +14,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`data-olympus verify` command.** New CLI subcommand that runs pass/fail
+  checks against a running instance (`--target`, `--json`, `--checks`,
+  `--token`): liveness (`/api/v1/health`), readiness (`/readyz`), a search
+  round-trip (`/api/v1/search`), and a deployment-tolerant enforcement-plane
+  probe (`/api/v1/gate/check`). Exit codes: `0` all pass, `4` a check failed,
+  `1` the target is unreachable. Used as the pre/post-release verification gate.
+- **Staged-promotion release pipeline (release engineering).** A release
+  candidate is published to a `X.Y.Z-rc.N` ghcr channel (`rc-publish.yml`),
+  deployed as a canary and verified, then promoted by re-tagging the verified
+  digest to `vX.Y.Z` byte-identically (`tag-release.yml`), with a moving-channel
+  helper (`set-channel.yml`) and project-local runbooks under `.rules/`.
 - **Glama registry score support.** Added the Glama score badge to the README
   and documented the claimed server listing, sandbox release settings, and
   score-maintenance checklist in `docs/glama.md`.
