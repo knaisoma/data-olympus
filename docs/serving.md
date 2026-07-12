@@ -65,6 +65,12 @@ trigram, auth, audit rotation):
   one with the classic nested-quantifier ReDoS shape, is logged and skipped
   rather than raised, and every accepted pattern runs with a hard 1-second
   match timeout. Empty by default (no extra patterns).
+- `KB_DISABLE_VERSION_CHECK`: truthy (`1`, `true`, `yes`, `on`) disables the
+  public PyPI/GitHub version check completely. Use this for air-gapped
+  deployments. Default is off.
+- `KB_VERSION_CHECK_INTERVAL_SEC`: how often the background task refreshes the
+  cached latest-version result (default `86400`, i.e. 24h). The health request
+  path never performs the outbound lookup.
 - `KB_GOVERNED_LANE_PROTECTION`: governed-lane write protection (issue #112),
   default `on`; set `off` to restore the exact pre-#112 behavior (see
   "Governed-lane write protection" below).
@@ -142,6 +148,13 @@ means a doc silently lost its governance metadata (`type`/`status`/`tier`), so i
 will not be governed or filtered correctly. It is a **warning** signal and does
 **not** flip `degraded` (that would 503 every read for an authoring mistake);
 alert on `malformed_frontmatter > 0` separately.
+
+When the background version check sees a newer published package than the
+running server, health also carries `latest_version` and sets
+`update_available: true`. `latest_version` is omitted from compact health output
+until a check has found a published version; verbose health shows it as `null`
+before then. This signal is informational only and does not affect `degraded`,
+`readyz`, or write behavior.
 
 ## Write serialization and integrity gates
 

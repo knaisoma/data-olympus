@@ -1190,6 +1190,29 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
     )
 
 
+def _maybe_start_version_check_task(
+    tasks: list[asyncio.Task[Any]], state: ServerState, config: Config
+) -> None:
+    """Append the version-check background task unless disabled for air gap."""
+    # Periodic "a newer version is published" check (issue #146 / KNA-68).
+    # Gated OFF by KB_DISABLE_VERSION_CHECK: when disabled the task is never
+    # spawned, so an air-gapped deployment makes ZERO outbound calls. When
+    # enabled it runs setup_wizard.latest_version() (blocking urllib) on a
+    # worker thread once per interval and caches the result on ServerState;
+    # the /api/v1/health route reads only the cache, never the network.
+    if config.disable_version_check:
+        return
+    from data_olympus.version_check import version_check_loop
+
+    tasks.append(asyncio.create_task(
+        version_check_loop(
+            state,
+            interval_sec=config.version_check_interval_sec,
+        ),
+        name="version_check_loop",
+    ))
+
+
 def _uvicorn_proxy_kwargs(trusted_proxies: list[str]) -> dict[str, Any]:
     """Build the uvicorn proxy-header kwargs from the trusted-proxy list.
 
@@ -1372,7 +1395,6 @@ def main() -> None:
             worktree_gc_loop,
         )
         from data_olympus.session_metrics import session_reaper_loop
-        from data_olympus.version_check import version_check_loop
 
         # Startup recovery: a crash between `git commit` and `push_queue.enqueue`
         # (tools_write) leaves a committed-but-unqueued orphan on a session
@@ -1477,20 +1499,7 @@ def main() -> None:
                 ),
                 name="session_reaper_loop",
             ))
-        # Periodic "a newer version is published" check (issue #146 / KNA-68).
-        # Gated OFF by KB_DISABLE_VERSION_CHECK: when disabled the task is never
-        # spawned, so an air-gapped deployment makes ZERO outbound calls. When
-        # enabled it runs setup_wizard.latest_version() (blocking urllib) on a
-        # worker thread once per interval and caches the result on ServerState;
-        # the /api/v1/health route reads only the cache, never the network.
-        if not config.disable_version_check:
-            tasks.append(asyncio.create_task(
-                version_check_loop(
-                    state,
-                    interval_sec=config.version_check_interval_sec,
-                ),
-                name="version_check_loop",
-            ))
+        _maybe_start_version_check_task(tasks, state, config)  # pragma: no cover
         # Proxy-header handling (WP3a item 3). By default uvicorn ignores
         # X-Forwarded-For, so behind an ingress every client collapses to the
         # proxy's address and the per-IP rate limiter throttles all clients as

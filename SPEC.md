@@ -281,6 +281,13 @@ The serving transport MUST be streamable HTTP (not stdio). The MCP endpoint is `
 
 **Readiness probes MUST NOT target `/api/v1/health`.** A load balancer or orchestrator readiness check MUST use `GET /readyz` (200 once the process is up and the index is loaded, independent of data staleness). `/api/v1/health` keeps a 503-on-degraded contract for data-freshness alerting; wiring it as a readiness probe would eject a healthy single replica from its Service on a transient git-remote staleness. See [`docs/serving.md`](docs/serving.md).
 
+**Update-available signal.** A server MAY surface cached `latest_version` and
+`update_available` fields in `kb_health` / `GET /api/v1/health` when a newer
+data-olympus package is published. These are informational serving-layer fields
+only: they MUST NOT affect `degraded` or readiness, and the health request path
+MUST read a cache rather than perform outbound registry calls. Deployments MAY
+disable the check entirely for air-gapped operation.
+
 **Enforcement endpoints.** A server MAY expose an enforcement surface that turns the advisory KB into a gated consultation proxy for code and architectural decisions. The endpoints are:
 
 - `POST /api/v1/consult`: record a consultation for a `(source_session, workspace)` pair and return the governing rules for the supplied intent.

@@ -41,6 +41,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   counters, index-build duration + last-build timestamp). Without the extra the
   route returns `501` and every metric update inside the core background loops
   is a silent no-op, so a standard deployment is unaffected. (gh #69 / KNA-71)
+- **Cached update-available signal.** The server now checks PyPI/GitHub for a
+  newer published `data-olympus` version in a background task and surfaces
+  `latest_version` / `update_available` in `kb_health` and
+  `GET /api/v1/health`. The health request path reads the cache only, and
+  air-gapped deployments can set `KB_DISABLE_VERSION_CHECK=on` to make zero
+  outbound version-check calls. (gh #146 / KNA-68)
 
 ## [0.4.2] - 2026-07-11
 

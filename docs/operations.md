@@ -40,11 +40,18 @@ Poll `GET /api/v1/health` from your monitoring system and alert on:
 | `pending_count` growing unbounded | proposals not being resolved by an operator | review the pending queue |
 | `last_index_build_status == failed` | a rebuild left the last-good index in place (e.g. duplicate id) | investigate `last_index_conflicts`; see §4.2 |
 | `malformed_frontmatter > 0` | one or more docs silently lost governance metadata (`type`/`status`/`tier`) | fix the offending doc(s); **warning**, not a service failure |
+| `update_available == true` | a newer published data-olympus version is available | schedule an upgrade; informational only |
 
 Why `malformed_frontmatter` does NOT flip `degraded`: it is an authoring-quality
 issue, not a serviceability failure. Flipping `degraded` would 503 every read (via
 the CLI `--no-stale` contract) for one bad document. Alert on it separately and
 fix the front-matter; the index still serves every well-formed doc.
+
+The `latest_version` / `update_available` fields are produced from a background
+cache refreshed every `KB_VERSION_CHECK_INTERVAL_SEC` seconds (default 24h). The
+health endpoint never calls PyPI or GitHub directly. Set
+`KB_DISABLE_VERSION_CHECK=on` for private or air-gapped deployments that must
+make no outbound version-check requests.
 
 Do **not** point the Kubernetes readiness probe at `/api/v1/health`. On a stale
 KB it returns 503, which would eject the (single-replica) pod from the Service and

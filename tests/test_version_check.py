@@ -57,6 +57,23 @@ def test_compute_once_no_update_when_installed_is_current(monkeypatch) -> None:
     assert newer is False
 
 
+def test_compute_once_falls_back_when_version_tuple_rejects(monkeypatch) -> None:
+    monkeypatch.setattr(
+        setup_wizard,
+        "latest_version",
+        lambda: VersionInfo("0.4.2-dev", "0.4.2", "pypi"),
+    )
+
+    def bad_tuple(_version: str) -> tuple[int, ...]:
+        raise ValueError("bad version")
+
+    monkeypatch.setattr(setup_wizard, "_version_tuple", bad_tuple)
+    latest, installed, newer = _compute_once()
+    assert latest == "0.4.2"
+    assert installed == "0.4.2-dev"
+    assert newer is True
+
+
 def test_compute_once_offline_returns_none(monkeypatch) -> None:
     """An offline lookup (latest is None) degrades to (None, False), no crash."""
     monkeypatch.setattr(
@@ -98,6 +115,78 @@ async def test_loop_refreshes_cache_then_can_be_cancelled(monkeypatch) -> None:
         await task
     assert state.latest_version == "9.9.9"
     assert state.update_available is True
+
+
+@pytest.mark.asyncio
+async def test_loop_can_skip_the_immediate_first_check(monkeypatch) -> None:
+    calls = {"latest": 0}
+
+    def _counting() -> VersionInfo:
+        calls["latest"] += 1
+        return VersionInfo("0.4.2", "9.9.9", "pypi")
+
+    async def _cancel_sleep(_interval: int) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(setup_wizard, "latest_version", _counting)
+    monkeypatch.setattr("data_olympus.version_check.asyncio.sleep", _cancel_sleep)
+
+    state = _FakeState()
+    with pytest.raises(asyncio.CancelledError):
+        await version_check_loop(
+            state,
+            interval_sec=3600,  # type: ignore[arg-type]
+            run_once_immediately=False,
+        )
+    assert calls["latest"] == 0
+    assert state.latest_version is None
+
+
+@pytest.mark.asyncio
+async def test_loop_propagates_cancelled_during_lookup(monkeypatch) -> None:
+    async def _cancel_to_thread(_fn):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("data_olympus.version_check.asyncio.to_thread", _cancel_to_thread)
+
+    with pytest.raises(asyncio.CancelledError):
+        await version_check_loop(_FakeState(), interval_sec=3600)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_server_starts_version_check_task_unless_disabled(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    import data_olympus.version_check as version_check
+    from data_olympus.server import _maybe_start_version_check_task
+
+    started: list[int] = []
+
+    async def _fake_loop(_state, *, interval_sec: int) -> None:
+        started.append(interval_sec)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(version_check, "version_check_loop", _fake_loop)
+
+    tasks: list[asyncio.Task[object]] = []
+    _maybe_start_version_check_task(
+        tasks,
+        _FakeState(),  # type: ignore[arg-type]
+        SimpleNamespace(disable_version_check=False, version_check_interval_sec=123),  # type: ignore[arg-type]
+    )
+    assert len(tasks) == 1
+    assert tasks[0].get_name() == "version_check_loop"
+    tasks[0].cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tasks[0]
+
+    tasks = []
+    _maybe_start_version_check_task(
+        tasks,
+        _FakeState(),  # type: ignore[arg-type]
+        SimpleNamespace(disable_version_check=True, version_check_interval_sec=123),  # type: ignore[arg-type]
+    )
+    assert tasks == []
 
 
 # --------------------------------------------------------------------------- #
