@@ -336,6 +336,15 @@ class ServerState:
         # count. None until then / in tests, so health reports live_sessions=None
         # rather than a misleading 0. See session_metrics.
         self.session_count_provider: Callable[[], int | None] | None = None
+        # Version-check cache (issue #146 / KNA-68). Refreshed by a periodic
+        # background task (version_check_loop) that runs the SYNCHRONOUS,
+        # network-bound setup_wizard.latest_version() on a worker thread. The
+        # health route only READS these, never the network, so a slow/offline
+        # PyPI lookup can never stall the async request path or the readiness
+        # probe. None until the first check completes (or forever when the check
+        # is disabled / air-gapped).
+        self.latest_version: str | None = None
+        self.update_available: bool = False
 
     @property
     def pending_count(self) -> int:
@@ -647,6 +656,8 @@ def build_app(
             last_successful_refresh_at=state.last_successful_refresh_at,
             remote_head_sha=state.remote_head_sha,
             live_sessions=state.live_session_count(),
+            latest_version=state.latest_version,
+            update_available=state.update_available,
         )
         return shape_response(resp, verbose=verbose)
 
@@ -1357,6 +1368,7 @@ def main() -> None:
             worktree_gc_loop,
         )
         from data_olympus.session_metrics import session_reaper_loop
+        from data_olympus.version_check import version_check_loop
 
         # Startup recovery: a crash between `git commit` and `push_queue.enqueue`
         # (tools_write) leaves a committed-but-unqueued orphan on a session
@@ -1460,6 +1472,20 @@ def main() -> None:
                     interval_sec=config.session_reap_interval_sec,
                 ),
                 name="session_reaper_loop",
+            ))
+        # Periodic "a newer version is published" check (issue #146 / KNA-68).
+        # Gated OFF by KB_DISABLE_VERSION_CHECK: when disabled the task is never
+        # spawned, so an air-gapped deployment makes ZERO outbound calls. When
+        # enabled it runs setup_wizard.latest_version() (blocking urllib) on a
+        # worker thread once per interval and caches the result on ServerState;
+        # the /api/v1/health route reads only the cache, never the network.
+        if not config.disable_version_check:
+            tasks.append(asyncio.create_task(
+                version_check_loop(
+                    state,
+                    interval_sec=config.version_check_interval_sec,
+                ),
+                name="version_check_loop",
             ))
         # Proxy-header handling (WP3a item 3). By default uvicorn ignores
         # X-Forwarded-For, so behind an ingress every client collapses to the

@@ -147,6 +147,16 @@ class Config:
     # bind + no allowed host -> every proxied request 421s while readiness stays
     # green (direct pod probes pass). See docs/serving.md and server._resolve_allowed_hosts.
     public_hostnames: list[str] = field(default_factory=list)
+    # Periodic "a newer version is published" check (issue #146 / KNA-68).
+    # ``disable_version_check`` (KB_DISABLE_VERSION_CHECK, default off) makes an
+    # air-gapped deployment do ZERO outbound calls: the background task is not
+    # spawned at all. When enabled, the task runs once every
+    # ``version_check_interval_sec`` (default 24h) on a worker thread and caches
+    # the result on ServerState; the /api/v1/health route only READS the cached
+    # value, never the network (a blocking urllib lookup on the async request
+    # path would freeze the event loop for the timeout and stall readiness).
+    disable_version_check: bool = False
+    version_check_interval_sec: int = 86400
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -262,6 +272,10 @@ def load_config() -> Config:
     emb_cfg = _embeddings_config()
     trusted_proxies = _split_csv(os.getenv("KB_TRUSTED_PROXIES", ""))
     public_hostnames = _split_csv(os.getenv("KB_PUBLIC_HOSTNAMES", ""))
+    disable_version_check = _env_bool(os.getenv("KB_DISABLE_VERSION_CHECK", ""))
+    version_check_interval_sec = int(
+        os.getenv("KB_VERSION_CHECK_INTERVAL_SEC", "86400")
+    )
     return Config(
         kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
         kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
@@ -315,4 +329,6 @@ def load_config() -> Config:
         embeddings_model=emb_cfg.model_name,
         trusted_proxies=trusted_proxies,
         public_hostnames=public_hostnames,
+        disable_version_check=disable_version_check,
+        version_check_interval_sec=version_check_interval_sec,
     )

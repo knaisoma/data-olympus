@@ -56,6 +56,15 @@ class HealthResponse(BaseModel):
     # Docs excluded from in-force retrieval by the supersession-graph rule at
     # the last index build (issue #110 slice 2). Same WARNING-only rationale.
     graph_excluded_docs: int = 0
+    # Latest published version, cached by the periodic version-check background
+    # task (issue #146 / KNA-68). None until the first check completes, or forever
+    # when KB_DISABLE_VERSION_CHECK is set (air-gapped: zero outbound calls) or the
+    # lookup is offline. update_available is True only when a strictly newer version
+    # than the installed one is published. The health route reads this cache only;
+    # it never touches the network on the request path. Deviation-only in compact
+    # mode: omitted until a newer version is actually detected.
+    latest_version: str | None = None
+    update_available: bool = False
     # Maintenance-ledger CTA (issue #113): short structured items
     # ({kind, message, count}) an agent should surface to the operator and act
     # on only with operator confirmation. None (field omitted in compact mode)

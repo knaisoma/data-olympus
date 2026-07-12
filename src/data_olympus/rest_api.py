@@ -73,6 +73,8 @@ def _build_health(state: ServerState) -> HealthResponse:
         last_successful_refresh_at=state.last_successful_refresh_at,
         remote_head_sha=state.remote_head_sha,
         live_sessions=state.live_session_count(),
+        latest_version=state.latest_version,
+        update_available=state.update_available,
     )
 
 
