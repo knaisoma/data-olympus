@@ -1044,7 +1044,8 @@ def build_app(
                 workspace=workspace, intent=intent, source_session=source_session,
                 agent_identity=agent_identity,
                 ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
-                audit_log=state.audit_log, trigger=trigger,
+                audit_log=state.audit_log, pending_queue=state.pending,
+                trigger=trigger,
             )
             return resp.model_dump(exclude_none=True)
 

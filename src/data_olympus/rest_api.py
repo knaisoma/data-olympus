@@ -677,6 +677,9 @@ def register_routes(
                 agent_identity=body.get("agent_identity", "unknown"),
                 ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
                 audit_log=state.audit_log,
+                # KNA-72 / gh #137: reconcile the demoted_writes CTA against the
+                # live pending queue so a resolved demotion stops surfacing.
+                pending_queue=state.pending,
                 # Optional: installers mark prompt-hook auto-consults so they are
                 # audited but never clear the gate. Omitted -> explicit (old
                 # clients are real agent calls).
