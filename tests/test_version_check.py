@@ -291,3 +291,26 @@ async def test_health_omits_version_fields_before_first_check(app) -> None:
     vbody = verbose.json()
     assert vbody["latest_version"] is None
     assert vbody["update_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_health_compact_omits_latest_version_when_no_update(app) -> None:
+    """When the check has run but found no newer version, compact health keeps
+    the boolean monitor signal but does not spend tokens on the current version."""
+    state = app._dolympus_state  # type: ignore[attr-defined]
+    state.latest_version = "0.4.2"
+    state.update_available = False
+
+    http_app = app.http_app()
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/health")
+        verbose = await client.get("/api/v1/health", params={"verbose": "true"})
+
+    body = resp.json()
+    assert "latest_version" not in body
+    assert body["update_available"] is False
+
+    vbody = verbose.json()
+    assert vbody["latest_version"] == "0.4.2"
+    assert vbody["update_available"] is False

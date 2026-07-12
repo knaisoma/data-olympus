@@ -45,7 +45,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   newer published `data-olympus` version in a background task and surfaces
   `latest_version` / `update_available` in `kb_health` and
   `GET /api/v1/health`. The health request path reads the cache only, and
-  air-gapped deployments can set `KB_DISABLE_VERSION_CHECK=on` to make zero
+  compact health includes `latest_version` only when `update_available` is true.
+  Air-gapped deployments can set `KB_DISABLE_VERSION_CHECK=on` to make zero
   outbound version-check calls. (gh #146 / KNA-68)
 - **Legacy corpus status migration.** Status-less documents from pre-0.4.0
   corpora now default to `active` in the SQLite index when

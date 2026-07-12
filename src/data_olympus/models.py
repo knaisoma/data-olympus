@@ -99,6 +99,8 @@ class HealthResponse(BaseModel):
         always = set(self._COMPACT_ALWAYS)
         out: dict[str, object] = {}
         for k, v in full.items():
+            if k == "latest_version" and not self.update_available:
+                continue
             if k in always or (v is not None and v != []):
                 out[k] = v
         return out
