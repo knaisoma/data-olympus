@@ -143,6 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_init_subparser(sub)
     from data_olympus.cli.verify_cmd import add_verify_subparser
     add_verify_subparser(sub)
+    from data_olympus.cli.migrate_cmd import add_migrate_subparser
+    add_migrate_subparser(sub)
     return parser
 
 

@@ -441,6 +441,7 @@ def build_app(
     maintenance_ledger_path: str = "tooling/maintenance-ledger.md",
     maintenance_recently_expired_days: int = 30,
     maintenance_expiring_soon_days: int = 30,
+    status_autofill: bool = True,
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
 
@@ -492,6 +493,7 @@ def build_app(
         maintenance_ledger_path=maintenance_ledger_path,
         maintenance_recently_expired_days=maintenance_recently_expired_days,
         maintenance_expiring_soon_days=maintenance_expiring_soon_days,
+        status_autofill=status_autofill,
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
@@ -531,6 +533,7 @@ def build_app(
         maintenance_ledger_path=config.maintenance_ledger_path,
         maintenance_recently_expired_days=config.maintenance_recently_expired_days,
         maintenance_expiring_soon_days=config.maintenance_expiring_soon_days,
+        status_autofill=config.status_autofill,
     )
     synonym_expander = default_query_expander()
     cooc_expander = idx.cooccurrence_expander() if cooccurrence_enabled() else None
@@ -1183,6 +1186,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         maintenance_ledger_path=config.maintenance_ledger_path,
         maintenance_recently_expired_days=config.maintenance_recently_expired_days,
         maintenance_expiring_soon_days=config.maintenance_expiring_soon_days,
+        status_autofill=config.status_autofill,
     )
 
 

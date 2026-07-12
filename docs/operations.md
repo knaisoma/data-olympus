@@ -445,6 +445,25 @@ This is a migration, not a hard break: a legacy corpus with status-less document
 4. Re-run `kb lint`; once every document lints clean, the next index build flips `status_present_in_all_kb_entries` to `true`, the ledger commits the clean state, and `pending_actions` stops appearing.
 5. New documents created from this point forward are rejected at write time if `status` is missing, so the corpus cannot regress.
 
+### 5.2 Automatic status autofill for legacy corpora (issue #147 / KNA-69)
+
+Issue #114 (section 5.1) left one sharp edge on the read side: a pre-0.4.0 corpus that upgrades to a `status`-mandatory build has its status-less documents served but NO LONGER treated as in-force, so guidance that used to govern silently stops governing until an operator adds `status` to every file. Issue #147 removes that edge with a safe default: a legacy document missing `status` is treated as `active` (the in-force default that preserves pre-0.4.0 behavior).
+
+This INTENTIONALLY reverses the conservative "never guess status" stance issue #114 took, but only for the narrow legacy-upgrade case. The rationale: a seamless upgrade that keeps a legacy corpus governing exactly as it did before beats conservatively flagging every legacy document as not-in-force and demanding a manual fix before any of it counts. The old conservative behavior is preserved behind a knob (`KB_STATUS_AUTOFILL=off`) for a deployment that prefers explicit flagging.
+
+The autofill runs in TWO lanes, kept deliberately separate so indexing stays side-effect-free:
+
+- **Virtual autofill (default on, `KB_STATUS_AUTOFILL=on`).** The index build treats a status-less document as `active` IN MEMORY: it writes `active` into the SQLite index (so retrieval, the in-force filter, and the status reranker all see it) but leaves the markdown source file UNTOUCHED. `Index.build` remains a read-only parse over the corpus: it never writes files, never crashes on a read-only filesystem, and never dirties the git worktree. The maintenance ledger still reports the PHYSICAL missing-status gap, so `status_present_in_all_kb_entries` stays `false` and the `missing_status` CTA keeps nagging until the source files actually carry `status`.
+- **Explicit persistence (`data-olympus migrate status --apply`).** An operator runs this once to write the `status` field into the physical markdown files, using the same default `active`. It is a SYSTEM write (an operator ran it on purpose): it rewrites the files directly via the normal serializer rather than going through the governed-lane pending route, is idempotent (a document that already has a `status` is left byte-for-byte untouched, so re-running is a no-op), and is audited (one `status_migrate` event per changed file through the tamper-evident audit chain when an audit-log path is configured). Without `--apply` the command is a dry run that reports the files it would change and writes nothing.
+
+Reserved filenames (`index.md` / `log.md` / `template.md`) are exempt from the `status` schema requirement, so neither lane autofills them. An explicit non-empty `status` is always preserved verbatim: autofill only ever fills a genuine gap, never overwrites.
+
+**Runbook (persist the autofill so the ledger goes clean):**
+
+1. Confirm the pending gap: `data-olympus migrate status <bundle-root>` (dry run) lists every document that would get a default `status`.
+2. Persist it: `data-olympus migrate status <bundle-root> --apply` (add `--audit-log <path>`, or set `KB_AUDIT_LOG_PATH`, to record the change in the audit chain).
+3. Re-run `kb lint`; the migrated documents now carry `status: active` and lint clean, so the next index build flips `status_present_in_all_kb_entries` to `true` and the `missing_status` CTA disappears.
+
 ## 6. Governed-lane recap and hook wiring (issue #112)
 
 Governed-lane write protection (see `docs/serving.md` and `SECURITY.md`)

@@ -219,6 +219,15 @@ _DEFAULT_STATUS_WEIGHTS: dict[str, float] = {
 # source (format.validate.IN_FORCE_STATUSES); do not hand-list statuses here.
 _IN_FORCE_STATUS_LIST: tuple[str, ...] = tuple(sorted(IN_FORCE_STATUSES))
 
+# Virtual status autofill (issue #147 / KNA-69). The default status written IN
+# MEMORY into the SQLite `docs.status` column for a legacy doc that has no
+# `status` field, when autofill is enabled for the index. `active` preserves the
+# pre-0.4.0 in-force behavior (it is in format.validate.IN_FORCE_STATUSES). The
+# markdown source file is untouched by the build; the same default is written to
+# disk only by the explicit `data-olympus migrate status --apply` lane
+# (data_olympus.status_migrate.DEFAULT_STATUS, kept in sync with this value).
+DEFAULT_AUTOFILL_STATUS = "active"
+
 # Generic, deployment-neutral default taxonomy. A deployment with a different
 # directory layout supplies its own table at runtime via KB_TAXONOMY_PATH (a
 # JSON file holding a list of [prefix, tier, category] triples). The two
@@ -647,8 +656,18 @@ class Index:
         maintenance_ledger_path: str = DEFAULT_LEDGER_PATH,
         maintenance_recently_expired_days: int = DEFAULT_RECENTLY_EXPIRED_DAYS,
         maintenance_expiring_soon_days: int = DEFAULT_EXPIRING_SOON_DAYS,
+        status_autofill: bool = True,
     ) -> None:
         self._db_path = db_path
+        # Virtual status autofill (issue #147 / KNA-69). When True (default), a
+        # doc missing `status` is indexed with `docs.status` = active IN MEMORY,
+        # so a pre-0.4.0 corpus keeps its in-force docs after upgrade without the
+        # build ever touching the markdown source. The physical missing-status
+        # gap is still reported by the maintenance ledger (DocAuditRow carries the
+        # PHYSICAL status), so the ledger keeps nagging until an operator runs
+        # `data-olympus migrate status --apply`. Off restores the conservative
+        # pre-#147 behavior (a status-less doc is served but never in-force).
+        self._status_autofill = status_autofill
         # Embeddings (issue #42) are threaded in from Config, NOT re-read from env
         # here (reviewer concern 2): Config (via load_config) is the single source
         # of truth for KB_EMBEDDINGS_MODE/MODEL/WEIGHT. ``embeddings`` being non-
@@ -1090,6 +1109,11 @@ class Index:
                         "block was treated as absent for this doc",
                         rel,
                     )
+                # The maintenance ledger audits the PHYSICAL corpus, so it records
+                # the doc's real (pre-autofill) status: a legacy doc missing
+                # `status` still counts as missing here, so the ledger keeps
+                # nagging until an operator runs `migrate status --apply`, even
+                # while virtual autofill (below) serves it as in-force.
                 maintenance_rows.append(
                     DocAuditRow(
                         path=str(rel), id=doc_id, status=doc.status,
@@ -1097,6 +1121,21 @@ class Index:
                         is_reserved=rel.name in RESERVED,
                     )
                 )
+                # Virtual status autofill (issue #147 / KNA-69): a legacy doc
+                # missing `status` is indexed as `active` IN MEMORY only (this
+                # SQLite column, never the markdown source), so a pre-0.4.0 corpus
+                # keeps its in-force docs after upgrade. Gated on the per-index
+                # ``_status_autofill`` flag; off restores the conservative
+                # served-but-never-in-force behavior. A reserved filename
+                # (index.md/log.md/template.md) is exempt from the status schema
+                # requirement, so it is NOT autofilled (it never needed a status).
+                indexed_status = doc.status
+                if (
+                    self._status_autofill
+                    and not doc.status
+                    and rel.name not in RESERVED
+                ):
+                    indexed_status = DEFAULT_AUTOFILL_STATUS
                 path_tier, path_category = _classify_by_path(str(rel), path_rules)
                 final_tier = doc.tier or path_tier
                 final_category = doc.category or path_category
@@ -1118,7 +1157,7 @@ class Index:
                     "valid_from, valid_until, last_verified, recheck_by, verification_source, "
                     "is_inbox) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (doc_id, str(rel), final_tier, final_category, doc.status, doc.doc_type,
+                    (doc_id, str(rel), final_tier, final_category, indexed_status, doc.doc_type,
                      applies_when_str, doc.description, doc.title, tags_str, content_markdown,
                      last_modified, lm_source, doc.git_remote_url,
                      doc.valid_from or None, doc.valid_until or None,
