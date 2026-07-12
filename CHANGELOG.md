@@ -55,6 +55,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   default explicitly with the idempotent `data-olympus migrate status --apply`
   command. (gh #147 / KNA-69)
 
+### Fixed
+
+- **`kb_consult` demoted_writes CTA count.** The maintenance CTA now counts only
+  the session's live pending entries and is omitted once none remain, instead of
+  reporting stale "N write(s) awaiting operator review" after every demoted entry
+  had been resolved (the demoted_writes / pending_actions surface shipped since
+  v0.4.0 via #131). (gh #137 / KNA-72)
+
 ## [0.4.2] - 2026-07-11
 
 ### Added
