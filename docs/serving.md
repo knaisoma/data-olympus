@@ -798,22 +798,30 @@ reverse proxy (terminate TLS there). See `SECURITY.md` for the full threat model
 the route/capability table, payload limits, the tamper-evident audit log, and the
 git sync-failure health fields.
 
-### Host allowlist behind a proxy (`FASTMCP_HTTP_ALLOWED_HOSTS`, v0.4.1+)
+### Host allowlist behind a proxy (`KB_PUBLIC_HOSTNAMES`, v0.4.3+)
 
 fastmcp >= 3.4.3 validates the `Host` header on streamable HTTP
 (DNS-rebinding protection) and returns `421 Misdirected Request` for
 hostnames outside its allowlist. When data-olympus is served behind a
-reverse proxy or ingress, set the public hostname explicitly:
+reverse proxy or ingress, set the public hostname explicitly via the
+first-class knob (comma-separated, no JSON):
 
 ```bash
-FASTMCP_HTTP_ALLOWED_HOSTS='["kb.example.com"]'
+KB_PUBLIC_HOSTNAMES=kb.example.com
 ```
 
+This is mapped onto fastmcp's Host-header allowlist when the HTTP app is
+built. The older dependency knob `FASTMCP_HTTP_ALLOWED_HOSTS='["kb.example.com"]'`
+still works and is merged with `KB_PUBLIC_HOSTNAMES` when both are set.
+
 Direct localhost/pod requests are always allowed, so health probes pass
-while proxied traffic fails: check the server log for 421 lines if agents
-suddenly cannot reach the endpoint after an upgrade. Operational details
-in docs/operations.md section 3.4; a first-class knob is tracked in
-issue #139.
+while proxied traffic fails: this is the exact shape of the 2026-07-09
+kn-dev outage (readiness green, every proxied request 421). To make that
+failure loud, the server now emits a startup WARN when Host protection is
+on, it binds a non-loopback address, and no public hostname is allowed.
+Check the server log for that WARN or for 421 lines if agents suddenly
+cannot reach the endpoint after an upgrade. Operational details in
+docs/operations.md section 3.4. (Closes issue #139 / KNA-70.)
 
 ### Proxy headers and the rate limiter (`KB_TRUSTED_PROXIES`)
 

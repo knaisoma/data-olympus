@@ -24,6 +24,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   allowed and skips the registry lookups; a registry outage fails closed. The
   operator can override a stuck registry with `KB_BYPASS_VERSION_CHECK=1`.
   (gh #148 / KNA-67)
+- **First-class reverse-proxy Host allowlist (`KB_PUBLIC_HOSTNAMES`).** New
+  config knob mapped onto fastmcp's Host-header allowlist when the HTTP app is
+  built, so operators configure data-olympus directly instead of reaching for
+  the dependency's `FASTMCP_HTTP_ALLOWED_HOSTS` env var (both are honoured and
+  merged). The server now emits a startup WARN when Host protection is on, it
+  binds a non-loopback address, and no public hostname is allowed: the exact
+  silent-breakage shape (readiness green, every proxied request 421) behind the
+  2026-07-09 kn-dev outage. A regression test boots the app with a configured
+  public hostname and asserts the good Host reaches the route while a foreign
+  Host is answered 421. (gh #139 / KNA-70)
 
 ## [0.4.2] - 2026-07-11
 

@@ -1190,6 +1190,60 @@ def _uvicorn_proxy_kwargs(trusted_proxies: list[str]) -> dict[str, Any]:
     }
 
 
+def _resolve_allowed_hosts(config: Config) -> list[str] | None:
+    """Compute the Host-header allowlist to pass to ``app.http_app(allowed_hosts=...)``.
+
+    Merges the first-class ``KB_PUBLIC_HOSTNAMES`` knob with fastmcp's own
+    ``FASTMCP_HTTP_ALLOWED_HOSTS`` env knob (surfaced as
+    ``fastmcp.settings.http_allowed_hosts``) so an operator can set either. When
+    both are empty this returns ``None`` so ``http_app`` falls back to its own
+    settings default (identical to the pre-KNA-70 behaviour); passing ``[]`` would
+    instead flip fastmcp's ``has_explicit_allowed_hosts`` on and force strict
+    validation with no host allowed, i.e. reproduce the 421 outage.
+    """
+    import fastmcp
+
+    merged: list[str] = list(config.public_hostnames)
+    env_hosts = getattr(fastmcp.settings, "http_allowed_hosts", None)
+    if env_hosts:
+        for h in env_hosts:
+            if h not in merged:
+                merged.append(h)
+    return merged or None
+
+
+def _warn_if_unprotected_bind(
+    *, bind_host: str, allowed_hosts: list[str] | None
+) -> None:
+    """Emit a startup WARN for the silent-breakage shape behind KNA-70.
+
+    fastmcp validates the Host header (DNS-rebind protection) whenever host
+    protection is on OR an explicit allowlist is configured. When the server
+    binds a non-loopback address (e.g. ``0.0.0.0`` behind an ingress) and
+    protection is on but no extra hostname is allowed, EVERY proxied request is
+    answered 421 while direct pod probes on 127.0.0.1/localhost still pass, so
+    readiness stays green and the breakage is invisible. That is exactly the
+    2026-07-09 kn-dev 7h outage. Warn loudly at boot so an operator sees it
+    before agents' enforce hooks start silently failing open.
+    """
+    import fastmcp
+
+    protection = getattr(fastmcp.settings, "http_host_origin_protection", False)
+    protection_on = bool(protection) or bool(allowed_hosts)
+    normalized = bind_host.strip().lower()
+    is_loopback_bind = normalized in {"127.0.0.1", "localhost", "::1"}
+    if protection_on and not is_loopback_bind and not allowed_hosts:
+        log.warning(
+            "host-header protection is ON and the server binds a non-loopback "
+            "address (%s) but no public hostname is allowed: every request "
+            "arriving through a reverse proxy will be answered 421 Misdirected "
+            "Request while direct pod probes still pass (readiness stays green). "
+            "Set KB_PUBLIC_HOSTNAMES to the public hostname(s) the proxy presents "
+            "(e.g. KB_PUBLIC_HOSTNAMES=kb.example.com). See docs/serving.md.",
+            bind_host,
+        )
+
+
 def _ensure_git_identity() -> None:
     """Give git a default author/committer identity when none is configured
     (scope item 10).
@@ -1267,8 +1321,15 @@ def main() -> None:
         # Always strictly below the idle window (>= 3 touches per window) even for
         # a tiny idle value; a small positive floor avoids a zero/negative sleep.
         _touch_interval = max(0.1, min(_touch_interval, _idle / 3))
+    # KNA-70: map the first-class KB_PUBLIC_HOSTNAMES knob (merged with fastmcp's
+    # own FASTMCP_HTTP_ALLOWED_HOSTS) onto fastmcp's Host-header allowlist, and
+    # warn at boot about the silent-breakage shape (host protection on + public
+    # bind + no allowed host) that 421s every proxied request.
+    allowed_hosts = _resolve_allowed_hosts(config)
+    _warn_if_unprotected_bind(bind_host="0.0.0.0", allowed_hosts=allowed_hosts)
     http_app = app.http_app(
         transport="streamable-http",
+        allowed_hosts=allowed_hosts,
         middleware=[
             StarletteMiddleware(
                 SessionActivityMiddleware,

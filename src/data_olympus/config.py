@@ -136,6 +136,17 @@ class Config:
     # peer, ONLY safe when nothing untrusted can reach the port directly) to make
     # the rate limiter see the true client IP behind the proxy. See docs/serving.md.
     trusted_proxies: list[str] = field(default_factory=list)
+    # Public hostnames the reverse proxy presents in the Host header
+    # (KB_PUBLIC_HOSTNAMES, comma-separated). Mapped to fastmcp's Host-header
+    # allowlist when the HTTP app is built (see server.main). Empty (default)
+    # leaves fastmcp reading its own FASTMCP_HTTP_ALLOWED_HOSTS env knob, so
+    # behaviour is unchanged for existing deployments. This exists so operators
+    # configure data-olympus directly (`KB_*`) rather than reaching for the
+    # fastmcp dependency's env var. Getting it wrong is the silent-breakage shape
+    # that caused the 2026-07-09 kn-dev 421 outage: host-protection on + a public
+    # bind + no allowed host -> every proxied request 421s while readiness stays
+    # green (direct pod probes pass). See docs/serving.md and server._resolve_allowed_hosts.
+    public_hostnames: list[str] = field(default_factory=list)
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -250,6 +261,7 @@ def load_config() -> Config:
     emb_enabled = _embeddings_enabled()
     emb_cfg = _embeddings_config()
     trusted_proxies = _split_csv(os.getenv("KB_TRUSTED_PROXIES", ""))
+    public_hostnames = _split_csv(os.getenv("KB_PUBLIC_HOSTNAMES", ""))
     return Config(
         kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
         kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
@@ -302,4 +314,5 @@ def load_config() -> Config:
         embeddings_weight=emb_cfg.weight,
         embeddings_model=emb_cfg.model_name,
         trusted_proxies=trusted_proxies,
+        public_hostnames=public_hostnames,
     )
