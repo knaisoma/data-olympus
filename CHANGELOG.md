@@ -47,6 +47,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `GET /api/v1/health`. The health request path reads the cache only, and
   air-gapped deployments can set `KB_DISABLE_VERSION_CHECK=on` to make zero
   outbound version-check calls. (gh #146 / KNA-68)
+- **Legacy corpus status migration.** Status-less documents from pre-0.4.0
+  corpora now default to `active` in the SQLite index when
+  `KB_STATUS_AUTOFILL=on` (the default), preserving in-force retrieval without
+  mutating source markdown during index builds. Operators can persist the same
+  default explicitly with the idempotent `data-olympus migrate status --apply`
+  command. (gh #147 / KNA-69)
 
 ## [0.4.2] - 2026-07-11
 
