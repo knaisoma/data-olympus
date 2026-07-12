@@ -12,6 +12,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Version-immutability release guard (`scripts/check_version_free.py`).** A
+  published version (PyPI, the ghcr `:vX.Y.Z` image tag, or a GitHub
+  release/tag) is immutable, so the release process now refuses to republish an
+  existing version. The guard runs as the first step of `tag-release.yml`'s
+  `decide` job (before the tag is pushed, so a duplicate never leaves an
+  orphaned public tag) and in PR CI (to catch a duplicate declared version
+  before merge). A legitimate reconcile (local tag `vX.Y.Z` already at HEAD) is
+  allowed and skips the registry lookups; a registry outage fails closed. The
+  operator can override a stuck registry with `KB_BYPASS_VERSION_CHECK=1`.
+  (gh #148 / KNA-67)
+
 ## [0.4.2] - 2026-07-11
 
 ### Added

@@ -14,6 +14,7 @@ of being skipped on a full workflow rerun. When the tag exists on a different
 """
 from __future__ import annotations
 
+import argparse
 import pathlib
 import re
 import subprocess
@@ -88,8 +89,19 @@ def _head_commit() -> str:
     return out.stdout.strip()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="should_tag")
+    parser.add_argument(
+        "--print-version",
+        action="store_true",
+        help="print the bare [project] version (X.Y.Z) and exit, without any "
+        "git/tag decision (used by the PR CI version-free guard)",
+    )
+    args = parser.parse_args(argv)
     version = project_version(pathlib.Path("pyproject.toml").read_text())
+    if args.print_version:
+        print(version)
+        return 0
     existing = _existing_tags()
     tag = f"v{version}"
     tag_commit = _tag_commit(tag) if tag in existing else None

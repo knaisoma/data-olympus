@@ -38,6 +38,39 @@ jobs:
         run: |
           mapfile -t changed < <(git diff --name-only "origin/$BASE_REF"...HEAD)
           python3 scripts/check_changelog.py "${changed[@]}"
+  version-free-guard:
+    # Catch a duplicate DECLARED version before merge: if the PR bumps
+    # [project].version to something already published on PyPI, ghcr, or as a
+    # GitHub release/tag, fail here rather than at tag-release time (where a
+    # failed guard would still be after the merge). A registry outage fails
+    # closed; the release cutter can override with KB_BYPASS_VERSION_CHECK=1.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Guard against a duplicate declared version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # Only enforce when THIS pr changes [project].version. The version is
+          # bumped at release time, so on a normal PR the declared version still
+          # equals the last released (published) one; checking it unconditionally
+          # would fail every non-release PR. Compare against the base branch and
+          # skip when unchanged.
+          HEAD_VERSION="$(python3 scripts/should_tag.py --print-version)"
+          BASE_VERSION="$(git show "origin/$BASE_REF:pyproject.toml" | python3 -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.buffer.read().decode())["project"]["version"])')"
+          if [ "$HEAD_VERSION" = "$BASE_VERSION" ]; then
+            echo "declared version unchanged ($HEAD_VERSION); nothing to guard"
+            exit 0
+          fi
+          echo "declared version changed $BASE_VERSION -> $HEAD_VERSION; checking it is free"
+          python3 scripts/check_version_free.py --version "$HEAD_VERSION"
   doc-consistency-guard:
     runs-on: ubuntu-latest
     steps:

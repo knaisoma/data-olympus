@@ -27,6 +27,19 @@ jobs:
         run: |
           TAG="$(python3 scripts/should_tag.py)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      # Version-immutability guard: refuse to (re)publish a version that already
+      # exists on PyPI, ghcr, or as a GitHub release/tag. Runs BEFORE the
+      # git tag/push below so a duplicate never leaves an orphaned public tag.
+      # A legitimate reconcile (local tag vX.Y.Z already at HEAD) is allowed and
+      # skips the registry lookups; a registry outage fails closed. Operator
+      # override: set KB_BYPASS_VERSION_CHECK=1 on the run.
+      - name: Guard against republishing an existing version
+        if: steps.decide.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          python3 scripts/check_version_free.py --version "${TAG#v}"
       - name: Create and push annotated tag
         if: steps.decide.outputs.tag != ''
         env:
