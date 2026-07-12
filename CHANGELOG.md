@@ -34,6 +34,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   2026-07-09 kn-dev outage. A regression test boots the app with a configured
   public hostname and asserts the good Host reaches the route while a foreign
   Host is answered 421. (gh #139 / KNA-70)
+- **Prometheus `/metrics` endpoint (optional `metrics` extra).**
+  `prometheus-client` is an OPTIONAL dependency; with it installed, `GET
+  /metrics` serves the standard exposition format (pending/push queue depths,
+  frozen count, push-failure counter, staleness, live sessions, per-tool call
+  counters, index-build duration + last-build timestamp). Without the extra the
+  route returns `501` and every metric update inside the core background loops
+  is a silent no-op, so a standard deployment is unaffected. (gh #69 / KNA-71)
 
 ## [0.4.2] - 2026-07-11
 

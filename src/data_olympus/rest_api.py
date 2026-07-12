@@ -7,7 +7,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import anyio
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, PlainTextResponse, Response
 
 from data_olympus.principals import (
     CAP_BOOTSTRAP,
@@ -399,6 +399,36 @@ def register_routes(
         # last-good index). The existing tcpSocket liveness probe is equivalent;
         # this HTTP variant is offered for operators who prefer an explicit route.
         return JSONResponse({"alive": True}, status_code=200)
+
+    @app.custom_route("/metrics", methods=["GET"])
+    async def metrics(_request: Request) -> Response:
+        # Prometheus scrape target (issue #69). prometheus-client is an OPTIONAL
+        # extra: when it is not installed the metric handles are no-ops and there
+        # is nothing to expose, so we answer 501 Not Implemented rather than 404
+        # (the route exists; the capability is simply not built into this image).
+        # Served inline (like the health probes) so a scrape never queues behind
+        # the worker pool. The gauge-style metrics are refreshed from the refresh
+        # loop; here we take a final best-effort snapshot so a scrape reflects the
+        # live queue depths / freshness even if a tick has not fired recently.
+        from data_olympus.metrics import get_metrics
+
+        m = get_metrics()
+        if not m.available:
+            return PlainTextResponse(
+                "prometheus-client not installed; reinstall data-olympus with the "
+                "'metrics' extra to enable /metrics\n",
+                status_code=501,
+            )
+        h = _build_health(state)
+        m.sync_from_state(
+            pending_count=h.pending_count,
+            push_queue_size=h.push_queue_size,
+            push_queue_frozen=h.push_queue_frozen,
+            staleness_seconds=h.staleness_seconds,
+            live_sessions=h.live_sessions,
+        )
+        body, content_type = m.render()
+        return Response(body, media_type=content_type)
 
     @app.custom_route("/api/v1/outline", methods=["GET"])
     async def outline(request: Request) -> JSONResponse:

@@ -823,6 +823,32 @@ Check the server log for that WARN or for 421 lines if agents suddenly
 cannot reach the endpoint after an upgrade. Operational details in
 docs/operations.md section 3.4. (Closes issue #139 / KNA-70.)
 
+### Prometheus metrics (`GET /metrics`, optional `metrics` extra)
+
+`prometheus-client` is an OPTIONAL dependency. Install it to enable the
+scrape endpoint:
+
+```bash
+uv tool install 'data-olympus[metrics]'   # or pip install 'data-olympus[metrics]'
+```
+
+With the extra installed, `GET /metrics` serves the standard text exposition
+format. Without it, `/metrics` returns `501 Not Implemented` (the route exists,
+the capability is simply not built into the image) and every metric update
+inside the core background loops is a silent no-op, so a standard deployment is
+unaffected. Exposed series (prefix `data_olympus_`):
+
+- `pending_queue_depth`, `push_queue_depth`, `push_queue_frozen` (gauges)
+- `push_failures_total` (counter)
+- `staleness_seconds`, `live_sessions` (gauges)
+- `tool_calls_total{tool="..."}` (counter, per MCP tool)
+- `index_build_duration_seconds` (histogram) and
+  `index_last_build_timestamp_seconds` (gauge)
+
+The gauges are refreshed from the refresh / push-retry loops each tick and also
+snapshotted on scrape, so a scrape reflects the live queue depths and freshness.
+(Closes issue #69 / KNA-71.)
+
 ### Proxy headers and the rate limiter (`KB_TRUSTED_PROXIES`)
 
 The rate limiter keys on the client remote address (plus principal). Behind an

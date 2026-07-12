@@ -255,6 +255,11 @@ class MCPAuthMiddleware(Middleware):
         token = _current_principal.set(principal)
         try:
             name = context.message.name
+            # Per-tool call counter (issue #69). Counted here (the single MCP
+            # tool-dispatch chokepoint) rather than per-closure. No-op without
+            # the metrics extra.
+            from data_olympus.metrics import get_metrics
+            get_metrics().tool_calls.labels(tool=name).inc()
             cap = WRITE_TOOL_CAPABILITY.get(name)
             if cap is not None:
                 if not principal.has(cap):
