@@ -5,11 +5,19 @@ Covers the four fail-open / crash gaps found in adversarial review:
 2. exit_code truthiness trap (False / 0.0 accepted as success),
 3. digest fail-open (missing digest_served skipped the check),
 4. CLI file-read crash instead of fail-closed.
+
+Also covers a fifth gap found in a later hardening pass: a MISSING
+top-level evidence key (e.g. "open_blockers" simply absent from the
+bundle) must fail closed, the same as a present-but-invalid value.
+Previously "open_blockers" defaulted to [] when absent, so an evidence
+bundle that never populated that field was silently treated as clear.
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -107,3 +115,45 @@ def test_rc_digest_mismatch_fails_closed() -> None:
 def test_cli_missing_file_fails_closed_no_crash() -> None:
     rc = main(["--evidence", "/nonexistent/path/to/evidence.json"])
     assert rc == 1  # fail-closed, no traceback
+
+
+def test_missing_open_blockers_key_is_not_ready() -> None:
+    # A bundle that never populated open_blockers must NOT be treated as
+    # equivalent to an explicit empty list. Missing evidence is not the
+    # same claim as verified-clear evidence.
+    b = _ready_bundle()
+    del b["open_blockers"]
+    result = evaluate(b)
+    assert result.conditions["no_open_blockers"] is False
+    assert result.ready is False
+    assert any(bl.startswith("no_open_blockers") for bl in result.blockers), result.blockers
+
+
+@pytest.mark.parametrize(
+    ("top_level_key", "failed_condition"),
+    [
+        ("manifest", "manifest_complete"),
+        ("tickets", "every_feature_done"),
+        ("integration_review", "integration_review_approved"),
+        ("ci", "ci_green_for_exact_sha"),
+        ("expected_rc_digest", "rc_digest_deployed"),
+        ("deployed_digest", "rc_digest_deployed"),
+        ("verify", "verify_passed"),
+        ("version_free", "version_unpublished"),
+        ("security", "security_clear"),
+        ("open_blockers", "no_open_blockers"),
+    ],
+)
+def test_missing_required_top_level_field_is_not_ready(
+    top_level_key: str, failed_condition: str
+) -> None:
+    # Omitting any of the top-level evidence keys the gate reads must make
+    # its owning condition (and therefore the overall verdict) NOT ready.
+    # This is the fail-closed principle applied to absence, not just to
+    # present-but-malformed values (which the other tests in this module
+    # and in test_release_readiness.py already cover).
+    b = _ready_bundle()
+    del b[top_level_key]
+    result = evaluate(b)
+    assert result.conditions[failed_condition] is False, result.conditions
+    assert result.ready is False

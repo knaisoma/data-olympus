@@ -270,7 +270,12 @@ def _check_security(security: dict[str, Any]) -> tuple[bool, list[str]]:
 
 
 def _check_no_open_blockers(bundle: dict[str, Any]) -> tuple[bool, list[str]]:
-    open_blockers = bundle.get("open_blockers", [])
+    # Fail-closed: a MISSING open_blockers key is NOT ready (it means the field
+    # was never populated, not that there are no blockers). Only a top-level
+    # key that is explicitly present and equal to [] counts as clear.
+    if "open_blockers" not in bundle:
+        return False, ["no_open_blockers: open_blockers key is missing from evidence bundle"]
+    open_blockers = bundle["open_blockers"]
     if open_blockers == []:
         return True, []
     return False, [f"no_open_blockers: open_blockers is {open_blockers!r}, expected []"]
