@@ -23,13 +23,13 @@ def _ready_bundle() -> dict:
         "manifest": {
             "version": "0.5.0",
             "integration_sha": _SHA,
-            "feature_ids": ["KNA-67"],
+            "feature_ids": ["FEATURE-1"],
             "contract_blob_sha": "deadbeef",
-            "security_classification": {"KNA-67": "standard"},
+            "security_classification": {"FEATURE-1": "standard"},
         },
         "tickets": [
             {
-                "id": "KNA-67",
+                "id": "FEATURE-1",
                 "status": "done",
                 "review_evidence": {
                     "companion_review_present": True,
@@ -64,7 +64,7 @@ def test_security_classification_non_standard_requires_verdict() -> None:
     # security_verdict; "high-security", True, and 1 must NOT bypass it.
     for label in ("high-security", "security", True, 1):
         b = _ready_bundle()
-        b["manifest"]["security_classification"]["KNA-67"] = label
+        b["manifest"]["security_classification"]["FEATURE-1"] = label
         # no security_verdict present -> must be NOT ready
         assert evaluate(b).ready is False, f"classification {label!r} bypassed security review"
         # with an approved security_verdict -> ready again
@@ -74,7 +74,7 @@ def test_security_classification_non_standard_requires_verdict() -> None:
 
 def test_missing_classification_defaults_to_security_required() -> None:
     b = _ready_bundle()
-    b["manifest"]["security_classification"] = {}  # no entry for KNA-67
+    b["manifest"]["security_classification"] = {}  # no entry for FEATURE-1
     assert evaluate(b).ready is False
     b["tickets"][0]["review_evidence"]["security_verdict"] = "approved"
     assert evaluate(b).ready is True

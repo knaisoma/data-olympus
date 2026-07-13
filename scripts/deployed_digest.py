@@ -16,12 +16,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from typing import Any
 
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
-def _tags(version: dict[str, Any]) -> list[str]:
+
+def _tags(version: Any) -> list[str]:
+    if not isinstance(version, dict):
+        return []
     metadata = version.get("metadata")
     container = metadata.get("container") if isinstance(metadata, dict) else None
     tags = container.get("tags") if isinstance(container, dict) else None
@@ -34,8 +39,10 @@ def evaluate(versions: list[dict[str, Any]], target: str) -> dict[str, Any]:
     """PURE. Resolve the digest for the package version tagged `target`.
 
     Fails closed (digest: None) unless exactly one version carries the
-    target tag and that version has a non-empty digest (its "name" field,
-    a "sha256:..." string in the GitHub Packages API shape).
+    target tag and that version has a digest (its "name" field) matching
+    the expected "sha256:<64 hex chars>" shape. Any other shape (empty,
+    truncated, non-hex, or not a string at all) is treated as no valid
+    digest, same as a no-match or ambiguous-match result.
     """
     matches = [v for v in versions if target in _tags(v)]
     matched_versions = len(matches)
@@ -43,7 +50,7 @@ def evaluate(versions: list[dict[str, Any]], target: str) -> dict[str, Any]:
     digest: str | None = None
     if matched_versions == 1:
         candidate = matches[0].get("name")
-        if isinstance(candidate, str) and candidate.strip():
+        if isinstance(candidate, str) and _DIGEST_RE.match(candidate):
             digest = candidate
 
     return {
@@ -58,16 +65,26 @@ def _fetch_versions(package: str, org: str) -> list[dict[str, Any]]:
     """Fetch every package version (one JSON object per line) via gh api.
 
     This is the digest source: the single seam release_readiness callers
-    (and tests) mock to avoid a real network/registry dependency.
+    (and tests) mock to avoid a real network/registry dependency. Every
+    failure mode (missing gh binary, subprocess failure, malformed JSON) is
+    normalized to RuntimeError so callers have one exception type to expect;
+    main() still fails closed on any other exception type as a backstop.
     """
     path = f"/orgs/{org}/packages/container/{package}/versions"
-    out = subprocess.run(
-        ["gh", "api", "--paginate", path, "--jq", ".[]"],
-        capture_output=True, text=True,
-    )
+    try:
+        out = subprocess.run(
+            ["gh", "api", "--paginate", path, "--jq", ".[]"],
+            capture_output=True, text=True,
+        )
+    except OSError as exc:
+        # e.g. the "gh" binary is not installed or not on PATH.
+        raise RuntimeError(f"gh api {path} could not be started: {exc}") from exc
     if out.returncode != 0:
         raise RuntimeError(f"gh api {path} failed:\n{out.stderr}")
-    return [json.loads(line) for line in out.stdout.splitlines() if line.strip()]
+    try:
+        return [json.loads(line) for line in out.stdout.splitlines() if line.strip()]
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"gh api {path} returned malformed JSON: {exc}") from exc
 
 
 def _unresolved(target: str, matched_versions: int = 0) -> dict[str, Any]:
@@ -89,16 +106,22 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         versions = _fetch_versions(args.package, args.org)
-    except RuntimeError as exc:
+        if not isinstance(versions, list):
+            raise TypeError(f"expected a list of package versions, got {type(versions).__name__}")
+        result = evaluate(versions, args.target)
+    except Exception as exc:
+        # Fail-closed backstop: any failure resolving or evaluating the
+        # digest lookup (subprocess/gh missing, malformed JSON, an
+        # unexpectedly-shaped payload, etc.) must emit the clean
+        # {"digest": null, "source": null} contract and a non-zero exit,
+        # never an uncaught traceback.
         result = _unresolved(args.target)
         if args.as_json:
             print(json.dumps(result))
         else:
-            print(f"deployed digest for {args.target}: UNRESOLVED (registry unreachable)")
+            print(f"deployed digest for {args.target}: UNRESOLVED (lookup failed)")
         print(str(exc), file=sys.stderr)
         return 2
-
-    result = evaluate(versions, args.target)
 
     if args.as_json:
         print(json.dumps(result))

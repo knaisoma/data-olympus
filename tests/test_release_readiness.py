@@ -21,13 +21,13 @@ def _valid_bundle() -> dict[str, Any]:
         "manifest": {
             "version": "0.5.0",
             "integration_sha": SHA_INTEGRATION,
-            "feature_ids": ["KNA-67", "KNA-68"],
+            "feature_ids": ["FEATURE-1", "FEATURE-2"],
             "contract_blob_sha": "deadbeef",
-            "security_classification": {"KNA-67": "standard", "KNA-68": "security"},
+            "security_classification": {"FEATURE-1": "standard", "FEATURE-2": "security"},
         },
         "tickets": [
             {
-                "id": "KNA-67",
+                "id": "FEATURE-1",
                 "status": "done",
                 "review_evidence": {
                     "companion_review_present": True,
@@ -37,7 +37,7 @@ def _valid_bundle() -> dict[str, Any]:
                 },
             },
             {
-                "id": "KNA-68",
+                "id": "FEATURE-2",
                 "status": "done",
                 "review_evidence": {
                     "companion_review_present": True,
@@ -60,7 +60,7 @@ def _valid_bundle() -> dict[str, Any]:
             "target": "https://example.invalid/verify",
         },
         "version_free": {"free": True},
-        "deployed_digest": {"digest": DIGEST, "source": "kndev"},
+        "deployed_digest": {"digest": DIGEST, "source": "test-channel"},
         "expected_rc_digest": DIGEST,
         "integration_review": {
             "approved": True,
@@ -223,7 +223,7 @@ def test_caller_supplied_ready_true_alone_does_not_make_it_ready() -> None:
         (lambda b: b["version_free"].__setitem__("free", False), "version_unpublished"),
         (lambda b: b["security"].__setitem__("exit_code", 1), "security_clear"),
         (
-            lambda b: b.__setitem__("open_blockers", ["KNA-99 needs a follow-up"]),
+            lambda b: b.__setitem__("open_blockers", ["FEATURE-3 needs a follow-up"]),
             "no_open_blockers",
         ),
     ],
