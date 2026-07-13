@@ -75,6 +75,19 @@ class Config:
     # Window sizes (days) for the "recently expired" / "expiring soon" buckets.
     maintenance_recently_expired_days: int = 30
     maintenance_expiring_soon_days: int = 30
+    # Virtual status autofill for legacy (pre-0.4.0) corpora (issue #147 / KNA-69).
+    # Default ON. When on, the index build treats a doc missing `status` as
+    # `active` IN MEMORY only (the SQLite `docs.status` column and the in-force
+    # retrieval view), so a pre-0.4.0 corpus does not silently lose its in-force
+    # docs on upgrade. The markdown source file is NEVER touched by the build:
+    # Index.build stays a read-only parse. The maintenance ledger still reports
+    # the PHYSICAL missing-status gap (so it keeps nagging until the operator runs
+    # `data-olympus migrate status --apply`, which is the only lane that writes
+    # `status` to disk). Set KB_STATUS_AUTOFILL=off to restore the conservative
+    # pre-#147 behavior (a status-less doc is served but never in-force). This
+    # intentionally reverses the #114 "never guess status" stance: for the narrow
+    # legacy-upgrade case, a seamless default beats conservative flagging.
+    status_autofill: bool = True
     # Streamable-http session reaping: terminate transports idle beyond this many
     # seconds to bound _server_instances (see session_metrics). 0 disables the
     # reaper (observability-only). The scan runs every session_reap_interval_sec.
@@ -136,6 +149,27 @@ class Config:
     # peer, ONLY safe when nothing untrusted can reach the port directly) to make
     # the rate limiter see the true client IP behind the proxy. See docs/serving.md.
     trusted_proxies: list[str] = field(default_factory=list)
+    # Public hostnames the reverse proxy presents in the Host header
+    # (KB_PUBLIC_HOSTNAMES, comma-separated). Mapped to fastmcp's Host-header
+    # allowlist when the HTTP app is built (see server.main). Empty (default)
+    # leaves fastmcp reading its own FASTMCP_HTTP_ALLOWED_HOSTS env knob, so
+    # behaviour is unchanged for existing deployments. This exists so operators
+    # configure data-olympus directly (`KB_*`) rather than reaching for the
+    # fastmcp dependency's env var. Getting it wrong is the silent-breakage shape
+    # that caused the 2026-07-09 kn-dev 421 outage: host-protection on + a public
+    # bind + no allowed host -> every proxied request 421s while readiness stays
+    # green (direct pod probes pass). See docs/serving.md and server._resolve_allowed_hosts.
+    public_hostnames: list[str] = field(default_factory=list)
+    # Periodic "a newer version is published" check (issue #146 / KNA-68).
+    # ``disable_version_check`` (KB_DISABLE_VERSION_CHECK, default off) makes an
+    # air-gapped deployment do ZERO outbound calls: the background task is not
+    # spawned at all. When enabled, the task runs once every
+    # ``version_check_interval_sec`` (default 24h) on a worker thread and caches
+    # the result on ServerState; the /api/v1/health route only READS the cached
+    # value, never the network (a blocking urllib lookup on the async request
+    # path would freeze the event loop for the timeout and stall readiness).
+    disable_version_check: bool = False
+    version_check_interval_sec: int = 86400
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -220,6 +254,10 @@ def load_config() -> Config:
     maintenance_expiring_soon_days = int(
         os.getenv("KB_MAINTENANCE_EXPIRING_SOON_DAYS", "30")
     )
+    # KB_STATUS_AUTOFILL defaults to on (issue #147 / KNA-69): a legacy corpus
+    # missing `status` keeps its in-force docs after upgrade. Any explicit
+    # non-truthy value (off/0/false/no) restores the conservative behavior.
+    status_autofill = _env_bool(os.getenv("KB_STATUS_AUTOFILL", "on"))
     session_idle_timeout_sec = int(os.getenv("KB_SESSION_IDLE_TIMEOUT_SEC", "300"))
     session_reap_interval_sec = int(os.getenv("KB_SESSION_REAP_INTERVAL_SEC", "60"))
     session_touch_interval_sec = int(os.getenv("KB_SESSION_TOUCH_INTERVAL_SEC", "30"))
@@ -250,6 +288,11 @@ def load_config() -> Config:
     emb_enabled = _embeddings_enabled()
     emb_cfg = _embeddings_config()
     trusted_proxies = _split_csv(os.getenv("KB_TRUSTED_PROXIES", ""))
+    public_hostnames = _split_csv(os.getenv("KB_PUBLIC_HOSTNAMES", ""))
+    disable_version_check = _env_bool(os.getenv("KB_DISABLE_VERSION_CHECK", ""))
+    version_check_interval_sec = int(
+        os.getenv("KB_VERSION_CHECK_INTERVAL_SEC", "86400")
+    )
     return Config(
         kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
         kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
@@ -285,6 +328,7 @@ def load_config() -> Config:
         maintenance_ledger_path=maintenance_ledger_path,
         maintenance_recently_expired_days=maintenance_recently_expired_days,
         maintenance_expiring_soon_days=maintenance_expiring_soon_days,
+        status_autofill=status_autofill,
         session_idle_timeout_sec=session_idle_timeout_sec,
         session_reap_interval_sec=session_reap_interval_sec,
         session_touch_interval_sec=session_touch_interval_sec,
@@ -302,4 +346,7 @@ def load_config() -> Config:
         embeddings_weight=emb_cfg.weight,
         embeddings_model=emb_cfg.model_name,
         trusted_proxies=trusted_proxies,
+        public_hostnames=public_hostnames,
+        disable_version_check=disable_version_check,
+        version_check_interval_sec=version_check_interval_sec,
     )

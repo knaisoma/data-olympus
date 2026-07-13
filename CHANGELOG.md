@@ -12,6 +12,59 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-12
+
+### Added
+
+- **Version-immutability release guard (`scripts/check_version_free.py`).** A
+  published version (PyPI, the ghcr `:vX.Y.Z` image tag, or a GitHub
+  release/tag) is immutable, so the release process now refuses to republish an
+  existing version. The guard runs as the first step of `tag-release.yml`'s
+  `decide` job (before the tag is pushed, so a duplicate never leaves an
+  orphaned public tag) and in PR CI (to catch a duplicate declared version
+  before merge). A legitimate reconcile (local tag `vX.Y.Z` already at HEAD) is
+  allowed and skips the registry lookups; a registry outage fails closed. The
+  operator can override a stuck registry with `KB_BYPASS_VERSION_CHECK=1`.
+  (gh #148 / KNA-67)
+- **First-class reverse-proxy Host allowlist (`KB_PUBLIC_HOSTNAMES`).** New
+  config knob mapped onto fastmcp's Host-header allowlist when the HTTP app is
+  built, so operators configure data-olympus directly instead of reaching for
+  the dependency's `FASTMCP_HTTP_ALLOWED_HOSTS` env var (both are honoured and
+  merged). The server now emits a startup WARN when Host protection is on, it
+  binds a non-loopback address, and no public hostname is allowed: the exact
+  silent-breakage shape (readiness green, every proxied request 421) behind the
+  2026-07-09 kn-dev outage. A regression test boots the app with a configured
+  public hostname and asserts the good Host reaches the route while a foreign
+  Host is answered 421. (gh #139 / KNA-70)
+- **Prometheus `/metrics` endpoint (optional `metrics` extra).**
+  `prometheus-client` is an OPTIONAL dependency; with it installed, `GET
+  /metrics` serves the standard exposition format (pending/push queue depths,
+  frozen count, push-failure counter, staleness, live sessions, per-tool call
+  counters, index-build duration + last-build timestamp). Without the extra the
+  route returns `501` and every metric update inside the core background loops
+  is a silent no-op, so a standard deployment is unaffected. (gh #69 / KNA-71)
+- **Cached update-available signal.** The server now checks PyPI/GitHub for a
+  newer published `data-olympus` version in a background task and surfaces
+  `latest_version` / `update_available` in `kb_health` and
+  `GET /api/v1/health`. The health request path reads the cache only, and
+  compact health includes `latest_version` only when `update_available` is true.
+  Air-gapped deployments can set `KB_DISABLE_VERSION_CHECK=on` to make zero
+  outbound version-check calls. (gh #146 / KNA-68)
+- **Legacy corpus status migration.** Status-less documents from pre-0.4.0
+  corpora now default to `active` in the SQLite index when
+  `KB_STATUS_AUTOFILL=on` (the default), preserving in-force retrieval without
+  mutating source markdown during index builds. Operators can persist the same
+  default explicitly with the idempotent `data-olympus migrate status --apply`
+  command. (gh #147 / KNA-69)
+
+### Fixed
+
+- **`kb_consult` demoted_writes CTA count.** The maintenance CTA now counts only
+  the session's live pending entries and is omitted once none remain, instead of
+  reporting stale "N write(s) awaiting operator review" after every demoted entry
+  had been resolved (the demoted_writes / pending_actions surface shipped since
+  v0.4.0 via #131). (gh #137 / KNA-72)
+
 ## [0.4.2] - 2026-07-11
 
 ### Added
@@ -1551,7 +1604,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/knaisoma/data-olympus/compare/v0.4.2...v0.5.0
 [0.4.1]: https://github.com/knaisoma/data-olympus/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/knaisoma/data-olympus/compare/v0.3.5...v0.4.0
 [0.3.5]: https://github.com/knaisoma/data-olympus/compare/v0.3.4...v0.3.5

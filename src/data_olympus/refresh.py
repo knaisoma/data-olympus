@@ -30,9 +30,13 @@ def rebuild_index_safely(
 ) -> dict[str, Any]:
     """Try to rebuild the index. On DuplicateIdError or other failures, the
     previous index is preserved (because Index.build uses atomic swap)."""
+    started = time.monotonic()
     try:
         idx.build(kb_main_path, source_commit=source_commit)
-        return {"outcome": "rebuilt", "error": None, "conflicts": []}
+        return {
+            "outcome": "rebuilt", "error": None, "conflicts": [],
+            "build_duration_sec": time.monotonic() - started,
+        }
     except DuplicateIdError as e:
         log.warning("index rebuild failed (duplicate ids): %s", e)
         conflicts = [{"id": id_, "paths": paths} for id_, paths in e.conflicts.items()]
@@ -107,6 +111,29 @@ async def git_pull_loop(state: ServerState, interval_sec: int) -> None:
                 state.last_index_error_at = None
                 state.last_index_conflicts = []
                 log.info("kb refreshed to %s", outcome.get("sha"))
+                # Prometheus (issue #69): record the rebuild duration + last-build
+                # timestamp. No-op without the metrics extra.
+                _dur = outcome.get("build_duration_sec")
+                if isinstance(_dur, (int, float)):
+                    from data_olympus.metrics import get_metrics
+                    get_metrics().record_index_build(
+                        duration_seconds=float(_dur), ts=now,
+                    )
+            # Refresh the gauge-style metrics from live state every tick so a
+            # scrape reflects current queue depths / freshness (issue #69).
+            # No-op without the metrics extra.
+            from data_olympus.metrics import get_metrics
+            _staleness = (
+                (now - state.last_git_pull_at)
+                if state.last_git_pull_at is not None else None
+            )
+            get_metrics().sync_from_state(
+                pending_count=state.pending_count,
+                push_queue_size=state.push_queue_size,
+                push_queue_frozen=state.push_queue_frozen,
+                staleness_seconds=_staleness,
+                live_sessions=state.live_session_count(),
+            )
             # Maintenance ledger (issue #113): checked on EVERY tick, not only
             # a "rebuilt" outcome. A fresh deployment whose remote never
             # changes would otherwise get "no_change" forever and the ledger
@@ -239,16 +266,36 @@ async def push_retry_loop(
             demote_conflict_to_pending, git=git, pending=pending,
             audit_log=audit_log,
         )
+    def _push_with_metrics(wt: str) -> Any:
+        # Wrap the push so any failure bumps the Prometheus push-failure counter
+        # (issue #69). A rebase conflict is a demotion, not a failure, and is
+        # raised through unchanged for the drain's on_rebase_conflict hook. No-op
+        # counter without the metrics extra.
+        from data_olympus.git_ops import RebaseConflictError
+        try:
+            return git.push_with_rebase_recovery(wt, timeout_sec=push_timeout_sec)
+        except RebaseConflictError:
+            raise
+        except Exception:
+            from data_olympus.metrics import get_metrics
+            get_metrics().push_failures.inc()
+            raise
+
     while True:
         try:
             fn = functools.partial(
                 push_queue.drain,
-                push_fn=lambda wt: git.push_with_rebase_recovery(
-                    wt, timeout_sec=push_timeout_sec),
+                push_fn=_push_with_metrics,
                 max_attempts=max_attempts,
                 on_rebase_conflict=on_conflict,
             )
             await asyncio.get_event_loop().run_in_executor(None, fn)
+            # Keep the push-queue gauges fresh even when the git_pull_loop tick
+            # has not fired recently (issue #69). No-op without the extra.
+            from data_olympus.metrics import get_metrics
+            m = get_metrics()
+            m.push_queue_depth.set(push_queue.size())
+            m.push_queue_frozen.set(push_queue.frozen_count())
         except Exception:
             log.exception("push_retry_loop iteration failed")
         await asyncio.sleep(interval_sec)

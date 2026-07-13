@@ -34,6 +34,17 @@ it does not merge or publish before that approval.
 4. Quality gates (all must pass, else open a `release blocked: <reason>` issue and
    stop): `uv run pytest -q`, `uv run ruff check .`, `uv run mypy src`,
    `bats -r tests`, a security review over `git diff <lasttag>..HEAD`, and `kb_health`.
+4a. Version-immutability readiness (hard block): run
+    `python3 scripts/check_version_free.py --version X.Y.Z`. A published version
+    (PyPI, the ghcr `:vX.Y.Z` image tag, or a GitHub release/tag) is immutable, so
+    a non-zero exit means the cut version is already taken (exit 3) or a registry
+    was unreachable and the guard failed closed (exit 4). On either, STOP: bump the
+    version (re-run step 3) or wait for the registry, then re-check. The same guard
+    runs automatically as the first step of `tag-release.yml`'s `decide` job (before
+    the tag is pushed) and in PR CI, so this is the cutter's early confirmation. A
+    genuine reconcile (local tag `vX.Y.Z` already at HEAD) is allowed by the guard
+    and skips the registry lookups. Only the operator may override a stuck registry
+    with `KB_BYPASS_VERSION_CHECK=1`.
 5. Build the RC: `gh workflow run rc-publish.yml -f ref=feature/<release-epic-id>`.
    This publishes `ghcr.io/knaisoma/data-olympus:X.Y.Z-rc.N` + the `:rc` channel and
    a GitHub pre-release. Wait for the run to succeed; capture `X.Y.Z-rc.N`.

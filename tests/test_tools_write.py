@@ -545,11 +545,19 @@ def test_pending_get_rejects_traversal_id(tmp_path) -> None:
 
 def _build_index(repo):
     """Build an Index over the current repo HEAD so the validation gate has a
-    live corpus to check duplicate ids against."""
+    live corpus to check duplicate ids against.
+
+    ``status_autofill=False`` pins the pre-#147 in-force semantics these tests
+    rely on: several seed a status-LESS doc precisely so it is NOT in force (so a
+    governed-target lookup treats it as non-governed and the edit auto-commits).
+    Virtual autofill (#147, default on) would otherwise index that doc as
+    ``active``/in-force and change the governance decision. These tests exercise
+    the write/governance path, not the autofill feature, so the conservative
+    lane is the faithful choice here."""
     import tempfile
 
     from data_olympus.index import Index
-    idx = Index(Path(tempfile.mkdtemp()) / "index.db")
+    idx = Index(Path(tempfile.mkdtemp()) / "index.db", status_autofill=False)
     idx.build(Path(str(repo)), source_commit="seed")
     return idx
 

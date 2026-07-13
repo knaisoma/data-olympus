@@ -65,6 +65,12 @@ trigram, auth, audit rotation):
   one with the classic nested-quantifier ReDoS shape, is logged and skipped
   rather than raised, and every accepted pattern runs with a hard 1-second
   match timeout. Empty by default (no extra patterns).
+- `KB_DISABLE_VERSION_CHECK`: truthy (`1`, `true`, `yes`, `on`) disables the
+  public PyPI/GitHub version check completely. Use this for air-gapped
+  deployments. Default is off.
+- `KB_VERSION_CHECK_INTERVAL_SEC`: how often the background task refreshes the
+  cached latest-version result (default `86400`, i.e. 24h). The health request
+  path never performs the outbound lookup.
 - `KB_GOVERNED_LANE_PROTECTION`: governed-lane write protection (issue #112),
   default `on`; set `off` to restore the exact pre-#112 behavior (see
   "Governed-lane write protection" below).
@@ -142,6 +148,13 @@ means a doc silently lost its governance metadata (`type`/`status`/`tier`), so i
 will not be governed or filtered correctly. It is a **warning** signal and does
 **not** flip `degraded` (that would 503 every read for an authoring mistake);
 alert on `malformed_frontmatter > 0` separately.
+
+When the background version check sees a newer published package than the
+running server, health also carries `latest_version` and sets
+`update_available: true`. `latest_version` is omitted from compact health output
+until a check has found a published version; verbose health shows it as `null`
+before then. This signal is informational only and does not affect `degraded`,
+`readyz`, or write behavior.
 
 ## Write serialization and integrity gates
 
@@ -798,22 +811,56 @@ reverse proxy (terminate TLS there). See `SECURITY.md` for the full threat model
 the route/capability table, payload limits, the tamper-evident audit log, and the
 git sync-failure health fields.
 
-### Host allowlist behind a proxy (`FASTMCP_HTTP_ALLOWED_HOSTS`, v0.4.1+)
+### Host allowlist behind a proxy (`KB_PUBLIC_HOSTNAMES`, v0.4.3+)
 
 fastmcp >= 3.4.3 validates the `Host` header on streamable HTTP
 (DNS-rebinding protection) and returns `421 Misdirected Request` for
 hostnames outside its allowlist. When data-olympus is served behind a
-reverse proxy or ingress, set the public hostname explicitly:
+reverse proxy or ingress, set the public hostname explicitly via the
+first-class knob (comma-separated, no JSON):
 
 ```bash
-FASTMCP_HTTP_ALLOWED_HOSTS='["kb.example.com"]'
+KB_PUBLIC_HOSTNAMES=kb.example.com
 ```
 
+This is mapped onto fastmcp's Host-header allowlist when the HTTP app is
+built. The older dependency knob `FASTMCP_HTTP_ALLOWED_HOSTS='["kb.example.com"]'`
+still works and is merged with `KB_PUBLIC_HOSTNAMES` when both are set.
+
 Direct localhost/pod requests are always allowed, so health probes pass
-while proxied traffic fails: check the server log for 421 lines if agents
-suddenly cannot reach the endpoint after an upgrade. Operational details
-in docs/operations.md section 3.4; a first-class knob is tracked in
-issue #139.
+while proxied traffic fails: this is the exact shape of the 2026-07-09
+kn-dev outage (readiness green, every proxied request 421). To make that
+failure loud, the server now emits a startup WARN when Host protection is
+on, it binds a non-loopback address, and no public hostname is allowed.
+Check the server log for that WARN or for 421 lines if agents suddenly
+cannot reach the endpoint after an upgrade. Operational details in
+docs/operations.md section 3.4. (Closes issue #139 / KNA-70.)
+
+### Prometheus metrics (`GET /metrics`, optional `metrics` extra)
+
+`prometheus-client` is an OPTIONAL dependency. Install it to enable the
+scrape endpoint:
+
+```bash
+uv tool install 'data-olympus[metrics]'   # or pip install 'data-olympus[metrics]'
+```
+
+With the extra installed, `GET /metrics` serves the standard text exposition
+format. Without it, `/metrics` returns `501 Not Implemented` (the route exists,
+the capability is simply not built into the image) and every metric update
+inside the core background loops is a silent no-op, so a standard deployment is
+unaffected. Exposed series (prefix `data_olympus_`):
+
+- `pending_queue_depth`, `push_queue_depth`, `push_queue_frozen` (gauges)
+- `push_failures_total` (counter)
+- `staleness_seconds`, `live_sessions` (gauges)
+- `tool_calls_total{tool="..."}` (counter, per MCP tool)
+- `index_build_duration_seconds` (histogram) and
+  `index_last_build_timestamp_seconds` (gauge)
+
+The gauges are refreshed from the refresh / push-retry loops each tick and also
+snapshotted on scrape, so a scrape reflects the live queue depths and freshness.
+(Closes issue #69 / KNA-71.)
 
 ### Proxy headers and the rate limiter (`KB_TRUSTED_PROXIES`)
 

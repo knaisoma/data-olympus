@@ -255,6 +255,11 @@ class MCPAuthMiddleware(Middleware):
         token = _current_principal.set(principal)
         try:
             name = context.message.name
+            # Per-tool call counter (issue #69). Counted here (the single MCP
+            # tool-dispatch chokepoint) rather than per-closure. No-op without
+            # the metrics extra.
+            from data_olympus.metrics import get_metrics
+            get_metrics().tool_calls.labels(tool=name).inc()
             cap = WRITE_TOOL_CAPABILITY.get(name)
             if cap is not None:
                 if not principal.has(cap):
@@ -331,6 +336,15 @@ class ServerState:
         # count. None until then / in tests, so health reports live_sessions=None
         # rather than a misleading 0. See session_metrics.
         self.session_count_provider: Callable[[], int | None] | None = None
+        # Version-check cache (issue #146 / KNA-68). Refreshed by a periodic
+        # background task (version_check_loop) that runs the SYNCHRONOUS,
+        # network-bound setup_wizard.latest_version() on a worker thread. The
+        # health route only READS these, never the network, so a slow/offline
+        # PyPI lookup can never stall the async request path or the readiness
+        # probe. None until the first check completes (or forever when the check
+        # is disabled / air-gapped).
+        self.latest_version: str | None = None
+        self.update_available: bool = False
 
     @property
     def pending_count(self) -> int:
@@ -427,6 +441,7 @@ def build_app(
     maintenance_ledger_path: str = "tooling/maintenance-ledger.md",
     maintenance_recently_expired_days: int = 30,
     maintenance_expiring_soon_days: int = 30,
+    status_autofill: bool = True,
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
 
@@ -478,6 +493,7 @@ def build_app(
         maintenance_ledger_path=maintenance_ledger_path,
         maintenance_recently_expired_days=maintenance_recently_expired_days,
         maintenance_expiring_soon_days=maintenance_expiring_soon_days,
+        status_autofill=status_autofill,
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
@@ -517,6 +533,7 @@ def build_app(
         maintenance_ledger_path=config.maintenance_ledger_path,
         maintenance_recently_expired_days=config.maintenance_recently_expired_days,
         maintenance_expiring_soon_days=config.maintenance_expiring_soon_days,
+        status_autofill=config.status_autofill,
     )
     synonym_expander = default_query_expander()
     cooc_expander = idx.cooccurrence_expander() if cooccurrence_enabled() else None
@@ -642,6 +659,8 @@ def build_app(
             last_successful_refresh_at=state.last_successful_refresh_at,
             remote_head_sha=state.remote_head_sha,
             live_sessions=state.live_session_count(),
+            latest_version=state.latest_version,
+            update_available=state.update_available,
         )
         return shape_response(resp, verbose=verbose)
 
@@ -1044,7 +1063,8 @@ def build_app(
                 workspace=workspace, intent=intent, source_session=source_session,
                 agent_identity=agent_identity,
                 ttl_sec=state.config.consult_ttl_sec, now=_time.time(),
-                audit_log=state.audit_log, trigger=trigger,
+                audit_log=state.audit_log, pending_queue=state.pending,
+                trigger=trigger,
             )
             return resp.model_dump(exclude_none=True)
 
@@ -1166,7 +1186,31 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         maintenance_ledger_path=config.maintenance_ledger_path,
         maintenance_recently_expired_days=config.maintenance_recently_expired_days,
         maintenance_expiring_soon_days=config.maintenance_expiring_soon_days,
+        status_autofill=config.status_autofill,
     )
+
+
+def _maybe_start_version_check_task(
+    tasks: list[asyncio.Task[Any]], state: ServerState, config: Config
+) -> None:
+    """Append the version-check background task unless disabled for air gap."""
+    # Periodic "a newer version is published" check (issue #146 / KNA-68).
+    # Gated OFF by KB_DISABLE_VERSION_CHECK: when disabled the task is never
+    # spawned, so an air-gapped deployment makes ZERO outbound calls. When
+    # enabled it runs setup_wizard.latest_version() (blocking urllib) on a
+    # worker thread once per interval and caches the result on ServerState;
+    # the /api/v1/health route reads only the cache, never the network.
+    if config.disable_version_check:
+        return
+    from data_olympus.version_check import version_check_loop
+
+    tasks.append(asyncio.create_task(
+        version_check_loop(
+            state,
+            interval_sec=config.version_check_interval_sec,
+        ),
+        name="version_check_loop",
+    ))
 
 
 def _uvicorn_proxy_kwargs(trusted_proxies: list[str]) -> dict[str, Any]:
@@ -1187,6 +1231,60 @@ def _uvicorn_proxy_kwargs(trusted_proxies: list[str]) -> dict[str, Any]:
         "proxy_headers": True,
         "forwarded_allow_ips": ",".join(trusted_proxies),
     }
+
+
+def _resolve_allowed_hosts(config: Config) -> list[str] | None:
+    """Compute the Host-header allowlist to pass to ``app.http_app(allowed_hosts=...)``.
+
+    Merges the first-class ``KB_PUBLIC_HOSTNAMES`` knob with fastmcp's own
+    ``FASTMCP_HTTP_ALLOWED_HOSTS`` env knob (surfaced as
+    ``fastmcp.settings.http_allowed_hosts``) so an operator can set either. When
+    both are empty this returns ``None`` so ``http_app`` falls back to its own
+    settings default (identical to the pre-KNA-70 behaviour); passing ``[]`` would
+    instead flip fastmcp's ``has_explicit_allowed_hosts`` on and force strict
+    validation with no host allowed, i.e. reproduce the 421 outage.
+    """
+    import fastmcp
+
+    merged: list[str] = list(config.public_hostnames)
+    env_hosts = getattr(fastmcp.settings, "http_allowed_hosts", None)
+    if env_hosts:
+        for h in env_hosts:
+            if h not in merged:
+                merged.append(h)
+    return merged or None
+
+
+def _warn_if_unprotected_bind(
+    *, bind_host: str, allowed_hosts: list[str] | None
+) -> None:
+    """Emit a startup WARN for the silent-breakage shape behind KNA-70.
+
+    fastmcp validates the Host header (DNS-rebind protection) whenever host
+    protection is on OR an explicit allowlist is configured. When the server
+    binds a non-loopback address (e.g. ``0.0.0.0`` behind an ingress) and
+    protection is on but no extra hostname is allowed, EVERY proxied request is
+    answered 421 while direct pod probes on 127.0.0.1/localhost still pass, so
+    readiness stays green and the breakage is invisible. That is exactly the
+    2026-07-09 kn-dev 7h outage. Warn loudly at boot so an operator sees it
+    before agents' enforce hooks start silently failing open.
+    """
+    import fastmcp
+
+    protection = getattr(fastmcp.settings, "http_host_origin_protection", False)
+    protection_on = bool(protection) or bool(allowed_hosts)
+    normalized = bind_host.strip().lower()
+    is_loopback_bind = normalized in {"127.0.0.1", "localhost", "::1"}
+    if protection_on and not is_loopback_bind and not allowed_hosts:
+        log.warning(
+            "host-header protection is ON and the server binds a non-loopback "
+            "address (%s) but no public hostname is allowed: every request "
+            "arriving through a reverse proxy will be answered 421 Misdirected "
+            "Request while direct pod probes still pass (readiness stays green). "
+            "Set KB_PUBLIC_HOSTNAMES to the public hostname(s) the proxy presents "
+            "(e.g. KB_PUBLIC_HOSTNAMES=kb.example.com). See docs/serving.md.",
+            bind_host,
+        )
 
 
 def _ensure_git_identity() -> None:
@@ -1266,8 +1364,15 @@ def main() -> None:
         # Always strictly below the idle window (>= 3 touches per window) even for
         # a tiny idle value; a small positive floor avoids a zero/negative sleep.
         _touch_interval = max(0.1, min(_touch_interval, _idle / 3))
+    # KNA-70: map the first-class KB_PUBLIC_HOSTNAMES knob (merged with fastmcp's
+    # own FASTMCP_HTTP_ALLOWED_HOSTS) onto fastmcp's Host-header allowlist, and
+    # warn at boot about the silent-breakage shape (host protection on + public
+    # bind + no allowed host) that 421s every proxied request.
+    allowed_hosts = _resolve_allowed_hosts(config)
+    _warn_if_unprotected_bind(bind_host="0.0.0.0", allowed_hosts=allowed_hosts)
     http_app = app.http_app(
         transport="streamable-http",
+        allowed_hosts=allowed_hosts,
         middleware=[
             StarletteMiddleware(
                 SessionActivityMiddleware,
@@ -1394,6 +1499,7 @@ def main() -> None:
                 ),
                 name="session_reaper_loop",
             ))
+        _maybe_start_version_check_task(tasks, state, config)  # pragma: no cover
         # Proxy-header handling (WP3a item 3). By default uvicorn ignores
         # X-Forwarded-For, so behind an ingress every client collapses to the
         # proxy's address and the per-IP rate limiter throttles all clients as

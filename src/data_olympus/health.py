@@ -53,6 +53,13 @@ class HealthState:
     # NOT flip ``degraded``; a superseded doc silently losing its own status
     # flip is a governance data-quality signal, not a service failure.
     graph_excluded_docs: int = 0
+    # Latest published version cached by the periodic version-check background
+    # task (issue #146 / KNA-68). None until the first check completes, or
+    # forever when the check is disabled (KB_DISABLE_VERSION_CHECK) or offline.
+    # The health route only READS this cache; it never touches the network, so a
+    # slow/unreachable PyPI can never stall the async request path.
+    latest_version: str | None = None
+    update_available: bool = False
 
 
 def snapshot(
@@ -74,6 +81,8 @@ def snapshot(
     last_successful_refresh_at: float | None = None,
     remote_head_sha: str | None = None,
     live_sessions: int | None = None,
+    latest_version: str | None = None,
+    update_available: bool = False,
 ) -> HealthState:
     """Compose a HealthState from the index and the last-pull/push timestamps.
 
@@ -127,4 +136,6 @@ def snapshot(
         malformed_frontmatter=malformed_frontmatter,
         malformed_validity=malformed_validity,
         graph_excluded_docs=graph_excluded_docs,
+        latest_version=latest_version,
+        update_available=update_available,
     )

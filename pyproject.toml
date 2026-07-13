@@ -1,6 +1,6 @@
 [project]
 name = "data-olympus"
-version = "0.4.2"
+version = "0.5.0"
 description = "Governance-grade knowledge-base format (OKF-compatible) plus CLI and single-writer MCP server"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -46,6 +46,14 @@ Changelog = "https://github.com/knaisoma/data-olympus/blob/main/CHANGELOG.md"
 embeddings = [
     "fastembed>=0.8,<0.9",
 ]
+# Optional Prometheus /metrics endpoint (issue #69). NOT a core dependency: the
+# metrics registry is a no-op shim when prometheus-client is absent (its inc/
+# set/observe calls live inside core background loops and tool wrappers, so a
+# bare import must never crash a standard deployment). With the extra installed,
+# /metrics serves the exposition format; without it, /metrics returns 501.
+metrics = [
+    "prometheus-client>=0.20",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -59,6 +67,9 @@ dev = [
     # runtime; the tests opt in via KB_EMBEDDINGS_MODE and skip if the model
     # cannot be fetched in the sandbox).
     "fastembed>=0.8,<0.9",
+    # Exercise the Prometheus /metrics path in CI (the exposition-format test
+    # skips when this is absent; the no-op-shim tests run regardless).
+    "prometheus-client>=0.20",
 ]
 bench = [
     "tiktoken>=0.8",

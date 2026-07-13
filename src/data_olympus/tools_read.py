@@ -75,6 +75,8 @@ def kb_health_fn(
     last_successful_refresh_at: float | None = None,
     remote_head_sha: str | None = None,
     live_sessions: int | None = None,
+    latest_version: str | None = None,
+    update_available: bool = False,
 ) -> HealthResponse:
     state = snapshot(
         idx=idx,
@@ -94,6 +96,8 @@ def kb_health_fn(
         last_successful_refresh_at=last_successful_refresh_at,
         remote_head_sha=remote_head_sha,
         live_sessions=live_sessions,
+        latest_version=latest_version,
+        update_available=update_available,
     )
     return HealthResponse(
         kb_commit=state.kb_commit,
@@ -121,6 +125,8 @@ def kb_health_fn(
         malformed_frontmatter=state.malformed_frontmatter,
         malformed_validity=state.malformed_validity,
         graph_excluded_docs=state.graph_excluded_docs,
+        latest_version=state.latest_version,
+        update_available=state.update_available,
         pending_actions=pending_actions_for(getattr(idx, "maintenance_state", None)),
     )
 

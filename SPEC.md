@@ -281,6 +281,13 @@ The serving transport MUST be streamable HTTP (not stdio). The MCP endpoint is `
 
 **Readiness probes MUST NOT target `/api/v1/health`.** A load balancer or orchestrator readiness check MUST use `GET /readyz` (200 once the process is up and the index is loaded, independent of data staleness). `/api/v1/health` keeps a 503-on-degraded contract for data-freshness alerting; wiring it as a readiness probe would eject a healthy single replica from its Service on a transient git-remote staleness. See [`docs/serving.md`](docs/serving.md).
 
+**Update-available signal.** A server MAY surface cached `latest_version` and
+`update_available` fields in `kb_health` / `GET /api/v1/health` when a newer
+data-olympus package is published. These are informational serving-layer fields
+only: they MUST NOT affect `degraded` or readiness, and the health request path
+MUST read a cache rather than perform outbound registry calls. Deployments MAY
+disable the check entirely for air-gapped operation.
+
 **Enforcement endpoints.** A server MAY expose an enforcement surface that turns the advisory KB into a gated consultation proxy for code and architectural decisions. The endpoints are:
 
 - `POST /api/v1/consult`: record a consultation for a `(source_session, workspace)` pair and return the governing rules for the supplied intent.
@@ -350,6 +357,8 @@ This document is now at `0.2`, incrementing from `0.1`: the addition of the opti
 The `spec_version` field is optional in bundles targeting this `0.1` draft. It becomes required at `1.0`.
 
 **Issue #114 (write-path `status` enforcement) does NOT bump this version.** `status` has been a required field under section 4.2 — and a `kb lint` error when absent — since the `0.1` draft; no prior version of this document ever described it as recommended, so there is no required-field-semantics change to record here. What issue #114 adds is a reference-implementation write-path check (section 8): a NEWLY created document missing `status` is now rejected at commit time, closing a gap where the write path was more permissive than `kb lint`. This does not affect any already-conformant bundle (which by definition already has `status` on every document) and does not change how an existing bundle is read, parsed, or validated — only how a brand-new document is admitted through the write path. Per the minor/major criteria above, that is neither: it is a reference-implementation enforcement-timing change, not a format change, so it is documented here rather than as a version increment. A bundle that is already non-conformant (missing `status` on one or more legacy documents) is unaffected in how it is READ — those documents keep being served, just never as in-force — see the maintenance ledger migration path in [`docs/operations.md`](docs/operations.md).
+
+**Issue #147 / KNA-69 (legacy status autofill) also does NOT bump this version.** `#147` is a reference-implementation read-side default, not a format change: it does not alter what `status` means, its controlled vocabulary, or the requirement that documents carry it. It changes how the reference implementation treats a legacy document that is missing `status`. Under `#114` such a document was served but never in-force, so a pre-0.4.0 corpus silently lost its in-force guidance on upgrade. Under `#147` the index build treats a missing `status` as `active` by default (`KB_STATUS_AUTOFILL=on`), so the corpus keeps governing exactly as it did before the upgrade. This intentionally reverses the conservative "never guess status" stance `#114` took, and it does so for one deliberate reason: for the narrow legacy-upgrade case, a seamless default that preserves prior in-force behavior is worth more than conservatively flagging every legacy document as not-in-force and blocking it until a manual fix lands. The reversal is bounded and reversible: it applies only to documents with NO `status` (an explicit status is always honored verbatim), never rewrites the markdown source at index time (the build stays a read-only parse; the physical gap is still tracked by the maintenance ledger so the `missing_status` CTA keeps nagging), and is fully disabled by `KB_STATUS_AUTOFILL=off` for a deployment that prefers explicit flagging. Persisting the default into the markdown source is a separate, explicit operator action (`data-olympus migrate status --apply`), never an implicit side effect of indexing. See [`docs/operations.md`](docs/operations.md) section 5.2.
 
 ---
 

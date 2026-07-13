@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from data_olympus.audit_log import AuditLog
     from data_olympus.enforce_policy import ConsultationLedger, IntentClassifier
     from data_olympus.index import Index
+    from data_olympus.pending import PendingQueue
 
 ENFORCE_EVENT_TYPES = (
     "consult", "gate_allow", "gate_block", "gate_bypass", "gate_degraded",
@@ -54,6 +55,7 @@ def kb_consult_fn(
     ttl_sec: float,
     now: float,
     audit_log: AuditLog | None = None,
+    pending_queue: PendingQueue | None = None,
     limit: int = 5,
     trigger: str = EXPLICIT_TRIGGER,
 ) -> ConsultResponse:
@@ -123,18 +125,38 @@ def kb_consult_fn(
         from data_olympus.tools_recap import kb_session_recap_fn
         recap = kb_session_recap_fn(audit_log=audit_log, source_session=source_session)
         if recap.demoted_to_pending > 0:
-            item = {
-                "kind": "demoted_writes",
-                "message": (
-                    f"{recap.demoted_to_pending} write(s) in this session are "
-                    f"awaiting operator review (governed-lane write "
-                    f"protection or low confidence). Surface this to the "
-                    f"operator; run `kb pending` / kb_session_recap for "
-                    f"details. Act only on operator confirmation."
-                ),
-                "count": recap.demoted_to_pending,
-            }
-            pending_actions = [*(pending_actions or []), item]
+            # KNA-72 / gh #137: reconcile the CTA against the LIVE pending queue.
+            # ``recap.demoted_to_pending`` is the session-LIFETIME demotion count
+            # from the audit log, which never decreases when a demoted entry is
+            # later approved or rejected. Using it verbatim made the CTA claim
+            # "N write(s) ... are awaiting operator review" long after every
+            # demoted entry was resolved (kb_health pending_count 0,
+            # kb_list_pending empty), so the count was neither accurate nor
+            # actionable. When a pending queue is available, count only the
+            # entries STILL on disk for this source_session and OMIT the item
+            # entirely once none remain; the recap's lifetime tally is left as-is
+            # (that surface is intended). Without a pending queue (old callers /
+            # unit tests that do not wire one) fall back to the lifetime count.
+            if pending_queue is not None:
+                live_count = sum(
+                    1 for e in pending_queue.list()
+                    if e.get("source_session") == source_session
+                )
+            else:
+                live_count = recap.demoted_to_pending
+            if live_count > 0:
+                item = {
+                    "kind": "demoted_writes",
+                    "message": (
+                        f"{live_count} write(s) in this session are "
+                        f"awaiting operator review (governed-lane write "
+                        f"protection or low confidence). Surface this to the "
+                        f"operator; run `kb pending` / kb_session_recap for "
+                        f"details. Act only on operator confirmation."
+                    ),
+                    "count": live_count,
+                }
+                pending_actions = [*(pending_actions or []), item]
     return ConsultResponse(
         is_governed_decision=result.is_governed_decision,
         rules=rules, consulted_at=now, ttl_seconds=int(ttl_sec),
