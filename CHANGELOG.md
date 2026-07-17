@@ -12,6 +12,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **Bumped transitive dependency `mcp` 1.28.0 to 1.28.1** to close
+  CVE-2026-59950 / GHSA-vj7q-gjh5-988w (Dependabot #18, high severity).
+  The advisory covers the MCP Python SDK WebSocket server transport, which
+  data-olympus does not use (Streamable HTTP only); the bump is applied as
+  a precaution and to clear the release security gate. No API surface change.
+  (KNA-146)
+
 ### Changed
 
 - **Improved tool definitions for 7 tools (`kb_gate_check`, `kb_onboarding_status`,
