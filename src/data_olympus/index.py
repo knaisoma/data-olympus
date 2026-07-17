@@ -1494,6 +1494,8 @@ class Index:
                     base_params=base_params,
                     candidate_limit=candidate_limit,
                 )
+        except sqlite3.Error:
+            return []
         finally:
             conn.close()
         # Stage 2c (dense candidate SOURCE, issue #42, reviewer concern 1). Only
@@ -1543,6 +1545,8 @@ class Index:
         conn = self._connect()
         try:
             by_id = _superseded_by_map(conn, [h.id for h in hits])
+        except sqlite3.Error:
+            return hits
         finally:
             conn.close()
         if not by_id:
@@ -2143,16 +2147,26 @@ class Index:
             ).fetchone()
             if row is None:
                 return None
-            commit_row = conn.execute(
-                "SELECT value FROM meta WHERE key='source_commit'"
-            ).fetchone()
-            source_commit = commit_row[0] if commit_row else ""
+            try:
+                commit_row = conn.execute(
+                    "SELECT value FROM meta WHERE key='source_commit'"
+                ).fetchone()
+                source_commit = commit_row[0] if commit_row else ""
+            except sqlite3.Error:
+                source_commit = ""
             # Lifecycle-relationship surfacing (issue #110 slice 2): computed
             # from the `edges` table so "retirement is explainable" -- see
             # _superseded_by_map / _edges_from / _edges_targeting.
-            superseded_by = _superseded_by_map(conn, [id]).get(id, [])
-            contradicts = _edges_from(conn, "contradicts", [id]).get(id, [])
-            contradicted_by = _edges_targeting(conn, "contradicts", [id]).get(id, [])
+            try:
+                superseded_by = _superseded_by_map(conn, [id]).get(id, [])
+                contradicts = _edges_from(conn, "contradicts", [id]).get(id, [])
+                contradicted_by = _edges_targeting(conn, "contradicts", [id]).get(
+                    id, []
+                )
+            except sqlite3.Error:
+                superseded_by, contradicts, contradicted_by = [], [], []
+        except sqlite3.Error:
+            return None
         finally:
             conn.close()
         tags = [t for t in (row["tags"] or "").split() if t]
@@ -2222,6 +2236,8 @@ class Index:
                 "SELECT id, tags FROM docs WHERE tags LIKE ? ESCAPE '\\'",
                 (f"%{escaped}%",),
             ).fetchall()
+        except sqlite3.Error:
+            return set()
         finally:
             conn.close()
         return {r["id"] for r in rows if tag in (r["tags"] or "").split()}
@@ -2242,6 +2258,8 @@ class Index:
                     "WHERE tier = ? AND category = ? ORDER BY id ASC",
                     (tier, category),
                 ).fetchall()
+        except sqlite3.Error:
+            return []
         finally:
             conn.close()
         return [{"id": r["id"], "title": r["title"], "path": r["path"]} for r in rows]
@@ -2254,6 +2272,8 @@ class Index:
                 "SELECT tier, category, COUNT(*) AS n "
                 "FROM docs GROUP BY tier, category ORDER BY tier, category"
             ).fetchall()
+        except sqlite3.Error:
+            return []
         finally:
             conn.close()
 
@@ -2298,6 +2318,13 @@ class Index:
         conn = self._connect()
         try:
             rows = conn.execute("SELECT key, value FROM meta").fetchall()
+        except sqlite3.Error:
+            return {
+                "source_commit": "",
+                "index_built_at": None,
+                "total_docs": 0,
+                "db_size_bytes": self._db_path.stat().st_size,
+            }
         finally:
             conn.close()
         meta = {r["key"]: r["value"] for r in rows}
@@ -2335,6 +2362,8 @@ class Index:
                 "SELECT id, path, tier, git_remote_url FROM docs WHERE path LIKE ?",
                 (f"{prefix}%",),
             ).fetchall()
+        except sqlite3.Error:
+            return []
         finally:
             conn.close()
         out: list[dict[str, Any]] = []
@@ -2358,6 +2387,8 @@ class Index:
                 "SELECT id, path, tier, git_remote_url FROM docs "
                 "WHERE git_remote_url IS NOT NULL AND git_remote_url != ''"
             ).fetchall()
+        except sqlite3.Error:
+            return []
         finally:
             conn.close()
         return [{

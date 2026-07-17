@@ -55,13 +55,17 @@ RUN uv sync --frozen --no-dev
 RUN mkdir -p /tmp/uv-cache && chmod 0777 /tmp/uv-cache
 ENV UV_CACHE_DIR=/tmp/uv-cache
 
+# Glama and other public catalog sandboxes need a safe, populated corpus so
+# tool calls exercise real results without exposing an operator KB.
+COPY example-bundle/ /example-bundle/
+
 # Pre-create runtime volume mount points + writable kb-main, owned by the runtime
 # uid so the container can write them when running as non-root (and when a PVC is
 # mounted the fsGroup owns the volume root; these image dirs are the fallback for
 # non-k8s runs like docker compose).
 RUN mkdir -p /kb-main /kb-worktrees /state/pending /state/pending/locks \
              /state/push-queue /state/audit /index \
-    && chown -R 65534:65534 /kb-main /kb-worktrees /state /index
+    && chown -R 65534:65534 /kb-main /kb-worktrees /state /index /example-bundle
 
 # Bake the git host's current known_hosts; rotate by rebuilding image (or add a
 # host at runtime via KB_SSH_KEYSCAN_HOST, see entrypoint.sh). Written into
@@ -76,7 +80,7 @@ RUN ssh-keyscan -t ed25519,rsa "${KB_SSH_KEYSCAN_HOST}" > /etc/ssh/known_hosts \
 COPY deploy/docker/entrypoint.sh /entrypoint.sh
 RUN chmod 0755 /entrypoint.sh
 
-ENV KB_MAIN_PATH=/kb-main \
+ENV KB_MAIN_PATH=/example-bundle \
     KB_INDEX_PATH=/index/kb.db \
     KB_PENDING_ROOT=/state/pending \
     KB_PUSH_QUEUE_ROOT=/state/push-queue \

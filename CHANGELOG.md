@@ -36,6 +36,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   when to use `kb_gate_check`, `kb_consult`, `kb_audit`, or `kb_compliance`
   instead. (gh #153 / KNA-143)
 
+### Fixed
+
+- **Hardened read tools against present SQLite indexes without tables.**
+  `kb_search`, `kb_get`, `kb_list`, `kb_outline`, onboarding status, and
+  cleanup planning now degrade to empty results or empty health instead of
+  surfacing raw `sqlite3.Error` failures. The Glama Docker sandbox now serves
+  the bundled `example-bundle` corpus so catalog introspection starts with a
+  populated, safe index. (gh #156 / KNA-142)
+
 ## [0.5.0] - 2026-07-12
 
 ### Added

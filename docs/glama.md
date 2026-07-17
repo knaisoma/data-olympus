@@ -24,13 +24,15 @@ with a non-root Dockerfile path:
 - MCP endpoint: `/mcp`
 
 For Glama introspection, do not point the release at a real operator knowledge
-base. An empty `/kb-main` directory is enough for `tools/list`: the server still
-registers every MCP tool before any corpus content exists.
+base. Use the repository's bundled `example-bundle` corpus. It is safe to expose,
+it lets startup build a SQLite index with a schema, and it gives catalog
+inspectors valid results for read tools instead of an empty database or a
+database without tables.
 
 Suggested sandbox environment:
 
 ```text
-KB_MAIN_PATH=/kb-main
+KB_MAIN_PATH=/example-bundle
 KB_INDEX_PATH=/index/kb.db
 KB_REMOTE_URL=
 KB_GIT_REMOTE_URL=
