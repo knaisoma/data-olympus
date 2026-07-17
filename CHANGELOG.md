@@ -14,6 +14,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Improved tool definitions for 7 tools (`kb_gate_check`, `kb_onboarding_status`,
+  `kb_compliance`, `kb_cleanup_plan`, `kb_get`, `kb_list`, `kb_outline`).** Each
+  docstring now includes a "Use when / use X instead when Y" guidance sentence.
+  `kb_gate_check` also discloses its audit-log side effect (`readOnlyHint=false`
+  is intentional). (gh #154 / KNA-144)
+
 - **Improved `kb_record_event` tool definition.** The docstring now discloses
   behavior (durable, non-destructive audit append; requires write capability),
   documents both event_type values (`gate_bypass`, `gate_degraded`) and all

@@ -667,6 +667,9 @@ def build_app(
     @app.tool(title="KB Outline", annotations=READ_ONLY_TOOL)
     def kb_outline(verbose: VerboseParam = False) -> dict[str, object]:
         """Return the tree of tiers and categories with doc counts.
+        Use this to get a structural map of the KB before tier exploration; use
+        `kb_search` when you have a topic query, or `kb_list` when you know the
+        tier and want the document id list.
 
         verbose: kb_outline is already lean, so compact and full modes return the
         same shape; the parameter exists for interface consistency."""
@@ -742,7 +745,9 @@ def build_app(
     @app.tool(title="KB Get Document", annotations=READ_ONLY_TOOL)
     def kb_get(id: DocumentIdParam, verbose: VerboseParam = False) -> dict[str, object]:
         """Retrieve a document by id (STD-U-001, ADR-002, T-NNN, etc.).
-        Returns the full content markdown plus metadata.
+        Returns the full content markdown plus metadata. Use this when you have a
+        specific id (from `kb_search` results or session memory); use `kb_search`
+        instead when you need to find a document by topic.
 
         Always resolves regardless of expiry (ids never dangle): an expired
         document is still returned, with its full `validity` object and a
@@ -772,6 +777,9 @@ def build_app(
         verbose: VerboseParam = False,
     ) -> dict[str, object]:
         """List doc ids in the given tier (and optional category), ordered by id.
+        Use this to enumerate all docs in a tier when auditing coverage or iterating
+        a full category; use `kb_search` when you need topic-based discovery, or
+        `kb_outline` for counts without the full id list.
 
         verbose: False (default) drops per-entry `path` (fetch via kb_get(id)) and
         omits a null category. verbose=True restores the full shape with paths."""
@@ -786,7 +794,11 @@ def build_app(
         component_remote_url: RemoteUrlParam = None,
     ) -> dict[str, object]:
         """Compute onboarding status for a workspace + optional component.
-        State is one of: absent, partial, onboarded, rename_candidate."""
+        State is one of: absent, partial, onboarded, rename_candidate.
+        Use this to check whether a workspace is registered in the KB and what
+        documentation is missing; use `kb_search` or `kb_get` instead when you
+        need to read existing KB content for the workspace rather than check its
+        registration state."""
         from data_olympus.tools_onboarding import kb_onboarding_status_fn
         resp = kb_onboarding_status_fn(
             idx=state.idx, workspace=workspace, component=component,
@@ -826,7 +838,10 @@ def build_app(
     ) -> dict[str, object]:
         """Read-only. Classify local project-repo docs against KB content for this
         workspace/component and return thin-pointer replacements for duplicates.
-        The agent applies confirmed edits locally; the server writes nothing."""
+        The agent applies confirmed edits locally; the server writes nothing.
+        Use this when migrating a workspace's local docs into the KB by identifying
+        redundant content; use `kb_propose_edit` or `kb_propose_memory` instead
+        when you are ready to write the actual KB content."""
         if (throttled := _mcp_rate_limited()) is not None:
             return throttled
         from data_olympus.tools_onboarding import CleanupInputError, kb_cleanup_plan_fn
@@ -1075,7 +1090,12 @@ def build_app(
             action_diff: ActionDiffParam = "",
         ) -> dict[str, object]:
             """Return a verdict (allow | consult_required) for a pending code action.
-            Governed actions require a fresh consultation on record."""
+            Governed actions require a fresh consultation on record. Records each
+            check to the audit log (non-destructive; `readOnlyHint=false` is
+            intentional). Use this in a PreToolUse hook to verify a specific pending
+            action before execution; use `kb_consult` instead when proactively
+            reading governing rules at the start of a session rather than checking
+            individual actions."""
             if (throttled := _mcp_rate_limited(gate=True)) is not None:
                 return throttled
             import time as _time
@@ -1094,7 +1114,10 @@ def build_app(
         def kb_compliance(
             since: SinceParam = None, agent: AgentParam = None,
         ) -> dict[str, object]:
-            """Aggregate enforcement events (consult / gate_*) overall and per agent."""
+            """Aggregate enforcement events (consult / gate_*) overall and per agent.
+            Use this to review enforcement posture across agents for a reporting
+            period; use `kb_audit` instead when you need the raw event log or
+            per-event details."""
             if state.audit_log is None:
                 return {"counts": {}, "by_agent": {}}
             from data_olympus.tools_enforce import kb_compliance_fn
