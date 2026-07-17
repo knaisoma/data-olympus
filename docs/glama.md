@@ -59,3 +59,26 @@ The highest-impact repo-side checks are:
   which neighboring tool to use instead.
 - After changing MCP tool descriptions, titles, annotations, or parameter
   schemas, trigger a new Glama release or rescan so the public score updates.
+
+## Maintenance profile actions
+
+The 0.6.0 Glama readiness pass addresses the remaining profile gaps tracked in
+GitHub issue #155.
+
+Completed repository actions:
+
+- `glama.json` declares related servers: `knowledge-mcp`, `en-quire`,
+  `md-graph`, and `obsidian-kb`.
+- Public issue triage comments record maintainer responses for the current open
+  backlog entries that lacked one.
+- The public sandbox image uses `example-bundle`, so usage seeding can exercise
+  real read tools without exposing an operator knowledge base.
+
+Manual follow-up after the release branch merges:
+
+- Trigger a Glama rescan or new release.
+- Use Glama "Try in Browser" against the rebuilt sandbox and call `kb_health`,
+  `kb_search`, `kb_get`, `kb_list`, `kb_outline`, `kb_onboarding_status`, and
+  `kb_cleanup_plan`.
+- Recheck the score page and confirm Maintenance grade A and profile completion
+  100 percent.

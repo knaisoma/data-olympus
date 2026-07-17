@@ -23,6 +23,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Added Glama related server metadata and maintenance notes.** `glama.json`
+  now names adjacent knowledge and memory MCP servers, and `docs/glama.md`
+  records the maintainer response and usage seeding steps for the Glama
+  maintenance profile. (gh #155 / KNA-145)
+
 - **Improved tool definitions for 7 tools (`kb_gate_check`, `kb_onboarding_status`,
   `kb_compliance`, `kb_cleanup_plan`, `kb_get`, `kb_list`, `kb_outline`).** Each
   docstring now includes a "Use when / use X instead when Y" guidance sentence.
