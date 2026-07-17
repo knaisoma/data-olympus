@@ -12,6 +12,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Improved `kb_record_event` tool definition.** The docstring now discloses
+  behavior (durable, non-destructive audit append; requires write capability),
+  documents both event_type values (`gate_bypass`, `gate_degraded`) and all
+  required parameters, and gives explicit usage guidance on when to call vs.
+  when to use `kb_gate_check`, `kb_consult`, `kb_audit`, or `kb_compliance`
+  instead. (gh #153 / KNA-143)
+
 ## [0.5.0] - 2026-07-12
 
 ### Added

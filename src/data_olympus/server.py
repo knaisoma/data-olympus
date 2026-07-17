@@ -1107,7 +1107,18 @@ def build_app(
             agent_identity: AgentIdentityParam, source_session: SourceSessionParam,
             reason: ReasonParam = "",
         ) -> dict[str, object]:
-            """Record a gate_bypass or gate_degraded enforcement event in the audit."""
+            """Append a durable, non-destructive audit entry for a client-reported
+            enforcement event. Requires write capability (not a read-only tool).
+
+            event_type is gate_bypass (agent proceeded despite a gate block) or
+            gate_degraded (kb_gate_check was unavailable; last-known state used).
+            workspace, agent_identity, source_session are required; reason is
+            optional but recommended for gate_bypass entries.
+
+            Use this when an enforce hook bypassed or degraded the gate and the
+            fallback must be recorded. To check gate status use kb_gate_check;
+            to consult use kb_consult; to read back events use kb_audit or
+            kb_compliance."""
             if state.audit_log is None:
                 return {"recorded": False, "event_type": event_type}
             import time as _time
