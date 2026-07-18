@@ -127,8 +127,7 @@ jobs:
             --base "$VERSION" --number "$RC_NUMBER" --source . \
             --output dist --provenance release-provenance.json
           uvx twine check --strict dist/*
-          uvx --from ./dist/*.whl data-olympus --help
-          uvx --from ./dist/*.whl data-olympus setup --check --no-version-check
+          uv run python scripts/smoke_installed_wheel.py --wheel dist/*.whl
       - name: Upload candidate artifacts
         uses: actions/upload-artifact@v7
         with:

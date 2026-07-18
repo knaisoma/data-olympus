@@ -22,6 +22,8 @@ on:
       - "pyproject.toml"
       - "src/**"
       - "bin/**"
+      - "scripts/smoke_installed_wheel.py"
+      - "tests/test_installed_wheel_smoke.py"
       - ".github/workflows/publish-pypi*.yml"
   # FALLBACK for a human-pushed tag (tag-release.yml's GITHUB_TOKEN push does not
   # reach here). Real upload.

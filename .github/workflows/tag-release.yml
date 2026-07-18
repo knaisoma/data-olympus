@@ -181,8 +181,7 @@ jobs:
             --candidate-wheel "$CANDIDATE_WHEEL" \
             --provenance release-provenance.json
           uvx twine check --strict dist/*
-          uvx --from ./dist/*.whl data-olympus --help
-          uvx --from ./dist/*.whl data-olympus setup --check --no-version-check
+          uv run python scripts/smoke_installed_wheel.py --wheel dist/*.whl
       - name: Publish stable package using Trusted Publishing
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

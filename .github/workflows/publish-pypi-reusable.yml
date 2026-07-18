@@ -43,11 +43,7 @@ jobs:
       - name: Verify metadata (twine check)
         run: uvx twine check --strict dist/*
       - name: Smoke-test the built wheel
-        # Confirms the console entry point and the packaged bin/ machinery ship
-        # correctly, so a broken build is caught BEFORE any PyPI upload.
-        run: |
-          uvx --from ./dist/*.whl data-olympus --help
-          uvx --from ./dist/*.whl data-olympus setup --check --no-version-check
+        run: uv run python scripts/smoke_installed_wheel.py --wheel dist/*.whl
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:

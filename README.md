@@ -11,7 +11,7 @@ data-olympus is a governance-grade knowledge-base format and server for agent wo
 
 It governs *decisions*, not code. When an agent is about to make a choice (a library, a pattern, a migration), data-olympus surfaces the established standard or decision that should govern that choice. It is deliberately **not** a code-search, reference-finding, or "where is X used" tool: LSP, grep, and Sourcegraph already do that well. The retrieval task it targets is coding-intent to governing-rule, and it helps where current model interaction during vibe-coding is weakest: keeping the model aligned to patterns the team has already established as correct.
 
-**Status: pre-1.0 beta. Latest release: v0.4.1.**
+**Status: pre-1.0 beta. Stable releases are distributed through PyPI and GHCR.**
 
 ## Why
 
@@ -24,23 +24,32 @@ It governs *decisions*, not code. When an agent is about to make a choice (a lib
 
 ## Quickstart
 
-Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/).
+Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/). Run the stable CLI
+directly from PyPI:
 
 ```bash
-# Install
-uv venv && uv pip install -e '.[dev]'
-
-# Lint the example bundle
-uv run data-olympus lint example-bundle
-
-# ...or scaffold your own bundle instead of copying example-bundle/
-uv run data-olympus init my-kb
-
-# Start the MCP server against the example bundle
-./scripts/run-local.sh
+uvx --from data-olympus data-olympus --help
 ```
 
-See `docs/quickstart.md` for the full local-run walkthrough, including curl and `kb` CLI queries. See `docs/adoption.md` for the full bundle-authoring guide.
+Install it persistently when you are ready to create a bundle and run the
+server:
+
+```bash
+uv tool install data-olympus
+data-olympus init my-kb
+data-olympus-mcp --help
+```
+
+An announced candidate remains opt in through its exact PyPI version:
+
+```bash
+uvx --from 'data-olympus==0.6.0rc3' data-olympus --help
+```
+
+See `docs/quickstart.md` for bundle initialization, server startup, readiness,
+agent registration, and the contributor source installation.
+
+See `docs/adoption.md` for the full bundle authoring guide.
 
 ## Documentation
 
