@@ -90,6 +90,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* **Corrected exact SHA CI readiness for conditional jobs.** Completed skipped
+  jobs are now non-blocking only when they are not required. Missing, pending,
+  failed, neutral, or skipped required checks still fail closed. This lets the
+  release gate accept a fully green pull request whose publishing workflow
+  intentionally skips upload and manual release paths.
+
 - **Hardened read tools against present SQLite indexes without tables.**
   `kb_search`, `kb_get`, `kb_list`, `kb_outline`, onboarding status, and
   cleanup planning now degrade to empty results or empty health instead of
