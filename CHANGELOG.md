@@ -12,16 +12,28 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
-
-- **Changed MCP tool discovery to a compact searchable catalog by default.**
-  `tools/list` exposes seven core tools plus `tool_search` and `call_tool` when
-  `KB_TOOL_DISCOVERY_MODE=search`; set the mode to `all` to expose the complete
-  native catalog. This changes discovery only. Hidden tools remain callable,
-  and their existing authorization requirements still apply to direct and
-  proxied calls.
-
 ## [0.6.0] - 2026-07-18
+
+### Added
+
+* **Added searchable MCP discovery.** `tools/list` now exposes seven core tools
+  plus `tool_search` and `call_tool` by default. Operators can set
+  `KB_TOOL_DISCOVERY_MODE=all` for the complete native catalog. Hidden tools
+  remain directly callable and retain the same authorization checks.
+* **Added executable OKF interoperability checks.** CI verifies both Data
+  Olympus consuming the pinned Google Knowledge Orchestration Framework sample
+  and the pinned upstream reference consumer reading the Data Olympus example
+  bundle. The immutable upstream revision and fixture checksums are recorded in
+  the repository.
+* **Added complete release candidates across every public channel.** One exact
+  source SHA now produces a PyPI prerelease wheel and sdist, GHCR image, GitHub
+  prerelease, and `release-provenance.json`. Stable promotion is an explicit
+  human approved dispatch that accepts only the highest complete candidate.
+* **Added deterministic benchmark provenance receipts.** The committed receipt
+  records source, corpus and query hashes, dependency lock, environment,
+  tokenizer and model identities, exact commands, seeds, result hashes, and
+  metric summaries. The documentation drift guard verifies it before checking
+  generated benchmark tables.
 
 ### Security
 
@@ -38,6 +50,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The patched dependency remains compatible with `sentence-transformers`.
 
 ### Changed
+
+* **Made PyPI the primary installation and onboarding path.** The README and
+  quickstart now lead with `uvx` and `uv tool install`. Every packaging workflow
+  runs a clean installed wheel smoke that exercises both console entry points,
+  packaged enforcement files, REST health, setup doctor, compact discovery,
+  hidden direct calls, and complete catalog mode.
+* **Hardened candidate to stable provenance.** Candidate and stable Python
+  artifacts are rebuilt from the same exact source, compared with only version
+  metadata normalized, and published through Trusted Publishing with no stored
+  PyPI credential. Stable OCI tags reuse the verified candidate digest and
+  never rebuild the image.
 
 - **Updated the supported runtime and development dependency baseline.**
   FastMCP is now locked to 3.4.4 and requires `>=3.4.4,<4`, guaranteeing the

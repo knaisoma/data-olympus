@@ -17,27 +17,43 @@ image, so the channel and its source share one digest.
    version kn-dev is running, e.g. the latest non-prerelease GitHub Release, or read
    it with `docker buildx imagetools inspect ghcr.io/knaisoma/data-olympus:kndev`).
    The canary and post-release rollbacks below re-point `:kndev` back at this value.
-1. Canary: `set-channel source=vX.Y.Z-rc.N` -> Keel rolls the RC onto kn-dev.
-2. Pre-release verify: `data-olympus verify --target <kn-dev ingress>` must be green.
-3. Paperclip approval-to-ship (operator).
-4. Merge the release PR -> `tag-release.yml` cuts tag vX.Y.Z, builds the stable
-   image, publishes PyPI, creates the GitHub Release.
-5. Promote the canary to stable: `set-channel source=vX.Y.Z` -> kn-dev runs stable.
-6. Post-release verify against kn-dev.
+1. Publish the complete candidate from an exact source SHA. The candidate
+   transaction includes its wheel, sdist, `release-provenance.json`, PyPI
+   prerelease, GHCR image, and GitHub prerelease.
+2. Canary: `set-channel source=X.Y.Z-rc.N` makes Keel roll the candidate onto
+   kn-dev.
+3. Pre-release verify: `data-olympus verify --target <kn-dev ingress>` must be
+   green, including default tool discovery and enforcement checks.
+4. Obtain the Paperclip approval to ship from the operator.
+5. Merge the exact reviewed candidate source to `main` with the required merge
+   method. Wait for CI on the resulting `main` SHA.
+6. Explicitly dispatch `tag-release.yml` through `workflow_dispatch`, passing
+   `candidate_tag=X.Y.Z-rc.N`. The workflow accepts only the highest complete
+   candidate, enters the protected `pypi` environment, compares the stable
+   Python payload with the candidate payload, publishes stable PyPI, creates
+   `vX.Y.Z` at the candidate source SHA, promotes the exact GHCR digest, and
+   creates the GitHub release.
+7. Promote the canary channel to stable with `set-channel source=vX.Y.Z`.
+8. Run post-release verification against kn-dev.
 
 ## Rollback
 
-- Canary failure (pre-release verify red, or approval rejected): nothing external
-  shipped. `set-channel source=<the rollback-point tag from step 0>` -> Keel restores
-  the prior version. Roll a new `-rc.(N+1)` forward if fixable, else block.
-- Post-release failure (stable already shipped): `set-channel source=<the rollback-point tag from step 0>` to restore kn-dev; **yank** the just-published version on PyPI (PyPI has no CLI yank: do it in the PyPI web UI, Project -> the release -> Options -> Yank; yank hides it from resolvers, it cannot be deleted or replaced); mark the GitHub Release as a draft/prerelease; open a
-  `release blocked: post-release verify failed` issue and notify the operator.
+* Candidate publication interrupted before finalization: rerun the same candidate
+  number only from the same exact source SHA. Existing PyPI files and the GHCR
+  image must match their recorded hashes and revision. Otherwise stop and use a
+  higher candidate number.
+* Canary failure or rejected approval: restore `kndev` to the recorded rollback
+  point. The candidate remains externally visible as a prerelease. A published
+  PyPI candidate cannot be replaced. Yank it when it is unsuitable for further
+  testing, then publish a corrected higher candidate number.
+* Post-release failure: restore `kndev` to the rollback point, yank the stable
+  PyPI version, mark the GitHub release as a prerelease, open a `release blocked`
+  issue, and notify the operator. Published files and version tags remain
+  immutable.
 
 ## Note
 
-Stable image promotion is byte-identical: `tag-release.yml` re-tags the verified
-`X.Y.Z-rc.N` digest to `vX.Y.Z` (it builds fresh only as a manual-tag fallback when
-no RC exists). The PyPI wheel is built fresh from the tagged commit (the RC is
-image-only). The promoted image carries the RC build's OCI labels
-(`org.opencontainers.image.version` reads the rc tag); this is a cosmetic
-provenance detail, not a content difference.
+Stable image promotion is byte identical. `tag-release.yml` re-tags the verified
+`X.Y.Z-rc.N` digest to `vX.Y.Z`, `stable`, and `latest`; it has no image build
+job. Stable Python artifacts are rebuilt from the same exact source SHA and
+compared with the candidate wheel. Only normalized version metadata may differ.
