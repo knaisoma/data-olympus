@@ -5,7 +5,7 @@
     "KB_EMBEDDINGS_MODE=on uv run --extra embeddings python -m benchmarks.generate_embeddings_ablation",
     "uv run python -m benchmarks.real_corpus_eval --corpus example-bundle --queries benchmarks/real_corpus/example_bundle_queries.json --lexical-only --out benchmarks/real_corpus/example_bundle_result.json",
     "uv run python -m benchmarks.docs_tables --write",
-    "uv run python -m benchmarks.receipt write --source-commit 2d288dfea17c383632bf50ddc6790bde4855c787"
+    "uv run python -m benchmarks.receipt write --source-commit f309332bb137dc53ee8c92ea3e5534bd5afb0592"
   ],
   "dependency_lock": {
     "packages": [
@@ -1703,7 +1703,7 @@
     "synthetic_corpus": 0,
     "token_curve_corpus": 42
   },
-  "source_commit": "2d288dfea17c383632bf50ddc6790bde4855c787",
+  "source_commit": "f309332bb137dc53ee8c92ea3e5534bd5afb0592",
   "source_tree": {
     "files": [
       {
@@ -1812,9 +1812,9 @@
         "sha256": "0056afdab5171c6205dfe7d4d734120a24b3fa72a68f68cf60b48abc58b5d253"
       },
       {
-        "bytes": 13778,
+        "bytes": 13978,
         "path": "benchmarks/receipt.py",
-        "sha256": "ce0ba3622ed64170b76b1748dc87b40370da4b709e2e31c490e475bc18d58233"
+        "sha256": "1300ccc748a79280cb35f331145dcd41eb120887c4c79e99a97163c720646ef2"
       },
       {
         "bytes": 24035,
@@ -2197,7 +2197,7 @@
         "sha256": "3e02aaf513a3c1a23c95cb9986750ea3213c3df505ef8655a54f236e8ade014f"
       }
     ],
-    "sha256": "add55658b0e8b61c99c7f92771761acde52724203bd8f18df2ae5c493d9932c1"
+    "sha256": "0fa227f56cf6637169af75400949546f51b916ff322c40d42e09afb517933fd1"
   },
   "summary": {
     "embedding_ablation": {
