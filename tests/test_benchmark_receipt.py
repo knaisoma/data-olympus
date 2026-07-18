@@ -283,3 +283,17 @@ def test_public_claims_carry_independent_reproduction_label() -> None:
     for relative in ("WHY.md", "docs/comparison.md", "benchmarks/README.md"):
         content = (root / relative).read_text(encoding="utf-8")
         assert label in content, f"missing benchmark honesty label in {relative}"
+
+
+def test_ci_fetches_receipt_source_commit_history() -> None:
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yaml").read_text())
+    checkout = next(
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    )
+
+    assert checkout["with"]["fetch-depth"] == 0
