@@ -3,6 +3,10 @@ name: build-and-push-image
 on:
   workflow_call:
     inputs:
+      ref:
+        description: "immutable git ref to build"
+        required: true
+        type: string
       tag:
         description: "image tag to publish, e.g. v0.1.0 or edge"
         required: true
@@ -27,7 +31,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
+      - name: Resolve source revision
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
@@ -66,6 +74,6 @@ jobs:
           tags: ${{ steps.image-tag.outputs.tags }}
           labels: |
             org.opencontainers.image.version=${{ inputs.tag }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

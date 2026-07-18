@@ -26,11 +26,15 @@ jobs:
     outputs:
       rc_tag: ${{ steps.rc.outputs.rc_tag }}
       version: ${{ steps.rc.outputs.version }}
+      source_sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
+      - name: Resolve source revision
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Compute RC tag
         id: rc
         env:
@@ -61,6 +65,7 @@ jobs:
     needs: decide
     uses: ./.github/workflows/release-image-reusable.yml
     with:
+      ref: ${{ needs.decide.outputs.source_sha }}
       tag: ${{ needs.decide.outputs.rc_tag }}
       move_latest: false
       channel: rc
@@ -76,12 +81,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.decide.outputs.source_sha }}
       - name: Create GitHub pre-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RC_TAG: ${{ needs.decide.outputs.rc_tag }}
           VERSION: ${{ needs.decide.outputs.version }}
+          SOURCE_SHA: ${{ needs.decide.outputs.source_sha }}
         run: |
           NOTES="docs/releases/v${VERSION}.md"
           if gh release view "$RC_TAG" >/dev/null 2>&1; then
@@ -89,9 +95,9 @@ jobs:
             exit 0
           fi
           if [ -f "$NOTES" ]; then
-            gh release create "$RC_TAG" --prerelease --target "${{ inputs.ref }}" \
+            gh release create "$RC_TAG" --prerelease --target "$SOURCE_SHA" \
               --title "$RC_TAG" --notes-file "$NOTES"
           else
-            gh release create "$RC_TAG" --prerelease --target "${{ inputs.ref }}" \
+            gh release create "$RC_TAG" --prerelease --target "$SOURCE_SHA" \
               --title "$RC_TAG" --notes "Release candidate ${RC_TAG} for ${VERSION}."
           fi

@@ -130,6 +130,7 @@ jobs:
     if: needs.decide.outputs.tag != '' && needs.resolve-rc.outputs.rc_tag == ''
     uses: ./.github/workflows/release-image-reusable.yml
     with:
+      ref: ${{ needs.decide.outputs.tag }}
       tag: ${{ needs.decide.outputs.tag }}
       move_latest: true
     permissions:

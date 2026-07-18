@@ -130,3 +130,54 @@ def test_publish_pr_dry_run_ref_is_not_untrusted():
             "${{ github.ref_name }}",
             "${{ inputs.ref }}",
         ), (job, ref)
+
+
+def test_reusable_image_build_checks_out_and_labels_explicit_ref():
+    doc = _load("release-image-reusable.yml")
+    triggers = doc.get("on", doc.get(True))  # PyYAML 1.1 may parse `on` as true.
+    ref_input = triggers["workflow_call"]["inputs"]["ref"]
+    assert ref_input["required"] is True
+
+    steps = doc["jobs"]["build-push"]["steps"]
+    checkout = next(s for s in steps if "actions/checkout" in str(s.get("uses", "")))
+    assert checkout["with"]["ref"] == "${{ inputs.ref }}"
+
+    source = next(s for s in steps if s.get("id") == "source")
+    assert "git rev-parse HEAD" in source["run"]
+
+    build = next(s for s in steps if "docker/build-push-action" in str(s.get("uses", "")))
+    assert "org.opencontainers.image.revision=${{ steps.source.outputs.sha }}" in build["with"][
+        "labels"
+    ]
+
+
+def test_every_reusable_image_caller_passes_a_ref():
+    for name in ("rc-publish.yml", "release-image.yml", "tag-release.yml"):
+        doc = _load(name)
+        callers = [
+            job
+            for job in doc["jobs"].values()
+            if str(job.get("uses", "")).endswith("release-image-reusable.yml")
+        ]
+        assert callers, name
+        for caller in callers:
+            assert caller["with"].get("ref"), (name, caller)
+
+
+def test_rc_resolves_requested_ref_once_and_reuses_exact_sha():
+    doc = _load("rc-publish.yml")
+    decide = doc["jobs"]["decide"]
+    assert decide["outputs"]["source_sha"] == "${{ steps.source.outputs.sha }}"
+    source = next(s for s in decide["steps"] if s.get("id") == "source")
+    assert "git rev-parse HEAD" in source["run"]
+
+    assert doc["jobs"]["build-image"]["with"]["ref"] == (
+        "${{ needs.decide.outputs.source_sha }}"
+    )
+    prerelease = doc["jobs"]["prerelease"]
+    checkout = next(
+        s for s in prerelease["steps"] if "actions/checkout" in str(s.get("uses", ""))
+    )
+    assert checkout["with"]["ref"] == "${{ needs.decide.outputs.source_sha }}"
+    create = next(s for s in prerelease["steps"] if s.get("name") == "Create GitHub pre-release")
+    assert '--target "$SOURCE_SHA"' in create["run"]
