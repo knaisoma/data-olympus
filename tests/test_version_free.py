@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from scripts.version_free import evaluate
+from typing import TYPE_CHECKING
+
+from scripts.version_free import evaluate, main, registry_versions
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def test_evaluate_all_absent_is_free() -> None:
@@ -55,3 +60,47 @@ def test_evaluate_gh_release_present_not_free() -> None:
     result = evaluate(False, False, True)
     assert result["free"] is False
     assert result["github_release_taken"] is True
+
+
+def test_registry_versions_map_candidate_channels() -> None:
+    versions = registry_versions("0.6.0-rc.3")
+    assert versions.pypi == "0.6.0rc3"
+    assert versions.ghcr == "0.6.0-rc.3"
+    assert versions.github == "0.6.0-rc.3"
+
+
+def test_registry_versions_keep_stable_channels() -> None:
+    versions = registry_versions("0.6.0")
+    assert versions.pypi == "0.6.0"
+    assert versions.ghcr == "v0.6.0"
+    assert versions.github == "v0.6.0"
+
+
+def test_main_queries_candidate_registry_spellings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.version_free as module
+
+    seen: dict[str, str] = {}
+
+    def pypi(version: str, _package: str) -> bool:
+        seen["pypi"] = version
+        return False
+
+    def ghcr(version: str, _package: str) -> bool:
+        seen["ghcr"] = version
+        return False
+
+    def github(version: str, _repo: str) -> bool:
+        seen["github"] = version
+        return False
+
+    monkeypatch.setattr(module, "_pypi_present", pypi)
+    monkeypatch.setattr(module, "_ghcr_present", ghcr)
+    monkeypatch.setattr(module, "_gh_release_present", github)
+    assert main(["--version", "0.6.0-rc.3"]) == 0
+    assert seen == {
+        "pypi": "0.6.0rc3",
+        "ghcr": "0.6.0-rc.3",
+        "github": "0.6.0-rc.3",
+    }

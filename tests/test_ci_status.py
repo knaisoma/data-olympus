@@ -48,6 +48,28 @@ def test_no_required_one_failure() -> None:
     assert result["all_success"] is False
 
 
+def test_optional_skipped_check_does_not_block_required_green_checks() -> None:
+    checks = [
+        _check("test"),
+        _check("dry-run / build"),
+        _check("release", conclusion="skipped"),
+    ]
+
+    result = evaluate(checks, ["test"])
+
+    assert result["all_success"] is True
+    assert result["missing_required"] == []
+
+
+def test_required_skipped_check_still_fails_closed() -> None:
+    checks = [_check("test", conclusion="skipped")]
+
+    result = evaluate(checks, ["test"])
+
+    assert result["all_success"] is False
+    assert result["missing_required"] == ["test"]
+
+
 def test_in_progress_check_not_success() -> None:
     checks = [_check("lint", status="in_progress", conclusion=None)]
     result = evaluate(checks, [])

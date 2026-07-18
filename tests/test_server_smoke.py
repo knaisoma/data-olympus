@@ -6,6 +6,7 @@ the server starts, tools register, and at least one read call round-trips.
 """
 from __future__ import annotations
 
+import sqlite3
 from typing import TYPE_CHECKING
 
 import pytest
@@ -97,6 +98,55 @@ async def test_kb_list_round_trip(tmp_kb: Path, tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_corpus_startup_builds_schema_and_read_tools_degrade(
+    tmp_path: Path,
+) -> None:
+    kb = tmp_path / "empty-kb"
+    kb.mkdir()
+    index_path = tmp_path / "idx.db"
+    app = build_app(
+        kb_main_path=kb,
+        kb_index_path=index_path,
+        sync_interval_sec=60,
+        staleness_degraded_sec=600,
+        bootstrap_now=True,
+    )
+
+    conn = sqlite3.connect(index_path)
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+    assert {"docs", "meta"} <= tables
+
+    async with Client(app) as client:
+        health = await client.call_tool("kb_health", {})
+        search = await client.call_tool("kb_search", {"query": "worktree", "limit": 5})
+        get = await client.call_tool("kb_get", {"id": "STD-U-001"})
+        listing = await client.call_tool("kb_list", {"tier": "T1"})
+        outline = await client.call_tool("kb_outline", {})
+        onboarding = await client.call_tool(
+            "kb_onboarding_status",
+            {"workspace": "example-project"},
+        )
+        cleanup = await client.call_tool(
+            "kb_cleanup_plan",
+            {
+                "workspace": "example-project",
+                "local_files": [{"path": "README.md", "content": "# Local\n"}],
+            },
+        )
+
+    for result in (health, search, get, listing, outline, onboarding, cleanup):
+        assert "sqlite3" not in str(result).lower()
+
+
+@pytest.mark.asyncio
 async def test_kb_cleanup_plan_tool_is_registered(tmp_kb: Path, tmp_path: Path) -> None:
     app = build_app(
         kb_main_path=tmp_kb,
@@ -104,6 +154,7 @@ async def test_kb_cleanup_plan_tool_is_registered(tmp_kb: Path, tmp_path: Path) 
         sync_interval_sec=60,
         staleness_degraded_sec=600,
         bootstrap_now=True,
+        tool_discovery_mode="all",
     )
     tools = await app.list_tools()
     assert any(t.name == "kb_cleanup_plan" for t in tools)

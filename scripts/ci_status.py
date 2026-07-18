@@ -23,6 +23,7 @@ _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 _SUCCESS_STATUS = "completed"
 _SUCCESS_CONCLUSION = "success"
+_SKIPPED_CONCLUSION = "skipped"
 
 
 def _passes(check_run: dict[str, Any]) -> bool:
@@ -32,13 +33,21 @@ def _passes(check_run: dict[str, Any]) -> bool:
     )
 
 
+def _is_optional_skip(check_run: dict[str, Any], required: set[str]) -> bool:
+    return (
+        check_run.get("name") not in required
+        and check_run.get("status") == _SUCCESS_STATUS
+        and check_run.get("conclusion") == _SKIPPED_CONCLUSION
+    )
+
+
 def evaluate(check_runs: list[dict[str, Any]], required: list[str]) -> dict[str, Any]:
     """Fail-closed CI readiness decision for a single commit's check-runs.
 
     A check "passes" iff status == "completed" AND conclusion == "success".
-    Any other status (queued, in_progress) or conclusion (failure, cancelled,
-    timed_out, action_required, neutral, startup_failure, or None) counts as
-    NOT passing. With no check_runs at all, readiness is False (fail-closed).
+    Any other status (queued, in_progress) or failing conclusion counts as NOT
+    passing. A completed skipped check is non-blocking only when it is not in
+    the required set. With no check_runs at all, readiness is False.
     """
     checks = [
         {
@@ -50,10 +59,13 @@ def evaluate(check_runs: list[dict[str, Any]], required: list[str]) -> dict[str,
     ]
     found_any = len(check_runs) > 0
 
+    required_names = set(required)
     passing_names = {c["name"] for c in checks if _passes(c)}
     missing_required = [name for name in required if name not in passing_names]
 
-    all_present_pass = all(_passes(c) for c in checks)
+    all_present_pass = all(
+        _passes(c) or _is_optional_skip(c, required_names) for c in checks
+    )
 
     if required:
         all_success = found_any and not missing_required and all_present_pass

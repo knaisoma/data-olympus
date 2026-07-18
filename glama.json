@@ -2,5 +2,11 @@
   "$schema": "https://glama.ai/mcp/schemas/server.json",
   "maintainers": [
     "ajdelaguila"
+  ],
+  "relatedServers": [
+    "knowledge-mcp",
+    "en-quire",
+    "md-graph",
+    "obsidian-kb"
   ]
 }

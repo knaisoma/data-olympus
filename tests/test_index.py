@@ -294,6 +294,29 @@ def test_get_includes_source_commit_from_meta(tmp_kb: Path, tmp_index_path: Path
     assert doc.source_commit == "commitsha123"
 
 
+def test_schema_less_index_read_methods_degrade(tmp_index_path: Path) -> None:
+    """A present database file without tables must not leak sqlite errors."""
+    import sqlite3
+
+    sqlite3.connect(tmp_index_path).close()
+    idx = Index(tmp_index_path)
+
+    assert idx.search("worktree", limit=5) == []
+    assert idx.get("STD-U-001") is None
+    assert idx.ids_with_exact_tag("policy") == set()
+    assert idx.list(tier="T1") == []
+    assert idx.outline() == []
+
+    health = idx.health()
+    assert health["source_commit"] == ""
+    assert health["index_built_at"] is None
+    assert health["total_docs"] == 0
+    assert health["db_size_bytes"] >= 0
+
+    assert idx.list_by_prefix("projects/example-project/") == []
+    assert idx.list_with_remote_url() == []
+
+
 def test_list_filters_by_tier(tmp_kb: Path, tmp_index_path: Path) -> None:
     idx = Index(tmp_index_path)
     idx.build(tmp_kb, source_commit="x")

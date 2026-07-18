@@ -12,7 +12,7 @@ The system is optimized for one specific job: a small team of agents (and humans
 
 | Tool / category | Portability / lock-in | Human + agent readable (no SDK) | Governance and multi-agent write-safety | Structured queryability | Concurrency model | Taxonomy | Hosting model | Interop |
 |---|---|---|---|---|---|---|---|---|
-| **data-olympus** | git-native / none | yes, plain markdown | single-writer MCP pipeline | FTS + filter by status/tier/type | single-writer, advisory locks | controlled vocabulary (type, status, tier) | self-hosted, streamable HTTP | designed to be OKF-readable (conformance test not yet built, [issue #82](https://github.com/knaisoma/data-olympus/issues/82)) |
+| **data-olympus** | git-native / none | yes, plain markdown | single-writer MCP pipeline | FTS + filter by status/tier/type | single-writer, advisory locks | controlled vocabulary (type, status, tier) | self-hosted, streamable HTTP | bidirectional fixture tests against a pinned official OKF revision |
 | Google OKF | git-native / none | yes | FTS only, no write governance | FTS only | none specified | minimal (type only) | any | OKF native |
 | Enterprise data catalogs (Dataplex, Unity Catalog, Collibra, DataHub, Amundsen) | vendor / high | partial (UI-centric) | strong (RBAC, lineage) | deep (column-level, lineage graphs) | multi-writer | rich, auto-generated | SaaS / self-hosted | APIs, connectors |
 | Markdown KB tools (Obsidian, Notion, MkDocs, Backstage TechDocs) | varies / medium | yes | none | FTS or plugin-based | multi-writer | user-defined | SaaS / local | plugin ecosystem |
@@ -26,7 +26,9 @@ The system is optimized for one specific job: a small team of agents (and humans
 
 Methodology: a synthetic corpus of 250 concepts (deterministic, `seed=0`) generated across all tiers and types, including supersession pairs. Five retrieval methods run over 500 queries in four categories (`exact`, `semantic`, `status`, `graph`). Token counts use the dep-free `SimpleTokenizer`; token *ratios* across methods are tokenizer-robust, absolute counts are tokenizer-specific. See [`benchmarks/README.md`](../benchmarks/README.md) for the full methodology, the de-leaking done to the corpus, and remaining known leaks.
 
-The numbers below are generated directly from [`benchmarks/results/results.json`](../benchmarks/results/results.json) by `benchmarks/docs_tables.py`; a CI guard (`scripts/check_benchmark_docs.py`) fails the build if any quoted number drifts from the committed results, so this section cannot go stale by hand. Regenerate everything with `python -m benchmarks.generate_artifacts && python -m benchmarks.docs_tables --write`.
+The numbers below are generated directly from [`benchmarks/results/results.json`](../benchmarks/results/results.json) by `benchmarks/docs_tables.py`; a CI guard (`scripts/check_benchmark_docs.py`) fails the build if any quoted number or provenance hash drifts from the committed results, so this section cannot go stale by hand. Regenerate everything with the exact commands recorded in [`benchmarks/results/receipt.json`](../benchmarks/results/receipt.json).
+
+**Maintainer-produced; not independently reproduced.**
 
 **Corpus: SYNTHETIC (generated). Tokenizer: SimpleTokenizer (dep-free).**
 
@@ -120,11 +122,11 @@ Every number above is from the deterministic synthetic corpus, which exists to e
 <!-- BENCH:real_corpus START -->
 | Metric | Lexical stack (embeddings off) |
 |---|---|
-| Corpus | 18 committed example-bundle docs |
+| Corpus | 25 committed example-bundle docs |
 | Labeled queries | 9 paraphrased intents |
 | recall@5 | 0.778 |
 | recall@10 | 0.889 |
-| MRR@5 | 0.778 |
+| MRR@5 | 0.593 |
 <!-- BENCH:real_corpus END -->
 
 The two misses at k=5 are the token-disjoint paraphrases (e.g. "why did the team choose this markdown knowledge system" vs the doc titled "Adopt data-olympus for the knowledge base") — the exact semantic gap the optional embedding hybrid targets and the default lexical stack does not close. Provenance: hand-authored paraphrase queries over a committed corpus, embeddings off; it is an illustrative reproducible example, not user traffic.
@@ -135,15 +137,15 @@ The two misses at k=5 are the token-disjoint paraphrases (e.g. "why did the team
 
 ### Google Open Knowledge Format (OKF)
 
-The Open Knowledge Format is the parent specification. data-olympus is designed to be readable by OKF consumers: it inherits OKF's directory structure, frontmatter conventions, reserved filenames, and link model. That claim is not yet backed by an executable conformance test against OKF reference tooling ([issue #82](https://github.com/knaisoma/data-olympus/issues/82) tracks adding one); today it rests on shared structure by construction.
+The Open Knowledge Format is the parent specification. data-olympus inherits OKF's directory structure, frontmatter conventions, reserved filenames, and link model. CI pins official Google OKF commit `d44368c15e38e7c92481c5992e4f9b5b421a801d` and proves two concrete paths: Google's reference visualization consumer reads every data-olympus example concept, and data-olympus normalizes and consumes the pinned official Bitcoin sample through lint, index, search, and retrieval. The evidence is intentionally scoped to that revision and those fixtures.
 
-**Where data-olympus is better (and why):** OKF defines a minimal required set (`id`, `type`, `spec_version`) with no governance fields. data-olympus adds `status`, `tier`, a `supersedes` chain, and controlled vocabularies for each field, making it possible to query "show me all accepted T1 standards" or "what superseded this decision" without post-processing. data-olympus also ships a validated write pipeline (proposed edits, pending queue, advisory locks, commit-and-push) and an MCP server; OKF specifies no serving or write model.
+**Where data-olympus is better (and why):** OKF v0.1 requires only a nonempty `type` on concept documents and deliberately leaves governance policy open. data-olympus adds a stable `id`, `status`, `tier`, a `supersedes` chain, and controlled vocabularies for each field, making it possible to query "show me all accepted T1 standards" or "what superseded this decision" without post-processing. data-olympus also ships a validated write pipeline (proposed edits, pending queue, advisory locks, commit-and-push) and an MCP server; OKF specifies no serving or write model.
 
 **Where it is weaker:** OKF ships an automatic producer agent. The reference implementation can pull structured data from BigQuery and enrich it with web sources to populate a bundle with minimal human authoring. data-olympus has no equivalent; every concept is hand-authored or agent-proposed but still human-reviewed before commit.
 
 **Where that is a deliberate decision:** data-olympus targets curated, reviewed knowledge where accuracy and governance matter more than coverage. Auto-ingestion without review is a deliberate non-goal for the v0.1 scope.
 
-**Where they are complementary:** Because data-olympus is designed to share OKF's baseline structure, bundles produced by the OKF producer should be importable and governable by data-olympus tools, and data-olympus bundles should be consumable by an OKF-aware tool without conversion. Neither direction has an automated test yet ([issue #82](https://github.com/knaisoma/data-olympus/issues/82)).
+**Where they are complementary:** The executable checks cover both directions. The pinned Google consumer reads the data-olympus example bundle without conversion. The data-olympus OKF importer converts the pinned Google sample to nonactivating governed drafts before linting and indexing it, because Google's open `type` values are intentionally broader than the data-olympus controlled vocabulary.
 
 ---
 

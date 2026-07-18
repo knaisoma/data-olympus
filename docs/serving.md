@@ -74,6 +74,37 @@ trigram, auth, audit rotation):
 - `KB_GOVERNED_LANE_PROTECTION`: governed-lane write protection (issue #112),
   default `on`; set `off` to restore the exact pre-#112 behavior (see
   "Governed-lane write protection" below).
+- `KB_TOOL_DISCOVERY_MODE`: MCP catalog exposure mode. `search` is the default;
+  `all` restores the complete native catalog in `tools/list`. Any other value
+  fails startup.
+
+## MCP tool discovery
+
+The default `KB_TOOL_DISCOVERY_MODE=search` keeps the initial MCP catalog small
+without removing any capability. `tools/list` exposes these native tools:
+
+* `kb_consult`
+* `kb_search`
+* `kb_get`
+* `kb_health`
+* `kb_gate_check`
+* `kb_record_event`
+* `kb_session_recap`
+
+It also exposes the synthetic `tool_search` and `call_tool` tools. Use
+`tool_search` to find a native tool omitted from the initial list, then invoke
+it with `call_tool`. A client that already knows the native name may still call
+it directly. Search mode filters discovery only; it does not unregister tools.
+
+Visibility is not an authorization boundary. A hidden write tool retains its
+annotations and passes through the same principal capability middleware whether
+it is called directly or through `call_tool`. For clients that require the
+complete catalog during initialization, set `KB_TOOL_DISCOVERY_MODE=all` and
+restart the server.
+
+Read only replicas expose the subset of the default catalog that is actually
+registered in read only mode, plus `tool_search` and `call_tool`. Discovery
+cannot make a write tool available when the replica did not register it.
 
 ## Read-only mirrors may scale horizontally
 

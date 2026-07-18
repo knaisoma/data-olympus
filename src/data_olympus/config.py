@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from data_olympus.tool_discovery import ToolDiscoveryMode, load_tool_discovery_mode
+
 _log = logging.getLogger("data_olympus.config")
 
 
@@ -105,6 +107,7 @@ class Config:
     # weight boosts an in-force status, a positive one penalizes a retired one.
     status_weights: dict[str, float] | None = None
     read_only: bool = False
+    tool_discovery_mode: ToolDiscoveryMode = "search"
     # Corpus co-occurrence query expansion (issue #40). Default ON. The build-time
     # table is bounded by ``cooccurrence_k`` related terms per term above the
     # ``cooccurrence_min_count`` / ``cooccurrence_min_pmi`` thresholds. These are
@@ -263,6 +266,9 @@ def load_config() -> Config:
     session_touch_interval_sec = int(os.getenv("KB_SESSION_TOUCH_INTERVAL_SEC", "30"))
     status_weights = _load_status_weights(os.getenv("KB_STATUS_WEIGHTS", ""))
     read_only = _env_bool(os.getenv("KB_READ_ONLY", ""))
+    tool_discovery_mode = load_tool_discovery_mode(
+        os.getenv("KB_TOOL_DISCOVERY_MODE", "search")
+    )
     from data_olympus.cooccurrence import (
         cooccurrence_build_params,
     )
@@ -334,6 +340,7 @@ def load_config() -> Config:
         session_touch_interval_sec=session_touch_interval_sec,
         status_weights=status_weights,
         read_only=read_only,
+        tool_discovery_mode=tool_discovery_mode,
         cooccurrence_enabled=cooc_enabled,
         cooccurrence_k=int(cooc_params["k"]),
         cooccurrence_min_count=int(cooc_params["min_count"]),
