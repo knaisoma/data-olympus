@@ -1,7 +1,7 @@
 # .github/workflows/publish-pypi.yml
 #
-# INERT UNTIL OPERATOR SETUP. The `upload` path (real releases + manual tag)
-# cannot succeed until the operator configures a PyPI Trusted Publisher on
+# REQUIRES OPERATOR SETUP. The `upload` path for real releases and manual tags
+# fails closed until the operator configures a PyPI Trusted Publisher on
 # pypi.org: owner=knaisoma, repo=data-olympus, workflow=publish-pypi.yml,
 # environment=pypi. See docs/releases/pypi-trusted-publishing.md.
 #

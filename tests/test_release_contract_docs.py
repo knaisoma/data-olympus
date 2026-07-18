@@ -57,3 +57,12 @@ def test_release_notes_cover_the_expanded_060_contract() -> None:
         "installed wheel",
     ):
         assert required in combined
+
+
+def test_versioning_rule_uses_the_release_routine_integration_branch() -> None:
+    versioning = _read(".rules/versioning.md")
+    routine = _read(".rules/release-routine.md")
+
+    assert "feature/<release-epic-id>" in versioning
+    assert "feature/<release-epic-id>" in routine
+    assert "release/X.Y.Z integration branches" not in versioning

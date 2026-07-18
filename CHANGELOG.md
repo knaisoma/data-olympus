@@ -53,9 +53,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 * **Made PyPI the primary installation and onboarding path.** The README and
   quickstart now lead with `uvx` and `uv tool install`. Every packaging workflow
-  runs a clean installed wheel smoke that exercises both console entry points,
-  packaged enforcement files, REST health, setup doctor, compact discovery,
-  hidden direct calls, and complete catalog mode.
+  runs clean wheel and source distribution smoke tests at the expected version.
+  They exercise both console entry points, packaged enforcement files, REST
+  health, setup doctor, compact discovery, hidden direct calls, and complete
+  catalog mode.
 * **Hardened candidate to stable provenance.** Candidate and stable Python
   artifacts are rebuilt from the same exact source, compared with only version
   metadata normalized, and published through Trusted Publishing with no stored
@@ -89,6 +90,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead. (gh #153 / KNA-143)
 
 ### Fixed
+
+* **Closed the remaining release verification gaps.** Every PyPI publishing
+  path now fails closed and verifies remote file hashes. Candidate provenance
+  validates its source, candidate tag, and image digest before publication.
+  Stable promotion derives its version from the requested complete candidate
+  and verifies that version against the candidate source commit. OKF freshness
+  reports only upstream fixture changes rather than unrelated repository commits.
 
 * **Corrected exact SHA CI readiness for conditional jobs.** Completed skipped
   jobs are now non-blocking only when they are not required. Missing, pending,

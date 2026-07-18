@@ -21,6 +21,7 @@ from typing import Any
 
 _BASE_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 _DIST_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:rc[1-9][0-9]*)?")
+_IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -454,6 +455,51 @@ def _load_candidate_receipt(path: Path, wheel: Path) -> BuildReceipt:
     )
 
 
+def finalize_candidate_provenance(
+    provenance: Path,
+    output: Path,
+    *,
+    source_sha: str,
+    candidate_tag: str,
+    image_digest: str,
+) -> None:
+    """Bind a validated candidate receipt to its public Git and OCI coordinates."""
+    payload = json.loads(provenance.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("candidate provenance must be a JSON object")
+    candidate = payload.get("candidate")
+    if not isinstance(candidate, dict):
+        raise ValueError("candidate provenance must contain a candidate receipt")
+    recorded_source = _receipt_string(payload, "source_sha")
+    candidate_source = _receipt_string(candidate, "source_sha")
+    if recorded_source != source_sha or candidate_source != source_sha:
+        raise ValueError("candidate provenance source SHA does not match checkout")
+    if re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
+        raise ValueError("candidate provenance requires an exact source SHA")
+
+    version = _receipt_string(candidate, "version")
+    match = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)rc([1-9][0-9]*)", version)
+    if match is None or candidate_tag != f"{match.group(1)}-rc.{match.group(2)}":
+        raise ValueError("candidate tag does not match candidate provenance version")
+    if _IMAGE_DIGEST.fullmatch(image_digest) is None:
+        raise ValueError("image digest must be an exact sha256 digest")
+
+    for key, expected in (
+        ("candidate_tag", candidate_tag),
+        ("image_digest", image_digest),
+    ):
+        current = payload.get(key)
+        if current is not None and current != expected:
+            raise ValueError(f"candidate provenance has conflicting {key}")
+        payload[key] = expected
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    temporary = output.with_suffix(output.suffix + ".tmp")
+    temporary.write_text(rendered, encoding="utf-8")
+    temporary.replace(output)
+
+
 def _run_candidate(args: argparse.Namespace) -> int:
     version = CandidateVersion.from_base(args.base, args.number)
     candidate = build_distribution(args.source, version.pypi_version, args.output)
@@ -494,6 +540,17 @@ def _run_stable(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_finalize_candidate(args: argparse.Namespace) -> int:
+    finalize_candidate_provenance(
+        args.provenance,
+        args.output,
+        source_sha=args.source_sha,
+        candidate_tag=args.candidate_tag,
+        image_digest=args.image_digest,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="release_artifacts")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -514,6 +571,14 @@ def main(argv: list[str] | None = None) -> int:
     stable.add_argument("--candidate-wheel", required=True, type=Path)
     stable.add_argument("--provenance", required=True, type=Path)
     stable.set_defaults(handler=_run_stable)
+
+    finalize = subparsers.add_parser("finalize-candidate")
+    finalize.add_argument("--provenance", required=True, type=Path)
+    finalize.add_argument("--output", required=True, type=Path)
+    finalize.add_argument("--source-sha", required=True)
+    finalize.add_argument("--candidate-tag", required=True)
+    finalize.add_argument("--image-digest", required=True)
+    finalize.set_defaults(handler=_run_finalize_candidate)
 
     args = parser.parse_args(argv)
     return int(args.handler(args))

@@ -3,18 +3,15 @@
 external registry.
 
 Once `vX.Y.Z` is published (PyPI, the ghcr `:vX.Y.Z` image tag, or a GitHub
-release/tag) it is immutable. This is the FIRST step of the tag-release `decide`
-job, before `git tag -a` / `git push origin`, so a duplicate never leaves an
-orphaned public tag behind. It also runs in PR CI to catch a duplicate declared
-version before merge.
+release/tag) it is immutable. This guard runs in PR CI and in the release
+routine before candidate publication so a duplicate declared version is caught
+before merge. Stable promotion independently reconciles the approved candidate
+against exact PyPI hashes, Git source SHA, and OCI digest.
 
-Idempotency (see should_tag.py): should_tag.py resolves only LOCAL git
-tags/commits, not registry digests. So a legitimate reconcile re-run is
-identified HERE by checking whether the local tag `vX.Y.Z` already exists AND
-points at the current HEAD commit. If it does, this exits 0 (allow) and does not
-query any registry: the downstream image/release jobs are idempotent and must be
-allowed to finish a partial release. If the version exists on a registry but no
-local tag matches HEAD, this hard-fails.
+Idempotency for direct use is identified by checking whether the local tag
+`vX.Y.Z` already exists and points at the current HEAD commit. If it does, this
+exits 0 and does not query any registry. If the version exists on a registry but
+no local tag matches HEAD, this hard-fails.
 
 Registry-outage behavior (operator-approved): FAIL CLOSED. An unreachable PyPI
 or ghcr blocks the release rather than assuming the version is free. The

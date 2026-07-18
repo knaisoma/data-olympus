@@ -19,6 +19,7 @@ jobs:
         with:
           script: |
             const fs = require("fs");
+            const crypto = require("crypto");
             const pin = JSON.parse(
               fs.readFileSync("tests/okf/reference.json", "utf8")
             );
@@ -29,6 +30,38 @@ jobs:
               ref: "main",
             });
             const upstreamSha = upstream.data.sha;
+            const tree = await github.rest.git.getTree({
+              owner: "GoogleCloudPlatform",
+              repo: "knowledge-catalog",
+              tree_sha: upstream.data.commit.tree.sha,
+              recursive: "true",
+            });
+            if (tree.data.truncated) {
+              throw new Error("upstream tree response was truncated");
+            }
+            const prefix = `${pin.fixture_path}/`;
+            const blobs = tree.data.tree
+              .filter(item => item.type === "blob" && item.path.startsWith(prefix))
+              .sort((left, right) =>
+                left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+              );
+            if (blobs.length === 0) {
+              throw new Error(`upstream fixture is missing at ${pin.fixture_path}`);
+            }
+            const hash = crypto.createHash("sha256");
+            for (const blob of blobs) {
+              const response = await github.rest.git.getBlob({
+                owner: "GoogleCloudPlatform",
+                repo: "knowledge-catalog",
+                file_sha: blob.sha,
+              });
+              const content = Buffer.from(response.data.content.replace(/\n/g, ""), "base64");
+              hash.update(`./${blob.path.slice(prefix.length)}`);
+              hash.update("\0");
+              hash.update(content);
+              hash.update("\0");
+            }
+            const upstreamFixtureSha256 = hash.digest("hex");
             const listed = await github.paginate(
               github.rest.issues.listForRepo,
               {
@@ -55,14 +88,14 @@ jobs:
               }
             }
 
-            if (pin.commit === upstreamSha) {
-              core.info(`OKF pin is current at ${upstreamSha}`);
+            if (pin.fixture_sha256 === upstreamFixtureSha256) {
+              core.info(`OKF fixture remains current at upstream ${upstreamSha}`);
               if (canonical && canonical.state === "open") {
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: canonical.number,
-                  body: `The recorded pin is current again at \`${upstreamSha}\`. Closing.`,
+                  body: `The pinned fixture content is current again at upstream \`${upstreamSha}\`. Closing.`,
                 });
                 await github.rest.issues.update({
                   owner: context.repo.owner,
@@ -76,10 +109,12 @@ jobs:
             }
 
             const body = [
-              "The official Google OKF main branch has moved beyond the reviewed pin.",
+              "The official Google OKF fixture has changed beyond the reviewed pin.",
               "",
               `* Recorded pin: \`${pin.commit}\``,
               `* Current upstream: \`${upstreamSha}\``,
+              `* Recorded fixture SHA256: \`${pin.fixture_sha256}\``,
+              `* Current fixture SHA256: \`${upstreamFixtureSha256}\``,
               "",
               "Review the upstream diff, refresh the vendored fixture and license provenance,",
               "rerun both conformance directions, and update the pin in a reviewed pull request.",

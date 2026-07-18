@@ -59,6 +59,16 @@ assert not missing, missing
 assert root.name == "_bin", root
 """
 
+_VERSION_PROBE = r"""
+from importlib.metadata import version
+import sys
+
+actual = version("data-olympus")
+expected = sys.argv[1]
+if actual != expected:
+    raise SystemExit(f"installed version mismatch: expected {expected}, got {actual}")
+"""
+
 
 def _run(command: list[str], *, cwd: Path, env: dict[str, str]) -> str:
     completed = subprocess.run(
@@ -186,10 +196,11 @@ def _probe_server(
             _stop(process)
 
 
-def run(wheel: Path, root: Path) -> None:
-    wheel = wheel.resolve()
-    if not wheel.is_file() or wheel.suffix != ".whl":
-        raise ValueError(f"wheel does not exist: {wheel}")
+def run(artifact: Path, root: Path, expected_version: str) -> None:
+    artifact = artifact.resolve()
+    is_distribution = artifact.suffix == ".whl" or artifact.name.endswith(".tar.gz")
+    if not artifact.is_file() or not is_distribution:
+        raise ValueError(f"distribution artifact does not exist: {artifact}")
     scratch = root / "to-delete" / "wheel-smoke"
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
@@ -199,7 +210,7 @@ def run(wheel: Path, root: Path) -> None:
         _run(["uv", "venv", "--python", "3.13", str(venv)], cwd=root, env=base_env)
         python = venv / "bin" / "python"
         _run(
-            ["uv", "pip", "install", "--python", str(python), str(wheel)],
+            ["uv", "pip", "install", "--python", str(python), str(artifact)],
             cwd=root,
             env=base_env,
         )
@@ -209,6 +220,11 @@ def run(wheel: Path, root: Path) -> None:
         isolated_env = dict(base_env)
         isolated_env["PATH"] = str(bin_dir) + os.pathsep + base_env.get("PATH", "")
         isolated_env["HOME"] = str(scratch / "home")
+        _run(
+            [str(python), "-c", _VERSION_PROBE, expected_version],
+            cwd=scratch,
+            env=isolated_env,
+        )
         _run([str(cli), "--help"], cwd=scratch, env=isolated_env)
         _run([str(server), "--help"], cwd=scratch, env=isolated_env)
         _run([str(python), "-c", _PACKAGE_PROBE], cwd=scratch, env=isolated_env)
@@ -240,11 +256,12 @@ def run(wheel: Path, root: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="smoke_installed_wheel")
-    parser.add_argument("--wheel", required=True, type=Path)
+    parser.add_argument("--artifact", "--wheel", dest="artifact", required=True, type=Path)
+    parser.add_argument("--expected-version", required=True)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     args = parser.parse_args(argv)
-    run(args.wheel, args.root.resolve())
-    print("installed wheel smoke: ok")
+    run(args.artifact, args.root.resolve(), args.expected_version)
+    print("installed artifact smoke: ok")
     return 0
 
 

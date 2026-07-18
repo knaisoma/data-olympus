@@ -1,8 +1,8 @@
-"""Syntactic + structural checks on the PyPI publish workflows and packaging.
+"""Syntactic and structural checks on the release workflows and packaging.
 
 Keeps the release wiring honest without needing a live GitHub Actions run:
 - the workflow YAML parses;
-- the reusable upload job is trusted-publishing + inert-until-setup shaped;
+- every upload job uses fail-closed Trusted Publishing and hash readback;
 - the normal release path (tag-release.yml) publishes to PyPI inline (not via the
   reusable workflow, which PyPI trusted publishing does not match through);
 - the PR dry-run does not upload.
@@ -101,14 +101,33 @@ def test_stable_promotion_is_explicit_and_tag_follows_approved_pypi() -> None:
     assert "create-tag" not in doc["jobs"]["publish-pypi"]["needs"]
 
 
-def test_publish_step_inert_until_setup():
-    """The upload step (not the caller job) carries continue-on-error, so a
-    pre-setup PyPI failure never blocks the release. continue-on-error is invalid
-    on a `uses:` job, so it MUST live on the step."""
+def test_reusable_publish_fails_closed_and_verifies_remote_hashes() -> None:
     doc = _load("publish-pypi-reusable.yml")
     steps = doc["jobs"]["upload"]["steps"]
     publish = next(s for s in steps if "pypa/gh-action-pypi-publish" in str(s.get("uses", "")))
-    assert publish["continue-on-error"] is True
+    assert "continue-on-error" not in publish
+    commands = "\n".join(str(step.get("run", "")) for step in steps)
+    assert "pypi.org/pypi/data-olympus" in commands
+    assert "sha256" in commands
+
+
+def test_every_pypi_publisher_fails_closed_and_reads_back_hashes() -> None:
+    publishers = (
+        ("publish-pypi-reusable.yml", "upload"),
+        ("rc-publish.yml", "publish-pypi"),
+        ("tag-release.yml", "publish-pypi"),
+    )
+    for workflow, job_name in publishers:
+        steps = _load(workflow)["jobs"][job_name]["steps"]
+        publish = next(
+            step
+            for step in steps
+            if "pypa/gh-action-pypi-publish" in str(step.get("uses", ""))
+        )
+        assert "continue-on-error" not in publish, workflow
+        commands = "\n".join(str(step.get("run", "")) for step in steps)
+        assert "pypi.org/pypi/data-olympus" in commands, workflow
+        assert "sha256" in commands, workflow
 
 
 def test_manual_dispatch_uploads_only_for_validated_release_tag():
@@ -248,7 +267,8 @@ def test_rc_builds_provenance_and_finalizes_only_after_complete_publication() ->
     final_commands = "\n".join(str(step.get("run", "")) for step in finalize["steps"])
     assert "imagetools create" in final_commands
     assert ":rc" in final_commands
-    assert "release-provenance.json" in final_commands
+    assert "scripts/release_artifacts.py finalize-candidate" in final_commands
+    assert "jq --arg candidate_tag" not in final_commands
     assert "gh release create" in final_commands
 
     inspect_commands = "\n".join(
@@ -274,6 +294,11 @@ def test_stable_requires_highest_complete_rc_and_never_rebuilds_image() -> None:
     assert "sha256" in commands
     assert "REQUESTED_RC" in commands
     assert "time.sleep" in commands
+    assert 'git show "$SOURCE_SHA:pyproject.toml"' in commands
+    assert "SOURCE_VERSION" in commands
+    assert commands.index('git fetch origin "refs/tags/$RC_TAG:refs/tags/$RC_TAG"') < (
+        commands.index('git show "$SOURCE_SHA:pyproject.toml"')
+    )
 
     tag = next(
         step
@@ -319,3 +344,13 @@ def test_stable_compares_same_source_wheels_before_upload() -> None:
     )
     assert "targetCommitish" not in release_commands
     assert "git rev-list -n 1" in release_commands
+
+
+def test_stable_version_is_derived_from_requested_candidate_not_main() -> None:
+    doc = _load("tag-release.yml")
+    decide_commands = "\n".join(
+        str(step.get("run", "")) for step in doc["jobs"]["decide"]["steps"]
+    )
+    assert "scripts/should_tag.py" not in decide_commands
+    assert "CANDIDATE_TAG" in decide_commands
+    assert "-rc." in decide_commands

@@ -154,5 +154,13 @@ def test_okf_pin_freshness_workflow_only_manages_one_issue() -> None:
     assert "issues.listForRepo" in script
     assert "issues.create" in script
     assert "issues.update" in script
+    assert "fixture_path" in script
+    assert "fixture_sha256" in script
+    assert "git.getTree" in script
+    assert "git.getBlob" in script
+    assert "createHash" in script
+    assert "localeCompare" not in script
+    assert "left.path < right.path" in script
+    assert "pin.commit === upstreamSha" not in script
     assert "fs.write" not in script
     assert "git push" not in script

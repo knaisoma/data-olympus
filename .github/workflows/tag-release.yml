@@ -27,8 +27,15 @@ jobs:
           fetch-depth: 0
       - name: Decide stable release version
         id: decide
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
         run: |
-          VERSION="$(python3 scripts/should_tag.py --print-version)"
+          if ! printf '%s' "$CANDIDATE_TAG" \
+              | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$'; then
+            echo "candidate_tag must be X.Y.Z-rc.N with a positive N" >&2
+            exit 1
+          fi
+          VERSION="${CANDIDATE_TAG%%-rc.*}"
           TAG="v$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -90,6 +97,11 @@ jobs:
             = "${VERSION}rc${RC_TAG##*.}"
           test -n "$SOURCE_SHA"
           test -n "$IMAGE_DIGEST"
+          git fetch origin "refs/tags/$RC_TAG:refs/tags/$RC_TAG"
+          test "$(git rev-list -n 1 "$RC_TAG")" = "$SOURCE_SHA"
+          SOURCE_VERSION="$(git show "$SOURCE_SHA:pyproject.toml" \
+            | python3 -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.read())["project"]["version"])')"
+          test "$SOURCE_VERSION" = "$VERSION"
           python3 - <<'PY'
           import json
           import time
@@ -116,8 +128,6 @@ jobs:
           if any(remote.get(name) != sha256 for name, sha256 in expected.items()):
               raise SystemExit("candidate PyPI sha256 does not match provenance")
           PY
-          git fetch origin "refs/tags/$RC_TAG:refs/tags/$RC_TAG"
-          test "$(git rev-list -n 1 "$RC_TAG")" = "$SOURCE_SHA"
           git merge-base --is-ancestor "$SOURCE_SHA" HEAD
           docker buildx imagetools inspect "$REPO@$IMAGE_DIGEST" >/dev/null
           {
@@ -185,7 +195,10 @@ jobs:
             --candidate-wheel "$CANDIDATE_WHEEL" \
             --provenance release-provenance.json
           uvx twine check --strict dist/*
-          uv run python scripts/smoke_installed_wheel.py --wheel dist/*.whl
+          for artifact in dist/*.whl dist/*.tar.gz; do
+            uv run python scripts/smoke_installed_wheel.py \
+              --artifact "$artifact" --expected-version "$VERSION"
+          done
       - name: Publish stable package using Trusted Publishing
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

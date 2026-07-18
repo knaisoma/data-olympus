@@ -56,7 +56,9 @@ Run `rc-publish.yml` with these inputs:
 The workflow builds `0.6.0rc3` for PyPI and `0.6.0-rc.3` for GHCR and GitHub.
 It publishes an immutable image, wheel, source distribution, and provenance
 receipt. It verifies PyPI file hashes and the image digest before moving `:rc`
-or creating the GitHub prerelease.
+or creating the GitHub prerelease. Before upload, clean environments install
+both Python distribution formats, verify the exact candidate version, and
+exercise the packaged command and MCP runtime surfaces.
 
 A rerun with the same number reuses an existing image only when its embedded
 source revision equals the requested SHA. PyPI upload uses `skip-existing`, then
@@ -81,6 +83,8 @@ approved and the stable Python files are published and verified. The workflow
 rebuilds only the stable Python version overlay, compares the wheel payload with
 the candidate, and retags the verified image digest as the stable version,
 `stable`, and `latest`. It never rebuilds the image during promotion.
+The rebuilt wheel and source distribution receive the same clean installation,
+exact version, and runtime checks before stable PyPI publication.
 
 ## Verification
 

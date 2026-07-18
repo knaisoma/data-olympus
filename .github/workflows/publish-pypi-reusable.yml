@@ -1,15 +1,13 @@
 # .github/workflows/publish-pypi-reusable.yml
 #
-# INERT UNTIL OPERATOR SETUP. This workflow uploads to PyPI via Trusted
-# Publishing (OIDC, no API token). It CANNOT succeed until the operator creates
-# a pending publisher on pypi.org. PyPI binds the publisher to the TOP-LEVEL
+# This workflow uploads to PyPI via Trusted Publishing (OIDC, no API token).
+# PyPI binds the publisher to the TOP-LEVEL
 # workflow that starts the run. This reusable workflow is now called only from
 # publish-pypi.yml, the human-pushed tag and manual fallback. The primary
 # rc-publish.yml and tag-release.yml paths publish inline and have their own
 # publisher identities.
-# See docs/releases/pypi-trusted-publishing.md for the exact click-path. Until
-# then the `upload` job's publish STEP fails (nothing is uploaded); the `build`
-# job and `twine check` still pass, so the release tag/image are unaffected.
+# See docs/releases/pypi-trusted-publishing.md for the exact setup path. A
+# missing publisher or a registry mismatch fails the caller closed.
 name: publish-pypi-reusable
 
 on:
@@ -30,6 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -38,12 +38,27 @@ jobs:
           fetch-depth: 0
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
+      - name: Read expected package version
+        id: version
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+
+          with open("pyproject.toml", "rb") as stream:
+              print(f"version={tomllib.load(stream)['project']['version']}")
+          PY
       - name: Build sdist + wheel
         run: uv build
       - name: Verify metadata (twine check)
         run: uvx twine check --strict dist/*
-      - name: Smoke-test the built wheel
-        run: uv run python scripts/smoke_installed_wheel.py --wheel dist/*.whl
+      - name: Smoke-test the built distributions
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for artifact in dist/*.whl dist/*.tar.gz; do
+            uv run python scripts/smoke_installed_wheel.py \
+              --artifact "$artifact" --expected-version "$VERSION"
+          done
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -74,15 +89,36 @@ jobs:
           path: dist/
       - name: Publish to PyPI (Trusted Publishing)
         uses: pypa/gh-action-pypi-publish@release/v1
-        # continue-on-error keeps this INERT until the operator configures the
-        # pypi.org Trusted Publisher: before that, the OIDC exchange fails, but a
-        # failed upload here must not fail the release (the tag + image are already
-        # published by the caller). Once the publisher exists the upload succeeds.
-        # A step-level continue-on-error is the correct mechanism; a `uses:` job in
-        # the caller cannot carry continue-on-error.
-        continue-on-error: true
-        # No `password:` / token: OIDC Trusted Publishing only. skip-existing so a
+        # No `password:` or token: OIDC Trusted Publishing only. skip-existing so a
         # partial-failure rerun of an already-uploaded version is a no-op, not an
         # error (mirrors the idempotent tag/image/release jobs).
         with:
           skip-existing: true
+      - name: Verify PyPI files by SHA256
+        env:
+          PYPI_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import time
+          import urllib.request
+
+          url = f"https://pypi.org/pypi/data-olympus/{os.environ['PYPI_VERSION']}/json"
+          for attempt in range(12):
+              try:
+                  with urllib.request.urlopen(url, timeout=15) as response:
+                      payload = json.load(response)
+                  break
+              except Exception:
+                  if attempt == 11:
+                      raise
+                  time.sleep(5)
+          remote = {item["filename"]: item["digests"]["sha256"] for item in payload["urls"]}
+          for path in sorted(pathlib.Path("dist").iterdir()):
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if remote.get(path.name) != digest:
+                  raise SystemExit(f"PyPI SHA256 mismatch for {path.name}")
+          PY

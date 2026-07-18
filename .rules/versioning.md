@@ -63,7 +63,7 @@ previous rule was squash-only):
   the one Conventional Commit and is linted by
   `.github/workflows/pr-title-lint.yml` (STD-U-810 §7.1 equivalent). This
   applies equally to PRs targeting `main` and PRs targeting a release branch.
-- **Release/integration branches (`release/X.Y.Z`) merge into `main` with a
+- **Release integration branches (`feature/<release-epic-id>`) merge into `main` with a
   merge commit, never a squash.** Each constituent commit on the release branch
   is already one squashed Conventional Commit per feature/fix, so a merge
   commit preserves one readable commit per change on `main` (blame and bisect
@@ -79,7 +79,7 @@ previous rule was squash-only):
 - **Do not confuse the two release branch kinds.** The daily release-cutter
   routine (`.rules/release-routine.md`) opens `chore/release-v<next>` PR
   branches containing a single version-cut commit; those are one logical
-  change and stay squash-merged. `release/X.Y.Z` integration branches, used
+  change and stay squash-merged. `feature/<release-epic-id>` integration branches, used
   when a coordinated program lands many features/fixes together before one
   gated merge to `main`, are the case the merge-commit rule above exists for.
 - Every functional PR updates the CHANGELOG `[Unreleased]` block (see

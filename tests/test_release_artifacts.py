@@ -174,6 +174,62 @@ def test_write_provenance_rejects_inconsistent_receipt(
         module.write_provenance(inconsistent, tmp_path / "invalid.json")
 
 
+def test_finalize_candidate_provenance_validates_public_coordinates(
+    built_pair, tmp_path: Path,
+) -> None:
+    module, candidate, _stable = built_pair
+    source = tmp_path / "candidate.json"
+    output = tmp_path / "candidate-final.json"
+    module.write_provenance(
+        module.ReleaseReceipt(source_sha=candidate.source_sha, candidate=candidate),
+        source,
+    )
+
+    module.finalize_candidate_provenance(
+        source,
+        output,
+        source_sha=candidate.source_sha,
+        candidate_tag="0.6.0-rc.3",
+        image_digest="sha256:" + "a" * 64,
+    )
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["candidate_tag"] == "0.6.0-rc.3"
+    assert payload["image_digest"] == "sha256:" + "a" * 64
+
+
+@pytest.mark.parametrize(
+    ("source_sha", "candidate_tag", "image_digest", "message"),
+    [
+        ("0" * 40, "0.6.0-rc.3", "sha256:" + "a" * 64, "source SHA"),
+        (None, "0.6.0-rc.4", "sha256:" + "a" * 64, "candidate tag"),
+        (None, "0.6.0-rc.3", "latest", "image digest"),
+    ],
+)
+def test_finalize_candidate_provenance_rejects_mismatched_coordinates(
+    built_pair,
+    tmp_path: Path,
+    source_sha: str | None,
+    candidate_tag: str,
+    image_digest: str,
+    message: str,
+) -> None:
+    module, candidate, _stable = built_pair
+    provenance = tmp_path / "candidate.json"
+    module.write_provenance(
+        module.ReleaseReceipt(source_sha=candidate.source_sha, candidate=candidate),
+        provenance,
+    )
+    with pytest.raises(ValueError, match=message):
+        module.finalize_candidate_provenance(
+            provenance,
+            tmp_path / "final.json",
+            source_sha=source_sha or candidate.source_sha,
+            candidate_tag=candidate_tag,
+            image_digest=image_digest,
+        )
+
+
 def test_candidate_and_stable_cli_create_portable_provenance(
     built_pair, tmp_path: Path,
 ) -> None:

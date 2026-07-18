@@ -127,7 +127,10 @@ jobs:
             --base "$VERSION" --number "$RC_NUMBER" --source . \
             --output dist --provenance release-provenance.json
           uvx twine check --strict dist/*
-          uv run python scripts/smoke_installed_wheel.py --wheel dist/*.whl
+          for artifact in dist/*.whl dist/*.tar.gz; do
+            uv run python scripts/smoke_installed_wheel.py \
+              --artifact "$artifact" --expected-version "${VERSION}rc${RC_NUMBER}"
+          done
       - name: Upload candidate artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -220,9 +223,11 @@ jobs:
           test -n "$IMAGE_DIGEST"
           docker buildx imagetools inspect "$REPO:$RC_TAG" \
             | grep -E "Digest:[[:space:]]*$IMAGE_DIGEST"
-          jq --arg candidate_tag "$RC_TAG" --arg image_digest "$IMAGE_DIGEST" \
-            '. + {candidate_tag: $candidate_tag, image_digest: $image_digest}' \
-            release-provenance.json > release-provenance.final.json
+          python3 scripts/release_artifacts.py finalize-candidate \
+            --provenance release-provenance.json \
+            --output release-provenance.final.json \
+            --source-sha "$SOURCE_SHA" --candidate-tag "$RC_TAG" \
+            --image-digest "$IMAGE_DIGEST"
           mv release-provenance.final.json release-provenance.json
           docker buildx imagetools create --tag "$REPO:rc" "$REPO@$IMAGE_DIGEST"
           docker buildx imagetools inspect "$REPO:rc" \
