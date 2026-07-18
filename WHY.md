@@ -178,6 +178,8 @@ opt-in rather than the default. The full methodology and the numbers are in
 table below is generated from the committed results and CI-checked for drift, so
 it cannot quietly go stale.
 
+**Maintainer-produced; not independently reproduced.**
+
 With that said, here is where we are strongest, measured against a plain BM25
 keyword baseline and a status-aware BM25 baseline (BM25 that also reads the
 governance `status` field) over the same 500 queries:

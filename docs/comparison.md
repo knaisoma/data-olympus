@@ -26,7 +26,9 @@ The system is optimized for one specific job: a small team of agents (and humans
 
 Methodology: a synthetic corpus of 250 concepts (deterministic, `seed=0`) generated across all tiers and types, including supersession pairs. Five retrieval methods run over 500 queries in four categories (`exact`, `semantic`, `status`, `graph`). Token counts use the dep-free `SimpleTokenizer`; token *ratios* across methods are tokenizer-robust, absolute counts are tokenizer-specific. See [`benchmarks/README.md`](../benchmarks/README.md) for the full methodology, the de-leaking done to the corpus, and remaining known leaks.
 
-The numbers below are generated directly from [`benchmarks/results/results.json`](../benchmarks/results/results.json) by `benchmarks/docs_tables.py`; a CI guard (`scripts/check_benchmark_docs.py`) fails the build if any quoted number drifts from the committed results, so this section cannot go stale by hand. Regenerate everything with `python -m benchmarks.generate_artifacts && python -m benchmarks.docs_tables --write`.
+The numbers below are generated directly from [`benchmarks/results/results.json`](../benchmarks/results/results.json) by `benchmarks/docs_tables.py`; a CI guard (`scripts/check_benchmark_docs.py`) fails the build if any quoted number or provenance hash drifts from the committed results, so this section cannot go stale by hand. Regenerate everything with the exact commands recorded in [`benchmarks/results/receipt.json`](../benchmarks/results/receipt.json).
+
+**Maintainer-produced; not independently reproduced.**
 
 **Corpus: SYNTHETIC (generated). Tokenizer: SimpleTokenizer (dep-free).**
 
