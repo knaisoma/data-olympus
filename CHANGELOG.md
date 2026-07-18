@@ -12,6 +12,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Changed MCP tool discovery to a compact searchable catalog by default.**
+  `tools/list` exposes seven core tools plus `tool_search` and `call_tool` when
+  `KB_TOOL_DISCOVERY_MODE=search`; set the mode to `all` to expose the complete
+  native catalog. This changes discovery only. Hidden tools remain callable,
+  and their existing authorization requirements still apply to direct and
+  proxied calls.
+
 ## [0.6.0] - 2026-07-18
 
 ### Security
