@@ -45,6 +45,10 @@ from data_olympus.push_queue import PushQueue
 from data_olympus.query_expansion import default_query_expander
 from data_olympus.rate_limit import SlidingWindowLimiter
 from data_olympus.search_shortcut import make_id_tag_reranker
+from data_olympus.tool_discovery import (
+    ToolDiscoveryMode,
+    configure_tool_discovery,
+)
 from data_olympus.tools_read import (
     kb_health_fn,
     kb_outline_fn,
@@ -435,6 +439,7 @@ def build_app(
     session_touch_interval_sec: int = 30,
     status_weights: dict[str, float] | None = None,
     read_only: bool = False,
+    tool_discovery_mode: ToolDiscoveryMode = "search",
     embeddings_enabled: bool = False,
     embeddings_weight: float = 0.35,
     embeddings_model: str = "BAAI/bge-small-en-v1.5",
@@ -487,6 +492,7 @@ def build_app(
         session_touch_interval_sec=session_touch_interval_sec,
         status_weights=status_weights,
         read_only=read_only,
+        tool_discovery_mode=tool_discovery_mode,
         embeddings_enabled=embeddings_enabled,
         embeddings_weight=embeddings_weight,
         embeddings_model=embeddings_model,
@@ -1166,6 +1172,7 @@ def build_app(
 
     from data_olympus.prompts import register_prompts
     register_prompts(app)
+    configure_tool_discovery(app, config.tool_discovery_mode)
     # Attach state for lifespan to discover; not used by tests
     app._dolympus_state = state  # type: ignore[attr-defined]
     return app
@@ -1214,6 +1221,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         session_touch_interval_sec=config.session_touch_interval_sec,
         status_weights=config.status_weights,
         read_only=config.read_only,
+        tool_discovery_mode=config.tool_discovery_mode,
         embeddings_enabled=config.embeddings_enabled,
         embeddings_weight=config.embeddings_weight,
         embeddings_model=config.embeddings_model,

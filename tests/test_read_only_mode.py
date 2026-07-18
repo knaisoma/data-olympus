@@ -75,6 +75,7 @@ def _read_only_app(tmp_kb: Path, tmp_path: Path):
         pending_root=str(tmp_path / "pending"),
         push_queue_root=str(tmp_path / "pq"),
         read_only=True,
+        tool_discovery_mode="all",
     )
 
 
@@ -185,6 +186,7 @@ async def test_default_mode_still_registers_write_tools(
         worktree_root=str(tmp_path / "wts"),
         pending_root=str(tmp_path / "pending"),
         push_queue_root=str(tmp_path / "pq"),
+        tool_discovery_mode="all",
     )
     tools = {t.name for t in await app.list_tools()}
     assert "kb_propose_memory" in tools

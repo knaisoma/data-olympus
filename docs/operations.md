@@ -232,6 +232,30 @@ ingress-sourced request, agents' enforcement hooks failing open. A
 first-class data-olympus knob plus a startup warning is tracked in
 issue #139.
 
+### 3.5 MCP tool catalog discovery
+
+Version 0.6.0 changes the default `tools/list` response to the compact search
+catalog documented in `docs/serving.md`. The native tools remain registered and
+callable. This is a discovery change, not a capability removal.
+
+After an upgrade, verify all of these behaviors with the same authenticated MCP
+principal used by production agents:
+
+1. `tools/list` returns the seven documented core tools plus `tool_search` and
+   `call_tool`.
+2. `tool_search` finds a hidden native tool such as `kb_outline`.
+3. `call_tool` invokes that hidden tool successfully.
+4. Calling `kb_outline` by its original name still succeeds.
+5. An anonymous or underprivileged principal is denied when it calls a hidden
+   write tool either directly or through `call_tool`.
+
+If a client cannot use search based discovery, set
+`KB_TOOL_DISCOVERY_MODE=all` on that deployment and restart it. Do not use this
+setting as an authorization control. Both modes expose the same callable native
+capabilities to a principal; they differ only in the catalog returned by
+`tools/list`. A value other than `search` or `all` fails startup so a typo cannot
+silently broaden the catalog.
+
 ## 4. Recovery playbooks
 
 ### 4.1 Degraded / `fetch_failed`

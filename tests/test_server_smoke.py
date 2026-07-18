@@ -154,6 +154,7 @@ async def test_kb_cleanup_plan_tool_is_registered(tmp_kb: Path, tmp_path: Path) 
         sync_interval_sec=60,
         staleness_degraded_sec=600,
         bootstrap_now=True,
+        tool_discovery_mode="all",
     )
     tools = await app.list_tools()
     assert any(t.name == "kb_cleanup_plan" for t in tools)

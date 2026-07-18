@@ -11,6 +11,7 @@ def test_enforce_tools_registered(tmp_kb, tmp_index_path) -> None:
     app = build_app(
         kb_main_path=tmp_kb, kb_index_path=tmp_index_path,
         sync_interval_sec=60, staleness_degraded_sec=600, bootstrap_now=True,
+        tool_discovery_mode="all",
     )
     # NOTE (plan adaptation): the plan's draft used `app.get_tools()`, which does
     # not exist in this fastmcp version. `app.list_tools()` is the supported
@@ -27,6 +28,7 @@ def test_kb_consult_tool_exposes_optional_trigger(tmp_kb, tmp_index_path) -> Non
     app = build_app(
         kb_main_path=tmp_kb, kb_index_path=tmp_index_path,
         sync_interval_sec=60, staleness_degraded_sec=600, bootstrap_now=True,
+        tool_discovery_mode="all",
     )
     tools = {t.name: t for t in asyncio.run(app.list_tools())}
     schema = tools["kb_consult"].parameters
