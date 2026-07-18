@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 _SOURCE_COMMIT = "1" * 40
@@ -182,6 +183,40 @@ def test_verify_receipt_rejects_schema_and_source_commit_tampering(tmp_path: Pat
     problems = verify_receipt(receipt, root)
     assert any("schema_version" in problem for problem in problems)
     assert any("source_commit" in problem for problem in problems)
+
+
+def test_verify_receipt_rejects_unknown_commit_in_a_git_checkout(tmp_path: Path) -> None:
+    from benchmarks.receipt import build_receipt, verify_receipt
+
+    root = _benchmark_repo(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Benchmark Test",
+            "-c",
+            "user.email=benchmark@example.invalid",
+            "commit",
+            "-qm",
+            "test fixture",
+        ],
+        cwd=root,
+        check=True,
+    )
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    receipt = build_receipt(root, source_commit)
+    assert verify_receipt(receipt, root) == []
+
+    receipt["source_commit"] = "f" * 40
+    assert any("does not exist" in problem for problem in verify_receipt(receipt, root))
 
 
 def test_artifact_generator_writes_receipt_for_current_head(

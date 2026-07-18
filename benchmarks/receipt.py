@@ -256,6 +256,51 @@ def _group_sha(receipt: Mapping[str, object], *path: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _verify_source_commit(
+    receipt: Mapping[str, object], repo_root: Path, source_commit: str
+) -> list[str]:
+    inside = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        return []
+    exists = subprocess.run(
+        ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],
+        cwd=repo_root,
+        capture_output=True,
+    )
+    if exists.returncode != 0:
+        return [f"source_commit {source_commit} does not exist in this checkout"]
+
+    source_tree = receipt.get("source_tree")
+    files = source_tree.get("files") if isinstance(source_tree, Mapping) else None
+    if not isinstance(files, list):
+        return ["source_tree.files is missing from the receipt"]
+    problems: list[str] = []
+    for entry in files:
+        if not isinstance(entry, Mapping):
+            problems.append("source_tree.files contains an invalid entry")
+            continue
+        path = entry.get("path")
+        expected_sha = entry.get("sha256")
+        if not isinstance(path, str) or not isinstance(expected_sha, str):
+            problems.append("source_tree.files contains an invalid path or sha256")
+            continue
+        content = subprocess.run(
+            ["git", "show", f"{source_commit}:{path}"],
+            cwd=repo_root,
+            capture_output=True,
+        )
+        if content.returncode != 0:
+            problems.append(f"source_commit does not contain {path}")
+        elif _sha256(content.stdout) != expected_sha:
+            problems.append(f"source_commit content differs for {path}")
+    return problems
+
+
 def verify_receipt(receipt: Mapping[str, object], repo_root: Path) -> list[str]:
     """Return every provenance mismatch instead of stopping at the first one."""
     root = repo_root.resolve()
@@ -265,6 +310,8 @@ def verify_receipt(receipt: Mapping[str, object], repo_root: Path) -> list[str]:
     source_commit = receipt.get("source_commit")
     if not isinstance(source_commit, str) or not _SHA_PATTERN.fullmatch(source_commit):
         problems.append("source_commit must be a lowercase 40 character git SHA")
+    else:
+        problems.extend(_verify_source_commit(receipt, root, source_commit))
 
     groups = {
         ("source_tree",): _source_group(root),
