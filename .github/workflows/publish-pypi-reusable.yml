@@ -117,8 +117,14 @@ jobs:
                       raise
                   time.sleep(5)
           remote = {item["filename"]: item["digests"]["sha256"] for item in payload["urls"]}
-          for path in sorted(pathlib.Path("dist").iterdir()):
-              digest = hashlib.sha256(path.read_bytes()).hexdigest()
-              if remote.get(path.name) != digest:
-                  raise SystemExit(f"PyPI SHA256 mismatch for {path.name}")
+          dist = pathlib.Path("dist")
+          artifacts = sorted([*dist.glob("*.whl"), *dist.glob("*.tar.gz")])
+          if not artifacts:
+              raise SystemExit("No publishable Python artifacts found")
+          local = {
+              path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in artifacts
+          }
+          if remote != local:
+              raise SystemExit(f"PyPI SHA256 mismatch: local={local}, remote={remote}")
           PY

@@ -128,6 +128,9 @@ def test_every_pypi_publisher_fails_closed_and_reads_back_hashes() -> None:
         commands = "\n".join(str(step.get("run", "")) for step in steps)
         assert "pypi.org/pypi/data-olympus" in commands, workflow
         assert "sha256" in commands, workflow
+        assert 'glob("*.whl")' in commands, workflow
+        assert 'glob("*.tar.gz")' in commands, workflow
+        assert 'Path("dist").iterdir()' not in commands, workflow
 
 
 def test_manual_dispatch_uploads_only_for_validated_release_tag():
