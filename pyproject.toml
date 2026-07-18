@@ -21,7 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "pyyaml>=6.0",
-    "fastmcp>=3.2.0,<4",
+    "fastmcp>=3.4.4,<4",
     "pydantic>=2.9",
     # The secret-scanning gate (issue #71) runs operator-supplied
     # KB_SECRET_SCAN_EXTRA_PATTERNS through the `regex` engine because it
