@@ -31,9 +31,34 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import cast
 
-_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+].+)?$")
+_STABLE_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+_CANDIDATE_RE = re.compile(r"([0-9]+\.[0-9]+\.[0-9]+)-rc\.([1-9][0-9]*)")
+
+
+@dataclass(frozen=True, slots=True)
+class RegistryVersions:
+    pypi: str
+    ghcr: str
+    github: str
+
+
+def registry_versions(version: str) -> RegistryVersions:
+    """Map one public release version to each registry's spelling."""
+    if _STABLE_RE.fullmatch(version):
+        tag = f"v{version}"
+        return RegistryVersions(pypi=version, ghcr=tag, github=tag)
+    candidate = _CANDIDATE_RE.fullmatch(version)
+    if candidate:
+        base, number = candidate.groups()
+        return RegistryVersions(
+            pypi=f"{base}rc{number}",
+            ghcr=version,
+            github=version,
+        )
+    raise ValueError("version must be X.Y.Z or X.Y.Z-rc.N")
 
 
 def evaluate(
@@ -76,8 +101,7 @@ def _pypi_present(version: str, package: str = "data-olympus") -> bool | None:
         return None
 
 
-def _ghcr_present(version: str, package: str = "data-olympus") -> bool | None:
-    tag = f"v{version}"
+def _ghcr_present(tag: str, package: str = "data-olympus") -> bool | None:
     out = subprocess.run(
         [
             "gh", "api",
@@ -93,9 +117,9 @@ def _ghcr_present(version: str, package: str = "data-olympus") -> bool | None:
     return tag in tags
 
 
-def _gh_release_present(version: str, repo: str = "knaisoma/data-olympus") -> bool | None:
+def _gh_release_present(tag: str, repo: str = "knaisoma/data-olympus") -> bool | None:
     out = subprocess.run(
-        ["gh", "api", f"repos/{repo}/releases/tags/v{version}"],
+        ["gh", "api", f"repos/{repo}/releases/tags/{tag}"],
         capture_output=True, text=True,
     )
     if out.returncode == 0:
@@ -113,13 +137,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit JSON instead of a summary")
     args = parser.parse_args(argv)
 
-    if not _SEMVER_RE.match(args.version):
-        print(f"invalid semver: {args.version!r}", file=sys.stderr)
+    try:
+        versions = registry_versions(args.version)
+    except ValueError as exc:
+        print(f"invalid release version {args.version!r}: {exc}", file=sys.stderr)
         return 1
 
-    pypi = _pypi_present(args.version, args.package)
-    ghcr = _ghcr_present(args.version, args.package)
-    gh_release = _gh_release_present(args.version, args.repo)
+    pypi = _pypi_present(versions.pypi, args.package)
+    ghcr = _ghcr_present(versions.ghcr, args.package)
+    gh_release = _gh_release_present(versions.github, args.repo)
     result = evaluate(pypi, ghcr, gh_release)
 
     if args.json:
