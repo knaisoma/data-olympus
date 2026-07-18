@@ -6,11 +6,10 @@
 # environment=pypi. See docs/releases/pypi-trusted-publishing.md.
 #
 # NORMAL RELEASE PATH: this file is NOT the primary release trigger. The live
-# release chain is tag-release.yml (on: push main -> should_tag.py -> tag pushed
-# with GITHUB_TOKEN). Because GITHUB_TOKEN-created tag pushes do NOT trigger
+# release chain uses inline Trusted Publishing jobs in rc-publish.yml and
+# tag-release.yml. Because GITHUB_TOKEN-created tag pushes do NOT trigger
 # `on: push tags` workflows, the `release` job below does not fire in the normal
-# flow; tag-release.yml calls publish-pypi-reusable.yml directly (mirroring how
-# it builds the image). This file provides two things tag-release.yml cannot:
+# flow. This file provides two independent fallback paths:
 #   1. a PR-time DRY RUN (build + twine check, no upload) for packaging changes;
 #   2. a manual-tag / human-pushed-tag FALLBACK (same rationale as
 #      release-image.yml's tag trigger, STD-U-810 section 9).

@@ -72,6 +72,15 @@ def test_build_distribution_uses_isolated_version_overlay(built_pair) -> None:
     assert "0.6.0" in stable.wheel.name
 
 
+def test_build_distribution_rejects_missing_source_sha(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_source_sha", lambda _source: "")
+    with pytest.raises(ValueError, match="source SHA"):
+        module.build_distribution(ROOT, "0.6.0rc3", tmp_path)
+
+
 def test_compare_wheels_accepts_version_only_difference(built_pair) -> None:
     module, candidate, stable = built_pair
     receipt = module.compare_wheels(candidate.wheel, stable.wheel)
@@ -139,3 +148,108 @@ def test_write_provenance_emits_machine_readable_receipt(
     assert payload["candidate"]["wheel_sha256"] == candidate.wheel_sha256
     assert payload["stable"]["wheel_sha256"] == stable.wheel_sha256
     assert payload["comparison"]["equivalent"] is True
+
+
+def test_write_provenance_rejects_inconsistent_receipt(
+    built_pair, tmp_path: Path,
+) -> None:
+    module, candidate, stable = built_pair
+    comparison = module.compare_wheels(candidate.wheel, stable.wheel)
+    inconsistent = module.ReleaseReceipt(
+        source_sha=candidate.source_sha,
+        candidate=candidate,
+        stable=module.BuildReceipt(
+            version=stable.version,
+            source_sha="0" * 40,
+            source_tree_sha256=stable.source_tree_sha256,
+            lock_sha256=stable.lock_sha256,
+            wheel=stable.wheel,
+            sdist=stable.sdist,
+            wheel_sha256=stable.wheel_sha256,
+            sdist_sha256=stable.sdist_sha256,
+        ),
+        comparison=comparison,
+    )
+    with pytest.raises(ValueError, match="source SHA"):
+        module.write_provenance(inconsistent, tmp_path / "invalid.json")
+
+
+def test_candidate_and_stable_cli_create_portable_provenance(
+    built_pair, tmp_path: Path,
+) -> None:
+    module, candidate, _stable = built_pair
+    candidate_receipt = tmp_path / "candidate-provenance.json"
+    candidate_output = tmp_path / "candidate-dist"
+    assert module.main(
+        [
+            "candidate",
+            "--base",
+            "0.6.0",
+            "--number",
+            "3",
+            "--source",
+            str(ROOT),
+            "--output",
+            str(candidate_output),
+            "--provenance",
+            str(candidate_receipt),
+        ]
+    ) == 0
+    candidate_payload = json.loads(candidate_receipt.read_text(encoding="utf-8"))
+    assert candidate_payload["candidate"]["version"] == "0.6.0rc3"
+    assert candidate_payload["candidate"]["wheel"] == next(candidate_output.glob("*.whl")).name
+
+    stable_receipt = tmp_path / "stable-provenance.json"
+    stable_output = tmp_path / "stable-dist"
+    assert module.main(
+        [
+            "stable",
+            "--base",
+            "0.6.0",
+            "--source",
+            str(ROOT),
+            "--output",
+            str(stable_output),
+            "--candidate-provenance",
+            str(candidate_receipt),
+            "--candidate-wheel",
+            str(next(candidate_output.glob("*.whl"))),
+            "--provenance",
+            str(stable_receipt),
+        ]
+    ) == 0
+    stable_payload = json.loads(stable_receipt.read_text(encoding="utf-8"))
+    assert stable_payload["source_sha"] == candidate.source_sha
+    assert stable_payload["stable"]["version"] == "0.6.0"
+    assert stable_payload["comparison"]["equivalent"] is True
+
+
+def test_stable_cli_rejects_candidate_from_another_source(
+    built_pair, tmp_path: Path,
+) -> None:
+    module, candidate, _stable = built_pair
+    receipt = module.ReleaseReceipt(source_sha=candidate.source_sha, candidate=candidate)
+    provenance = tmp_path / "wrong-source.json"
+    module.write_provenance(receipt, provenance)
+    payload = json.loads(provenance.read_text(encoding="utf-8"))
+    payload["source_sha"] = "0" * 40
+    payload["candidate"]["source_sha"] = "0" * 40
+    provenance.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="source SHA"):
+        module.main(
+            [
+                "stable",
+                "--base",
+                "0.6.0",
+                "--source",
+                str(ROOT),
+                "--output",
+                str(tmp_path / "stable"),
+                "--candidate-provenance",
+                str(provenance),
+                "--candidate-wheel",
+                str(candidate.wheel),
+                "--provenance",
+                str(tmp_path / "stable.json"),
+            ]
+        )

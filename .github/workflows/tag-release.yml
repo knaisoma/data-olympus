@@ -1,12 +1,10 @@
 # .github/workflows/tag-release.yml
-name: Tag release on version bump
+name: Promote complete release candidate
 
 on:
   push:
     branches: [main]
 
-# Serialize release runs on main so two close pushes (or a manual rerun) do not
-# race on creating and pushing the same tag. Never cancel an in-flight release.
 concurrency:
   group: tag-release-${{ github.ref }}
   cancel-in-progress: false
@@ -15,55 +13,27 @@ jobs:
   decide:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     outputs:
       tag: ${{ steps.decide.outputs.tag }}
+      version: ${{ steps.decide.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Decide tag from pyproject version
+      - name: Decide stable release version
         id: decide
-        run: |
-          TAG="$(python3 scripts/should_tag.py)"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-      # Version-immutability guard: refuse to (re)publish a version that already
-      # exists on PyPI, ghcr, or as a GitHub release/tag. Runs BEFORE the
-      # git tag/push below so a duplicate never leaves an orphaned public tag.
-      # A legitimate reconcile (local tag vX.Y.Z already at HEAD) is allowed and
-      # skips the registry lookups; a registry outage fails closed. Operator
-      # override: set KB_BYPASS_VERSION_CHECK=1 on the run.
-      - name: Guard against republishing an existing version
-        if: steps.decide.outputs.tag != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.decide.outputs.tag }}
         run: |
-          python3 scripts/check_version_free.py --version "${TAG#v}"
-      - name: Create and push annotated tag
-        if: steps.decide.outputs.tag != ''
-        env:
-          TAG: ${{ steps.decide.outputs.tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Idempotent: a re-run after a partial failure must not hard-fail on an
-          # existing tag.
-          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            git tag -a "$TAG" -m "Release ${TAG#v}"
+          VERSION="$(python3 scripts/should_tag.py --print-version)"
+          TAG="v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            TAG=""
           fi
-          # This tag is pushed with the default GITHUB_TOKEN on purpose. GitHub does not
-          # trigger workflows from GITHUB_TOKEN-created events, so release-image.yml
-          # (on: push tags v*) does not fire here, and the build-image job below builds
-          # the image instead. release-image.yml's tag trigger remains the manual-tag
-          # fallback path (STD-U-810 section 9) for a human-pushed tag. If this push is
-          # ever switched to a PAT or GitHub App token, release-image.yml will also fire
-          # and double-build plus double-move latest. Keep it on GITHUB_TOKEN.
-          git push origin "$TAG"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-  # Resolve whether a verified release-candidate image exists for this version.
-  # If it does, promotion re-tags that exact digest (byte-identical to what was
-  # verified on the kn-dev canary). If not (manual-tag / no-RC cut), build fresh.
   resolve-rc:
     needs: decide
     if: needs.decide.outputs.tag != ''
@@ -72,145 +42,242 @@ jobs:
       contents: read
       packages: read
     outputs:
-      rc_tag: ${{ steps.rc.outputs.rc_tag }}
+      image_digest: ${{ steps.resolve.outputs.image_digest }}
+      rc_tag: ${{ steps.resolve.outputs.rc_tag }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
     steps:
       - uses: actions/checkout@v7
-      - name: Find the highest existing RC tag for this version
-        id: rc
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.decide.outputs.tag }}
-        run: |
-          VERSION="${TAG#v}"
-          : > /tmp/tags.txt
-          if ! gh api --paginate \
-                "/orgs/knaisoma/packages/container/data-olympus/versions" \
-                --jq '.[].metadata.container.tags[]' > /tmp/tags.txt 2>/tmp/gh-err.log; then
-            if grep -qiE '404|not found' /tmp/gh-err.log; then
-              echo "no existing package versions; will build fresh"
-            else
-              echo "gh api failed (non-404):" >&2; cat /tmp/gh-err.log >&2; exit 1
-            fi
-          fi
-          RC_TAG="$(python3 scripts/rc_tag.py --base "$VERSION" --current < /tmp/tags.txt)"
-          echo "rc_tag=$RC_TAG" >> "$GITHUB_OUTPUT"
-          echo "resolved rc_tag='$RC_TAG' for $VERSION"
-
-  # Byte-identical promotion: re-tag the verified RC digest to vX.Y.Z + :latest.
-  # No rebuild, so the released image is exactly what passed kn-dev verification.
-  promote-image:
-    needs: [decide, resolve-rc]
-    if: needs.decide.outputs.tag != '' && needs.resolve-rc.outputs.rc_tag != ''
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Re-tag verified RC digest to the release tag
+      - name: Resolve the highest complete prerelease
+        id: resolve
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.decide.outputs.version }}
           REPO: ghcr.io/knaisoma/data-olympus
-          TAG: ${{ needs.decide.outputs.tag }}
-          RC_TAG: ${{ needs.resolve-rc.outputs.rc_tag }}
         run: |
-          docker buildx imagetools create \
-            --tag "$REPO:$TAG" --tag "$REPO:latest" "$REPO:$RC_TAG"
-          echo "$REPO:$TAG and :latest now point at the verified $REPO:$RC_TAG digest"
+          mkdir -p candidate
+          gh release list --limit 100 --json tagName,isPrerelease,isDraft \
+            --jq '.[] | select(.isPrerelease and (.isDraft | not)) | .tagName' \
+            > /tmp/prereleases.txt
+          : > /tmp/complete-rcs.txt
+          while IFS= read -r candidate_tag; do
+            case "$candidate_tag" in
+              "$VERSION"-rc.[0-9]*) ;;
+              *) continue ;;
+            esac
+            assets="$(gh release view "$candidate_tag" --json assets --jq '.assets[].name')"
+            if grep -qx 'release-provenance.json' <<<"$assets" && \
+               grep -Eq '^data_olympus-.*\.whl$' <<<"$assets" && \
+               grep -Eq '^data_olympus-.*\.tar\.gz$' <<<"$assets"; then
+              echo "$candidate_tag" >> /tmp/complete-rcs.txt
+            fi
+          done < /tmp/prereleases.txt
+          RC_TAG="$(python3 scripts/rc_tag.py --base "$VERSION" --current < /tmp/complete-rcs.txt)"
+          test -n "$RC_TAG"
+          gh release download "$RC_TAG" --pattern release-provenance.json --dir candidate
+          SOURCE_SHA="$(jq -r .source_sha candidate/release-provenance.json)"
+          IMAGE_DIGEST="$(jq -r .image_digest candidate/release-provenance.json)"
+          test "$(jq -r .candidate_tag candidate/release-provenance.json)" = "$RC_TAG"
+          test "$(jq -r .candidate.version candidate/release-provenance.json)" \
+            = "${VERSION}rc${RC_TAG##*.}"
+          test -n "$SOURCE_SHA"
+          test -n "$IMAGE_DIGEST"
+          python3 - <<'PY'
+          import json
+          import urllib.request
 
-  # Fresh build fallback: only when no verified RC image exists (manual-tag cut).
-  build-image:
+          with open("candidate/release-provenance.json", encoding="utf-8") as stream:
+              provenance = json.load(stream)
+          candidate = provenance["candidate"]
+          url = f"https://pypi.org/pypi/data-olympus/{candidate['version']}/json"
+          with urllib.request.urlopen(url, timeout=15) as response:
+              pypi = json.load(response)
+          remote = {item["filename"]: item["digests"]["sha256"] for item in pypi["urls"]}
+          expected = {
+              candidate["wheel"]: candidate["wheel_sha256"],
+              candidate["sdist"]: candidate["sdist_sha256"],
+          }
+          if any(remote.get(name) != sha256 for name, sha256 in expected.items()):
+              raise SystemExit("candidate PyPI sha256 does not match provenance")
+          PY
+          git fetch origin "refs/tags/$RC_TAG:refs/tags/$RC_TAG"
+          test "$(git rev-list -n 1 "$RC_TAG")" = "$SOURCE_SHA"
+          git merge-base --is-ancestor "$SOURCE_SHA" HEAD
+          docker buildx imagetools inspect "$REPO@$IMAGE_DIGEST" >/dev/null
+          {
+            echo "rc_tag=$RC_TAG"
+            echo "source_sha=$SOURCE_SHA"
+            echo "image_digest=$IMAGE_DIGEST"
+          } >> "$GITHUB_OUTPUT"
+
+  create-tag:
     needs: [decide, resolve-rc]
-    if: needs.decide.outputs.tag != '' && needs.resolve-rc.outputs.rc_tag == ''
-    uses: ./.github/workflows/release-image-reusable.yml
-    with:
-      ref: ${{ needs.decide.outputs.tag }}
-      tag: ${{ needs.decide.outputs.tag }}
-      move_latest: true
+    runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve-rc.outputs.source_sha }}
+          fetch-depth: 0
+      - name: Guard stable registry availability
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.decide.outputs.tag }}
+        run: python3 scripts/check_version_free.py --version "${TAG#v}"
+      - name: Create and push annotated tag
+        env:
+          TAG: ${{ needs.decide.outputs.tag }}
+          SOURCE_SHA: ${{ needs.resolve-rc.outputs.source_sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            test "$(git rev-list -n 1 "$TAG")" = "$SOURCE_SHA"
+          else
+            git tag -a "$TAG" "$SOURCE_SHA" -m "Release ${TAG#v}"
+            git push origin "$TAG"
+          fi
 
-  # Publish sdist + wheel to PyPI via Trusted Publishing (OIDC, no token). Runs
-  # off the SAME decided tag as build-image, so a release publishes the image AND
-  # the package from one main-push flow. This is the primary PyPI path: the tag is
-  # pushed with GITHUB_TOKEN, which does NOT trigger publish-pypi.yml's `on: push
-  # tags`, so we call the reusable workflow here (exactly as build-image does).
-  #
-  # Publish sdist + wheel to PyPI via Trusted Publishing (OIDC, no token). The
-  # steps run INLINE here (not via a reusable workflow) on purpose: PyPI's OIDC
-  # exchange does not reliably match a publisher when the publishing step runs
-  # inside a called reusable workflow (the gh-action-pypi-publish action itself
-  # warns against reusable workflows). Running inline makes the entry workflow
-  # (tag-release.yml) the publishing workflow, matching the registered pypi.org
-  # Trusted Publisher (workflow=tag-release.yml, environment=pypi). Runs off the
-  # SAME decided tag as build-image. Does not gate the GitHub Release (which needs
-  # only build-image), so a PyPI hiccup surfaces as a failed job without blocking
-  # the tag/image/release. See docs/releases/pypi-trusted-publishing.md.
   publish-pypi:
-    needs: decide
-    if: needs.decide.outputs.tag != ''
+    needs: [decide, resolve-rc, create-tag]
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/p/data-olympus
     permissions:
       contents: read
-      # id-token: write mints the OIDC token gh-action-pypi-publish exchanges for
-      # a short-lived upload credential. No secret token exists.
       id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.decide.outputs.tag }}
+          ref: ${{ needs.resolve-rc.outputs.source_sha }}
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v7
-      - name: Build sdist + wheel
-        run: uv build
-      - name: Verify metadata (twine check)
-        run: uvx twine check --strict dist/*
-      - name: Smoke-test the built wheel
+      - name: Download candidate comparison inputs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RC_TAG: ${{ needs.resolve-rc.outputs.rc_tag }}
         run: |
+          mkdir -p candidate
+          gh release download "$RC_TAG" \
+            --pattern '*.whl' --pattern release-provenance.json --dir candidate
+      - name: Build and compare stable Python artifacts
+        env:
+          VERSION: ${{ needs.decide.outputs.version }}
+        run: |
+          CANDIDATE_WHEEL="$(find candidate -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$CANDIDATE_WHEEL"
+          uv run python scripts/release_artifacts.py stable \
+            --base "$VERSION" --source . --output dist \
+            --candidate-provenance candidate/release-provenance.json \
+            --candidate-wheel "$CANDIDATE_WHEEL" \
+            --provenance release-provenance.json
+          uvx twine check --strict dist/*
           uvx --from ./dist/*.whl data-olympus --help
           uvx --from ./dist/*.whl data-olympus setup --check --no-version-check
-      - name: Publish to PyPI (Trusted Publishing)
+      - name: Publish stable package using Trusted Publishing
         uses: pypa/gh-action-pypi-publish@release/v1
-        # skip-existing so a partial-failure rerun of an already-uploaded version
-        # is a no-op, not an error (mirrors the idempotent tag/image/release jobs).
-        # No continue-on-error: the publisher is configured, so a real upload
-        # failure must be visible rather than silently swallowed.
         with:
           skip-existing: true
+      - name: Verify stable PyPI files by SHA256
+        env:
+          VERSION: ${{ needs.decide.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import time
+          import urllib.request
+
+          url = f"https://pypi.org/pypi/data-olympus/{os.environ['VERSION']}/json"
+          for attempt in range(12):
+              try:
+                  with urllib.request.urlopen(url, timeout=15) as response:
+                      payload = json.load(response)
+                  break
+              except Exception:
+                  if attempt == 11:
+                      raise
+                  time.sleep(5)
+          remote = {item["filename"]: item["digests"]["sha256"] for item in payload["urls"]}
+          for path in sorted(pathlib.Path("dist").iterdir()):
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if remote.get(path.name) != digest:
+                  raise SystemExit(f"PyPI SHA256 mismatch for {path.name}")
+          PY
+      - name: Upload stable release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: stable-${{ needs.decide.outputs.tag }}
+          path: |
+            dist/
+            release-provenance.json
+          if-no-files-found: error
+
+  promote-image:
+    needs: [decide, resolve-rc, create-tag, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Re-tag the verified candidate digest
+        env:
+          IMAGE_DIGEST: ${{ needs.resolve-rc.outputs.image_digest }}
+          REPO: ghcr.io/knaisoma/data-olympus
+          TAG: ${{ needs.decide.outputs.tag }}
+        run: |
+          docker buildx imagetools create \
+            --tag "$REPO:$TAG" --tag "$REPO:stable" --tag "$REPO:latest" \
+            "$REPO@$IMAGE_DIGEST"
+          for channel in "$TAG" stable latest; do
+            docker buildx imagetools inspect "$REPO:$channel" \
+              | grep -F "Digest:    $IMAGE_DIGEST"
+          done
 
   release:
-    needs: [decide, resolve-rc, promote-image, build-image]
-    if: >-
-      always() && needs.decide.outputs.tag != '' &&
-      (needs.promote-image.result == 'success' || needs.build-image.result == 'success')
+    needs: [decide, resolve-rc, create-tag, publish-pypi, promote-image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - name: Create GitHub Release (after the image is published)
+        with:
+          ref: ${{ needs.resolve-rc.outputs.source_sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: stable-${{ needs.decide.outputs.tag }}
+      - name: Create GitHub release after Python and OCI publication
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.resolve-rc.outputs.source_sha }}
           TAG: ${{ needs.decide.outputs.tag }}
         run: |
-          # Idempotent: skip if the release already exists (partial-failure rerun).
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "release $TAG already exists, skipping"
-            exit 0
-          fi
           NOTES="docs/releases/${TAG}.md"
-          if [ -f "$NOTES" ]; then
-            gh release create "$TAG" --title "$TAG" --notes-file "$NOTES"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            test "$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)" \
+              = "$SOURCE_SHA"
+            gh release upload "$TAG" dist/* release-provenance.json --clobber
+          elif [ -f "$NOTES" ]; then
+            gh release create "$TAG" --target "$SOURCE_SHA" --title "$TAG" \
+              --notes-file "$NOTES" dist/* release-provenance.json
           else
-            gh release create "$TAG" --title "$TAG" --generate-notes
+            gh release create "$TAG" --target "$SOURCE_SHA" --title "$TAG" \
+              --generate-notes dist/* release-provenance.json
           fi

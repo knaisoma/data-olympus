@@ -3,11 +3,10 @@
 # INERT UNTIL OPERATOR SETUP. This workflow uploads to PyPI via Trusted
 # Publishing (OIDC, no API token). It CANNOT succeed until the operator creates
 # a pending publisher on pypi.org. PyPI binds the publisher to the TOP-LEVEL
-# workflow that starts the run, and this reusable workflow is called from TWO of
-# them, so BOTH need a publisher (same owner=knaisoma, repo=data-olympus,
-# environment=pypi):
-#   - workflow=tag-release.yml     (PRIMARY: normal main-merge release path)
-#   - workflow=publish-pypi.yml    (fallback: human-pushed tag / manual dispatch)
+# workflow that starts the run. This reusable workflow is now called only from
+# publish-pypi.yml, the human-pushed tag and manual fallback. The primary
+# rc-publish.yml and tag-release.yml paths publish inline and have their own
+# publisher identities.
 # See docs/releases/pypi-trusted-publishing.md for the exact click-path. Until
 # then the `upload` job's publish STEP fails (nothing is uploaded); the `build`
 # job and `twine check` still pass, so the release tag/image are unaffected.

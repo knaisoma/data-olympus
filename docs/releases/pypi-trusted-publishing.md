@@ -1,113 +1,118 @@
-# PyPI publishing (Trusted Publishing) — one-time operator setup
+# PyPI Trusted Publishing setup
 
-The release chain builds an sdist + wheel and uploads them to PyPI using
-[Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OpenID Connect).
-**No API token is stored anywhere** (not in repo secrets, not in the workflow).
-GitHub mints a short-lived OIDC token at release time and PyPI exchanges it for a
-one-shot upload credential.
+Data Olympus publishes Python distributions with PyPI Trusted Publishing.
+GitHub mints a short lived OIDC token for a protected environment, and PyPI
+exchanges it for an upload credential. The repository stores no PyPI token.
 
-The publish workflow is **inert until you complete the pypi.org setup below.**
-Until then, every release still tags, builds the container image, and publishes a
-GitHub Release normally; only the PyPI upload step fails (and it is marked
-`continue-on-error`, so it does not block the release). Once the pending
-publisher exists, the next release uploads to PyPI with no further action.
+Release publication is fail closed. A candidate is not finalized and stable
+channels are not promoted when the corresponding PyPI upload or registry
+verification fails.
 
-## After setup: tighten the release chain
+## Publisher identities
 
-Once the publishers are configured and the first release has published to PyPI
-for real, harden the chain so a broken upload can no longer pass silently. Do
-NOT make these edits before setup: pre-setup the upload step fails by design, so
-removing its tolerance would break every release.
+Create a pending GitHub publisher on PyPI for each top level workflow that can
+upload. Every other field is identical.
 
-Two edits, both post-first-successful-publish:
+* PyPI project name: `data-olympus`
+* GitHub owner: `knaisoma`
+* GitHub repository: `data-olympus`
+* Environment: `pypi`
+* Candidate workflow: `rc-publish.yml`
+* Stable workflow: `tag-release.yml`
+* Manual fallback workflow: `publish-pypi.yml`
 
-- In `.github/workflows/publish-pypi-reusable.yml`, remove the
-  `continue-on-error: true` line from the **Publish to PyPI (Trusted
-  Publishing)** step (the `pypa/gh-action-pypi-publish@release/v1` step). A real
-  upload failure then fails the job instead of no-oping.
-- In `.github/workflows/tag-release.yml`, add `publish-pypi` to the `release`
-  job's `needs`, i.e. change `needs: [decide, build-image]` to
-  `needs: [decide, build-image, publish-pypi]`. The GitHub Release is then cut
-  only after the PyPI upload succeeds, so a release never advertises a version
-  that failed to publish.
+The reusable workflow is not a publisher identity. PyPI evaluates the top level
+workflow that started the run.
 
-## What binds the publisher
+## PyPI setup
 
-Trusted Publishing matches four values exactly. Ours are:
+1. Sign in to <https://pypi.org> with two factor authentication enabled.
+2. Open <https://pypi.org/manage/account/publishing/>.
+3. Add a pending GitHub publisher for `rc-publish.yml` using the values above.
+4. Repeat for `tag-release.yml`.
+5. Repeat for `publish-pypi.yml` only when the manual tag fallback is retained.
 
-- **PyPI project name:** `data-olympus`
-- **Owner (GitHub org/user):** `knaisoma`
-- **Repository:** `data-olympus`
-- **Workflow filename:** `publish-pypi.yml`
-- **Environment name:** `pypi`
+## GitHub environment
 
-The `environment: pypi` and `workflow filename` come from
-`.github/workflows/publish-pypi-reusable.yml` (the reusable workflow that does the
-upload) and `.github/workflows/publish-pypi.yml` (the caller PyPI knows about).
-When PyPI validates the OIDC claim it checks the **top-level workflow** that
-started the run. Both `publish-pypi.yml` (manual/tag fallback) and
-`tag-release.yml` (the normal release path) call the reusable upload workflow, so
-register a pending publisher for **each** top-level workflow filename you release
-from (see step 2b).
+Create an environment named `pypi` in the repository settings.
 
-## One-time steps on pypi.org
+1. Require an operator reviewer for deployments.
+2. Allow deployment only from `main` and approved protected release branches.
+3. Dispatch `rc-publish.yml` itself from `main`, even when its `ref` input names
+   another exact source SHA.
+4. Do not add a PyPI password or API token secret.
 
-You do this once. There is no project yet, so create a **pending publisher**
-(PyPI supports binding a publisher before the project's first upload).
+The candidate and stable jobs scope `id-token: write` to this environment. Other
+jobs use read only repository permissions unless they must publish a Git tag,
+GitHub release, or GHCR tag.
 
-### Step 1 — sign in
+## Candidate publication
 
-1. Go to <https://pypi.org> and log in (create an account first if needed).
-2. Confirm 2FA is enabled on the account (PyPI requires it for uploads).
+Run `rc-publish.yml` with these inputs:
 
-### Step 2 — add the pending publisher
+* `ref`: the exact reviewed source SHA or a ref that resolves to it
+* `number`: the positive candidate number, such as `3`
 
-1. Open <https://pypi.org/manage/account/publishing/>.
-2. Scroll to **"Add a new pending publisher"** and select the **GitHub** tab.
-3. Fill in **exactly**:
-   - **PyPI Project Name:** `data-olympus`
-   - **Owner:** `knaisoma`
-   - **Repository name:** `data-olympus`
-   - **Workflow name:** `publish-pypi.yml`
-   - **Environment name:** `pypi`
-4. Click **Add**.
+The workflow builds `0.6.0rc3` for PyPI and `0.6.0-rc.3` for GHCR and GitHub.
+It publishes an immutable image, wheel, source distribution, and provenance
+receipt. It verifies PyPI file hashes and the image digest before moving `:rc`
+or creating the GitHub prerelease.
 
-### Step 2b — add the second publisher for the primary release path
+A rerun with the same number reuses an existing image only when its embedded
+source revision equals the requested SHA. PyPI upload uses `skip-existing`, then
+reads the registry back and compares SHA256 values. A source mismatch fails.
 
-The normal release runs from `tag-release.yml`, not `publish-pypi.yml`. Add a
-second pending publisher identical to step 2 but with:
+## Stable promotion
 
-- **Workflow name:** `tag-release.yml`
+`tag-release.yml` runs after the release change reaches `main`. It selects the
+highest complete prerelease for the declared project version. A complete
+candidate must have all of these assets:
 
-(Everything else the same: owner `knaisoma`, repo `data-olympus`, environment
-`pypi`, project `data-olympus`.) Without this, releases cut by the normal
-main-merge flow would fail the OIDC check; the `publish-pypi.yml` publisher alone
-only covers the manual-tag / dispatch fallback.
+* `release-provenance.json`
+* candidate wheel
+* candidate source distribution
+* verified image digest
 
-### Step 3 — create the GitHub `pypi` environment (recommended)
+The candidate source SHA must be an ancestor of `main`. The stable Git tag is
+created at that candidate SHA. The workflow rebuilds only the stable Python
+version overlay, compares the wheel payload with the candidate, publishes PyPI,
+and retags the verified image digest as the stable version, `stable`, and
+`latest`. It never rebuilds the image during promotion.
 
-1. In the GitHub repo: **Settings → Environments → New environment**, name it
-   `pypi`.
-2. Optionally add required reviewers or a branch/tag protection rule so only
-   release tags can deploy to it. (The workflow already scopes `id-token: write`
-   to the `pypi` environment.)
+## Verification
 
-## Verifying after a release
+After candidate publication, verify:
 
-1. After the first release that runs with the publisher configured, check the
-   **Publish to PyPI** job in the Actions run — the upload step should succeed.
-2. Confirm the project page exists: <https://pypi.org/project/data-olympus/>.
-3. Smoke-test the published artifact:
+```bash
+uvx --from 'data-olympus==0.6.0rc3' data-olympus --help
+gh release view 0.6.0-rc.3
+docker buildx imagetools inspect ghcr.io/knaisoma/data-olympus:0.6.0-rc.3
+```
 
-   ```bash
-   uvx --from data-olympus data-olympus --help
-   uv tool install data-olympus
-   data-olympus setup --check
-   ```
+After stable promotion, verify:
 
-## PR dry-run (no setup needed)
+```bash
+uvx --from 'data-olympus==0.6.0' data-olympus --help
+gh release view v0.6.0
+docker buildx imagetools inspect ghcr.io/knaisoma/data-olympus:stable
+```
 
-Every PR that touches `pyproject.toml`, `src/`, `bin/`, or the publish workflows
-runs a **dry run**: `uv build` + `twine check --strict` + a wheel smoke test, with
-no upload. This catches packaging regressions before a release without needing
-any PyPI credentials.
+## Recovery and rollback
+
+For a failed upload, rerun the same workflow with the same source and candidate
+number. The jobs reconcile existing artifacts and verify their hashes.
+
+For an unsuitable candidate on PyPI, yank that candidate from its PyPI release
+page and publish a higher candidate number. Do not delete or overwrite it.
+
+To restore a moving GHCR channel, retag a previously verified digest:
+
+```bash
+docker buildx imagetools create \
+  --tag ghcr.io/knaisoma/data-olympus:rc \
+  ghcr.io/knaisoma/data-olympus@sha256:<verified-digest>
+```
+
+Use the same pattern for `stable` and `latest`. Immutable version tags and PyPI
+versions are never overwritten. A faulty stable PyPI release should be yanked,
+followed by a new patch release.

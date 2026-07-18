@@ -581,7 +581,32 @@ exposes it to the hook command).
 Set `KB_ENDPOINT` / `KB_AUTH_TOKEN` in the hook's environment the same way
 `bin/kb` reads them.
 
-## 7. Quick reference
+## 7. Release operations
+
+Candidate publication is a complete transaction across PyPI, GHCR, and GitHub.
+Dispatch `rc-publish.yml` from `main` with the reviewed source in `ref` and an
+explicit positive `number`. The workflow does not move `:rc` or create a public
+prerelease until the candidate wheel, source distribution, image, and provenance
+receipt have passed registry read back verification.
+
+Stable promotion runs through `tag-release.yml`. It selects the highest complete
+candidate, requires its source SHA to be an ancestor of `main`, builds the stable
+Python overlay from that SHA, and verifies version only wheel equivalence. It
+retags the candidate image digest as the version, `stable`, and `latest`; it does
+not build another image.
+
+Rerun a partial candidate with the same `ref` and `number`. An existing image is
+accepted only when its embedded revision matches the requested source. PyPI
+publishing uses `skip-existing`, followed by exact SHA256 verification. Never
+overwrite an immutable candidate or stable version.
+
+Yank an unsuitable PyPI candidate and publish a higher candidate number. Roll a
+moving GHCR channel back by applying the channel tag to a previously verified
+digest with `docker buildx imagetools create`. Keep the immutable version tag for
+forensic comparison. See `docs/releases/pypi-trusted-publishing.md` for the full
+publisher setup, verification commands, and rollback procedure.
+
+## 8. Quick reference
 
 | Task | Command |
 |---|---|
@@ -597,3 +622,5 @@ Set `KB_ENDPOINT` / `KB_AUTH_TOKEN` in the hook's environment the same way
 | Session write recap | `kb session-recap <source_session>` |
 | Disable governed-lane protection | set `KB_GOVERNED_LANE_PROTECTION=off` in the ConfigMap |
 | View maintenance-ledger state | `curl -s 'http://<host>/api/v1/health?verbose=true' \| jq .pending_actions` |
+| Publish candidate | dispatch `rc-publish.yml` with exact `ref` and `number` |
+| Inspect candidate provenance | `gh release download X.Y.Z-rc.N --pattern release-provenance.json` |

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import copy
 import csv
 import hashlib
@@ -243,6 +244,8 @@ def build_distribution(source: Path, version: str, output: Path) -> BuildReceipt
         copied = _copy_build_inputs(source, overlay)
         source_tree_sha256 = _tree_hash(overlay, copied)
         source_sha = _source_sha(source)
+        if re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
+            raise ValueError("distribution build requires an exact git source SHA")
         _apply_version_overlay(overlay, version)
         _normalized, lock_sha256 = _normalized_lock(overlay / "uv.lock")
         built = overlay / "dist"
@@ -379,14 +382,142 @@ def _jsonable(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     if isinstance(value, Path):
-        return str(value)
+        return value.name
     return value
 
 
 def write_provenance(receipt: ReleaseReceipt, path: Path) -> None:
     """Write a stable JSON receipt without mutating any build input."""
+    _validate_release_receipt(receipt)
     path.parent.mkdir(parents=True, exist_ok=True)
     rendered = json.dumps(_jsonable(receipt), indent=2, sort_keys=True) + "\n"
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(rendered, encoding="utf-8")
     temporary.replace(path)
+
+
+def _validate_release_receipt(receipt: ReleaseReceipt) -> None:
+    if re.fullmatch(r"[0-9a-f]{40}", receipt.source_sha) is None:
+        raise ValueError("release provenance requires an exact source SHA")
+    if receipt.candidate.source_sha != receipt.source_sha:
+        raise ValueError("candidate source SHA does not match release provenance")
+    if (receipt.stable is None) != (receipt.comparison is None):
+        raise ValueError("stable build and comparison receipts must appear together")
+    if receipt.stable is None or receipt.comparison is None:
+        return
+    stable = receipt.stable
+    comparison = receipt.comparison
+    if stable.source_sha != receipt.source_sha:
+        raise ValueError("stable source SHA does not match release provenance")
+    if stable.source_tree_sha256 != receipt.candidate.source_tree_sha256:
+        raise ValueError("candidate and stable source tree hashes differ")
+    if stable.lock_sha256 != receipt.candidate.lock_sha256:
+        raise ValueError("candidate and stable normalized lock hashes differ")
+    if not comparison.equivalent:
+        raise ValueError("wheel comparison must be equivalent")
+    if comparison.candidate_wheel_sha256 != receipt.candidate.wheel_sha256:
+        raise ValueError("candidate wheel hash does not match comparison")
+    if comparison.stable_wheel_sha256 != stable.wheel_sha256:
+        raise ValueError("stable wheel hash does not match comparison")
+
+
+def _receipt_string(payload: dict[str, object], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"candidate provenance has invalid {key!r}")
+    return value
+
+
+def _load_candidate_receipt(path: Path, wheel: Path) -> BuildReceipt:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("candidate provenance must be a JSON object")
+    candidate = payload.get("candidate")
+    if not isinstance(candidate, dict):
+        raise ValueError("candidate provenance must contain a candidate receipt")
+    source_sha = _receipt_string(payload, "source_sha")
+    candidate_source_sha = _receipt_string(candidate, "source_sha")
+    if source_sha != candidate_source_sha:
+        raise ValueError("candidate provenance source SHA fields disagree")
+    expected_wheel_hash = _receipt_string(candidate, "wheel_sha256")
+    if _sha256(wheel) != expected_wheel_hash:
+        raise ValueError("candidate wheel hash does not match provenance")
+    return BuildReceipt(
+        version=_receipt_string(candidate, "version"),
+        source_sha=source_sha,
+        source_tree_sha256=_receipt_string(candidate, "source_tree_sha256"),
+        lock_sha256=_receipt_string(candidate, "lock_sha256"),
+        wheel=wheel,
+        sdist=Path(_receipt_string(candidate, "sdist")),
+        wheel_sha256=expected_wheel_hash,
+        sdist_sha256=_receipt_string(candidate, "sdist_sha256"),
+    )
+
+
+def _run_candidate(args: argparse.Namespace) -> int:
+    version = CandidateVersion.from_base(args.base, args.number)
+    candidate = build_distribution(args.source, version.pypi_version, args.output)
+    if not candidate.source_sha:
+        raise ValueError("candidate builds require an exact git source SHA")
+    write_provenance(
+        ReleaseReceipt(source_sha=candidate.source_sha, candidate=candidate),
+        args.provenance,
+    )
+    return 0
+
+
+def _run_stable(args: argparse.Namespace) -> int:
+    if _BASE_VERSION.fullmatch(args.base) is None:
+        raise ValueError("base version must be X.Y.Z without a prefix or suffix")
+    candidate = _load_candidate_receipt(args.candidate_provenance, args.candidate_wheel)
+    expected_candidate = re.compile(rf"{re.escape(args.base)}rc[1-9][0-9]*")
+    if expected_candidate.fullmatch(candidate.version) is None:
+        raise ValueError("candidate provenance version does not match the stable base")
+    source_sha = _source_sha(args.source)
+    if source_sha != candidate.source_sha:
+        raise ValueError("candidate provenance source SHA does not match the checkout")
+    stable = build_distribution(args.source, args.base, args.output)
+    if stable.source_tree_sha256 != candidate.source_tree_sha256:
+        raise ValueError("candidate and stable source tree hashes differ")
+    if stable.lock_sha256 != candidate.lock_sha256:
+        raise ValueError("candidate and stable normalized lock hashes differ")
+    comparison = compare_wheels(candidate.wheel, stable.wheel)
+    write_provenance(
+        ReleaseReceipt(
+            source_sha=source_sha,
+            candidate=candidate,
+            stable=stable,
+            comparison=comparison,
+        ),
+        args.provenance,
+    )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="release_artifacts")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    candidate = subparsers.add_parser("candidate")
+    candidate.add_argument("--base", required=True)
+    candidate.add_argument("--number", required=True, type=int)
+    candidate.add_argument("--source", required=True, type=Path)
+    candidate.add_argument("--output", required=True, type=Path)
+    candidate.add_argument("--provenance", required=True, type=Path)
+    candidate.set_defaults(handler=_run_candidate)
+
+    stable = subparsers.add_parser("stable")
+    stable.add_argument("--base", required=True)
+    stable.add_argument("--source", required=True, type=Path)
+    stable.add_argument("--output", required=True, type=Path)
+    stable.add_argument("--candidate-provenance", required=True, type=Path)
+    stable.add_argument("--candidate-wheel", required=True, type=Path)
+    stable.add_argument("--provenance", required=True, type=Path)
+    stable.set_defaults(handler=_run_stable)
+
+    args = parser.parse_args(argv)
+    return int(args.handler(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

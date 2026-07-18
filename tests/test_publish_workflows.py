@@ -75,9 +75,9 @@ def test_tag_release_publishes_pypi_inline():
     assert "uses" not in pub
     assert pub["permissions"]["id-token"] == "write"
     assert pub["environment"]["name"] == "pypi"
-    # Checks out the same decided tag as the image build.
+    # Checks out the exact source SHA carried by the complete RC.
     checkout = next(s for s in pub["steps"] if "actions/checkout" in str(s.get("uses", "")))
-    assert checkout["with"]["ref"] == "${{ needs.decide.outputs.tag }}"
+    assert checkout["with"]["ref"] == "${{ needs.resolve-rc.outputs.source_sha }}"
     publish = next(
         s for s in pub["steps"] if "pypa/gh-action-pypi-publish" in str(s.get("uses", ""))
     )
@@ -86,8 +86,9 @@ def test_tag_release_publishes_pypi_inline():
     assert publish["with"]["skip-existing"] is True
     # The publisher is configured now, so a real failure must be visible.
     assert "continue-on-error" not in publish
-    # PyPI publish must not gate the GitHub Release (release needs only build-image).
-    assert "publish-pypi" not in doc["jobs"]["release"]["needs"]
+    # A stable GitHub release is complete only after Python and OCI promotion.
+    assert "publish-pypi" in doc["jobs"]["release"]["needs"]
+    assert "promote-image" in doc["jobs"]["release"]["needs"]
 
 
 def test_publish_step_inert_until_setup():
@@ -146,13 +147,15 @@ def test_reusable_image_build_checks_out_and_labels_explicit_ref():
     assert "git rev-parse HEAD" in source["run"]
 
     build = next(s for s in steps if "docker/build-push-action" in str(s.get("uses", "")))
+    assert build["id"] == "build"
     assert "org.opencontainers.image.revision=${{ steps.source.outputs.sha }}" in build["with"][
         "labels"
     ]
+    assert doc["jobs"]["build-push"]["outputs"]["digest"] == "${{ steps.build.outputs.digest }}"
 
 
 def test_every_reusable_image_caller_passes_a_ref():
-    for name in ("rc-publish.yml", "release-image.yml", "tag-release.yml"):
+    for name in ("rc-publish.yml", "release-image.yml"):
         doc = _load(name)
         callers = [
             job
@@ -162,6 +165,11 @@ def test_every_reusable_image_caller_passes_a_ref():
         assert callers, name
         for caller in callers:
             assert caller["with"].get("ref"), (name, caller)
+    stable = _load("tag-release.yml")
+    assert all(
+        not str(job.get("uses", "")).endswith("release-image-reusable.yml")
+        for job in stable["jobs"].values()
+    )
 
 
 def test_rc_resolves_requested_ref_once_and_reuses_exact_sha():
@@ -174,10 +182,118 @@ def test_rc_resolves_requested_ref_once_and_reuses_exact_sha():
     assert doc["jobs"]["build-image"]["with"]["ref"] == (
         "${{ needs.decide.outputs.source_sha }}"
     )
-    prerelease = doc["jobs"]["prerelease"]
+    assert doc["jobs"]["build-image"]["with"].get("channel", "") == ""
+    prerelease = doc["jobs"]["finalize"]
     checkout = next(
         s for s in prerelease["steps"] if "actions/checkout" in str(s.get("uses", ""))
     )
     assert checkout["with"]["ref"] == "${{ needs.decide.outputs.source_sha }}"
     create = next(s for s in prerelease["steps"] if s.get("name") == "Create GitHub pre-release")
     assert '--target "$SOURCE_SHA"' in create["run"]
+
+
+def test_rc_publishes_python_inline_before_moving_channels() -> None:
+    doc = _load("rc-publish.yml")
+    publish = doc["jobs"]["publish-pypi"]
+    assert "uses" not in publish
+    assert publish["permissions"]["id-token"] == "write"
+    assert publish["environment"]["name"] == "pypi"
+    assert "build-python" in publish["needs"]
+    action = next(
+        step
+        for step in publish["steps"]
+        if "pypa/gh-action-pypi-publish" in str(step.get("uses", ""))
+    )
+    assert action["with"]["skip-existing"] is True
+    assert "password" not in (action.get("with") or {})
+    commands = "\n".join(str(step.get("run", "")) for step in publish["steps"])
+    assert "pypi.org/pypi/data-olympus" in commands
+    assert "sha256" in commands
+
+
+def test_rc_builds_provenance_and_finalizes_only_after_complete_publication() -> None:
+    doc = _load("rc-publish.yml")
+    triggers = doc.get("on", doc.get(True))
+    assert triggers["workflow_dispatch"]["inputs"]["number"]["required"] is True
+    build = doc["jobs"]["build-python"]
+    commands = "\n".join(str(step.get("run", "")) for step in build["steps"])
+    assert "scripts/release_artifacts.py candidate" in commands
+    upload = next(
+        step for step in build["steps"] if "actions/upload-artifact" in str(step.get("uses", ""))
+    )
+    paths = str(upload["with"]["path"])
+    assert "dist/" in paths
+    assert "release-provenance.json" in paths
+
+    finalize = doc["jobs"]["finalize"]
+    assert set(finalize["needs"]) == {
+        "decide",
+        "inspect-image",
+        "build-image",
+        "build-python",
+        "publish-pypi",
+    }
+    final_commands = "\n".join(str(step.get("run", "")) for step in finalize["steps"])
+    assert "imagetools create" in final_commands
+    assert ":rc" in final_commands
+    assert "release-provenance.json" in final_commands
+    assert "gh release create" in final_commands
+
+    inspect_commands = "\n".join(
+        str(step.get("run", "")) for step in doc["jobs"]["inspect-image"]["steps"]
+    )
+    assert "org.opencontainers.image.revision" in inspect_commands
+    assert "SOURCE_SHA" in inspect_commands
+    assert "manifest unknown" in inspect_commands
+    assert "exit 1" in inspect_commands
+    assert "inspect-image.outputs.present != 'true'" in doc["jobs"]["build-image"]["if"]
+
+
+def test_stable_requires_highest_complete_rc_and_never_rebuilds_image() -> None:
+    doc = _load("tag-release.yml")
+    assert "build-image" not in doc["jobs"]
+    resolve = doc["jobs"]["resolve-rc"]
+    commands = "\n".join(str(step.get("run", "")) for step in resolve["steps"])
+    assert "isPrerelease" in commands
+    assert "release-provenance.json" in commands
+    assert "image_digest" in commands
+    assert "merge-base --is-ancestor" in commands
+    assert "pypi.org/pypi/data-olympus" in commands
+    assert "sha256" in commands
+
+    tag = next(
+        step
+        for step in doc["jobs"]["create-tag"]["steps"]
+        if step.get("name") == "Create and push annotated tag"
+    )
+    assert 'git tag -a "$TAG" "$SOURCE_SHA"' in tag["run"]
+
+    promote = doc["jobs"]["promote-image"]
+    promote_commands = "\n".join(str(step.get("run", "")) for step in promote["steps"])
+    assert "imagetools create" in promote_commands
+    assert ":stable" in promote_commands
+    assert ":latest" in promote_commands
+    assert "IMAGE_DIGEST" in promote_commands
+    assert "docker/build-push-action" not in str(promote)
+
+
+def test_stable_compares_same_source_wheels_before_upload() -> None:
+    doc = _load("tag-release.yml")
+    publish = doc["jobs"]["publish-pypi"]
+    assert set(publish["needs"]) >= {"decide", "resolve-rc"}
+    commands = "\n".join(str(step.get("run", "")) for step in publish["steps"])
+    assert "gh release download" in commands
+    assert "scripts/release_artifacts.py stable" in commands
+    compare_index = commands.index("scripts/release_artifacts.py stable")
+    publish_index = next(
+        index
+        for index, step in enumerate(publish["steps"])
+        if "pypa/gh-action-pypi-publish" in str(step.get("uses", ""))
+    )
+    stable_step_index = next(
+        index
+        for index, step in enumerate(publish["steps"])
+        if "scripts/release_artifacts.py stable" in str(step.get("run", ""))
+    )
+    assert compare_index >= 0
+    assert stable_step_index < publish_index
