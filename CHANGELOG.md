@@ -30,6 +30,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Updated the supported runtime and development dependency baseline.**
+  FastMCP is now locked to 3.4.4 and requires `>=3.4.4,<4`, guaranteeing the
+  catalog search transform used by the default MCP tool-discovery mode. Regex
+  is updated to 2026.7.10 with the secret-scanning timeout and false-positive
+  regressions green. Mypy, types-regex, and Ruff were updated to their current
+  Dependabot revisions and pass the strict type and lint gates. (gh #159, #160,
+  #161, #162, #163)
+
 - **Added Glama related server metadata and maintenance notes.** `glama.json`
   now names adjacent knowledge and memory MCP servers, and `docs/glama.md`
   records the maintainer response and usage seeding steps for the Glama
