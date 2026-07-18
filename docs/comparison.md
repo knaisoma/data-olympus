@@ -12,7 +12,7 @@ The system is optimized for one specific job: a small team of agents (and humans
 
 | Tool / category | Portability / lock-in | Human + agent readable (no SDK) | Governance and multi-agent write-safety | Structured queryability | Concurrency model | Taxonomy | Hosting model | Interop |
 |---|---|---|---|---|---|---|---|---|
-| **data-olympus** | git-native / none | yes, plain markdown | single-writer MCP pipeline | FTS + filter by status/tier/type | single-writer, advisory locks | controlled vocabulary (type, status, tier) | self-hosted, streamable HTTP | designed to be OKF-readable (conformance test not yet built, [issue #82](https://github.com/knaisoma/data-olympus/issues/82)) |
+| **data-olympus** | git-native / none | yes, plain markdown | single-writer MCP pipeline | FTS + filter by status/tier/type | single-writer, advisory locks | controlled vocabulary (type, status, tier) | self-hosted, streamable HTTP | bidirectional fixture tests against a pinned official OKF revision |
 | Google OKF | git-native / none | yes | FTS only, no write governance | FTS only | none specified | minimal (type only) | any | OKF native |
 | Enterprise data catalogs (Dataplex, Unity Catalog, Collibra, DataHub, Amundsen) | vendor / high | partial (UI-centric) | strong (RBAC, lineage) | deep (column-level, lineage graphs) | multi-writer | rich, auto-generated | SaaS / self-hosted | APIs, connectors |
 | Markdown KB tools (Obsidian, Notion, MkDocs, Backstage TechDocs) | varies / medium | yes | none | FTS or plugin-based | multi-writer | user-defined | SaaS / local | plugin ecosystem |
@@ -135,15 +135,15 @@ The two misses at k=5 are the token-disjoint paraphrases (e.g. "why did the team
 
 ### Google Open Knowledge Format (OKF)
 
-The Open Knowledge Format is the parent specification. data-olympus is designed to be readable by OKF consumers: it inherits OKF's directory structure, frontmatter conventions, reserved filenames, and link model. That claim is not yet backed by an executable conformance test against OKF reference tooling ([issue #82](https://github.com/knaisoma/data-olympus/issues/82) tracks adding one); today it rests on shared structure by construction.
+The Open Knowledge Format is the parent specification. data-olympus inherits OKF's directory structure, frontmatter conventions, reserved filenames, and link model. CI pins official Google OKF commit `d44368c15e38e7c92481c5992e4f9b5b421a801d` and proves two concrete paths: Google's reference visualization consumer reads every data-olympus example concept, and data-olympus normalizes and consumes the pinned official Bitcoin sample through lint, index, search, and retrieval. The evidence is intentionally scoped to that revision and those fixtures.
 
-**Where data-olympus is better (and why):** OKF defines a minimal required set (`id`, `type`, `spec_version`) with no governance fields. data-olympus adds `status`, `tier`, a `supersedes` chain, and controlled vocabularies for each field, making it possible to query "show me all accepted T1 standards" or "what superseded this decision" without post-processing. data-olympus also ships a validated write pipeline (proposed edits, pending queue, advisory locks, commit-and-push) and an MCP server; OKF specifies no serving or write model.
+**Where data-olympus is better (and why):** OKF v0.1 requires only a nonempty `type` on concept documents and deliberately leaves governance policy open. data-olympus adds a stable `id`, `status`, `tier`, a `supersedes` chain, and controlled vocabularies for each field, making it possible to query "show me all accepted T1 standards" or "what superseded this decision" without post-processing. data-olympus also ships a validated write pipeline (proposed edits, pending queue, advisory locks, commit-and-push) and an MCP server; OKF specifies no serving or write model.
 
 **Where it is weaker:** OKF ships an automatic producer agent. The reference implementation can pull structured data from BigQuery and enrich it with web sources to populate a bundle with minimal human authoring. data-olympus has no equivalent; every concept is hand-authored or agent-proposed but still human-reviewed before commit.
 
 **Where that is a deliberate decision:** data-olympus targets curated, reviewed knowledge where accuracy and governance matter more than coverage. Auto-ingestion without review is a deliberate non-goal for the v0.1 scope.
 
-**Where they are complementary:** Because data-olympus is designed to share OKF's baseline structure, bundles produced by the OKF producer should be importable and governable by data-olympus tools, and data-olympus bundles should be consumable by an OKF-aware tool without conversion. Neither direction has an automated test yet ([issue #82](https://github.com/knaisoma/data-olympus/issues/82)).
+**Where they are complementary:** The executable checks cover both directions. The pinned Google consumer reads the data-olympus example bundle without conversion. The data-olympus OKF importer converts the pinned Google sample to nonactivating governed drafts before linting and indexing it, because Google's open `type` values are intentionally broader than the data-olympus controlled vocabulary.
 
 ---
 

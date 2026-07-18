@@ -1,0 +1,105 @@
+name: OKF pin freshness
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare the pin with official OKF main
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require("fs");
+            const pin = JSON.parse(
+              fs.readFileSync("tests/okf/reference.json", "utf8")
+            );
+            const title = "[automation] OKF reference pin is stale";
+            const upstream = await github.rest.repos.getCommit({
+              owner: "GoogleCloudPlatform",
+              repo: "knowledge-catalog",
+              ref: "main",
+            });
+            const upstreamSha = upstream.data.sha;
+            const listed = await github.paginate(
+              github.rest.issues.listForRepo,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: "all",
+                per_page: 100,
+              }
+            );
+            const matches = listed.filter(
+              issue => !issue.pull_request && issue.title === title
+            );
+            const canonical = matches[0];
+
+            for (const duplicate of matches.slice(1)) {
+              if (duplicate.state === "open") {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: duplicate.number,
+                  state: "closed",
+                  state_reason: "not_planned",
+                });
+              }
+            }
+
+            if (pin.commit === upstreamSha) {
+              core.info(`OKF pin is current at ${upstreamSha}`);
+              if (canonical && canonical.state === "open") {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: canonical.number,
+                  body: `The recorded pin is current again at \`${upstreamSha}\`. Closing.`,
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: canonical.number,
+                  state: "closed",
+                  state_reason: "completed",
+                });
+              }
+              return;
+            }
+
+            const body = [
+              "The official Google OKF main branch has moved beyond the reviewed pin.",
+              "",
+              `* Recorded pin: \`${pin.commit}\``,
+              `* Current upstream: \`${upstreamSha}\``,
+              "",
+              "Review the upstream diff, refresh the vendored fixture and license provenance,",
+              "rerun both conformance directions, and update the pin in a reviewed pull request.",
+              "This workflow never changes the pin automatically.",
+            ].join("\n");
+
+            if (canonical) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: canonical.number,
+                title,
+                body,
+                state: "open",
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+              });
+            }

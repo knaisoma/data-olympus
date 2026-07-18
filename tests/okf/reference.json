@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/GoogleCloudPlatform/knowledge-catalog.git",
+  "commit": "d44368c15e38e7c92481c5992e4f9b5b421a801d",
+  "fixture_path": "okf/bundles/crypto_bitcoin",
+  "local_fixture_path": "tests/okf/upstream-sample",
+  "fixture_sha256": "df77a4f3a568613e74c763b76e2ad70279f9a489a97606e0b9dfafcee562f92b",
+  "license": {
+    "spdx": "Apache-2.0",
+    "path": "okf/LICENSE.md",
+    "local_path": "tests/okf/LICENSE.upstream.md",
+    "sha256": "8c6db340475136df3c1201d458fa5755698eace76e510471ecc9d857d6083dac"
+  }
+}
