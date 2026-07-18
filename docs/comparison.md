@@ -122,11 +122,11 @@ Every number above is from the deterministic synthetic corpus, which exists to e
 <!-- BENCH:real_corpus START -->
 | Metric | Lexical stack (embeddings off) |
 |---|---|
-| Corpus | 18 committed example-bundle docs |
+| Corpus | 25 committed example-bundle docs |
 | Labeled queries | 9 paraphrased intents |
 | recall@5 | 0.778 |
 | recall@10 | 0.889 |
-| MRR@5 | 0.778 |
+| MRR@5 | 0.593 |
 <!-- BENCH:real_corpus END -->
 
 The two misses at k=5 are the token-disjoint paraphrases (e.g. "why did the team choose this markdown knowledge system" vs the doc titled "Adopt data-olympus for the knowledge base") — the exact semantic gap the optional embedding hybrid targets and the default lexical stack does not close. Provenance: hand-authored paraphrase queries over a committed corpus, embeddings off; it is an illustrative reproducible example, not user traffic.
