@@ -12,6 +12,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-18
+
 ### Security
 
 - **Bumped transitive dependency `mcp` 1.28.0 to 1.28.1** to close
