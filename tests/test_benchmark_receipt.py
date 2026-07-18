@@ -94,6 +94,32 @@ version = "0.13.0"
     return root
 
 
+def _commit_repo(root: Path) -> str:
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Benchmark Test",
+            "-c",
+            "user.email=benchmark@example.invalid",
+            "commit",
+            "-qm",
+            "test fixture",
+        ],
+        cwd=root,
+        check=True,
+    )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 def test_build_receipt_is_deterministic_and_complete(tmp_path: Path) -> None:
     from benchmarks.receipt import build_receipt
 
@@ -156,7 +182,7 @@ def test_verify_receipt_detects_input_output_and_lock_drift(tmp_path: Path) -> N
     from benchmarks.receipt import build_receipt, verify_receipt
 
     root = _benchmark_repo(tmp_path)
-    receipt = build_receipt(root, _SOURCE_COMMIT)
+    receipt = build_receipt(root, _commit_repo(root))
     assert verify_receipt(receipt, root) == []
 
     corpus = root / "benchmarks" / "corpus" / "a.md"
@@ -176,7 +202,7 @@ def test_verify_receipt_rejects_schema_and_source_commit_tampering(tmp_path: Pat
     from benchmarks.receipt import build_receipt, verify_receipt
 
     root = _benchmark_repo(tmp_path)
-    receipt = build_receipt(root, _SOURCE_COMMIT)
+    receipt = build_receipt(root, _commit_repo(root))
 
     receipt["schema_version"] = 2
     receipt["source_commit"] = "not-a-sha"
@@ -189,34 +215,31 @@ def test_verify_receipt_rejects_unknown_commit_in_a_git_checkout(tmp_path: Path)
     from benchmarks.receipt import build_receipt, verify_receipt
 
     root = _benchmark_repo(tmp_path)
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run(["git", "add", "."], cwd=root, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Benchmark Test",
-            "-c",
-            "user.email=benchmark@example.invalid",
-            "commit",
-            "-qm",
-            "test fixture",
-        ],
-        cwd=root,
-        check=True,
-    )
-    source_commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    source_commit = _commit_repo(root)
     receipt = build_receipt(root, source_commit)
     assert verify_receipt(receipt, root) == []
 
     receipt["source_commit"] = "f" * 40
     assert any("does not exist" in problem for problem in verify_receipt(receipt, root))
+
+
+def test_verify_receipt_rejects_unverifiable_commit_outside_git(tmp_path: Path) -> None:
+    from benchmarks.receipt import build_receipt, verify_receipt
+
+    root = _benchmark_repo(tmp_path)
+    receipt = build_receipt(root, _SOURCE_COMMIT)
+
+    assert any("not a git checkout" in problem for problem in verify_receipt(receipt, root))
+
+
+def test_verify_receipt_recomputes_summary(tmp_path: Path) -> None:
+    from benchmarks.receipt import build_receipt, verify_receipt
+
+    root = _benchmark_repo(tmp_path)
+    receipt = build_receipt(root, _commit_repo(root))
+    receipt["summary"]["synthetic"]["recall_at_k"] = 0.999
+
+    assert any("summary" in problem for problem in verify_receipt(receipt, root))
 
 
 def test_artifact_generator_writes_receipt_for_current_head(

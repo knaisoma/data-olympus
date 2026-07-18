@@ -266,7 +266,7 @@ def _verify_source_commit(
         text=True,
     )
     if inside.returncode != 0 or inside.stdout.strip() != "true":
-        return []
+        return ["source_commit is unverifiable because repository is not a git checkout"]
     exists = subprocess.run(
         ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],
         cwd=repo_root,
@@ -330,6 +330,8 @@ def verify_receipt(receipt: Mapping[str, object], repo_root: Path) -> list[str]:
         or expected_lock.get("packages") != current_lock["packages"]
     ):
         problems.append("dependency_lock does not match uv.lock")
+    if receipt.get("summary") != _summary(root):
+        problems.append("summary does not match the hashed benchmark outputs")
     return problems
 
 
