@@ -218,13 +218,15 @@ jobs:
           REPO: ghcr.io/knaisoma/data-olympus
         run: |
           test -n "$IMAGE_DIGEST"
-          docker buildx imagetools inspect "$REPO:$RC_TAG" | grep -F "Digest:    $IMAGE_DIGEST"
+          docker buildx imagetools inspect "$REPO:$RC_TAG" \
+            | grep -E "Digest:[[:space:]]*$IMAGE_DIGEST"
           jq --arg candidate_tag "$RC_TAG" --arg image_digest "$IMAGE_DIGEST" \
             '. + {candidate_tag: $candidate_tag, image_digest: $image_digest}' \
             release-provenance.json > release-provenance.final.json
           mv release-provenance.final.json release-provenance.json
           docker buildx imagetools create --tag "$REPO:rc" "$REPO@$IMAGE_DIGEST"
-          docker buildx imagetools inspect "$REPO:rc" | grep -F "Digest:    $IMAGE_DIGEST"
+          docker buildx imagetools inspect "$REPO:rc" \
+            | grep -E "Digest:[[:space:]]*$IMAGE_DIGEST"
       - name: Create GitHub pre-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -234,8 +236,8 @@ jobs:
         run: |
           NOTES="docs/releases/v${VERSION}.md"
           if gh release view "$RC_TAG" >/dev/null 2>&1; then
-            TARGET="$(gh release view "$RC_TAG" --json targetCommitish --jq .targetCommitish)"
-            test "$TARGET" = "$SOURCE_SHA"
+            git fetch origin "refs/tags/$RC_TAG:refs/tags/$RC_TAG"
+            test "$(git rev-list -n 1 "$RC_TAG")" = "$SOURCE_SHA"
             gh release upload "$RC_TAG" dist/* release-provenance.json --clobber
           elif [ -f "$NOTES" ]; then
             gh release create "$RC_TAG" --prerelease --target "$SOURCE_SHA" \
@@ -246,4 +248,4 @@ jobs:
               --title "$RC_TAG" --notes "Release candidate $RC_TAG for $VERSION." \
               dist/* release-provenance.json
           fi
-          gh release view "$RC_TAG" --json isDraft,isPrerelease,targetCommitish,assets
+          gh release view "$RC_TAG" --json isDraft,isPrerelease,assets

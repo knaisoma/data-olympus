@@ -64,8 +64,10 @@ reads the registry back and compares SHA256 values. A source mismatch fails.
 
 ## Stable promotion
 
-`tag-release.yml` runs after the release change reaches `main`. It selects the
-highest complete prerelease for the declared project version. A complete
+After the release change reaches `main`, an operator explicitly dispatches
+`tag-release.yml` from `main` with the highest complete prerelease in the
+`candidate_tag` input. The workflow rejects any requested candidate that is not
+the highest complete prerelease for the declared project version. A complete
 candidate must have all of these assets:
 
 * `release-provenance.json`
@@ -74,10 +76,11 @@ candidate must have all of these assets:
 * verified image digest
 
 The candidate source SHA must be an ancestor of `main`. The stable Git tag is
-created at that candidate SHA. The workflow rebuilds only the stable Python
-version overlay, compares the wheel payload with the candidate, publishes PyPI,
-and retags the verified image digest as the stable version, `stable`, and
-`latest`. It never rebuilds the image during promotion.
+created at that candidate SHA only after the protected PyPI environment is
+approved and the stable Python files are published and verified. The workflow
+rebuilds only the stable Python version overlay, compares the wheel payload with
+the candidate, and retags the verified image digest as the stable version,
+`stable`, and `latest`. It never rebuilds the image during promotion.
 
 ## Verification
 

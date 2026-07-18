@@ -2,11 +2,15 @@
 name: Promote complete release candidate
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: "highest complete candidate to promote, for example 0.6.0-rc.3"
+        required: true
+        type: string
 
 concurrency:
-  group: tag-release-${{ github.ref }}
+  group: tag-release-${{ inputs.candidate_tag }}
   cancel-in-progress: false
 
 jobs:
@@ -23,14 +27,9 @@ jobs:
           fetch-depth: 0
       - name: Decide stable release version
         id: decide
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="$(python3 scripts/should_tag.py --print-version)"
           TAG="v$VERSION"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            TAG=""
-          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -59,6 +58,7 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_RC: ${{ inputs.candidate_tag }}
           VERSION: ${{ needs.decide.outputs.version }}
           REPO: ghcr.io/knaisoma/data-olympus
         run: |
@@ -81,6 +81,7 @@ jobs:
           done < /tmp/prereleases.txt
           RC_TAG="$(python3 scripts/rc_tag.py --base "$VERSION" --current < /tmp/complete-rcs.txt)"
           test -n "$RC_TAG"
+          test "$RC_TAG" = "$REQUESTED_RC"
           gh release download "$RC_TAG" --pattern release-provenance.json --dir candidate
           SOURCE_SHA="$(jq -r .source_sha candidate/release-provenance.json)"
           IMAGE_DIGEST="$(jq -r .image_digest candidate/release-provenance.json)"
@@ -91,14 +92,22 @@ jobs:
           test -n "$IMAGE_DIGEST"
           python3 - <<'PY'
           import json
+          import time
           import urllib.request
 
           with open("candidate/release-provenance.json", encoding="utf-8") as stream:
               provenance = json.load(stream)
           candidate = provenance["candidate"]
           url = f"https://pypi.org/pypi/data-olympus/{candidate['version']}/json"
-          with urllib.request.urlopen(url, timeout=15) as response:
-              pypi = json.load(response)
+          for attempt in range(12):
+              try:
+                  with urllib.request.urlopen(url, timeout=15) as response:
+                      pypi = json.load(response)
+                  break
+              except Exception:
+                  if attempt == 11:
+                      raise
+                  time.sleep(5)
           remote = {item["filename"]: item["digests"]["sha256"] for item in pypi["urls"]}
           expected = {
               candidate["wheel"]: candidate["wheel_sha256"],
@@ -118,7 +127,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   create-tag:
-    needs: [decide, resolve-rc]
+    needs: [decide, resolve-rc, publish-pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -127,11 +136,6 @@ jobs:
         with:
           ref: ${{ needs.resolve-rc.outputs.source_sha }}
           fetch-depth: 0
-      - name: Guard stable registry availability
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.decide.outputs.tag }}
-        run: python3 scripts/check_version_free.py --version "${TAG#v}"
       - name: Create and push annotated tag
         env:
           TAG: ${{ needs.decide.outputs.tag }}
@@ -147,7 +151,7 @@ jobs:
           fi
 
   publish-pypi:
-    needs: [decide, resolve-rc, create-tag]
+    needs: [decide, resolve-rc]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -242,12 +246,23 @@ jobs:
           REPO: ghcr.io/knaisoma/data-olympus
           TAG: ${{ needs.decide.outputs.tag }}
         run: |
+          if docker buildx imagetools inspect \
+              "$REPO:$TAG" > /tmp/version-image.txt 2> /tmp/version-error.txt; then
+            VERSION_DIGEST="$(awk '/^Digest:/ {print $2; exit}' /tmp/version-image.txt)"
+            test "$VERSION_DIGEST" = "$IMAGE_DIGEST"
+          elif grep -qiE 'manifest unknown|not found|no such manifest' \
+              /tmp/version-error.txt; then
+            docker buildx imagetools create --tag "$REPO:$TAG" "$REPO@$IMAGE_DIGEST"
+          else
+            cat /tmp/version-error.txt >&2
+            exit 1
+          fi
           docker buildx imagetools create \
-            --tag "$REPO:$TAG" --tag "$REPO:stable" --tag "$REPO:latest" \
+            --tag "$REPO:stable" --tag "$REPO:latest" \
             "$REPO@$IMAGE_DIGEST"
           for channel in "$TAG" stable latest; do
             docker buildx imagetools inspect "$REPO:$channel" \
-              | grep -F "Digest:    $IMAGE_DIGEST"
+              | grep -E "Digest:[[:space:]]*$IMAGE_DIGEST"
           done
 
   release:
@@ -259,6 +274,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve-rc.outputs.source_sha }}
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
           name: stable-${{ needs.decide.outputs.tag }}
@@ -270,8 +286,8 @@ jobs:
         run: |
           NOTES="docs/releases/${TAG}.md"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            test "$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)" \
-              = "$SOURCE_SHA"
+            git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+            test "$(git rev-list -n 1 "$TAG")" = "$SOURCE_SHA"
             gh release upload "$TAG" dist/* release-provenance.json --clobber
           elif [ -f "$NOTES" ]; then
             gh release create "$TAG" --target "$SOURCE_SHA" --title "$TAG" \

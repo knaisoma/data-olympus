@@ -91,6 +91,16 @@ def test_tag_release_publishes_pypi_inline():
     assert "promote-image" in doc["jobs"]["release"]["needs"]
 
 
+def test_stable_promotion_is_explicit_and_tag_follows_approved_pypi() -> None:
+    doc = _load("tag-release.yml")
+    triggers = doc.get("on", doc.get(True))
+    assert "push" not in triggers
+    candidate = triggers["workflow_dispatch"]["inputs"]["candidate_tag"]
+    assert candidate["required"] is True
+    assert "publish-pypi" in doc["jobs"]["create-tag"]["needs"]
+    assert "create-tag" not in doc["jobs"]["publish-pypi"]["needs"]
+
+
 def test_publish_step_inert_until_setup():
     """The upload step (not the caller job) carries continue-on-error, so a
     pre-setup PyPI failure never blocks the release. continue-on-error is invalid
@@ -190,6 +200,8 @@ def test_rc_resolves_requested_ref_once_and_reuses_exact_sha():
     assert checkout["with"]["ref"] == "${{ needs.decide.outputs.source_sha }}"
     create = next(s for s in prerelease["steps"] if s.get("name") == "Create GitHub pre-release")
     assert '--target "$SOURCE_SHA"' in create["run"]
+    assert "targetCommitish" not in create["run"]
+    assert "git rev-list -n 1" in create["run"]
 
 
 def test_rc_publishes_python_inline_before_moving_channels() -> None:
@@ -260,6 +272,8 @@ def test_stable_requires_highest_complete_rc_and_never_rebuilds_image() -> None:
     assert "merge-base --is-ancestor" in commands
     assert "pypi.org/pypi/data-olympus" in commands
     assert "sha256" in commands
+    assert "REQUESTED_RC" in commands
+    assert "time.sleep" in commands
 
     tag = next(
         step
@@ -275,6 +289,8 @@ def test_stable_requires_highest_complete_rc_and_never_rebuilds_image() -> None:
     assert ":latest" in promote_commands
     assert "IMAGE_DIGEST" in promote_commands
     assert "docker/build-push-action" not in str(promote)
+    assert "manifest unknown" in promote_commands
+    assert "VERSION_DIGEST" in promote_commands
 
 
 def test_stable_compares_same_source_wheels_before_upload() -> None:
@@ -284,6 +300,7 @@ def test_stable_compares_same_source_wheels_before_upload() -> None:
     commands = "\n".join(str(step.get("run", "")) for step in publish["steps"])
     assert "gh release download" in commands
     assert "scripts/release_artifacts.py stable" in commands
+    assert "check_version_free.py" not in commands
     compare_index = commands.index("scripts/release_artifacts.py stable")
     publish_index = next(
         index
@@ -297,3 +314,8 @@ def test_stable_compares_same_source_wheels_before_upload() -> None:
     )
     assert compare_index >= 0
     assert stable_step_index < publish_index
+    release_commands = "\n".join(
+        str(step.get("run", "")) for step in doc["jobs"]["release"]["steps"]
+    )
+    assert "targetCommitish" not in release_commands
+    assert "git rev-list -n 1" in release_commands

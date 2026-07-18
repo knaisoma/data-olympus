@@ -589,9 +589,12 @@ explicit positive `number`. The workflow does not move `:rc` or create a public
 prerelease until the candidate wheel, source distribution, image, and provenance
 receipt have passed registry read back verification.
 
-Stable promotion runs through `tag-release.yml`. It selects the highest complete
-candidate, requires its source SHA to be an ancestor of `main`, builds the stable
-Python overlay from that SHA, and verifies version only wheel equivalence. It
+Stable promotion runs only through an explicit `tag-release.yml` dispatch from
+`main`. Supply the highest complete candidate in `candidate_tag`; any lower or
+incomplete candidate is rejected. The workflow requires its source SHA to be an
+ancestor of `main`, builds the stable Python overlay from that SHA, and verifies
+version only wheel equivalence. Protected environment approval and verified
+PyPI publication happen before the stable Git tag is created. The workflow then
 retags the candidate image digest as the version, `stable`, and `latest`; it does
 not build another image.
 
@@ -623,4 +626,5 @@ publisher setup, verification commands, and rollback procedure.
 | Disable governed-lane protection | set `KB_GOVERNED_LANE_PROTECTION=off` in the ConfigMap |
 | View maintenance-ledger state | `curl -s 'http://<host>/api/v1/health?verbose=true' \| jq .pending_actions` |
 | Publish candidate | dispatch `rc-publish.yml` with exact `ref` and `number` |
+| Promote stable | dispatch `tag-release.yml` from `main` with `candidate_tag` |
 | Inspect candidate provenance | `gh release download X.Y.Z-rc.N --pattern release-provenance.json` |
