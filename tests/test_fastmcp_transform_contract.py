@@ -4,7 +4,9 @@ import inspect
 import tomllib
 from pathlib import Path
 
+import pytest
 from fastmcp.server.transforms.search import BM25SearchTransform
+from fastmcp.tools import Tool
 
 
 def test_project_requires_fastmcp_with_search_transform() -> None:
@@ -18,9 +20,21 @@ def test_bm25_search_transform_exposes_required_configuration() -> None:
     assert {"always_visible", "search_tool_name", "call_tool_name"} <= set(parameters)
 
 
-def test_bm25_search_transform_documents_hidden_direct_calls() -> None:
-    doc = inspect.getdoc(BM25SearchTransform)
-    base_doc = inspect.getdoc(BM25SearchTransform.__mro__[1])
-    assert doc
-    assert base_doc
-    assert "Hidden tools remain callable" in base_doc
+@pytest.mark.asyncio
+async def test_bm25_search_transform_delegates_hidden_direct_calls() -> None:
+    transform = BM25SearchTransform(always_visible=["kb_health"])
+
+    async def kb_outline() -> dict[str, object]:
+        return {"tiers": []}
+
+    hidden_tool = Tool.from_function(kb_outline, name="kb_outline")
+    calls: list[tuple[str, object]] = []
+
+    async def call_next(name: str, *, version: object = None) -> Tool | None:
+        calls.append((name, version))
+        return hidden_tool
+
+    resolved = await transform.get_tool("kb_outline", call_next)
+
+    assert resolved is hidden_tool
+    assert calls == [("kb_outline", None)]
