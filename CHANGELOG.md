@@ -20,6 +20,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   data-olympus does not use (Streamable HTTP only); the bump is applied as
   a precaution and to clear the release security gate. No API surface change.
   (KNA-146)
+- **Bumped transitive benchmark dependency `torch` 2.12.1 to 2.13.0** to
+  close CVE-2025-3000 / GHSA-rrmf-rvhw-rf47 (Dependabot #19, low severity).
+  The affected `torch.jit.script` path is available only through the optional
+  `bench` extra and is not used by the production embedding implementation.
+  The patched dependency remains compatible with `sentence-transformers`.
 
 ### Changed
 
