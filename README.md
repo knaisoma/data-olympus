@@ -2,6 +2,8 @@
 
 [![knaisoma/data-olympus MCP server](https://glama.ai/mcp/servers/knaisoma/data-olympus/badges/score.svg)](https://glama.ai/mcp/servers/knaisoma/data-olympus)
 
+[![OKF BundleDex](https://bundledex.net/static-badge.svg)](https://bundledex.net)
+
 **New here? Start with [WHY.md](WHY.md).** It is the story behind the project: the
 problem we kept hitting with coding agents, what data-olympus does differently, how
 it relates to Google's Open Knowledge Format, and where our benchmarks say it is
