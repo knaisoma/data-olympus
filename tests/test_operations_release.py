@@ -127,6 +127,13 @@ def test_admission_emits_exact_forward_candidate() -> None:
             ),
             "v0.6.0",
         ),
+        (
+            lambda value: value["computed_release"].__setitem__(
+                "next_version",
+                "0.9.0",
+            ),
+            "does not match",
+        ),
     ],
 )
 def test_admission_blocks_unmerged_changed_or_v060_candidate(
@@ -404,7 +411,7 @@ def test_deliver_accepts_only_existing_workflows_bound_to_candidate() -> None:
     assert result["outputs"]["published_version"] == "0.6.1"
 
 
-def test_deliver_blocks_stable_promotion_without_verified_canary() -> None:
+def test_deliver_fails_stable_promotion_without_verified_canary() -> None:
     input_document = {
         "candidate": _candidate(),
         "current_source_revision": SOURCE_SHA,
@@ -481,6 +488,57 @@ def test_verify_requires_every_surface_and_live_service_to_match() -> None:
 
     assert result["status"] == "pass"
     assert result["evidence"]["digest"] == IMAGE_DIGEST
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value["github_release"].__setitem__(
+            "source_revision",
+            "f" * 40,
+        ),
+        lambda value: value["pypi"].__setitem__("version", "0.6.2"),
+        lambda value: value["image"].__setitem__(
+            "digest",
+            PREVIOUS_DIGEST,
+        ),
+        lambda value: value["deployment"].__setitem__("healthy", False),
+        lambda value: value["deployment"].__setitem__("ready", False),
+        lambda value: value["deployment"].__setitem__("mcp_search", False),
+        lambda value: value["deployment"].__setitem__("enforcement", False),
+        lambda value: value["deployment"].__setitem__(
+            "documentation",
+            False,
+        ),
+    ],
+)
+def test_verify_fails_closed_when_any_external_surface_differs(mutate) -> None:
+    input_document = {
+        "candidate": _candidate(),
+        "github_release": {
+            "tag": "v0.6.1",
+            "source_revision": SOURCE_SHA,
+        },
+        "pypi": {
+            "version": "0.6.1",
+            "provenance_source_revision": SOURCE_SHA,
+        },
+        "image": {"tag": "v0.6.1", "digest": IMAGE_DIGEST},
+        "deployment": {
+            "source_revision": SOURCE_SHA,
+            "digest": IMAGE_DIGEST,
+            "healthy": True,
+            "ready": True,
+            "mcp_search": True,
+            "enforcement": True,
+            "documentation": True,
+        },
+    }
+    mutate(input_document)
+
+    result = evaluate_stage("verify", input_document)
+
+    assert result["status"] == "failed"
 
 
 def test_notify_requires_exact_independent_readback() -> None:
@@ -596,6 +654,24 @@ def test_rollback_fails_when_events_are_out_of_order() -> None:
     assert "out of order" in result["reason"]
 
 
+def test_rollback_fails_when_rollback_digest_is_the_failed_digest() -> None:
+    result = evaluate_stage(
+        "rollback",
+        {
+            "failed_digest": IMAGE_DIGEST,
+            "rollback_point": {
+                "image": f"ghcr.io/knaisoma/data-olympus@{IMAGE_DIGEST}",
+                "digest": IMAGE_DIGEST,
+                "intended_keel_policy": "never",
+            },
+            "events": [],
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert "must differ" in result["reason"]
+
+
 def test_cli_emits_one_failed_json_object_when_input_is_missing(
     monkeypatch,
     capsys,
@@ -612,3 +688,34 @@ def test_cli_emits_one_failed_json_object_when_input_is_missing(
         "evidence": {},
         "outputs": {},
     }
+
+
+def test_cli_rejects_wrong_argument_count(capsys) -> None:
+    exit_code = main([])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert output["status"] == "failed"
+    assert output["reason"] == "exactly one release stage is required"
+
+
+def test_cli_rejects_malformed_json(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AI_OPERATIONS_STAGE_INPUT", "{")
+
+    exit_code = main(["authority"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert output["status"] == "failed"
+    assert output["reason"] == "AI_OPERATIONS_STAGE_INPUT must be valid JSON"
+
+
+def test_cli_rejects_unknown_stage(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AI_OPERATIONS_STAGE_INPUT", "{}")
+
+    exit_code = main(["not-a-stage"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert output["status"] == "failed"
+    assert output["reason"] == "unknown release stage: not-a-stage"

@@ -118,6 +118,15 @@ def _version_tuple(value: str) -> tuple[int, int, int]:
     return tuple(int(part) for part in value.split("."))  # type: ignore[return-value]
 
 
+def _expected_next_version(current: str, bump: str) -> str:
+    major, minor, patch = _version_tuple(current)
+    if bump == "patch":
+        return f"{major}.{minor}.{patch + 1}"
+    if bump == "minor":
+        return f"{major}.{minor + 1}.0"
+    raise ReleaseInputError("releasable computation must use patch or minor bump")
+
+
 def _same_source(
     expected: str,
     value: Any,
@@ -251,10 +260,11 @@ def _admission(input_document: dict[str, Any]) -> StageResult:
             evidence,
         )
 
-    if bump not in {"patch", "minor"}:
-        raise ReleaseInputError("releasable computation must use patch or minor bump")
     if next_version == "0.6.0":
         raise ReleaseInputError("v0.6.0 is immutable; the next release must move forward")
+    expected_next = _expected_next_version(current, bump)
+    if next_version != expected_next:
+        raise ReleaseInputError("computed_release.next_version does not match its bump")
     if _version_tuple(next_version) <= _version_tuple(current):
         raise ReleaseInputError("computed release does not move beyond the current version")
     return _result(

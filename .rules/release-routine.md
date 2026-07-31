@@ -48,6 +48,12 @@ lifecycle stages plus rollback:
 * `notify`
 * `rollback`
 
+The command validates supplied evidence. It does not fetch Git, Data Olympus,
+GitHub, registry, cluster, or Telegram state by itself. The central runner
+adapter must fetch those sources, compare the real revisions, and supply the
+bounded stage input. A format valid SHA is not proof that a remote or authority
+revision exists.
+
 ## Monday sequence
 
 1. Load the single private release issue and the exact Friday source SHA.
