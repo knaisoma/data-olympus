@@ -12,6 +12,105 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-18
+
+### Added
+
+* **Added searchable MCP discovery.** `tools/list` now exposes seven core tools
+  plus `tool_search` and `call_tool` by default. Operators can set
+  `KB_TOOL_DISCOVERY_MODE=all` for the complete native catalog. Hidden tools
+  remain directly callable and retain the same authorization checks.
+* **Added executable OKF interoperability checks.** CI verifies both Data
+  Olympus consuming the pinned Google Knowledge Orchestration Framework sample
+  and the pinned upstream reference consumer reading the Data Olympus example
+  bundle. The immutable upstream revision and fixture checksums are recorded in
+  the repository.
+* **Added complete release candidates across every public channel.** One exact
+  source SHA now produces a PyPI prerelease wheel and sdist, GHCR image, GitHub
+  prerelease, and `release-provenance.json`. Stable promotion is an explicit
+  human approved dispatch that accepts only the highest complete candidate.
+* **Added deterministic benchmark provenance receipts.** The committed receipt
+  records source, corpus and query hashes, dependency lock, environment,
+  tokenizer and model identities, exact commands, seeds, result hashes, and
+  metric summaries. The documentation drift guard verifies it before checking
+  generated benchmark tables.
+
+### Security
+
+- **Bumped transitive dependency `mcp` 1.28.0 to 1.28.1** to close
+  CVE-2026-59950 / GHSA-vj7q-gjh5-988w (Dependabot #18, high severity).
+  The advisory covers the MCP Python SDK WebSocket server transport, which
+  data-olympus does not use (Streamable HTTP only); the bump is applied as
+  a precaution and to clear the release security gate. No API surface change.
+  (KNA-146)
+- **Bumped transitive benchmark dependency `torch` 2.12.1 to 2.13.0** to
+  close CVE-2025-3000 / GHSA-rrmf-rvhw-rf47 (Dependabot #19, low severity).
+  The affected `torch.jit.script` path is available only through the optional
+  `bench` extra and is not used by the production embedding implementation.
+  The patched dependency remains compatible with `sentence-transformers`.
+
+### Changed
+
+* **Made PyPI the primary installation and onboarding path.** The README and
+  quickstart now lead with `uvx` and `uv tool install`. Every packaging workflow
+  runs clean wheel and source distribution smoke tests at the expected version.
+  They exercise both console entry points, packaged enforcement files, REST
+  health, setup doctor, compact discovery, hidden direct calls, and complete
+  catalog mode.
+* **Hardened candidate to stable provenance.** Candidate and stable Python
+  artifacts are rebuilt from the same exact source, compared with only version
+  metadata normalized, and published through Trusted Publishing with no stored
+  PyPI credential. Stable OCI tags reuse the verified candidate digest and
+  never rebuild the image.
+
+- **Updated the supported runtime and development dependency baseline.**
+  FastMCP is now locked to 3.4.4 and requires `>=3.4.4,<4`, guaranteeing the
+  catalog search transform used by the default MCP tool-discovery mode. Regex
+  is updated to 2026.7.10 with the secret-scanning timeout and false-positive
+  regressions green. Mypy, types-regex, and Ruff were updated to their current
+  Dependabot revisions and pass the strict type and lint gates. (gh #159, #160,
+  #161, #162, #163)
+
+- **Added Glama related server metadata and maintenance notes.** `glama.json`
+  now names adjacent knowledge and memory MCP servers, and `docs/glama.md`
+  records the maintainer response and usage seeding steps for the Glama
+  maintenance profile. (gh #155 / KNA-145)
+
+- **Improved tool definitions for 7 tools (`kb_gate_check`, `kb_onboarding_status`,
+  `kb_compliance`, `kb_cleanup_plan`, `kb_get`, `kb_list`, `kb_outline`).** Each
+  docstring now includes a "Use when / use X instead when Y" guidance sentence.
+  `kb_gate_check` also discloses its audit-log side effect (`readOnlyHint=false`
+  is intentional). (gh #154 / KNA-144)
+
+- **Improved `kb_record_event` tool definition.** The docstring now discloses
+  behavior (durable, non-destructive audit append; requires write capability),
+  documents both event_type values (`gate_bypass`, `gate_degraded`) and all
+  required parameters, and gives explicit usage guidance on when to call vs.
+  when to use `kb_gate_check`, `kb_consult`, `kb_audit`, or `kb_compliance`
+  instead. (gh #153 / KNA-143)
+
+### Fixed
+
+* **Closed the remaining release verification gaps.** Every PyPI publishing
+  path now fails closed and verifies remote file hashes. Candidate provenance
+  validates its source, candidate tag, and image digest before publication.
+  Stable promotion derives its version from the requested complete candidate
+  and verifies that version against the candidate source commit. OKF freshness
+  reports only upstream fixture changes rather than unrelated repository commits.
+
+* **Corrected exact SHA CI readiness for conditional jobs.** Completed skipped
+  jobs are now non-blocking only when they are not required. Missing, pending,
+  failed, neutral, or skipped required checks still fail closed. This lets the
+  release gate accept a fully green pull request whose publishing workflow
+  intentionally skips upload and manual release paths.
+
+- **Hardened read tools against present SQLite indexes without tables.**
+  `kb_search`, `kb_get`, `kb_list`, `kb_outline`, onboarding status, and
+  cleanup planning now degrade to empty results or empty health instead of
+  surfacing raw `sqlite3.Error` failures. The Glama Docker sandbox now serves
+  the bundled `example-bundle` corpus so catalog introspection starts with a
+  populated, safe index. (gh #156 / KNA-142)
+
 ## [0.5.0] - 2026-07-12
 
 ### Added
@@ -1604,7 +1703,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/knaisoma/data-olympus/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/knaisoma/data-olympus/compare/v0.4.2...v0.5.0
 [0.4.1]: https://github.com/knaisoma/data-olympus/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/knaisoma/data-olympus/compare/v0.3.5...v0.4.0

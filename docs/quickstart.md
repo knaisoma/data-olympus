@@ -1,74 +1,77 @@
-# Quickstart: Run data-olympus locally
+# Quickstart: Install and run data-olympus
 
-This guide shows how to install, start, and query the data-olympus MCP server
-against the included example bundle. Every command below was verified on macOS
-with Python 3.13 and uv.
+This guide installs Data Olympus from PyPI, starts the MCP server against a
+local bundle, checks readiness, and connects coding agents. Python 3.13 and
+[`uv`](https://docs.astral.sh/uv/) are required.
 
 ## 1. Install
 
-### Install from source
-
-This is the path that works today, from a clone of the repo:
+Run the current stable CLI without cloning the repository:
 
 ```bash
-# From the repo root
-uv venv && uv pip install -e '.[dev]'
+uvx --from data-olympus data-olympus --help
 ```
 
-Or simply use `uv run` (which handles the venv automatically):
-
-```bash
-uv run data-olympus-mcp --help   # confirms the entry point is installed
-```
-
-### Install from PyPI
-
-> The PyPI package is available from v0.3.0 onward, but publishing goes live only
-> after the operator completes the one-time pypi.org Trusted Publishing setup (see
-> `docs/releases/pypi-trusted-publishing.md`). Until that first publish lands the
-> commands below fail; use the from-source path above.
-
-Once the package is published, run the CLI directly with no clone, using `uvx`:
-
-```bash
-uvx data-olympus --help
-```
-
-Or install it as a persistent tool:
+For repeated use, install both console commands as a persistent tool:
 
 ```bash
 uv tool install data-olympus
 data-olympus --help
+data-olympus-mcp --help
 ```
 
-Then run the guided setup wizard to probe your server endpoint, wire your
-coding agents (Claude Code, Codex, Gemini, OpenCode), and optionally install the
-enforcement hooks:
+To test an announced release candidate without replacing the persistent stable
+tool, select its exact PEP 440 version:
 
 ```bash
-data-olympus setup          # interactive
-data-olympus setup --check  # read-only doctor summary (also the update check)
+uvx --from 'data-olympus==0.6.0rc3' data-olympus --help
 ```
 
-## 2. Run the server
+## 2. Create a bundle and run the server
+
+Create a valid starter bundle and initialize its git history:
 
 ```bash
-./scripts/run-local.sh
+data-olympus init my-kb
+git -C my-kb init -b main
+git -C my-kb config user.name "Local Operator"
+git -C my-kb config user.email "operator@localhost"
+git -C my-kb add .
+git -C my-kb commit -m "docs: initialize knowledge bundle"
 ```
 
-The script:
+Start the installed MCP server. Runtime state stays outside the bundle:
 
-- Copies `example-bundle/` to `/tmp/data-olympus-demo-kb`
-- Git-initializes the copy (the server requires a git repo)
-- Starts the MCP server at `http://localhost:8080`
-
-The server logs startup to stdout. Wait for a line like:
-
+```bash
+mkdir -p .data-olympus
+KB_MAIN_PATH="$PWD/my-kb" \
+KB_INDEX_PATH="$PWD/.data-olympus/kb.db" \
+KB_REMOTE_URL="" \
+KB_WORKTREE_ROOT="$PWD/.data-olympus/worktrees" \
+KB_PENDING_ROOT="$PWD/.data-olympus/pending" \
+KB_PUSH_QUEUE_ROOT="$PWD/.data-olympus/push-queue" \
+KB_AUDIT_LOG_PATH="$PWD/.data-olympus/audit.log" \
+data-olympus-mcp
 ```
-INFO     data_olympus  starting streamable HTTP MCP on port 8080
+
+Wait for readiness in another terminal:
+
+```bash
+curl -fsS http://localhost:8080/readyz
+curl -fsS http://localhost:8080/api/v1/health
 ```
 
-## 3. Query with curl
+## 3. Connect coding agents
+
+Run the guided setup to register the MCP endpoint with detected Claude Code,
+Codex, Gemini, and OpenCode installations. The doctor command is read only.
+
+```bash
+data-olympus setup --endpoint http://localhost:8080
+data-olympus setup --check --endpoint http://localhost:8080
+```
+
+## 4. Query with curl
 
 ```bash
 # Health
@@ -111,12 +114,12 @@ curl -fsS "http://localhost:8080/api/v1/search?q=writing&verbose=true"
 The `kb` CLI always requests `verbose=true` so its plain-text output keeps
 showing paths.
 
-## 4. Lifecycle-aware retrieval: in-force vs superseded
+## 5. Lifecycle-aware retrieval: in-force vs superseded
 
-The example bundle ships a real supersession pair in
-`universal/foundation/`: `STD-U-003` (`status: superseded`,
-`superseded_by: STD-U-004`) and `STD-U-004` (`status: active`,
-`supersedes: STD-U-003`), the standard that replaced it. This section shows
+The generated starter bundle ships a real supersession pair in
+`universal/foundation/`: `STD-INIT-001` (`status: superseded`,
+`superseded_by: STD-INIT-002`) and `STD-INIT-002` (`status: active`,
+`supersedes: STD-INIT-001`), the standard that replaced it. This section shows
 the two ways `kb_search` treats that pair differently.
 
 **Default search** applies a soft status-aware rerank: an `active` document is
@@ -125,11 +128,11 @@ document is still returned (useful when an agent or human is tracing decision
 history).
 
 ```bash
-curl -fsS "http://localhost:8080/api/v1/search?q=commit%20format&limit=5"
+curl -fsS "http://localhost:8080/api/v1/search?q=example%20standard&limit=5"
 ```
 
-The top two hits are `STD-U-004` (currently in force) ranked ahead of
-`STD-U-003` (`status: superseded`) — both present, active first. In the compact
+The top two hits are `STD-INIT-002` (currently in force) ranked ahead of
+`STD-INIT-001` (`status: superseded`) — both present, active first. In the compact
 default the in-force hit carries no `status` field while the superseded hit shows
 `"status": "superseded"` (the deviation an agent must act on); add `verbose=true`
 to see `"status": "active"` spelled out on every hit.
@@ -141,10 +144,10 @@ for docs carrying a `validity` frontmatter block, any doc outside its
 validity window (past `valid_until`, or before a future `valid_from`).
 
 ```bash
-curl -fsS "http://localhost:8080/api/v1/search?q=commit%20format&limit=5&in_force=true"
+curl -fsS "http://localhost:8080/api/v1/search?q=example%20standard&limit=5&in_force=true"
 ```
 
-`STD-U-003` does not appear in the response at all: an agent that only wants
+`STD-INIT-001` does not appear in the response at all: an agent that only wants
 guidance currently in force (for example, before writing a commit message)
 gets a result set that can never surface retired governance, rather than
 relying on the rerank to have pushed it down far enough.
@@ -154,21 +157,6 @@ search results too, not just from `in_force=true` queries; pass
 `include_expired=true` to see it, or fetch it directly with `kb_get` (which
 always resolves by id). See [`docs/serving.md`](serving.md) and SPEC.md
 section 4.2 for the full validity semantics.
-
-## 5. Query with the kb CLI
-
-```bash
-KB_ENDPOINT=http://localhost:8080 ./bin/kb health -o plain
-KB_ENDPOINT=http://localhost:8080 ./bin/kb search writing -o plain
-KB_ENDPOINT=http://localhost:8080 ./bin/kb outline -o plain
-```
-
-Set `KB_ENDPOINT` in your shell to avoid repeating it:
-
-```bash
-export KB_ENDPOINT=http://localhost:8080
-./bin/kb search writing
-```
 
 ## 6. Docker path
 
@@ -191,7 +179,7 @@ docker compose -f deploy/docker/compose.yaml run \
 The bundle at `/path/to/my-kb` must be a git repository (run `git init` inside
 it first).
 
-## 7. Use your own bundle
+## 7. Serve an existing bundle
 
 Point the server at any git-initialized directory following the
 `example-bundle/` layout:
@@ -204,3 +192,18 @@ KB_MAIN_PATH=/path/to/your-bundle \
 ```
 
 See `SPEC.md` for the full document schema and tier conventions.
+
+## 8. Contributor installation
+
+Editable installation is for repository development, not normal onboarding:
+
+```bash
+git clone https://github.com/knaisoma/data-olympus.git
+cd data-olympus
+uv sync --all-groups
+uv run pytest -q
+```
+
+Use `uv run data-olympus` and `uv run data-olympus-mcp` while developing.
+The repository also provides the lower level `./bin/kb` REST helper for
+maintainer diagnostics.

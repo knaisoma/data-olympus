@@ -7,11 +7,11 @@ problem we kept hitting with coding agents, what data-olympus does differently, 
 it relates to Google's Open Knowledge Format, and where our benchmarks say it is
 strong and where it is not. The rest of this README is the technical reference.
 
-data-olympus is a governance-grade knowledge-base format and server for agent workforces. It is designed to be readable by [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) (OKF) consumers: it inherits OKF's directory structure, frontmatter conventions, reserved filenames, and link model, then layers governance extensions on top (stable `id`, controlled `type`/`status`/`tier` fields, `supersedes` chains) plus a single-writer MCP server and a CLI. Formal conformance testing against the OKF reference tooling is not yet in place (tracked in [issue #82](https://github.com/knaisoma/data-olympus/issues/82)). The result is a git-native, version-controlled document graph of engineering standards, architectural decisions, and project knowledge that agents and humans can read, search, and extend without any proprietary service.
+data-olympus is a governance-grade knowledge-base format and server for agent workforces. It is readable by [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) (OKF) consumers: it inherits OKF's directory structure, frontmatter conventions, reserved filenames, and link model, then layers governance extensions on top (stable `id`, controlled `type`/`status`/`tier` fields, `supersedes` chains) plus a single-writer MCP server and a CLI. CI proves two concrete directions against official Google OKF commit `d44368c15e38e7c92481c5992e4f9b5b421a801d`: its reference visualization consumer reads every concept in `example-bundle`, and data-olympus imports, lints, indexes, searches, and retrieves the pinned official Bitcoin sample. This is fixture-scoped interoperability evidence, not a blanket guarantee for every OKF bundle or future upstream revision. The result is a git-native, version-controlled document graph of engineering standards, architectural decisions, and project knowledge that agents and humans can read, search, and extend without any proprietary service.
 
 It governs *decisions*, not code. When an agent is about to make a choice (a library, a pattern, a migration), data-olympus surfaces the established standard or decision that should govern that choice. It is deliberately **not** a code-search, reference-finding, or "where is X used" tool: LSP, grep, and Sourcegraph already do that well. The retrieval task it targets is coding-intent to governing-rule, and it helps where current model interaction during vibe-coding is weakest: keeping the model aligned to patterns the team has already established as correct.
 
-**Status: pre-1.0 beta. Latest release: v0.4.1.**
+**Status: pre-1.0 beta. Stable releases are distributed through PyPI and GHCR.**
 
 ## Why
 
@@ -20,27 +20,36 @@ It governs *decisions*, not code. When an agent is about to make a choice (a lib
 - **Agent and human readable.** Plain markdown with YAML frontmatter. No SDK required to read or author a document.
 - **Governed multi-agent writes.** The single-writer MCP pipeline (advisory locks, per-session worktrees, durable push queue) prevents concurrent write races without requiring distributed locking infrastructure.
 - **Queryable by status, tier, and type.** Filter by `status: accepted`, `tier: T1`, or `type: decision` without post-processing. The `supersedes` chain makes it possible to trace decision history across the graph.
-- **Designed to be OKF-readable.** Built on OKF's directory structure, frontmatter conventions, reserved filenames, and link model; formal conformance testing against OKF reference tooling is tracked in [issue #82](https://github.com/knaisoma/data-olympus/issues/82), not yet implemented.
+- **Tested with official OKF tooling.** CI pins an exact Google OKF revision and proves both consumption directions over committed fixtures. The pin, fixture checksum, and Apache 2.0 license provenance live in `tests/okf/reference.json`.
 
 ## Quickstart
 
-Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/).
+Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/). Run the stable CLI
+directly from PyPI:
 
 ```bash
-# Install
-uv venv && uv pip install -e '.[dev]'
-
-# Lint the example bundle
-uv run data-olympus lint example-bundle
-
-# ...or scaffold your own bundle instead of copying example-bundle/
-uv run data-olympus init my-kb
-
-# Start the MCP server against the example bundle
-./scripts/run-local.sh
+uvx --from data-olympus data-olympus --help
 ```
 
-See `docs/quickstart.md` for the full local-run walkthrough, including curl and `kb` CLI queries. See `docs/adoption.md` for the full bundle-authoring guide.
+Install it persistently when you are ready to create a bundle and run the
+server:
+
+```bash
+uv tool install data-olympus
+data-olympus init my-kb
+data-olympus-mcp --help
+```
+
+An announced candidate remains opt in through its exact PyPI version:
+
+```bash
+uvx --from 'data-olympus==0.6.0rc3' data-olympus --help
+```
+
+See `docs/quickstart.md` for bundle initialization, server startup, readiness,
+agent registration, and the contributor source installation.
+
+See `docs/adoption.md` for the full bundle authoring guide.
 
 ## Documentation
 

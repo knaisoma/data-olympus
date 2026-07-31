@@ -20,6 +20,7 @@ jobs:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     uses: ./.github/workflows/release-image-reusable.yml
     with:
+      ref: ${{ github.ref_name }}
       tag: ${{ github.ref_name }}
       move_latest: true
     permissions:
@@ -29,6 +30,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/release-image-reusable.yml
     with:
+      ref: ${{ github.sha }}
       tag: ${{ inputs.tag }}
       move_latest: false
     permissions:

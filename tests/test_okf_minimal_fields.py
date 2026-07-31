@@ -1,18 +1,17 @@
-"""Structural assertion of OKF's minimal required fields on example-bundle.
+"""Structural floor beneath the executable OKF interoperability checks.
 
 Context (see WHY.md "How this relates to OKF" and the tracking issue linked
-from README.md / SPEC.md section 11): data-olympus claims to be an
-OKF-compatible profile, but has no executable conformance suite against the
-real OKF reference tooling. That is a genuine gap and this test does not
-close it.
+from README.md / SPEC.md section 11): the executable suite runs the pinned
+official reference consumer. These tests keep the local profile requirements
+and version declaration explicit without pretending they are all OKF-required.
 
-What this test DOES prove: every concept document in example-bundle carries
-non-empty `id` and `type` values (OKF's per-document minimal fields), and the
-bundle-root index.md declares an `okf_version`, both structurally, by reading
-the actual frontmatter rather than trusting documentation prose.
+What this test DOES prove: every concept document in example-bundle carries a
+nonempty `type` (the OKF v0.1 concept requirement) and a nonempty stable `id`
+(a data-olympus requirement), and the bundle-root index.md declares the optional
+target `okf_version` used by this profile.
 
 What this test does NOT prove:
-- That an OKF reference consumer can actually parse and accept this bundle.
+- The executable consumer behavior by itself; `test_okf_conformance.py` covers it.
 - That `type` values used here are within whatever vocabulary (if any) the
   real OKF spec expects at the wire level (data-olympus's `type` vocabulary is
   its own controlled extension; OKF is documented as leaving `type` open).
@@ -22,8 +21,7 @@ What this test does NOT prove:
   a directly-checked OKF field.
 - Round-trip fidelity, link resolution, or any behavioral conformance.
 
-This is a cheap structural floor, not a conformance test. See the tracking
-issue for the real conformance check against OKF reference tooling.
+This remains a cheap structural floor, not the interoperability check itself.
 """
 from __future__ import annotations
 

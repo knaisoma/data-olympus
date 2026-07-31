@@ -4,6 +4,11 @@ A reproducible, retrieval-only benchmark that measures token cost and retrieval
 accuracy of five methods over a synthetic committed corpus, plus a governance
 ablation and one reproducible run on a real (non-templated) corpus.
 
+**Maintainer-produced; not independently reproduced.** The committed
+[`results/receipt.json`](results/receipt.json) records exact source, inputs,
+dependencies, commands, seeds, environment, and output hashes for independent
+verification.
+
 ## What it measures
 
 For each (method, query) pair the harness records:

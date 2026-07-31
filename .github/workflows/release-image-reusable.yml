@@ -3,6 +3,10 @@ name: build-and-push-image
 on:
   workflow_call:
     inputs:
+      ref:
+        description: "immutable git ref to build"
+        required: true
+        type: string
       tag:
         description: "image tag to publish, e.g. v0.1.0 or edge"
         required: true
@@ -17,17 +21,31 @@ on:
         required: false
         default: ""
         type: string
+    outputs:
+      digest:
+        description: "immutable digest of the published image"
+        value: ${{ jobs.build-push.outputs.digest }}
+      source_sha:
+        description: "exact source commit embedded in the image"
+        value: ${{ jobs.build-push.outputs.source_sha }}
 jobs:
   build-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      source_sha: ${{ steps.source.outputs.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
+      - name: Resolve source revision
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
@@ -57,6 +75,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -66,6 +85,6 @@ jobs:
           tags: ${{ steps.image-tag.outputs.tags }}
           labels: |
             org.opencontainers.image.version=${{ inputs.tag }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

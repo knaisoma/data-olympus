@@ -10,6 +10,7 @@ artifacts. Fix drift with ``python -m benchmarks.docs_tables --write``.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -18,10 +19,26 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 
+def receipt_problems(repo_root: Path) -> list[str]:
+    """Verify committed benchmark evidence before checking rendered claims."""
+    from benchmarks.receipt import RECEIPT_PATH, verify_receipt
+
+    path = repo_root / RECEIPT_PATH
+    if not path.is_file():
+        return [f"missing benchmark receipt: {RECEIPT_PATH}"]
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return [f"invalid benchmark receipt: {exc}"]
+    return verify_receipt(document, repo_root)
+
+
 def main() -> int:
     from benchmarks.docs_tables import check_or_write
 
-    problems = check_or_write(write=False)
+    problems = receipt_problems(_ROOT)
+    if not problems:
+        problems = check_or_write(write=False)
     if problems:
         print("benchmark-docs guard: FAIL", file=sys.stderr)
         for p in problems:

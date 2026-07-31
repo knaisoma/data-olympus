@@ -168,6 +168,24 @@ uv run data-olympus import <source> --kind <kind> --tier <tier> [options]
   are renamed to the canonical schema keys, missing required fields are filled
   with draft-safe defaults, and every inference is reported.
 
+The OKF path is covered by executable interoperability checks against official
+Google OKF commit `d44368c15e38e7c92481c5992e4f9b5b421a801d`. The pinned official
+Bitcoin sample imports as five lint-clean governed drafts, all five are indexed,
+and search plus retrieval complete successfully. The reverse check runs Google's
+reference visualization consumer over every concept in `example-bundle`. To
+repeat both checks from a source checkout:
+
+```bash
+uv run python scripts/okf_conformance.py verify-pin
+uv run python scripts/okf_conformance.py consume-data-olympus \
+  --upstream-root to-delete/okf-reference
+uv run python scripts/okf_conformance.py consume-upstream
+```
+
+The first and third commands are offline. The second requires the official
+repository checked out at the exact SHA recorded in `tests/okf/reference.json`.
+The evidence is scoped to that revision and those fixtures.
+
 ### Safety and next steps
 
 - **Everything lands as `status: draft`.** Nothing auto-activates, and the
