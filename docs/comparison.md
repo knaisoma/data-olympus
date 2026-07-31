@@ -122,7 +122,7 @@ Every number above is from the deterministic synthetic corpus, which exists to e
 <!-- BENCH:real_corpus START -->
 | Metric | Lexical stack (embeddings off) |
 |---|---|
-| Corpus | 25 committed example-bundle docs |
+| Corpus | 26 committed example-bundle docs |
 | Labeled queries | 9 paraphrased intents |
 | recall@5 | 0.778 |
 | recall@10 | 0.889 |

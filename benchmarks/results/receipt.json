@@ -5,7 +5,7 @@
     "KB_EMBEDDINGS_MODE=on uv run --extra embeddings python -m benchmarks.generate_embeddings_ablation",
     "uv run python -m benchmarks.real_corpus_eval --corpus example-bundle --queries benchmarks/real_corpus/example_bundle_queries.json --lexical-only --out benchmarks/real_corpus/example_bundle_result.json",
     "uv run python -m benchmarks.docs_tables --write",
-    "uv run python -m benchmarks.receipt write --source-commit f309332bb137dc53ee8c92ea3e5534bd5afb0592"
+    "uv run python -m benchmarks.receipt write --source-commit 2453b4d934e71ff07f13070944a483f4dd4efea2"
   ],
   "dependency_lock": {
     "packages": [
@@ -1598,9 +1598,14 @@
           "sha256": "61981a0ab8d0ffba6ad577af3efda93c33fa9aa7c080357035f242b42278af69"
         },
         {
-          "bytes": 571,
+          "bytes": 2984,
+          "path": "example-bundle/universal/foundation/STD-U-702-telegram-cron-routing.md",
+          "sha256": "ffa5d0fca958735fe1f936f01399b217725aebb4993c141fde363cbc732cb4a6"
+        },
+        {
+          "bytes": 745,
           "path": "example-bundle/universal/foundation/index.md",
-          "sha256": "b6d4e1e730b2e6b11d8500a72a35dc2092f932c4047b5a4882a2bbb63704b382"
+          "sha256": "bbc9e7739c4586ada2743bd9423aa6cdf77ee5c439eed948002225066aa45dba"
         },
         {
           "bytes": 1422,
@@ -1623,7 +1628,7 @@
           "sha256": "1246a1643cf66a1694c34b1a1d43eaa49616833fc16f065bbcf2b9ea12e78975"
         }
       ],
-      "sha256": "31e93a51735315d3183b813cee5d0f740a2fcf79fb06dd6cd3dde9a5e7b3f1ca"
+      "sha256": "fe08fb918a2a8e9373869e70f0d9f0c0dd78bf4ff5d3342b608e6c925b43a387"
     },
     "queries": {
       "files": [
@@ -1671,7 +1676,7 @@
       {
         "bytes": 362,
         "path": "benchmarks/real_corpus/example_bundle_result.json",
-        "sha256": "373aa7f914ef08e4e2dd42bc2c7993205f2476f3a100502dbfa7bbffd2107eeb"
+        "sha256": "3f5b666974a2f2c38b2f227d6eaf09fe0e997944886049ccdab7ad16487dcd37"
       },
       {
         "bytes": 6034,
@@ -1684,7 +1689,7 @@
         "sha256": "0abb4fb660050cb3d383740f7fe258fb4bf869ed3577ca2d61b2a9f905d618f7"
       }
     ],
-    "sha256": "69c28edcf8338c9ea9c399c364fe452a90e287891fd8bfbd6bada411e0273ea1"
+    "sha256": "ddefdaf8b50ba35b5a2406f2a732a32649308f1606fd08c96b12c5ac79694484"
   },
   "retrieval": {
     "models": [
@@ -1703,7 +1708,7 @@
     "synthetic_corpus": 0,
     "token_curve_corpus": 42
   },
-  "source_commit": "f309332bb137dc53ee8c92ea3e5534bd5afb0592",
+  "source_commit": "2453b4d934e71ff07f13070944a483f4dd4efea2",
   "source_tree": {
     "files": [
       {
