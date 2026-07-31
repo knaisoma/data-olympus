@@ -1,59 +1,107 @@
-# Rule: release promotion and rollback (kn-dev canary)
+# Data Olympus release rollback
 
 Status: active
-Since: 2026-07-11
-Applies to: the data-olympus release train (staged-promotion pipeline)
+Since: 2026-07-31
+Applies to: Data Olympus release canary and stable deployment on kn dev
 
-## Channel model
+## Deployment model
 
-kn-dev runs whatever the moving ghcr tag `:kndev` points at (Keel `policy: force`,
-`match-tag: true`, poll). The pipeline moves `:kndev` via the `set-channel.yml`
-workflow (`gh workflow run set-channel.yml -f source=<tag>`); it never rebuilds an
-image, so the channel and its source share one digest.
+The kn dev StatefulSet runs immutable GHCR digests. Keel policy is `never`.
 
-## Promotion sequence (cutter, after approval)
+The `kndev` moving registry tag may be updated for traceability, but it does not
+deploy the workload. Canary, stable deployment, and rollback apply an exact
+digest to both StatefulSet containers through the kn dev FastMCP gateway.
 
-0. Record the rollback point: note the tag `:kndev` currently points at (the stable
-   version kn-dev is running, e.g. the latest non-prerelease GitHub Release, or read
-   it with `docker buildx imagetools inspect ghcr.io/knaisoma/data-olympus:kndev`).
-   The canary and post-release rollbacks below re-point `:kndev` back at this value.
-1. Publish the complete candidate from an exact source SHA. The candidate
-   transaction includes its wheel, sdist, `release-provenance.json`, PyPI
-   prerelease, GHCR image, and GitHub prerelease.
-2. Canary: `set-channel source=X.Y.Z-rc.N` makes Keel roll the candidate onto
-   kn-dev.
-3. Pre-release verify: `data-olympus verify --target <kn-dev ingress>` must be
-   green, including default tool discovery and enforcement checks.
-4. Obtain the Paperclip approval to ship from the operator.
-5. Merge the exact reviewed candidate source to `main` with the required merge
-   method. Wait for CI on the resulting `main` SHA.
-6. Explicitly dispatch `tag-release.yml` through `workflow_dispatch`, passing
-   `candidate_tag=X.Y.Z-rc.N`. The workflow accepts only the highest complete
-   candidate, enters the protected `pypi` environment, compares the stable
-   Python payload with the candidate payload, publishes stable PyPI, creates
-   `vX.Y.Z` at the candidate source SHA, promotes the exact GHCR digest, and
-   creates the GitHub release.
-7. Promote the canary channel to stable with `set-channel source=vX.Y.Z`.
-8. Run post-release verification against kn-dev.
+This rule replaces the former assumption that Keel `force` plus `matchTag`
+would follow the moving `kndev` tag.
 
-## Rollback
+## Required rollback point
 
-* Candidate publication interrupted before finalization: rerun the same candidate
-  number only from the same exact source SHA. Existing PyPI files and the GHCR
-  image must match their recorded hashes and revision. Otherwise stop and use a
-  higher candidate number.
-* Canary failure or rejected approval: restore `kndev` to the recorded rollback
-  point. The candidate remains externally visible as a prerelease. A published
-  PyPI candidate cannot be replaced. Yank it when it is unsuitable for further
-  testing, then publish a corrected higher candidate number.
-* Post-release failure: restore `kndev` to the rollback point, yank the stable
-  PyPI version, mark the GitHub release as a prerelease, open a `release blocked`
-  issue, and notify the operator. Published files and version tags remain
-  immutable.
+Before candidate deployment, record:
 
-## Note
+* Exact image reference.
+* Exact image digest.
+* Source revision from provenance.
+* Main container name.
+* Init container name.
+* Current StatefulSet generation.
+* Intended Keel policy.
+* Health and readiness result.
 
-Stable image promotion is byte identical. `tag-release.yml` re-tags the verified
-`X.Y.Z-rc.N` digest to `vX.Y.Z`, `stable`, and `latest`; it has no image build
-job. Stable Python artifacts are rebuilt from the same exact source SHA and
-compared with the candidate wheel. Only normalized version metadata may differ.
+The rollback point is invalid if either container is missing or the recorded
+digest cannot be resolved.
+
+## Rollback sequence
+
+Execute these steps in order:
+
+1. Set or confirm `keel.sh/policy: never`.
+2. Apply the previous exact digest to:
+
+   * `data-olympus-mcp`
+   * `prepare-git`
+
+3. Wait for the StatefulSet rollout to finish.
+4. Verify:
+
+   * Both containers use the rollback digest.
+   * Pod health passes.
+   * Readiness passes.
+   * The public MCP endpoint responds.
+   * Search works.
+   * Enforcement works.
+
+5. Restore the intended Keel policy. The approved intended policy is `never`,
+   so this step confirms the policy rather than enabling automatic upgrades.
+6. Record the failed digest, restored digest, rollout evidence, verification
+   evidence, gateway calls, and terminal state.
+
+The project command accepts rollback only when the evidence names these events
+in the same order:
+
+* `keel-paused`
+* `digest-restored`
+* `deployment-verified`
+* `keel-policy-restored`
+
+## Registry channels
+
+If a failed candidate or stable release changed `kndev`, restore that channel
+to the prior known good tag through `set-channel.yml` after service recovery.
+Channel repair does not replace direct digest rollback and does not count as
+deployment verification.
+
+## Published artifacts
+
+Published files and immutable version tags are never replaced.
+
+When a candidate is unsuitable:
+
+* Leave the GitHub prerelease immutable.
+* Yank the PyPI candidate when continued installation would be unsafe.
+* Correct the defect under a new source SHA.
+* Publish a higher candidate number.
+
+When a stable release is unsuitable:
+
+* Restore kn dev first.
+* Yank the PyPI stable version when required.
+* Mark the GitHub release as a prerelease when required.
+* Open or update the private release issue with the failure evidence.
+* Prepare a new patch version. Do not move the existing stable tag.
+
+## Failure
+
+A rollback is failed when:
+
+* Keel was not paused first.
+* Only one container was changed.
+* A tag was applied without an exact digest.
+* Rollout did not complete.
+* The observed digest differs.
+* Health or readiness failed.
+* Policy was restored before deployment verification.
+* Required evidence is missing.
+
+In every such case, keep the release schedule disabled and notify the operator
+with the exact failed step.

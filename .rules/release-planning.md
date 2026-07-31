@@ -1,71 +1,92 @@
-# data-olympus-release-planner routine
+# Data Olympus release planning
 
 Status: active
-Since: 2026-07-11
-Schedule: cron `0 18 * * 5` (Friday 18:00 Europe/Madrid)
-Purpose: turn open GitHub issues into a scoped, reviewed, operator-approved release
-with implementation tickets, so the Monday cutter has a ready epic.
+Since: 2026-07-31
+Schedule: Friday at 18:00 Europe/Bucharest
+Automation status: disabled until baseline certification
 
-## What it does each run
+## Purpose
 
-1. Hygiene + gh auth: clean `main` checkout, `gh` reachable
-   (`tooling/paperclip-gh-auth-context`).
-2. Gather: `gh issue list --state open --json number,title,labels,milestone,body`.
-3. Select + cluster: target 4 (range 3-5) highest-value issues, then pull in
-   closely-related ones (shared files, labels, milestone, epic). Produce a Release
-   Scope Brief: chosen set with rationale, explicitly-deferred set, projected bump.
-4. Security clearance (MANDATORY, first phase). No release may be prepared while
-   any known weakness is open. Hard rule: by the end of this phase,
-   `python3 scripts/security_alerts.py` MUST exit 0 (zero open Dependabot AND zero
-   open CodeQL alerts) - that is the exact gate the Monday cutter re-checks and
-   blocks on (`.rules/release-routine.md` step 2a).
+The planning run identifies one release candidate from work that is already
+merged, reviewed, green, and unreleased on `origin/main`.
 
-   Query every OPEN alert (`python3 scripts/security_alerts.py` lists them; or
-   `gh api /repos/knaisoma/data-olympus/dependabot/alerts?state=open` and
-   `.../code-scanning/alerts?state=open`). Drive EVERY open alert to a disposition,
-   one of:
-   - **Fix / dependency update** - scope it as an implementation sub-ticket in the
-     release epic (the fix must land before the cutter runs); or
-   - **Dismissal with a recorded justification** - only after confirming it is a
-     false positive, not exploitable, or an accepted risk. Apply via:
-     `gh api -X PATCH /repos/knaisoma/data-olympus/code-scanning/alerts/<n>
-     -f state=dismissed -f dismissed_reason="false positive" -f
-     dismissed_comment="<why, <=280 chars>"`. Valid `dismissed_reason` values are
-     exactly `"false positive"`, `"won't fix"`, `"used in tests"` (Dependabot uses
-     `tolerable_risk`, `inaccurate`, `not_used`, `no_bandwidth`). The comment is a
-     hard cap of 280 characters.
+It does not select future issues, create a weekly feature batch, or promise that
+unfinished work will ship on Monday. Product planning and release planning are
+separate outcomes.
 
-   Dismissals are a security judgment: the planner PROPOSES each disposition, and
-   the OPERATOR approves them at the approval gate below (step 6) before anything
-   is dismissed. The release scope brief MUST list every open alert with its
-   planned disposition (fix ticket or dismissal + reason). A release is not scoped
-   until every alert has a disposition and the gate exits 0.
-5. Dual-architect review: the routine (Architect, Claude Opus) drafts the scope +
-   a per-issue implementation spec. The companion architect is `agy` with
-   Gemini 3.5 Flash (High):
-   `agy -p '<review prompt + brief>' --model 'Gemini 3.5 Flash (High)'`.
-   Fallback when agy/Gemini is unavailable: codex CLI with gpt-5.6-sol high
-   reasoning: `codex exec --sandbox read-only --skip-git-repo-check -m gpt-5.6-sol
-   -c model_reasoning_effort="high" -C <dir> '<review prompt>'`. Iterate until both
-   agree; record a `## Companion review (<agy | codex>)` evidence block
-   (WF-004 / collaboration protocol).
-6. Operator approval gate: request a Paperclip approval carrying the brief + specs;
-   notify the operator (Telegram, GDEC-007). Wait.
-7. On approval: create the release parent epic + one implementation sub-ticket per
-   selected issue, each with a `Ready for Build` block, a reviewer assigned
-   (GDEC-028), and `Branch: feature/<release-epic-id>` (WF-004 section 2.2 epic
-   integration branch). The iterative changes-requested and re-review cycle follows WF-004 section 7 (In Review to In Progress until the reviewer approves).
-   Create the `feature/<release-epic-id>` branch off `main`.
+## Authority
 
-## Constraints
+The run reads these sources before acting:
 
-- No em-dashes.
-- One release epic per week; the batch is expected ready by the following Monday
-  (strict 1-week pipeline). The Monday cutter (`.rules/release-routine.md`) gates on
-  readiness and never ships a batch that is not Done + reviewed + green.
-- The epic uses the WF-004 section 2.2 shared integration branch: each feature is
-  one squashed Conventional Commit per ticket on the branch, each sub-ticket updates
-  the CHANGELOG `[Unreleased]` block, and the single integration MR merges to `main`
-  with a MERGE COMMIT (never a squash), per `.rules/versioning.md`, so
-  `compute_release.py` sees each per-feature commit. This reconciles the "release
-  branch" model with STD-U-810 section 2 (no long-lived gitflow release branch).
+* The active Data Olympus records named by the AI Operations contract.
+* `AGENTS.md`.
+* `.rules/versioning.md`.
+* `.rules/release-routine.md`.
+* `.rules/release-rollback.md`.
+* The exact `origin/main` revision under consideration.
+
+The authority revision, contract digest, and source revision are recorded
+before admission.
+
+## Friday planning sequence
+
+1. Fetch `origin/main` and work from a clean dedicated worktree.
+2. Bind the candidate source to the exact remote `main` SHA.
+3. Run `uv run python scripts/compute_release.py`.
+4. If `releasable` is false, record `No action` with the computation and stop.
+5. If a release is due, require a version greater than the current stable
+   version. `v0.6.0` is immutable and can never be selected again.
+6. Run `python3 scripts/security_alerts.py`. Any open or unreadable alert blocks
+   planning. Alert dismissal remains a separate operator approved security
+   action and is never an automatic release planning side effect.
+7. Record the changelog hash and the test evidence bound to the exact source
+   SHA.
+8. Read the current kn dev workload image and record the exact rollback digest.
+   The intended Keel policy is `never`.
+9. Create or update exactly one open private GitHub issue for the candidate.
+   Discover the GitHub FastMCP surface first. If it cannot create or edit
+   issues, use the authenticated `gh` CLI and record the missing gateway
+   capability as the fallback reason.
+10. Leave the issue awaiting the Monday gates and exact SHA approval. Do not
+    publish a release candidate, move a channel, or change kn dev during
+    planning.
+
+## Required release issue fields
+
+The private release issue contains:
+
+* Candidate version.
+* Exact source SHA.
+* Authority revision.
+* AI Operations contract digest.
+* Changelog summary and content hash.
+* Security state and evidence hash.
+* Test commands, result, and evidence hash.
+* Current kn dev image and exact rollback digest.
+* Intended Keel policy.
+* Companion review state.
+* Operator approval state and approved source SHA.
+* Delivery, verification, notification, and rollback evidence as it becomes
+  available.
+
+The issue is a write ahead record. It is not completion evidence by itself.
+
+## Manual context
+
+Every manual run receives `ExtraContext` with the exact default:
+
+`No extra context for this run`
+
+The run may use meaningful extra context to adjust the candidate assessment,
+but it records only whether the default was used, normalized length, and a
+SHA256 hash. Raw extra context is not stored in the runner ledger.
+
+## Completion
+
+Planning is complete only when:
+
+* `No action` is proven from the exact remote `main` revision, or
+* One private release issue records the complete candidate evidence.
+
+An empty issue, a future scope, a list of open feature requests, or an alert
+query failure is not successful planning.
