@@ -30,6 +30,13 @@ _RESULTS_DIR = _REPO_ROOT / "benchmarks" / "results"
 _INDEX_PATH = _REPO_ROOT / "benchmarks" / "bench.db"
 
 
+def write_provenance_receipt(repo_root: Path = _REPO_ROOT) -> None:
+    """Bind generated artifacts to the exact benchmark source revision."""
+    from benchmarks.receipt import current_source_commit, write_receipt
+
+    write_receipt(repo_root, current_source_commit(repo_root))
+
+
 def main() -> None:
     from benchmarks.corpus_gen import generate_corpus
     from benchmarks.methods.bm25 import Bm25Method, StatusAwareBm25Method
@@ -79,6 +86,8 @@ def main() -> None:
     print(f"Writing results to {_RESULTS_DIR} ...")
     write_report(report, _RESULTS_DIR)
     print(f"  {len(report.rows)} aggregate rows written.")
+    write_provenance_receipt()
+    print("  provenance receipt written.")
     print("Done.")
 
 

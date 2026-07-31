@@ -3,9 +3,9 @@
 Status: active
 Since: 2026-07-01 (rewritten 2026-07-11 for staged promotion)
 Schedule: cron `0 5 * * 1` (Monday 05:00 Europe/Madrid)
-Human gate: a single Paperclip approval-to-ship after the release candidate is
-live on kn-dev and pre-release verification is green. The routine then promotes;
-it does not merge or publish before that approval.
+Human gate: a single Paperclip approval to ship after the complete release
+candidate is live on kn-dev and pre-release verification is green. The routine
+does not merge or promote stable before that approval.
 
 ## What it does each run (strict 1-week pipeline)
 
@@ -34,20 +34,24 @@ it does not merge or publish before that approval.
 4. Quality gates (all must pass, else open a `release blocked: <reason>` issue and
    stop): `uv run pytest -q`, `uv run ruff check .`, `uv run mypy src`,
    `bats -r tests`, a security review over `git diff <lasttag>..HEAD`, and `kb_health`.
-4a. Version-immutability readiness (hard block): run
+4a. Stable version immutability readiness (hard block): run
     `python3 scripts/check_version_free.py --version X.Y.Z`. A published version
     (PyPI, the ghcr `:vX.Y.Z` image tag, or a GitHub release/tag) is immutable, so
     a non-zero exit means the cut version is already taken (exit 3) or a registry
     was unreachable and the guard failed closed (exit 4). On either, STOP: bump the
     version (re-run step 3) or wait for the registry, then re-check. The same guard
-    runs automatically as the first step of `tag-release.yml`'s `decide` job (before
-    the tag is pushed) and in PR CI, so this is the cutter's early confirmation. A
-    genuine reconcile (local tag `vX.Y.Z` already at HEAD) is allowed by the guard
-    and skips the registry lookups. Only the operator may override a stuck registry
-    with `KB_BYPASS_VERSION_CHECK=1`.
-5. Build the RC: `gh workflow run rc-publish.yml -f ref=feature/<release-epic-id>`.
-   This publishes `ghcr.io/knaisoma/data-olympus:X.Y.Z-rc.N` + the `:rc` channel and
-   a GitHub pre-release. Wait for the run to succeed; capture `X.Y.Z-rc.N`.
+    runs in PR CI, so this is the cutter's early confirmation. A genuine
+    reconcile is allowed only when every existing artifact names the same exact
+    source and hash. Only the operator may override a stuck registry with
+    `KB_BYPASS_VERSION_CHECK=1`.
+5. Resolve `SOURCE_SHA` from the final reviewed integration head and select the
+   next unused candidate number, which must be 3 or greater for 0.6.0. Dispatch
+   `gh workflow run rc-publish.yml -f ref="$SOURCE_SHA" -f number="$RC_NUMBER"`.
+   The workflow publishes `X.Y.ZrcN` to PyPI, the
+   `ghcr.io/knaisoma/data-olympus:X.Y.Z-rc.N` image, a wheel, sdist,
+   `release-provenance.json`, and the GitHub prerelease from the exact source SHA.
+   The `rc` channel moves only after all candidate surfaces verify. Wait for the
+   run to succeed and capture every hash and digest from the provenance asset.
 6. Canary + record rollback point: read the current `:kndev` source (the stable
    version kn-dev runs) and record it (`.rules/release-rollback.md` step 0). Then
    `gh workflow run set-channel.yml -f source=X.Y.Z-rc.N`. Keel rolls the RC onto
@@ -58,16 +62,18 @@ it does not merge or publish before that approval.
 8. Approval-to-ship: request a Paperclip approval on the epic and notify the
    operator (Telegram). The operator may exercise the RC live on kn-dev, then
    approves or rejects. On rejection, roll back and stop.
-9. Promote (on approval): merge the integration MR (`feature/<release-epic-id>` ->
-   `main`) with a MERGE COMMIT, never a squash (per `.rules/versioning.md`: each
+9. Promote (on approval): merge the integration MR (`feature/<release-epic-id>`
+   to `main`) with a MERGE COMMIT, never a squash (per `.rules/versioning.md`: each
    per-feature commit and the `chore(release)` version-cut commit must reach `main`
-   individually so `compute_release.py` (which walks `git log --no-merges`) and
-   `tag-release.yml` see them). `tag-release.yml` then cuts tag `vX.Y.Z`, builds the
-   stable image, publishes PyPI, and creates the GitHub Release. Because a verified
-   `X.Y.Z-rc.N` image exists in ghcr, `tag-release.yml` promotes it by re-tagging that
-   exact digest to `vX.Y.Z` + `:latest` (byte-identical to what passed kn-dev verification),
-   rather than building fresh. Then `gh workflow run set-channel.yml -f source=vX.Y.Z` so
-   kn-dev runs the promoted stable.
+   individually so `compute_release.py` sees them). Wait for required CI on the
+   resulting `main` SHA. Then explicitly dispatch `tag-release.yml` through
+   `workflow_dispatch` with `candidate_tag=X.Y.Z-rc.N`. The workflow rejects any
+   candidate other than the highest complete candidate, requires its source to
+   be an ancestor of `main`, and enters the protected `pypi` environment before
+   publishing stable Python artifacts. It creates `vX.Y.Z` at the candidate
+   source SHA only after PyPI succeeds, then promotes the exact verified GHCR
+   digest to `vX.Y.Z`, `stable`, and `latest` without rebuilding. Finally run
+   `gh workflow run set-channel.yml -f source=vX.Y.Z` so kn-dev runs stable.
 10. Post-release verify: `data-olympus verify --target <kn-dev ingress>` green. If
     red, roll back per `.rules/release-rollback.md` (post-release path) and notify.
 11. Release note into the Paperclip task: post the `docs/releases/vX.Y.Z.md` content
@@ -84,11 +90,13 @@ it does not merge or publish before that approval.
 
 ## Constraints
 
-- No em-dashes in authored prose.
-- The RC image carries the final `X.Y.Z` (baked from `pyproject.toml`); `-rc.N` is a
+* No em dashes in authored prose.
+* The RC image carries the final `X.Y.Z` from `pyproject.toml`; `-rc.N` is a
   registry channel tag only. See `.rules/versioning.md` and STD-U-810.
-- ghcr operations run in CI (dispatched via `gh workflow run`); the runtime needs
+* Candidate Python artifacts use the PEP 440 version `X.Y.ZrcN` and are part of
+  the public candidate transaction.
+* GHCR operations run in CI through `gh workflow run`; the runtime needs
   ghcr package-write via CI's token and the `kn-dev` SSH key only for direct
   cluster inspection/rollback.
-- Exactly one release epic in flight; the pipeline is idempotent (re-running a
-  green step is safe: rc-publish, tag-release, and set-channel are all idempotent).
+* Exactly one release epic is in flight. The pipeline is reconcilable. Rerunning
+  a green `rc-publish`, `tag-release`, or `set-channel` step is idempotent.

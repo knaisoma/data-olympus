@@ -134,16 +134,16 @@ and we think it is a sensible one, we would rather build on it than around it.
 In practice that design intent means a data-olympus bundle inherits OKF's
 directory structure, frontmatter conventions, reserved filenames, and link
 model, so an OKF consumer that tolerates unknown keys (as the OKF spec
-requires) should be able to read it. We have not yet run a real OKF reference
-consumer against a data-olympus bundle to confirm that end to end, or the
-reverse (importing an OKF-tooling-produced bundle and confirming it governs
-cleanly); that executable check is tracked in
-[issue #82](https://github.com/knaisoma/data-olympus/issues/82), not shipped
-today.
+requires) can read it. We test that claim against official Google OKF commit
+`d44368c15e38e7c92481c5992e4f9b5b421a801d`: its reference visualization
+consumer reads every concept in our example bundle, and our importer converts
+the pinned official sample into lint-clean, searchable, retrievable governed
+drafts. This is exact-revision, fixture-scoped evidence, not a promise about
+every OKF bundle or a future upstream change.
 
 The natural question is then why use data-olympus rather than OKF directly. OKF
-defines a deliberately minimal required set (an `id`, a `type`, a `spec_version`)
-and no governance fields. What we add sits on top of that baseline:
+requires only a nonempty `type` on a concept document and leaves governance
+fields open. What we add sits on top of that baseline:
 
 - A stable `id` that is decoupled from the file path, so reorganizing the tree
   does not change a concept's identity.
@@ -177,6 +177,8 @@ opt-in rather than the default. The full methodology and the numbers are in
 [`benchmarks/README.md`](benchmarks/README.md), and you can regenerate them. The
 table below is generated from the committed results and CI-checked for drift, so
 it cannot quietly go stale.
+
+**Maintainer-produced; not independently reproduced.**
 
 With that said, here is where we are strongest, measured against a plain BM25
 keyword baseline and a status-aware BM25 baseline (BM25 that also reads the

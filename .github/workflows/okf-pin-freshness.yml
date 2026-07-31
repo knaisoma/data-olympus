@@ -1,0 +1,140 @@
+name: OKF pin freshness
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare the pin with official OKF main
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require("fs");
+            const crypto = require("crypto");
+            const pin = JSON.parse(
+              fs.readFileSync("tests/okf/reference.json", "utf8")
+            );
+            const title = "[automation] OKF reference pin is stale";
+            const upstream = await github.rest.repos.getCommit({
+              owner: "GoogleCloudPlatform",
+              repo: "knowledge-catalog",
+              ref: "main",
+            });
+            const upstreamSha = upstream.data.sha;
+            const tree = await github.rest.git.getTree({
+              owner: "GoogleCloudPlatform",
+              repo: "knowledge-catalog",
+              tree_sha: upstream.data.commit.tree.sha,
+              recursive: "true",
+            });
+            if (tree.data.truncated) {
+              throw new Error("upstream tree response was truncated");
+            }
+            const prefix = `${pin.fixture_path}/`;
+            const blobs = tree.data.tree
+              .filter(item => item.type === "blob" && item.path.startsWith(prefix))
+              .sort((left, right) =>
+                left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+              );
+            if (blobs.length === 0) {
+              throw new Error(`upstream fixture is missing at ${pin.fixture_path}`);
+            }
+            const hash = crypto.createHash("sha256");
+            for (const blob of blobs) {
+              const response = await github.rest.git.getBlob({
+                owner: "GoogleCloudPlatform",
+                repo: "knowledge-catalog",
+                file_sha: blob.sha,
+              });
+              const content = Buffer.from(response.data.content.replace(/\n/g, ""), "base64");
+              hash.update(`./${blob.path.slice(prefix.length)}`);
+              hash.update("\0");
+              hash.update(content);
+              hash.update("\0");
+            }
+            const upstreamFixtureSha256 = hash.digest("hex");
+            const listed = await github.paginate(
+              github.rest.issues.listForRepo,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: "all",
+                per_page: 100,
+              }
+            );
+            const matches = listed.filter(
+              issue => !issue.pull_request && issue.title === title
+            );
+            const canonical = matches[0];
+
+            for (const duplicate of matches.slice(1)) {
+              if (duplicate.state === "open") {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: duplicate.number,
+                  state: "closed",
+                  state_reason: "not_planned",
+                });
+              }
+            }
+
+            if (pin.fixture_sha256 === upstreamFixtureSha256) {
+              core.info(`OKF fixture remains current at upstream ${upstreamSha}`);
+              if (canonical && canonical.state === "open") {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: canonical.number,
+                  body: `The pinned fixture content is current again at upstream \`${upstreamSha}\`. Closing.`,
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: canonical.number,
+                  state: "closed",
+                  state_reason: "completed",
+                });
+              }
+              return;
+            }
+
+            const body = [
+              "The official Google OKF fixture has changed beyond the reviewed pin.",
+              "",
+              `* Recorded pin: \`${pin.commit}\``,
+              `* Current upstream: \`${upstreamSha}\``,
+              `* Recorded fixture SHA256: \`${pin.fixture_sha256}\``,
+              `* Current fixture SHA256: \`${upstreamFixtureSha256}\``,
+              "",
+              "Review the upstream diff, refresh the vendored fixture and license provenance,",
+              "rerun both conformance directions, and update the pin in a reviewed pull request.",
+              "This workflow never changes the pin automatically.",
+            ].join("\n");
+
+            if (canonical) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: canonical.number,
+                title,
+                body,
+                state: "open",
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+              });
+            }

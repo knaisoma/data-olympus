@@ -7,9 +7,9 @@ runtime-only serving-envelope fields that never touch frontmatter, which are
 experimental candidates tracked against open OKF discussions, and how each
 maps to OKF baseline compatibility. It exists so an adjacent OKF implementer
 (or a data-olympus operator) can compare field names and semantics without
-reading the codebase, and so nobody (including us) overclaims formal OKF
-conformance before [issue #82](https://github.com/knaisoma/data-olympus/issues/82)
-lands an executable test against OKF reference tooling.
+reading the codebase, and so nobody (including us) overclaims beyond the exact
+interoperability evidence recorded for [issue
+#82](https://github.com/knaisoma/data-olympus/issues/82).
 
 **This is a profile document, not a new specification.** `SPEC.md` remains the
 authoritative source; where this document restates a rule, `SPEC.md` wins on
@@ -37,15 +37,17 @@ sections 3-5). Specifically:
   it is what lets an OKF consumer silently ignore `supersedes`, `validity`,
   and every other data-olympus addition.
 
-**On the conformance wording, deliberately careful:** `SPEC.md` section 1 says
-this profile is "designed to be readable by consumers of ... OKF" and that
-"formal conformance testing against the OKF reference tooling is not yet in
-place." Section 11 repeats the same qualifier: the claim "rests on shared
-structure by construction, not on an executable check." [Issue
-#82](https://github.com/knaisoma/data-olympus/issues/82) tracks adding that
-executable check. Until it lands, every "OKF-readable" or "OKF-compatible"
-claim in this document (and in `README.md`/`WHY.md`) means exactly that shared
-structure, and nothing stronger.
+**On the conformance wording, deliberately careful:** CI pins official Google
+OKF commit `d44368c15e38e7c92481c5992e4f9b5b421a801d` and verifies the fixture and
+Apache 2.0 license checksums from `tests/okf/reference.json`. Google's reference
+visualization consumer reads every concept in `example-bundle`. In the reverse
+direction, the data-olympus OKF importer converts the pinned official Bitcoin
+sample into governed drafts, then the linter, index, search, and retrieval paths
+consume all five concepts. These are executable interoperability checks for the
+named revision and fixtures. They are not a formal certification, a round-trip
+fidelity claim, or evidence for every possible OKF bundle. A scheduled workflow
+reports upstream pin drift by maintaining one GitHub issue and never updates the
+pin automatically.
 
 ---
 
