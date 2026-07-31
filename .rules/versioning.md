@@ -1,86 +1,104 @@
-# Rule: how data-olympus versions and releases
+# Data Olympus versioning and release rule
 
 Status: active
-Since: 2026-07-01
-Applies to: the data-olympus product (this repository)
+Since: 2026-07-31
+Applies to: the Data Olympus product
 Governing standard: STD-U-810
 
-## Bump mapping (pre-1.0)
+## Version mapping before 1.0
 
-data-olympus is pre-1.0. STD-U-810 §3.1.1 lets a pre-1.0 project adopt a
-features-as-minor mapping instead of the squashed default, provided the choice is
-documented in the project's local rules. data-olympus adopts it: a `feat:` drives
-a MINOR bump, so shipped features are visible in the version number. Conventional
-Commit types on commits since the last tag drive the bump:
+Data Olympus uses the documented pre 1.0 project deviation where features
+advance the minor version.
 
-- `feat:` -> minor (new functionality; resets patch, e.g. 0.1.x -> 0.2.0)
-- `feat!:`, any `type!:`, or a `BREAKING CHANGE:` footer -> minor (a breaking change pre-1.0 stays pre-1.0; it does NOT force 1.0.0)
-- `fix:` / `perf:` -> patch
-- `chore/docs/ci/build/refactor/test/style` -> no release, EXCEPT floored to patch when a functional path changed
+Conventional Commit types since the last stable tag drive the bump:
 
-This DEVIATES from the STD-U-810 §3.1.1 default (which maps pre-1.0 `feat:` to a
-patch); the deviation is the documented project choice §3.1.1 requires. Pre-1.0 a
-breaking change is a minor bump, not major, so the project stays in the `0.x`
-series until `v1.0.0` is cut deliberately.
+* `feat:` advances the minor version.
+* Any breaking change advances the minor version while the project remains
+  before 1.0.
+* `fix:` and `perf:` advance the patch version.
+* Other types do not create a release unless a functional path changed.
 
-"Functional path" is the exact set `scripts/check_changelog.py` defines: `src/`,
-`bin/`, `deploy/`, and `SPEC.md`. This safety net guarantees source changes are
-never left unreleased even if the commit type is non-user-facing.
+Functional paths are defined by `scripts/check_changelog.py`:
 
-The project stays pre-1.0 until `v1.0.0` is cut deliberately. When it reaches
-1.0, `bump_for` in `scripts/compute_release.py` switches breaking -> major
-(`feat:` already maps to minor), and this rule is updated.
+* `src/`
+* `bin/`
+* `deploy/`
+* `SPEC.md`
 
-## Engine
+A functional path change creates at least a patch release even when its commit
+type would otherwise produce no release.
 
-* `scripts/compute_release.py` computes the bump as the single source of the
-  bump rules.
-* The release cutter prepares the final version commit on the integration
-  branch before any candidate is published.
-* `rc-publish.yml` receives an exact source SHA and explicit candidate number.
-  It publishes a wheel, sdist, `release-provenance.json`, GHCR image, PyPI
-  prerelease, and GitHub prerelease from that exact source SHA. The moving `rc`
-  channel changes only after every candidate surface verifies successfully.
-* Candidate Python versions use `X.Y.ZrcN`. GHCR and GitHub candidates use
-  `X.Y.Z-rc.N`.
-* After canary verification and human approval, the integration branch is
-  merged to `main`. Stable publication does not start from the merge event.
-  The operator explicitly dispatches `tag-release.yml` with `candidate_tag`
-  naming the highest complete candidate.
-* Stable promotion requires the candidate source to be an ancestor of `main`.
-  It rebuilds the wheel and sdist from the candidate source, permits only
-  normalized version metadata to differ, publishes through the protected
-  `pypi` environment, creates the stable tag at the candidate source SHA, and
-  promotes the exact candidate image digest without rebuilding it.
-* `pyproject.toml` is the single version source of truth (STD-U-810 §11.4).
+## Single source
 
-## PR discipline
+`scripts/compute_release.py` is the single source for bump computation.
 
-Merge method follows the granularity of the change (amended 2026-07-04; the
-previous rule was squash-only):
+`pyproject.toml` is the single source for the package version.
 
-- **Feature/fix PRs (one logical change) are squash-merged.** The PR title is
-  the one Conventional Commit and is linted by
-  `.github/workflows/pr-title-lint.yml` (STD-U-810 §7.1 equivalent). This
-  applies equally to PRs targeting `main` and PRs targeting a release branch.
-- **Release integration branches (`feature/<release-epic-id>`) merge into `main` with a
-  merge commit, never a squash.** Each constituent commit on the release branch
-  is already one squashed Conventional Commit per feature/fix, so a merge
-  commit preserves one readable commit per change on `main` (blame and bisect
-  keep per-feature granularity), while squashing again would collapse the whole
-  release into a single opaque commit. The release PR title still follows the
-  Conventional format (`chore(release): vX.Y.Z`) for the PR-title lint, but the
-  merge commit itself carries no bump-relevant type: `compute_release.py` reads
-  the constituent commits. Stable promotion is dispatched explicitly after the
-  merge and checks that the candidate source is an ancestor of `main`, so it is
-  also unaffected by the merge method.
-  (`compute_release.py` walks `git log --no-merges`, so the merge commit is
-  invisible to the bump computation by construction.)
-- **Do not confuse the two release branch kinds.** The daily release-cutter
-  routine (`.rules/release-routine.md`) opens `chore/release-v<next>` PR
-  branches containing a single version-cut commit; those are one logical
-  change and stay squash-merged. `feature/<release-epic-id>` integration branches, used
-  when a coordinated program lands many features/fixes together before one
-  gated merge to `main`, are the case the merge-commit rule above exists for.
-- Every functional PR updates the CHANGELOG `[Unreleased]` block (see
-  `.rules/changelog-per-release.md`).
+The AI Operations runner consumes their output and never reimplements the
+mapping.
+
+## Outcome based release
+
+The release routine examines work already merged to `origin/main`.
+
+It does not create a feature batch, choose a quota of issues, or assume that
+Friday planning must produce a Monday release.
+
+When a release is due:
+
+1. Create one short lived `chore/release-vX.Y.Z` branch from the approved main
+   SHA.
+2. Update `pyproject.toml`, the changelog, and the release note in one logical
+   release change.
+3. Review and merge that change through the current repository rules.
+4. Bind the candidate to the resulting exact main SHA.
+5. Publish and promote only through the existing release workflows.
+
+## Pull request discipline
+
+Feature and fix pull requests contain one logical change and are squash merged.
+The pull request title is the Conventional Commit recorded on `main`.
+
+The release pull request also contains one logical release change and is squash
+merged.
+
+The repository currently enforces linear history. Ordinary release work must
+not require a merge commit or an integration branch that bypasses that rule.
+
+The exceptional 2026-07-31 history reconciliation preserved the already
+published `v0.6.0` ancestry through an explicit recovery merge. That exception
+does not define the future release pattern.
+
+## Candidate and stable publication
+
+Candidate identities use:
+
+* Python version `X.Y.ZrcN`.
+* GHCR and GitHub prerelease tag `X.Y.Z-rc.N`.
+
+`rc-publish.yml` receives an exact source SHA and candidate number. It publishes
+the complete candidate transaction and moves the `rc` channel only after every
+surface verifies.
+
+`tag-release.yml` is invoked only by explicit `workflow_dispatch` with the
+`candidate_tag` input naming the highest complete candidate. It requires the
+candidate source to be an ancestor of `main`. It enters the protected `pypi` environment,
+publishes stable Python artifacts from the same source, creates `vX.Y.Z` at that
+source, and promotes the exact OCI digest without rebuilding it.
+
+`set-channel.yml` moves registry channels to an existing image digest. It does
+not build an image and does not deploy kn dev while Keel policy is `never`.
+
+## Immutability
+
+Published versions, Git tags, GitHub releases, and OCI version tags are
+immutable.
+
+`v0.6.0` is already published and reconciled into `main`. It must never be
+rebuilt, retagged, or republished. The next valid release is a forward version,
+currently expected to be `v0.6.1` when the exact main history remains
+releasable.
+
+Any collision or source mismatch blocks the release. Recovery uses a new
+version or a higher candidate number, never replacement of an existing
+artifact.

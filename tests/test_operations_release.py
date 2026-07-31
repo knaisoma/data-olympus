@@ -1,0 +1,721 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from scripts.operations.release import (
+    DEFAULT_EXTRA_CONTEXT,
+    evaluate_stage,
+    main,
+)
+
+SOURCE_SHA = "a" * 40
+AUTHORITY_SHA = "b" * 40
+CONTRACT_SHA = "c" * 64
+IMAGE_DIGEST = "sha256:" + "d" * 64
+PREVIOUS_DIGEST = "sha256:" + "e" * 64
+
+
+def _candidate() -> dict[str, object]:
+    return {
+        "version": "0.6.1",
+        "candidate_tag": "0.6.1-rc.1",
+        "source_revision": SOURCE_SHA,
+        "image_digest": IMAGE_DIGEST,
+    }
+
+
+def _authority_input() -> dict[str, object]:
+    return {
+        "authority_revision": AUTHORITY_SHA,
+        "contract_revision": CONTRACT_SHA,
+        "source_revision": SOURCE_SHA,
+    }
+
+
+def _admission_input(*, releasable: bool = True) -> dict[str, object]:
+    return {
+        "branch": "main",
+        "source_revision": SOURCE_SHA,
+        "remote_main_revision": SOURCE_SHA,
+        "computed_release": {
+            "releasable": releasable,
+            "bump": "patch" if releasable else "none",
+            "current_version": "0.6.0",
+            "next_version": "0.6.1" if releasable else "0.6.0",
+            "functional_changed": False,
+            "changes": {
+                "features": [],
+                "fixes": (
+                    ["fix(ci): allow immutable history reconciliation"] if releasable else []
+                ),
+                "breaking": [],
+            },
+        },
+    }
+
+
+def test_authority_binds_governance_contract_and_source_revisions() -> None:
+    result = evaluate_stage("authority", _authority_input())
+
+    assert result["status"] == "pass"
+    assert result["evidence"] == _authority_input()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("authority_revision", "not-a-sha"),
+        ("contract_revision", ""),
+        ("source_revision", "short"),
+    ],
+)
+def test_authority_fails_closed_on_invalid_revisions(
+    field: str,
+    value: str,
+) -> None:
+    input_document = _authority_input()
+    input_document[field] = value
+
+    result = evaluate_stage("authority", input_document)
+
+    assert result["status"] == "blocked"
+    assert field in result["reason"]
+
+
+def test_admission_returns_truthful_no_action_only_for_no_release() -> None:
+    result = evaluate_stage(
+        "admission",
+        _admission_input(releasable=False),
+    )
+
+    assert result["status"] == "no_action"
+    assert result["evidence"]["source_revision"] == SOURCE_SHA
+    assert result["outputs"] == {}
+
+
+def test_admission_emits_exact_forward_candidate() -> None:
+    result = evaluate_stage("admission", _admission_input())
+
+    assert result["status"] == "pass"
+    assert result["outputs"]["candidate"] == {
+        "version": "0.6.1",
+        "source_revision": SOURCE_SHA,
+        "bump": "patch",
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutate", "reason"),
+    [
+        (
+            lambda value: value.__setitem__("branch", "feature/not-main"),
+            "main",
+        ),
+        (
+            lambda value: value.__setitem__(
+                "remote_main_revision",
+                "f" * 40,
+            ),
+            "remote main",
+        ),
+        (
+            lambda value: value["computed_release"].__setitem__(
+                "next_version",
+                "0.6.0",
+            ),
+            "v0.6.0",
+        ),
+        (
+            lambda value: value["computed_release"].__setitem__(
+                "next_version",
+                "0.9.0",
+            ),
+            "does not match",
+        ),
+    ],
+)
+def test_admission_blocks_unmerged_changed_or_v060_candidate(
+    mutate,
+    reason: str,
+) -> None:
+    input_document = _admission_input()
+    mutate(input_document)
+
+    result = evaluate_stage("admission", input_document)
+
+    assert result["status"] == "blocked"
+    assert reason in result["reason"]
+
+
+def test_prepare_confirms_one_private_issue_and_hashes_extra_context() -> None:
+    result = evaluate_stage(
+        "prepare",
+        {
+            "candidate": _candidate(),
+            "extra_context": DEFAULT_EXTRA_CONTEXT,
+            "changelog": {
+                "source_revision": SOURCE_SHA,
+                "content_hash": "1" * 64,
+            },
+            "security": {"exit_code": 0, "report_hash": "2" * 64},
+            "tests": {
+                "source_revision": SOURCE_SHA,
+                "passed": True,
+                "evidence_hash": "3" * 64,
+            },
+            "rollback_point": {
+                "image": f"ghcr.io/knaisoma/data-olympus@{PREVIOUS_DIGEST}",
+                "digest": PREVIOUS_DIGEST,
+                "keel_policy": "never",
+            },
+            "release_issue": {
+                "count": 1,
+                "private": True,
+                "number": 177,
+                "url": "https://github.com/knaisoma/data-olympus/issues/177",
+                "source_revision": SOURCE_SHA,
+                "candidate_version": "0.6.1",
+                "body_hash": "4" * 64,
+            },
+        },
+    )
+
+    assert result["status"] == "pass"
+    context = result["evidence"]["extra_context"]
+    assert context["default"] is True
+    assert context["length"] == len(DEFAULT_EXTRA_CONTEXT)
+    assert len(context["sha256"]) == 64
+    assert DEFAULT_EXTRA_CONTEXT not in json.dumps(result)
+    assert result["outputs"]["release_issue_number"] == 177
+
+
+def test_prepare_blocks_when_the_private_release_issue_is_missing() -> None:
+    input_document = {
+        "candidate": _candidate(),
+        "extra_context": DEFAULT_EXTRA_CONTEXT,
+        "changelog": {
+            "source_revision": SOURCE_SHA,
+            "content_hash": "1" * 64,
+        },
+        "security": {"exit_code": 0, "report_hash": "2" * 64},
+        "tests": {
+            "source_revision": SOURCE_SHA,
+            "passed": True,
+            "evidence_hash": "3" * 64,
+        },
+        "rollback_point": {
+            "image": f"ghcr.io/knaisoma/data-olympus@{PREVIOUS_DIGEST}",
+            "digest": PREVIOUS_DIGEST,
+            "keel_policy": "never",
+        },
+        "release_issue": {
+            "count": 0,
+            "private": True,
+            "number": 177,
+            "url": "https://github.com/knaisoma/data-olympus/issues/177",
+            "source_revision": SOURCE_SHA,
+            "candidate_version": "0.6.1",
+            "body_hash": "4" * 64,
+        },
+    }
+
+    result = evaluate_stage("prepare", input_document)
+
+    assert result["status"] == "blocked"
+    assert "exactly one private release issue" in result["reason"]
+
+
+def test_validate_requires_unchanged_candidate_and_all_exact_gates() -> None:
+    result = evaluate_stage(
+        "validate",
+        {
+            "candidate": _candidate(),
+            "current_source_revision": SOURCE_SHA,
+            "ci": {
+                "source_revision": SOURCE_SHA,
+                "all_success": True,
+                "missing_required": [],
+            },
+            "security": {"exit_code": 0},
+            "version_free": {"version": "0.6.1", "free": True},
+            "tests": {
+                "source_revision": SOURCE_SHA,
+                "passed": True,
+            },
+        },
+    )
+
+    assert result["status"] == "pass"
+    assert result["evidence"]["source_revision"] == SOURCE_SHA
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value.__setitem__(
+            "current_source_revision",
+            "f" * 40,
+        ),
+        lambda value: value["ci"].__setitem__("all_success", False),
+        lambda value: value["security"].__setitem__("exit_code", 5),
+        lambda value: value["version_free"].__setitem__("free", False),
+        lambda value: value["tests"].__setitem__("passed", False),
+    ],
+)
+def test_validate_fails_closed_when_any_gate_changes(mutate) -> None:
+    input_document = {
+        "candidate": _candidate(),
+        "current_source_revision": SOURCE_SHA,
+        "ci": {
+            "source_revision": SOURCE_SHA,
+            "all_success": True,
+            "missing_required": [],
+        },
+        "security": {"exit_code": 0},
+        "version_free": {"version": "0.6.1", "free": True},
+        "tests": {"source_revision": SOURCE_SHA, "passed": True},
+    }
+    mutate(input_document)
+
+    result = evaluate_stage("validate", input_document)
+
+    assert result["status"] == "blocked"
+
+
+def test_review_requires_crossed_claude_codex_families_and_sha_approval() -> None:
+    result = evaluate_stage(
+        "review",
+        {
+            "candidate": _candidate(),
+            "current_source_revision": SOURCE_SHA,
+            "executor": {"family": "codex", "source_revision": SOURCE_SHA},
+            "companion_review": {
+                "family": "claude",
+                "verdict": "APPROVE",
+                "reviewed_source_revision": SOURCE_SHA,
+                "evidence_hash": "5" * 64,
+            },
+            "operator_approval": {
+                "approved": True,
+                "source_revision": SOURCE_SHA,
+                "approval_id": "approval-0.6.1",
+            },
+        },
+    )
+
+    assert result["status"] == "pass"
+    assert result["evidence"]["reviewer_family"] == "claude"
+    assert result["evidence"]["executor_family"] == "codex"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value["companion_review"].__setitem__(
+            "family",
+            "codex",
+        ),
+        lambda value: value["companion_review"].__setitem__(
+            "verdict",
+            "BLOCK",
+        ),
+        lambda value: value["companion_review"].__setitem__(
+            "reviewed_source_revision",
+            "f" * 40,
+        ),
+        lambda value: value["operator_approval"].__setitem__(
+            "approved",
+            False,
+        ),
+        lambda value: value["operator_approval"].__setitem__(
+            "source_revision",
+            "f" * 40,
+        ),
+    ],
+)
+def test_review_blocks_self_review_changed_sha_or_missing_approval(
+    mutate,
+) -> None:
+    input_document = {
+        "candidate": _candidate(),
+        "current_source_revision": SOURCE_SHA,
+        "executor": {"family": "codex", "source_revision": SOURCE_SHA},
+        "companion_review": {
+            "family": "claude",
+            "verdict": "APPROVE",
+            "reviewed_source_revision": SOURCE_SHA,
+            "evidence_hash": "5" * 64,
+        },
+        "operator_approval": {
+            "approved": True,
+            "source_revision": SOURCE_SHA,
+            "approval_id": "approval-0.6.1",
+        },
+    }
+    mutate(input_document)
+
+    result = evaluate_stage("review", input_document)
+
+    assert result["status"] == "blocked"
+
+
+def test_deliver_accepts_only_existing_workflows_bound_to_candidate() -> None:
+    result = evaluate_stage(
+        "deliver",
+        {
+            "candidate": _candidate(),
+            "current_source_revision": SOURCE_SHA,
+            "workflows": [
+                {
+                    "name": "rc-publish.yml",
+                    "conclusion": "success",
+                    "source_revision": SOURCE_SHA,
+                    "candidate_tag": "0.6.1-rc.1",
+                },
+                {
+                    "name": "tag-release.yml",
+                    "conclusion": "success",
+                    "source_revision": SOURCE_SHA,
+                    "candidate_tag": "0.6.1-rc.1",
+                },
+                {
+                    "name": "set-channel.yml",
+                    "conclusion": "success",
+                    "source_revision": SOURCE_SHA,
+                    "source_tag": "v0.6.1",
+                },
+            ],
+            "canary": {
+                "candidate_tag": "0.6.1-rc.1",
+                "source_revision": SOURCE_SHA,
+                "digest": IMAGE_DIGEST,
+                "keel_policy": "never",
+                "rollout_complete": True,
+                "healthy": True,
+                "ready": True,
+                "mcp_search": True,
+                "enforcement": True,
+            },
+            "deployment": {
+                "keel_policy": "never",
+                "image_digest": IMAGE_DIGEST,
+                "source_revision": SOURCE_SHA,
+                "rollout_complete": True,
+            },
+        },
+    )
+
+    assert result["status"] == "pass"
+    assert result["outputs"]["published_version"] == "0.6.1"
+
+
+def test_deliver_fails_stable_promotion_without_verified_canary() -> None:
+    input_document = {
+        "candidate": _candidate(),
+        "current_source_revision": SOURCE_SHA,
+        "workflows": [
+            {
+                "name": "rc-publish.yml",
+                "conclusion": "success",
+                "source_revision": SOURCE_SHA,
+                "candidate_tag": "0.6.1-rc.1",
+            },
+            {
+                "name": "tag-release.yml",
+                "conclusion": "success",
+                "source_revision": SOURCE_SHA,
+                "candidate_tag": "0.6.1-rc.1",
+            },
+            {
+                "name": "set-channel.yml",
+                "conclusion": "success",
+                "source_revision": SOURCE_SHA,
+                "source_tag": "v0.6.1",
+            },
+        ],
+        "canary": {
+            "candidate_tag": "0.6.1-rc.1",
+            "source_revision": SOURCE_SHA,
+            "digest": IMAGE_DIGEST,
+            "keel_policy": "never",
+            "rollout_complete": True,
+            "healthy": False,
+            "ready": True,
+            "mcp_search": True,
+            "enforcement": True,
+        },
+        "deployment": {
+            "keel_policy": "never",
+            "image_digest": IMAGE_DIGEST,
+            "source_revision": SOURCE_SHA,
+            "rollout_complete": True,
+        },
+    }
+
+    result = evaluate_stage("deliver", input_document)
+
+    assert result["status"] == "failed"
+    assert "canary.healthy" in result["reason"]
+
+
+def test_verify_requires_every_surface_and_live_service_to_match() -> None:
+    result = evaluate_stage(
+        "verify",
+        {
+            "candidate": _candidate(),
+            "github_release": {
+                "tag": "v0.6.1",
+                "source_revision": SOURCE_SHA,
+            },
+            "pypi": {
+                "version": "0.6.1",
+                "provenance_source_revision": SOURCE_SHA,
+            },
+            "image": {"tag": "v0.6.1", "digest": IMAGE_DIGEST},
+            "deployment": {
+                "source_revision": SOURCE_SHA,
+                "digest": IMAGE_DIGEST,
+                "healthy": True,
+                "ready": True,
+                "mcp_search": True,
+                "enforcement": True,
+                "documentation": True,
+            },
+        },
+    )
+
+    assert result["status"] == "pass"
+    assert result["evidence"]["digest"] == IMAGE_DIGEST
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value["github_release"].__setitem__(
+            "source_revision",
+            "f" * 40,
+        ),
+        lambda value: value["pypi"].__setitem__("version", "0.6.2"),
+        lambda value: value["image"].__setitem__(
+            "digest",
+            PREVIOUS_DIGEST,
+        ),
+        lambda value: value["deployment"].__setitem__("healthy", False),
+        lambda value: value["deployment"].__setitem__("ready", False),
+        lambda value: value["deployment"].__setitem__("mcp_search", False),
+        lambda value: value["deployment"].__setitem__("enforcement", False),
+        lambda value: value["deployment"].__setitem__(
+            "documentation",
+            False,
+        ),
+    ],
+)
+def test_verify_fails_closed_when_any_external_surface_differs(mutate) -> None:
+    input_document = {
+        "candidate": _candidate(),
+        "github_release": {
+            "tag": "v0.6.1",
+            "source_revision": SOURCE_SHA,
+        },
+        "pypi": {
+            "version": "0.6.1",
+            "provenance_source_revision": SOURCE_SHA,
+        },
+        "image": {"tag": "v0.6.1", "digest": IMAGE_DIGEST},
+        "deployment": {
+            "source_revision": SOURCE_SHA,
+            "digest": IMAGE_DIGEST,
+            "healthy": True,
+            "ready": True,
+            "mcp_search": True,
+            "enforcement": True,
+            "documentation": True,
+        },
+    }
+    mutate(input_document)
+
+    result = evaluate_stage("verify", input_document)
+
+    assert result["status"] == "failed"
+
+
+def test_notify_requires_exact_independent_readback() -> None:
+    result = evaluate_stage(
+        "notify",
+        {
+            "destination": "data-olympus-operations",
+            "readback_destination": "data-olympus-operations",
+            "sent_message_id": "120",
+            "readback_message_id": "120",
+            "sent_content_hash": "6" * 64,
+            "readback_content_hash": "6" * 64,
+        },
+    )
+
+    assert result["status"] == "pass"
+    assert result["outputs"]["message_id"] == "120"
+
+
+def test_notify_fails_when_readback_content_differs() -> None:
+    result = evaluate_stage(
+        "notify",
+        {
+            "destination": "data-olympus-operations",
+            "readback_destination": "data-olympus-operations",
+            "sent_message_id": "120",
+            "readback_message_id": "120",
+            "sent_content_hash": "6" * 64,
+            "readback_content_hash": "7" * 64,
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert "content does not match" in result["reason"]
+
+
+def test_rollback_requires_direct_digest_restore_while_keel_stays_paused() -> None:
+    result = evaluate_stage(
+        "rollback",
+        {
+            "failed_digest": IMAGE_DIGEST,
+            "rollback_point": {
+                "image": f"ghcr.io/knaisoma/data-olympus@{PREVIOUS_DIGEST}",
+                "digest": PREVIOUS_DIGEST,
+                "intended_keel_policy": "never",
+            },
+            "events": [
+                {
+                    "name": "keel-paused",
+                    "policy": "never",
+                },
+                {
+                    "name": "digest-restored",
+                    "digest": PREVIOUS_DIGEST,
+                    "containers": [
+                        "data-olympus-mcp",
+                        "prepare-git",
+                    ],
+                },
+                {
+                    "name": "deployment-verified",
+                    "digest": PREVIOUS_DIGEST,
+                    "healthy": True,
+                    "ready": True,
+                },
+                {
+                    "name": "keel-policy-restored",
+                    "policy": "never",
+                },
+            ],
+        },
+    )
+
+    assert result["status"] == "pass"
+    assert result["evidence"]["restored_digest"] == PREVIOUS_DIGEST
+
+
+def test_rollback_fails_when_events_are_out_of_order() -> None:
+    result = evaluate_stage(
+        "rollback",
+        {
+            "failed_digest": IMAGE_DIGEST,
+            "rollback_point": {
+                "image": f"ghcr.io/knaisoma/data-olympus@{PREVIOUS_DIGEST}",
+                "digest": PREVIOUS_DIGEST,
+                "intended_keel_policy": "never",
+            },
+            "events": [
+                {
+                    "name": "digest-restored",
+                    "digest": PREVIOUS_DIGEST,
+                    "containers": [
+                        "data-olympus-mcp",
+                        "prepare-git",
+                    ],
+                },
+                {"name": "keel-paused", "policy": "never"},
+                {
+                    "name": "deployment-verified",
+                    "digest": PREVIOUS_DIGEST,
+                    "healthy": True,
+                    "ready": True,
+                },
+                {
+                    "name": "keel-policy-restored",
+                    "policy": "never",
+                },
+            ],
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert "out of order" in result["reason"]
+
+
+def test_rollback_fails_when_rollback_digest_is_the_failed_digest() -> None:
+    result = evaluate_stage(
+        "rollback",
+        {
+            "failed_digest": IMAGE_DIGEST,
+            "rollback_point": {
+                "image": f"ghcr.io/knaisoma/data-olympus@{IMAGE_DIGEST}",
+                "digest": IMAGE_DIGEST,
+                "intended_keel_policy": "never",
+            },
+            "events": [],
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert "must differ" in result["reason"]
+
+
+def test_cli_emits_one_failed_json_object_when_input_is_missing(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.delenv("AI_OPERATIONS_STAGE_INPUT", raising=False)
+
+    exit_code = main(["authority"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert output == {
+        "status": "failed",
+        "reason": "AI_OPERATIONS_STAGE_INPUT is required",
+        "evidence": {},
+        "outputs": {},
+    }
+
+
+def test_cli_rejects_wrong_argument_count(capsys) -> None:
+    exit_code = main([])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert output["status"] == "failed"
+    assert output["reason"] == "exactly one release stage is required"
+
+
+def test_cli_rejects_malformed_json(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AI_OPERATIONS_STAGE_INPUT", "{")
+
+    exit_code = main(["authority"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert output["status"] == "failed"
+    assert output["reason"] == "AI_OPERATIONS_STAGE_INPUT must be valid JSON"
+
+
+def test_cli_rejects_unknown_stage(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AI_OPERATIONS_STAGE_INPUT", "{}")
+
+    exit_code = main(["not-a-stage"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert output["status"] == "failed"
+    assert output["reason"] == "unknown release stage: not-a-stage"

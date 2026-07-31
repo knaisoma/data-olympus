@@ -59,10 +59,23 @@ def test_release_notes_cover_the_expanded_060_contract() -> None:
         assert required in combined
 
 
-def test_versioning_rule_uses_the_release_routine_integration_branch() -> None:
+def test_versioning_rule_uses_one_linear_release_change() -> None:
     versioning = _read(".rules/versioning.md")
     routine = _read(".rules/release-routine.md")
 
-    assert "feature/<release-epic-id>" in versioning
-    assert "feature/<release-epic-id>" in routine
-    assert "release/X.Y.Z integration branches" not in versioning
+    assert "`chore/release-vX.Y.Z`" in versioning
+    assert "`chore/release-vX.Y.Z`" in routine
+    assert "linear history" in versioning
+    assert "squash merged" in versioning
+    assert "feature/<release-epic-id>" not in versioning
+    assert "feature/<release-epic-id>" not in routine
+
+
+def test_release_planning_is_outcome_based() -> None:
+    planning = _read(".rules/release-planning.md")
+
+    assert "already\nmerged, reviewed, green, and unreleased" in planning
+    assert "does not select future issues" in planning
+    assert "No action" in planning
+    assert "three to five" not in planning
+    assert "strict 1-week" not in planning
