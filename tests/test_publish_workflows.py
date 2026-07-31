@@ -101,6 +101,22 @@ def test_stable_promotion_is_explicit_and_tag_follows_approved_pypi() -> None:
     assert "create-tag" not in doc["jobs"]["publish-pypi"]["needs"]
 
 
+def test_version_guard_allows_only_newly_integrated_release_history() -> None:
+    doc = _load("ci.yaml")
+    steps = doc["jobs"]["version-free-guard"]["steps"]
+    commands = "\n".join(str(step.get("run", "")) for step in steps)
+
+    assert 'TAG="v$HEAD_VERSION"' in commands
+    assert 'git show-ref --verify --quiet "refs/tags/$TAG"' in commands
+    assert 'git merge-base --is-ancestor "$TAG" HEAD' in commands
+    assert '! git merge-base --is-ancestor "$TAG" "origin/$BASE_REF"' in commands
+    assert 'git show "$TAG:pyproject.toml"' in commands
+    assert 'TAG_VERSION" != "$HEAD_VERSION' in commands
+    assert commands.index('git merge-base --is-ancestor "$TAG" HEAD') < (
+        commands.index("scripts/check_version_free.py")
+    )
+
+
 def test_reusable_publish_fails_closed_and_verifies_remote_hashes() -> None:
     doc = _load("publish-pypi-reusable.yml")
     steps = doc["jobs"]["upload"]["steps"]

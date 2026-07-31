@@ -96,6 +96,26 @@ jobs:
             exit 0
           fi
           echo "declared version changed $BASE_VERSION -> $HEAD_VERSION; checking it is free"
+
+          # A history reconciliation is safe when an existing immutable release
+          # tag enters the pull request history for the first time. The tag must
+          # be an ancestor of this head, must not already be an ancestor of the
+          # base, and its own project version must match the declared version.
+          # This does not publish or move the tag. Every other version change
+          # continues through the fail closed registry guard below.
+          TAG="v$HEAD_VERSION"
+          if git show-ref --verify --quiet "refs/tags/$TAG" && \
+             git merge-base --is-ancestor "$TAG" HEAD && \
+             ! git merge-base --is-ancestor "$TAG" "origin/$BASE_REF"; then
+            TAG_VERSION="$(git show "$TAG:pyproject.toml" | python3 -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.buffer.read().decode())["project"]["version"])')"
+            if [ "$TAG_VERSION" != "$HEAD_VERSION" ]; then
+              echo "tag $TAG declares $TAG_VERSION, expected $HEAD_VERSION" >&2
+              exit 1
+            fi
+            echo "tag $TAG newly enters this branch history: reconciliation allowed"
+            exit 0
+          fi
+
           python3 scripts/check_version_free.py --version "$HEAD_VERSION"
   doc-consistency-guard:
     runs-on: ubuntu-latest
