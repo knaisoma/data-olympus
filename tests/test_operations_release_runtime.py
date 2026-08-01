@@ -12,6 +12,8 @@ from scripts.operations.release_runtime import (
     FastMCPGateway,
     ReleaseDeliveryError,
     ReleaseRuntime,
+    _authority_consult,
+    _authority_gate_check,
     candidate_release_evidence,
     completed_check_evidence,
     default_release_dependencies,
@@ -88,6 +90,90 @@ def test_fastmcp_gateway_uses_the_gateway_control_plane() -> None:
         "--target",
     ]
     assert calls[0][5] == "execute_tool"
+
+
+def test_authority_consult_calls_data_olympus_mcp_directly() -> None:
+    calls: list[list[str]] = []
+    arguments = {
+        "agent_identity": "ai-operations-release",
+        "intent": "Prepare governed release.",
+        "source_session": "run-id",
+        "trigger": "explicit",
+        "workspace": "data-olympus",
+    }
+
+    def run_command(command: list[str], _cwd: Path, _timeout: int) -> str:
+        calls.append(command)
+        return json.dumps(
+            {
+                "content": [{"type": "text", "text": "consulted"}],
+                "is_error": False,
+                "structured_content": {
+                    "consulted_at": 1.0,
+                    "ttl_seconds": 300,
+                },
+            }
+        )
+
+    result = _authority_consult(arguments, run_command)
+
+    assert result == {"consulted_at": 1.0, "ttl_seconds": 300}
+    assert calls[0][:6] == [
+        "fastmcp",
+        "call",
+        "--server-spec",
+        (
+            "http://data-olympus-mcp.data-olympus."
+            "apps.172.30.1.2.nip.io/mcp"
+        ),
+        "--target",
+        "kb_consult",
+    ]
+    assert json.loads(calls[0][7]) == arguments
+
+
+def test_authority_gate_check_binds_session_and_workspace_directly() -> None:
+    calls: list[list[str]] = []
+    arguments = {
+        "action_diff": "Prepare governed release v0.7.0.",
+        "action_path": "pyproject.toml",
+        "session_id": "run-id",
+        "tool_name": "git commit",
+        "workspace": "data-olympus",
+    }
+    receipt = {
+        "verdict": "allow",
+        "reason": "fresh explicit consultation on record",
+        "rules": [],
+        "session_id": "run-id",
+        "workspace": "data-olympus",
+    }
+
+    def run_command(command: list[str], _cwd: Path, _timeout: int) -> str:
+        calls.append(command)
+        return json.dumps(
+            {
+                "content": [{"type": "text", "text": "allowed"}],
+                "is_error": False,
+                "structured_content": receipt,
+            }
+        )
+
+    result = _authority_gate_check(arguments, run_command)
+
+    assert result == receipt
+    assert calls[0][:6] == [
+        "fastmcp",
+        "call",
+        "--server-spec",
+        (
+            "http://data-olympus-mcp.data-olympus."
+            "apps.172.30.1.2.nip.io/mcp"
+        ),
+        "--target",
+        "kb_gate_check",
+    ]
+    assert json.loads(calls[0][7]) == arguments
 
 
 def test_fastmcp_gateway_accepts_the_standard_text_content_envelope() -> None:
@@ -170,6 +256,136 @@ def test_fastmcp_gateway_rejects_a_different_tool_result() -> None:
             "create_pull_request",
             {"owner": "knaisoma", "repo": "data-olympus"},
         )
+
+
+def test_prepare_fails_before_mutation_without_authority_consult_receipt(
+    tmp_path: Path,
+) -> None:
+    commands: list[list[str]] = []
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        commands.append(command)
+        if command == ["git", "status", "--porcelain"]:
+            return ""
+        raise AssertionError(command)
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway(),
+        command_output=command_output,
+        authority_consult=lambda _arguments: {},
+    )
+
+    with pytest.raises(ValueError, match="authority consultation receipt"):
+        runtime.prepare(
+            {
+                "extra_context": "No extra context for this run",
+                "run_id": "11111111-2222-4333-8444-555555555555",
+                "source_revision": SOURCE_SHA,
+            },
+            {
+                "evidence": {
+                    "computed_release": {
+                        "changes": {"breaking": [], "features": [], "fixes": []}
+                    }
+                },
+                "outputs": {"candidate": {"version": "0.7.0"}},
+            },
+        )
+
+    assert commands == [["git", "status", "--porcelain"]]
+
+
+def test_prepare_fails_before_mutation_on_stale_authority_consultation(
+    tmp_path: Path,
+) -> None:
+    commands: list[list[str]] = []
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        commands.append(command)
+        if command == ["git", "status", "--porcelain"]:
+            return ""
+        raise AssertionError(command)
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway(),
+        command_output=command_output,
+        authority_consult=lambda _arguments: {
+            "consulted_at": 100.0,
+            "ttl_seconds": 300,
+        },
+        authority_gate_check=lambda _arguments: pytest.fail(
+            "stale consultation must not reach the gate check"
+        ),
+        clock=lambda: 401.0,
+    )
+
+    with pytest.raises(ValueError, match="authority consultation is not fresh"):
+        runtime.prepare(
+            {
+                "extra_context": "No extra context for this run",
+                "run_id": "11111111-2222-4333-8444-555555555555",
+                "source_revision": SOURCE_SHA,
+            },
+            {
+                "evidence": {
+                    "computed_release": {
+                        "changes": {"breaking": [], "features": [], "fixes": []}
+                    }
+                },
+                "outputs": {"candidate": {"version": "0.7.0"}},
+            },
+        )
+
+    assert commands == [["git", "status", "--porcelain"]]
+
+
+def test_prepare_fails_before_mutation_on_unbound_authority_gate_receipt(
+    tmp_path: Path,
+) -> None:
+    commands: list[list[str]] = []
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        commands.append(command)
+        if command == ["git", "status", "--porcelain"]:
+            return ""
+        raise AssertionError(command)
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway(),
+        command_output=command_output,
+        authority_consult=lambda _arguments: {
+            "consulted_at": 100.0,
+            "ttl_seconds": 300,
+        },
+        authority_gate_check=lambda _arguments: {
+            "verdict": "allow",
+            "session_id": "different-run",
+            "workspace": "data-olympus",
+        },
+        clock=lambda: 100.0,
+    )
+
+    with pytest.raises(ValueError, match="authority gate receipt is invalid"):
+        runtime.prepare(
+            {
+                "extra_context": "No extra context for this run",
+                "run_id": "11111111-2222-4333-8444-555555555555",
+                "source_revision": SOURCE_SHA,
+            },
+            {
+                "evidence": {
+                    "computed_release": {
+                        "changes": {"breaking": [], "features": [], "fixes": []}
+                    }
+                },
+                "outputs": {"candidate": {"version": "0.7.0"}},
+            },
+        )
+
+    assert commands == [["git", "status", "--porcelain"]]
 
 
 def test_collect_admission_binds_exact_remote_main_and_governed_computation(
@@ -654,6 +870,8 @@ def test_prepare_reports_failed_recovery_evidence_after_merge_boundary(
 ) -> None:
     head_revision = "c" * 40
     final_revision = "d" * 40
+    consultations: list[dict[str, object]] = []
+    gate_checks: list[dict[str, object]] = []
     gateway = StubGateway(
         {
             "create_pull_request": {
@@ -666,6 +884,19 @@ def test_prepare_reports_failed_recovery_evidence_after_merge_boundary(
         tmp_path,
         gateway=gateway,
         command_output=lambda _command, _cwd, _timeout: "",
+        authority_consult=lambda arguments: (
+            consultations.append(arguments)
+            or {"consulted_at": 1.0, "ttl_seconds": 300}
+        ),
+        authority_gate_check=lambda arguments: (
+            gate_checks.append(arguments)
+            or {
+                "verdict": "allow",
+                "session_id": "11111111-2222-4333-8444-555555555555",
+                "workspace": "data-olympus",
+            }
+        ),
+        clock=lambda: 1.0,
     )
     monkeypatch.setattr(
         "scripts.operations.release_runtime.render_release_documents",
@@ -730,6 +961,30 @@ def test_prepare_reports_failed_recovery_evidence_after_merge_boundary(
     assert raised.value.evidence["merge_confirmed"] is merge_confirmed
     assert raised.value.evidence["release_pr_number"] == 182
     assert raised.value.evidence["rollback_completed"] is False
+    assert consultations == [
+        {
+            "agent_identity": "ai-operations-release",
+            "intent": (
+                "Prepare governed Data Olympus release v0.7.0 from exact "
+                f"source {SOURCE_SHA}."
+            ),
+            "source_session": "11111111-2222-4333-8444-555555555555",
+            "trigger": "explicit",
+            "workspace": "data-olympus",
+        }
+    ]
+    assert gate_checks == [
+        {
+            "action_diff": (
+                "Prepare governed Data Olympus release v0.7.0 from exact "
+                f"source {SOURCE_SHA}."
+            ),
+            "action_path": "pyproject.toml",
+            "session_id": "11111111-2222-4333-8444-555555555555",
+            "tool_name": "git commit",
+            "workspace": "data-olympus",
+        }
+    ]
     if merge_confirmed:
         assert raised.value.evidence["merged_revision"] == final_revision
 

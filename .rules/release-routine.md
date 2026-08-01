@@ -80,8 +80,13 @@ Rollback is the same executable with the `rollback` argument. It reads
 3. If the repository proves that no unreleased work exists, close the
    candidate as `No action`. Never manufacture a release to satisfy the
    schedule.
-4. Prepare the version change and release notes on one short lived
-   `chore/release-vX.Y.Z-RUN` branch from the admitted source SHA.
+4. Before branch creation or file mutation, record a fresh explicit Data
+   Olympus consultation under the runner identifier and workspace
+   `data-olympus`. Require `kb_gate_check` to return `allow` for that exact
+   session and workspace. Then prepare the version change and release notes on
+   one short lived `chore/release-vX.Y.Z-RUN` branch from the admitted source
+   SHA. The unchanged repository precommit hook remains the final staged
+   authority gate.
 5. Set `pyproject.toml` to `X.Y.Z`, update `uv.lock`, close the matching
    changelog block, open a
    new empty `[Unreleased]` block, and write `docs/releases/vX.Y.Z.md`.
