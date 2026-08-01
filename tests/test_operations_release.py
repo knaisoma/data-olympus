@@ -1149,3 +1149,35 @@ def test_release_cli_rollback_failure_is_one_closed_recovery_result(
         "evidence": {},
         "source_revision": SOURCE_SHA,
     }
+
+
+def test_release_cli_preserves_rollback_failure_evidence(monkeypatch, capsys) -> None:
+    recovery_input = {
+        "outcome_evidence": {
+            "digest": IMAGE_DIGEST,
+            "rollback_digest": PREVIOUS_DIGEST,
+        },
+        "source_revision": SOURCE_SHA,
+    }
+    monkeypatch.setenv(
+        "AI_OPERATIONS_RECOVERY_INPUT",
+        json.dumps(recovery_input),
+    )
+
+    class RecoveryFailure(ValueError):
+        evidence = {
+            "digest_apply_confirmed": True,
+            "external_state_changed": True,
+            "rollback_completed": False,
+        }
+
+    dependencies = _release_dependencies()
+    dependencies["rollback"] = lambda _recovery: (_ for _ in ()).throw(
+        RecoveryFailure("acceptance failed")
+    )
+
+    exit_code = main(["rollback"], dependencies=dependencies)
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert output["evidence"] == RecoveryFailure.evidence

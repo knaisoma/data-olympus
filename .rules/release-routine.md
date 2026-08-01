@@ -59,6 +59,11 @@ revision when known, and incomplete recovery state.
 Workflow preflight reads remain safely retryable and `blocked`. The delivery
 mutation boundary begins immediately before the first workflow dispatch;
 dispatch ambiguity and every later failure are `failed`.
+The deployment mutation boundary begins immediately before the Kubernetes
+apply. A rollback preflight read may block without recovery evidence. Once the
+apply begins, an ambiguous apply or failed postapply acceptance returns a
+failed recovery result that records the rollback digest, apply confirmation,
+rollout state, acceptance state, and incomplete recovery.
 
 The central runner owns authority admission, immutable run control, model
 tickets, exact candidate approval, the durable ledger, Telegram delivery, and

@@ -517,6 +517,38 @@ def test_merge_uses_github_expected_head_precondition(tmp_path: Path) -> None:
     ]
 
 
+def test_merge_response_distinguishes_no_merge_from_confirmed_missing_identity(
+    tmp_path: Path,
+) -> None:
+    runtime = ReleaseRuntime(tmp_path, gateway=StubGateway())
+
+    with pytest.raises(ValueError) as unmerged:
+        runtime._confirmed_merge_revision(
+            {"merged": False, "message": "head changed"},
+            number=182,
+            head_revision="f" * 40,
+        )
+
+    assert type(unmerged.value) is ValueError
+    assert getattr(unmerged.value, "external_state_changed", False) is False
+
+    with pytest.raises(ReleaseDeliveryError) as confirmed:
+        runtime._confirmed_merge_revision(
+            {"merged": True},
+            number=182,
+            head_revision="f" * 40,
+        )
+
+    assert confirmed.value.evidence == {
+        "external_state_changed": True,
+        "merge_confirmed": True,
+        "merge_outcome": "merged",
+        "release_pr_head_revision": "f" * 40,
+        "release_pr_number": 182,
+        "rollback_completed": False,
+    }
+
+
 @pytest.mark.parametrize("merge_confirmed", [False, True])
 def test_prepare_reports_failed_recovery_evidence_after_merge_boundary(
     tmp_path: Path,
@@ -684,14 +716,18 @@ def test_partial_delivery_failure_restores_the_exact_previous_digest(
         "_candidate_publication",
         lambda _source, _version, _tag: {"image_digest": DIGEST},
     )
-    monkeypatch.setattr(
-        runtime,
-        "_apply_digest",
-        lambda digest: (
-            applied.append(digest)
-            or {"digest": digest, "keel_policy": "never", "rollout_complete": True}
-        ),
-    )
+    def apply_digest(
+        digest: str,
+        *,
+        on_apply: object = None,
+    ) -> dict[str, object]:
+        if on_apply is not None:
+            assert callable(on_apply)
+            on_apply()
+        applied.append(digest)
+        return {"digest": digest, "keel_policy": "never", "rollout_complete": True}
+
+    monkeypatch.setattr(runtime, "_apply_digest", apply_digest)
     monkeypatch.setattr(runtime, "_service_acceptance", lambda: acceptance)
     monkeypatch.setattr(
         runtime,
@@ -709,3 +745,56 @@ def test_partial_delivery_failure_restores_the_exact_previous_digest(
         "external_state_changed": True,
         "rollback_completed": True,
     }
+
+
+@pytest.mark.parametrize("failure_point", ["preflight", "apply", "acceptance"])
+def test_rollback_failure_evidence_tracks_the_digest_apply_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    rollback_digest = "sha256:" + "e" * 64
+    runtime = ReleaseRuntime(tmp_path, gateway=StubGateway())
+
+    def apply_digest(
+        digest: str,
+        *,
+        on_apply: object = None,
+    ) -> dict[str, object]:
+        assert digest == rollback_digest
+        if failure_point != "preflight":
+            assert callable(on_apply)
+            on_apply()
+        if failure_point in {"preflight", "apply"}:
+            raise ValueError(f"{failure_point} failed")
+        return {"digest": digest, "keel_policy": "never", "rollout_complete": True}
+
+    monkeypatch.setattr(runtime, "_apply_digest", apply_digest)
+    monkeypatch.setattr(
+        runtime,
+        "_service_acceptance",
+        lambda: (_ for _ in ()).throw(ValueError("acceptance failed")),
+    )
+    recovery = {
+        "source_revision": SOURCE_SHA,
+        "outcome_evidence": {
+            "digest": DIGEST,
+            "rollback_digest": rollback_digest,
+        },
+    }
+
+    with pytest.raises(ValueError) as raised:
+        runtime.rollback(recovery)
+
+    if failure_point == "preflight":
+        assert type(raised.value) is ValueError
+        assert getattr(raised.value, "external_state_changed", False) is False
+        return
+
+    assert isinstance(raised.value, ReleaseDeliveryError)
+    assert raised.value.evidence["external_state_changed"] is True
+    assert raised.value.evidence["digest_apply_confirmed"] is (
+        failure_point == "acceptance"
+    )
+    assert raised.value.evidence["rollback_completed"] is False
+    assert raised.value.evidence["rollback_digest"] == rollback_digest

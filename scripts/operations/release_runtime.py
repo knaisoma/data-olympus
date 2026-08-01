@@ -707,6 +707,30 @@ class ReleaseRuntime:
         except json.JSONDecodeError as error:
             raise ValueError("release merge result is invalid") from error
 
+    def _confirmed_merge_revision(
+        self,
+        merged: dict[str, Any],
+        *,
+        number: int,
+        head_revision: str,
+    ) -> str:
+        if merged.get("merged") is not True:
+            raise ValueError("release pull request did not merge")
+        final_revision = merged.get("sha")
+        if type(final_revision) is not str or _SHA40.fullmatch(final_revision) is None:
+            raise ReleaseDeliveryError(
+                "confirmed release merge returned no usable source revision",
+                {
+                    "external_state_changed": True,
+                    "merge_confirmed": True,
+                    "merge_outcome": "merged",
+                    "release_pr_head_revision": head_revision,
+                    "release_pr_number": number,
+                    "rollback_completed": False,
+                },
+            )
+        return final_revision
+
     def _wait_main_checks(self, source_revision: str) -> dict[str, Any]:
         required = ",".join(sorted(REQUIRED_MAIN_CHECKS))
         for _attempt in range(120):
@@ -927,9 +951,11 @@ class ReleaseRuntime:
                     "rollback_completed": False,
                 },
             ) from error
-        final_revision = merged.get("sha")
-        if merged.get("merged") is not True or not isinstance(final_revision, str):
-            raise ValueError("release pull request did not merge")
+        final_revision = self._confirmed_merge_revision(
+            merged,
+            number=number,
+            head_revision=head_revision,
+        )
         try:
             return self._finish_preparation_after_merge(
                 run_input=run_input,
@@ -1200,10 +1226,17 @@ class ReleaseRuntime:
             raise ValueError(f"GHCR tag {tag} does not resolve to one exact digest")
         return digest
 
-    def _apply_digest(self, digest: str) -> dict[str, Any]:
+    def _apply_digest(
+        self,
+        digest: str,
+        *,
+        on_apply: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         live = self.live_statefulset()
         manifest = deployment_manifest_for_digest(live, digest)
         self.heartbeat()
+        if on_apply is not None:
+            on_apply()
         self.gateway.execute(
             "k8s_kndev_resources_create_or_update",
             {
@@ -1366,6 +1399,11 @@ class ReleaseRuntime:
             nonlocal external_state_changed
             external_state_changed = True
 
+        def mark_deployment_started() -> None:
+            nonlocal deployment_started
+            mark_external_state_changed()
+            deployment_started = True
+
         try:
             rc_receipt = self._workflow_run(
                 "rc-publish.yml",
@@ -1380,8 +1418,10 @@ class ReleaseRuntime:
                 candidate_tag,
             )
             digest = publication["image_digest"]
-            deployment_started = True
-            canary_rollout = self._apply_digest(digest)
+            canary_rollout = self._apply_digest(
+                digest,
+                on_apply=mark_deployment_started,
+            )
             canary_acceptance = self._service_acceptance()
             tag_receipt = self._workflow_run(
                 "tag-release.yml",
@@ -1399,7 +1439,10 @@ class ReleaseRuntime:
                 {"channel": "kndev", "source": f"v{version}"},
                 on_dispatch=mark_external_state_changed,
             )
-            stable_rollout = self._apply_digest(digest)
+            stable_rollout = self._apply_digest(
+                digest,
+                on_apply=mark_deployment_started,
+            )
             stable_acceptance = self._service_acceptance()
         except (OSError, subprocess.SubprocessError, ValueError) as error:
             if deployment_started:
@@ -1525,8 +1568,45 @@ class ReleaseRuntime:
             or _DIGEST.fullmatch(rollback_digest) is None
         ):
             raise ValueError("release rollback digest is unavailable")
-        restored = self._apply_digest(rollback_digest)
-        acceptance = self._service_acceptance()
+        apply_started = False
+
+        def mark_apply_started() -> None:
+            nonlocal apply_started
+            apply_started = True
+
+        try:
+            restored = self._apply_digest(
+                rollback_digest,
+                on_apply=mark_apply_started,
+            )
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            if apply_started:
+                raise ReleaseDeliveryError(
+                    str(error),
+                    {
+                        "acceptance_completed": False,
+                        "digest_apply_confirmed": False,
+                        "external_state_changed": True,
+                        "rollback_completed": False,
+                        "rollback_digest": rollback_digest,
+                        "rollout_complete": False,
+                    },
+                ) from error
+            raise
+        try:
+            acceptance = self._service_acceptance()
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            raise ReleaseDeliveryError(
+                str(error),
+                {
+                    "acceptance_completed": False,
+                    "digest_apply_confirmed": True,
+                    "external_state_changed": True,
+                    "rollback_completed": False,
+                    "rollback_digest": rollback_digest,
+                    "rollout_complete": restored["rollout_complete"],
+                },
+            ) from error
         from scripts.operations.release import evaluate_stage
 
         evaluated = evaluate_stage(

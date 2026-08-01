@@ -1495,10 +1495,13 @@ def main(
                 if type(recovery_input) is dict
                 else None
             )
+            failure_evidence = getattr(error, "evidence", {})
+            if type(failure_evidence) is not dict:
+                failure_evidence = {}
             recovery = {
                 "status": "failed",
                 "reason": str(error),
-                "evidence": {},
+                "evidence": failure_evidence,
                 "source_revision": (
                     recovery_source
                     if type(recovery_source) is str
