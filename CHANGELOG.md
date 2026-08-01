@@ -12,6 +12,31 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-01
+
+### New features
+
+* feat(automation): execute weekly release outcome
+* feat(automation): make weekly releases outcome based
+### Fixed
+
+* fix(release): inspect exact GHCR version tag (#203)
+* fix(release): isolate development quality tools
+* fix(release): retry transient artifact smoke (#198)
+* fix(release): remove unavailable quality gate (#196)
+* fix(release): require approval before merge (#195)
+* fix(release): wait for complete check matrix (#193)
+* fix(release): wait for complete check conclusions (#191)
+* fix(release): allow metadata-only lock version bump (#189)
+* fix(automation): bind release consultation to run
+* fix(automation): accept FastMCP text content
+* fix(automation): read pull number from gateway receipt
+* fix(automation): make release imports deterministic (#182)
+* fix(automation): align final main checks
+* fix(security): update setuptools to 83.0.0
+* fix(ci): allow immutable history reconciliation
+
+
 ### Fixed
 
 * **Made the GHCR immutability guard exact and credential independent.** The
