@@ -1113,7 +1113,7 @@ def test_release_cli_default_invocation_reads_complete_run_input(
     assert "candidate_revision" in lines[-1]
 
 
-def test_release_cli_rollback_failure_is_one_closed_recovery_result(
+def test_release_cli_rollback_preflight_failure_is_one_blocked_recovery_result(
     monkeypatch,
     capsys,
 ) -> None:
@@ -1144,7 +1144,7 @@ def test_release_cli_rollback_failure_is_one_closed_recovery_result(
 
     assert exit_code == 1
     assert output == {
-        "status": "failed",
+        "status": "blocked",
         "reason": "gateway unavailable",
         "evidence": {},
         "source_revision": SOURCE_SHA,
@@ -1165,6 +1165,7 @@ def test_release_cli_preserves_rollback_failure_evidence(monkeypatch, capsys) ->
     )
 
     class RecoveryFailure(ValueError):
+        external_state_changed = True
         evidence = {
             "digest_apply_confirmed": True,
             "external_state_changed": True,
@@ -1180,4 +1181,5 @@ def test_release_cli_preserves_rollback_failure_evidence(monkeypatch, capsys) ->
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
+    assert output["status"] == "failed"
     assert output["evidence"] == RecoveryFailure.evidence

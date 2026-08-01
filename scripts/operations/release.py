@@ -1499,7 +1499,11 @@ def main(
             if type(failure_evidence) is not dict:
                 failure_evidence = {}
             recovery = {
-                "status": "failed",
+                "status": (
+                    "failed"
+                    if bool(getattr(error, "external_state_changed", False))
+                    else "blocked"
+                ),
                 "reason": str(error),
                 "evidence": failure_evidence,
                 "source_revision": (
