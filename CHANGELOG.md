@@ -12,16 +12,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-
-* Resume a merged but still unpublished release preparation by validating its
-  prior canonical documents, rebuilding them atomically from the complete
-  current computation, and then reusing the ordinary reviewed release path.
-* Retry one transient unbound FastMCP response during the idempotent postmerge
-  tag inventory, while preserving strict tool binding and exact merge evidence
-  when the bounded retry still fails.
-
-## [0.7.0] - 2026-08-01
+## [0.7.0] - 2026-08-02
 
 ### New features
 
@@ -29,6 +20,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * feat(automation): make weekly releases outcome based
 ### Fixed
 
+* fix(release): resume unpublished preparation
+* fix(release): retry bound tag inventory read (#208)
 * fix(release): isolate prereview model evidence (#206)
 * fix(release): inspect exact GHCR version tag (#203)
 * fix(release): isolate development quality tools
@@ -45,7 +38,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * fix(automation): align final main checks
 * fix(security): update setuptools to 83.0.0
 * fix(ci): allow immutable history reconciliation
-
 
 ### Fixed
 
@@ -82,6 +74,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   MCP consultation, validates receipt freshness, and requires a server side
   gate receipt bound to the exact run and workspace. The unchanged precommit
   audit gate still verifies the staged governed change.
+
+### Fixed
+
+* Resume a merged but still unpublished release preparation by validating its
+  prior canonical documents, rebuilding them atomically from the complete
+  current computation, and then reusing the ordinary reviewed release path.
+* Retry one transient unbound FastMCP response during the idempotent postmerge
+  tag inventory, while preserving strict tool binding and exact merge evidence
+  when the bounded retry still fails.
 
 ## [0.6.0] - 2026-07-18
 
