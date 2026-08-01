@@ -60,7 +60,7 @@ JsonFetch = Callable[[str, int], dict[str, Any]]
 
 
 class ReleaseDeliveryError(ValueError):
-    """A delivery failure after externally visible release side effects."""
+    """A release failure after externally visible side effects."""
 
     external_state_changed = True
 
@@ -913,10 +913,60 @@ class ReleaseRuntime:
         self.command(["git", "fetch", "origin", "main"], timeout=120)
         if self.candidate_revision() != admitted:
             raise ValueError("remote main changed before release merge")
-        merged = self._merge_exact(number, version, head_revision)
+        try:
+            merged = self._merge_exact(number, version, head_revision)
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            raise ReleaseDeliveryError(
+                "release merge outcome could not be confirmed",
+                {
+                    "external_state_changed": True,
+                    "merge_confirmed": False,
+                    "merge_outcome": "unknown",
+                    "release_pr_head_revision": head_revision,
+                    "release_pr_number": number,
+                    "rollback_completed": False,
+                },
+            ) from error
         final_revision = merged.get("sha")
         if merged.get("merged") is not True or not isinstance(final_revision, str):
             raise ValueError("release pull request did not merge")
+        try:
+            return self._finish_preparation_after_merge(
+                run_input=run_input,
+                admitted=admitted,
+                version=version,
+                head_revision=head_revision,
+                final_revision=final_revision,
+                number=number,
+                ready=ready,
+                document_evidence=document_evidence,
+            )
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            raise ReleaseDeliveryError(
+                str(error),
+                {
+                    "external_state_changed": True,
+                    "merge_confirmed": True,
+                    "merge_outcome": "merged",
+                    "merged_revision": final_revision,
+                    "release_pr_head_revision": head_revision,
+                    "release_pr_number": number,
+                    "rollback_completed": False,
+                },
+            ) from error
+
+    def _finish_preparation_after_merge(
+        self,
+        *,
+        run_input: dict[str, Any],
+        admitted: str,
+        version: str,
+        head_revision: str,
+        final_revision: str,
+        number: int,
+        ready: dict[str, Any],
+        document_evidence: dict[str, Any],
+    ) -> dict[str, Any]:
         if _SHA40.fullmatch(final_revision) is None:
             raise ValueError("release merge returned an invalid source revision")
         self.command(["git", "fetch", "origin", "main"], timeout=120)

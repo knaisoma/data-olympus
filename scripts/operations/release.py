@@ -1348,7 +1348,11 @@ def execute_release_run(
                     "verdict": "APPROVE",
                     "reviewed_source_revision": candidate_revision,
                     "evidence_hash": sha256(
-                        json.dumps(packet, separators=(",", ":"), sort_keys=True).encode()
+                        json.dumps(
+                            {"packet": packet, "response": review},
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ).encode()
                     ).hexdigest(),
                 },
                 "candidate_approval": approval,

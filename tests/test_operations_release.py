@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 
 import pytest
 
@@ -965,6 +966,31 @@ def test_one_release_command_emits_the_exact_runner_protocol() -> None:
     }
 
 
+def test_review_evidence_hash_binds_the_packet_and_claude_response() -> None:
+    dependencies = _release_dependencies()
+    captured: dict[str, object] = {}
+
+    def invoke_model(request: dict[str, object]) -> dict[str, object]:
+        response = _approved_review(request)
+        captured["packet"] = request["packet"]
+        captured["response"] = response
+        return response
+
+    dependencies["invoke_model"] = invoke_model
+
+    events = execute_release_run(json.dumps(RUN_INPUT), dependencies)
+
+    review_event = next(event for event in events if event.get("name") == "domain_review")
+    expected_hash = sha256(
+        json.dumps(
+            {"packet": captured["packet"], "response": captured["response"]},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    assert review_event["evidence"]["review_hash"] == expected_hash
+
+
 def test_runtime_heartbeats_keep_one_contiguous_protocol_sequence() -> None:
     dependencies = _release_dependencies()
     original_prepare = dependencies["prepare"]
@@ -1050,7 +1076,10 @@ def test_release_blocks_when_review_ticket_is_not_the_qualified_claude_route() -
     assert "qualified Claude route" in events[-1]["reason"]
 
 
-def test_release_marks_external_delivery_failure_as_failed_with_recovery_evidence() -> None:
+@pytest.mark.parametrize("stage", ["prepare", "deliver"])
+def test_release_marks_external_release_failure_as_failed_with_recovery_evidence(
+    stage: str,
+) -> None:
     dependencies = _release_dependencies()
 
     class ExternalFailure(ValueError):
@@ -1060,7 +1089,7 @@ def test_release_marks_external_delivery_failure_as_failed_with_recovery_evidenc
             "rollback_completed": True,
         }
 
-    dependencies["deliver"] = lambda *_arguments: (_ for _ in ()).throw(
+    dependencies[stage] = lambda *_arguments: (_ for _ in ()).throw(
         ExternalFailure("stable publication failed")
     )
 

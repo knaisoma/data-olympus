@@ -52,6 +52,10 @@ precondition. They reuse governed repository commands and record the direct
 GitHub fallback because the gateway exposes none of those exact operations.
 An unconditional gateway merge is not an acceptable substitute for the
 expected head precondition.
+After the conditional merge mutation begins, an unknown merge outcome or any
+confirmed postmerge gate failure is `failed`, never `blocked`. Its result
+records the pull request, reviewed head, merge confirmation state, resulting
+revision when known, and incomplete recovery state.
 
 The central runner owns authority admission, immutable run control, model
 tickets, exact candidate approval, the durable ledger, Telegram delivery, and
@@ -91,7 +95,8 @@ Rollback is the same executable with the `rollback` argument. It reads
    * Version availability across PyPI, GHCR, GitHub tags, and GitHub releases.
 
 9. The deterministic executor requests one central, run controlled Claude
-   review of the exact final SHA. Self review is prohibited.
+   review of the exact final SHA. Self review is prohibited. Review evidence
+   hashes both the submitted packet and the ticket bound Claude response.
 10. Require the candidate approval ledger entry to bind the run, contract
     digest, final SHA, and consumed Claude review. The approved standing
     delegation may materialize that exact entry only after the review passes.

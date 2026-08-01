@@ -517,6 +517,87 @@ def test_merge_uses_github_expected_head_precondition(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize("merge_confirmed", [False, True])
+def test_prepare_reports_failed_recovery_evidence_after_merge_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    merge_confirmed: bool,
+) -> None:
+    head_revision = "c" * 40
+    final_revision = "d" * 40
+    gateway = StubGateway({"create_pull_request": {"number": 182}})
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=gateway,
+        command_output=lambda _command, _cwd, _timeout: "",
+    )
+    monkeypatch.setattr(
+        "scripts.operations.release_runtime.render_release_documents",
+        lambda *_arguments: {
+            "changelog_hash": "1" * 64,
+            "content_hash": "2" * 64,
+            "release_note_hash": "2" * 64,
+        },
+    )
+    monkeypatch.setattr(runtime, "source_revision", lambda: head_revision)
+    remote_revisions = iter([SOURCE_SHA, final_revision])
+    monkeypatch.setattr(runtime, "candidate_revision", lambda: next(remote_revisions))
+    monkeypatch.setattr(
+        runtime,
+        "_wait_pull_request",
+        lambda _number, _head: {"checks": {}, "pull": {}},
+    )
+    if merge_confirmed:
+        monkeypatch.setattr(
+            runtime,
+            "_merge_exact",
+            lambda _number, _version, _head: {
+                "merged": True,
+                "sha": final_revision,
+            },
+        )
+        monkeypatch.setattr(
+            runtime,
+            "_final_local_gates",
+            lambda _source, _version: (_ for _ in ()).throw(
+                ValueError("post merge gates failed")
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            runtime,
+            "_merge_exact",
+            lambda _number, _version, _head: (_ for _ in ()).throw(
+                ValueError("merge response lost")
+            ),
+        )
+
+    with pytest.raises(ReleaseDeliveryError) as raised:
+        runtime.prepare(
+            {
+                "extra_context": "No extra context for this run",
+                "run_id": "11111111-2222-4333-8444-555555555555",
+                "source_revision": SOURCE_SHA,
+            },
+            {
+                "evidence": {
+                    "computed_release": {
+                        "changes": {"breaking": [], "features": [], "fixes": []}
+                    }
+                },
+                "outputs": {"candidate": {"version": "0.7.0"}},
+            },
+        )
+
+    assert raised.value.external_state_changed is True
+    assert raised.value.evidence["external_state_changed"] is True
+    assert raised.value.evidence["merge_confirmed"] is merge_confirmed
+    assert raised.value.evidence["release_pr_number"] == 182
+    assert raised.value.evidence["rollback_completed"] is False
+    if merge_confirmed:
+        assert raised.value.evidence["merged_revision"] == final_revision
+
+
 def test_partial_delivery_failure_restores_the_exact_previous_digest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
