@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from scripts.operations.release_runtime import (
+    REQUIRED_MAIN_CHECKS,
+    REQUIRED_PULL_REQUEST_CHECKS,
     FastMCPGateway,
     ReleaseDeliveryError,
     ReleaseRuntime,
@@ -24,6 +26,19 @@ if TYPE_CHECKING:
 
 SOURCE_SHA = "a" * 40
 DIGEST = "sha256:" + "b" * 64
+
+
+def test_required_checks_match_pull_request_and_main_github_surfaces() -> None:
+    codeql_analyses = {
+        "Analyze (actions)",
+        "Analyze (javascript-typescript)",
+        "Analyze (python)",
+    }
+
+    assert codeql_analyses <= REQUIRED_PULL_REQUEST_CHECKS
+    assert codeql_analyses <= REQUIRED_MAIN_CHECKS
+    assert "CodeQL" in REQUIRED_PULL_REQUEST_CHECKS
+    assert "CodeQL" not in REQUIRED_MAIN_CHECKS
 
 
 class StubGateway:

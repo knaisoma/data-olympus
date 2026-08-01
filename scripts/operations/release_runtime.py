@@ -47,7 +47,6 @@ REQUIRED_MAIN_CHECKS = {
     "Analyze (actions)",
     "Analyze (javascript-typescript)",
     "Analyze (python)",
-    "CodeQL",
     "doc-consistency-guard",
     "test",
 }

@@ -102,6 +102,10 @@ Rollback is the same executable with the `rollback` argument. It reads
    * `scripts/ci_status.py`.
    * Version availability across PyPI, GHCR, GitHub tags, and GitHub releases.
 
+   Pull request checks require the aggregate `CodeQL` signal and all three
+   language analyses. Default branch pushes do not emit the aggregate signal,
+   so final main CI requires the three successful language analyses directly.
+
 9. The deterministic executor requests one central, run controlled Claude
    review of the exact final SHA. Self review is prohibited. Review evidence
    hashes both the submitted packet and the ticket bound Claude response.
