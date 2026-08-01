@@ -199,13 +199,6 @@ def _release_control_evidence(value: Any, source_revision: str) -> dict[str, Any
         raise ReleaseInputError(
             "release_controls.check_evidence.missing_required must be empty"
         )
-    if controls.get("code_quality_check") not in {
-        "CodeQL - Code Quality",
-        "CodeQL - Code Quality / Analyze",
-    }:
-        raise ReleaseInputError("release_controls.code_quality_check is invalid")
-    if controls.get("code_quality_state") != "configured":
-        raise ReleaseInputError("release_controls.code_quality_state must be configured")
     codeql_hash = _hash(
         controls.get("codeql_analysis_hash"),
         "release_controls.codeql_analysis_hash",
@@ -236,7 +229,6 @@ def _release_control_evidence(value: Any, source_revision: str) -> dict[str, Any
     ):
         raise ReleaseInputError("release_controls.ruleset_ids is invalid")
     return {
-        "code_quality_check": controls["code_quality_check"],
         "codeql_analysis_hash": codeql_hash,
         "ruleset_fingerprint": fingerprint,
         "ruleset_ids": ruleset_ids,

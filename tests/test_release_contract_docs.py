@@ -77,7 +77,8 @@ def test_release_routine_reviews_before_merge_and_proves_content_transfer() -> N
 
     for required in (
         "Keep it open and unmerged",
-        "Code Quality must be configured",
+        "GitHub Code Quality is not a dependency",
+        "aggregate `CodeQL` check",
         "review of `H`",
         "expected head `H`",
         "sole parent `B`",
@@ -87,6 +88,7 @@ def test_release_routine_reviews_before_merge_and_proves_content_transfer() -> N
         "candidate fields remain `H`",
     ):
         assert required in normalized
+    assert "Code Quality must be configured" not in normalized
     assert "review of the exact final SHA" not in normalized
     assert "bypass only the native approval" not in normalized
 

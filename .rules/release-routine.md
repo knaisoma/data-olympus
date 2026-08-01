@@ -95,11 +95,12 @@ Rollback is the same executable with the `rollback` argument. It reads
    new empty `[Unreleased]` block, and write `docs/releases/vX.Y.Z.md`.
 6. Open one public pull request through FastMCP. Keep it open and unmerged.
    Require every observed repository check to reach a successful terminal
-   conclusion. Require the exact `CodeQL - Code Quality` check, all three
-   CodeQL language analyses with zero results, no open CodeQL alert for the
-   pull request, no unresolved review thread, and the complete active default
-   branch ruleset fingerprint. Code Quality must be configured. Missing or
-   unverifiable evidence blocks before review or merge.
+   conclusion. Require the aggregate `CodeQL` check, all three CodeQL language
+   analyses with zero results, no open CodeQL alert for the pull request, no
+   unresolved review thread, and the complete active default branch ruleset
+   fingerprint. GitHub Code Quality is not a dependency because it is not
+   available on the approved GitHub Free plan. Missing or unverifiable
+   evidence blocks before review or merge.
 7. Bind the review candidate to the exact pull request head SHA `H`, its Git
    tree `T`, and admitted main SHA `B`. Require `H` to have sole parent `B`.
    Rerun all local release gates against `H`:
@@ -125,10 +126,10 @@ Rollback is the same executable with the `rollback` argument. It reads
    digest, `H`, and consumed Claude review. The approved standing delegation
    may materialize that exact entry only after the review passes.
 10. In the same execution, rederive `H`, `T`, `B`, remote `main`, every check
-    and security result, every review thread, Code Quality setup and result,
-    and the complete ruleset fingerprint. Any change requires a new run and
-    review. The deliberate team bypass bypasses the entire GitHub ruleset, not
-    only native approval, so these routine owned controls are load bearing.
+    and CodeQL result, every review thread, and the complete ruleset
+    fingerprint. Any change requires a new run and review. The deliberate team
+    bypass bypasses the entire GitHub ruleset, not only native approval, so
+    these routine owned controls are load bearing.
 11. Submit a conditional squash merge naming expected head `H`. Reconcile an
     ambiguous response only from the same pull request and current remote
     `main`. An open unchanged pull request stops safely. Every other ambiguous
