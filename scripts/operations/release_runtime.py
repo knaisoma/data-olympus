@@ -280,6 +280,71 @@ def _release_sections(changes: dict[str, Any]) -> list[tuple[str, list[str]]]:
     return sections
 
 
+def _render_change_sections(
+    sections: list[tuple[str, list[str]]],
+    *,
+    heading_level: int,
+) -> str:
+    if heading_level not in {2, 3}:
+        raise ValueError("release section heading level must be 2 or 3")
+    separator = "\n\n" if heading_level == 2 else "\n"
+    heading = "#" * heading_level
+    return separator.join(
+        f"{heading} {title}\n\n" + "\n".join(f"* {item}" for item in items)
+        for title, items in sections
+    )
+
+
+def _parse_release_note(
+    document: str,
+    version: str,
+) -> list[tuple[str, list[str]]]:
+    title = f"# data-olympus {version}\n\n"
+    if not document.startswith(title):
+        raise ValueError("prepared release note title is invalid")
+    lines = document[len(title) :].splitlines()
+    allowed = ["Breaking changes", "New features", "Fixed"]
+    sections: list[tuple[str, list[str]]] = []
+    index = 0
+    last_order = -1
+    while index < len(lines):
+        line = lines[index]
+        if not line.startswith("## ") or line[3:] not in allowed:
+            raise ValueError("prepared release note section is invalid")
+        section_title = line[3:]
+        section_order = allowed.index(section_title)
+        if section_order <= last_order:
+            raise ValueError("prepared release note section order is invalid")
+        last_order = section_order
+        index += 1
+        if index >= len(lines) or lines[index] != "":
+            raise ValueError("prepared release note section spacing is invalid")
+        index += 1
+        items: list[str] = []
+        while index < len(lines) and lines[index] != "":
+            if not lines[index].startswith("* ") or not lines[index][2:].strip():
+                raise ValueError("prepared release note item is invalid")
+            items.append(lines[index][2:])
+            index += 1
+        if not items:
+            raise ValueError("prepared release note section must contain an item")
+        sections.append((section_title, items))
+        if index < len(lines):
+            index += 1
+            if index >= len(lines):
+                raise ValueError("prepared release note has trailing whitespace")
+    canonical = f"{title}{_render_change_sections(sections, heading_level=2)}\n"
+    if document != canonical:
+        raise ValueError("prepared release note is not canonical")
+    return sections
+
+
+def _section_items(
+    sections: list[tuple[str, list[str]]],
+) -> dict[str, list[str]]:
+    return {title: items for title, items in sections}
+
+
 def render_release_documents(
     repository_root: Path,
     version: str,
@@ -292,6 +357,10 @@ def render_release_documents(
     sections = _release_sections(changes)
     pyproject_path = repository_root / "pyproject.toml"
     pyproject = pyproject_path.read_text(encoding="utf-8")
+    project_versions = re.findall(r'(?m)^version = "([^"]+)"\s*$', pyproject)
+    if len(project_versions) != 1:
+        raise ValueError("pyproject.toml must contain one project version")
+    current_version = project_versions[0]
     updated_project, replacements = re.subn(
         r'(?m)^(version = ")[^"]+("\s*)$',
         rf"\g<1>{version}\g<2>",
@@ -300,38 +369,103 @@ def render_release_documents(
     )
     if replacements != 1:
         raise ValueError("pyproject.toml must contain one project version")
-    pyproject_path.write_text(updated_project, encoding="utf-8")
 
     changelog_path = repository_root / "CHANGELOG.md"
     changelog = changelog_path.read_text(encoding="utf-8")
     marker = "## [Unreleased]"
     if changelog.count(marker) != 1:
         raise ValueError("CHANGELOG.md must contain one Unreleased section")
-    changelog_sections = "\n".join(
-        f"### {title}\n\n" + "\n".join(f"* {item}" for item in items)
-        for title, items in sections
-    )
-    replacement = (
-        f"{marker}\n\n## [{version}] - {release_date.isoformat()}\n\n"
-        f"{changelog_sections}\n"
-    )
-    updated_changelog = changelog.replace(marker, replacement, 1)
-    changelog_path.write_text(updated_changelog, encoding="utf-8")
-
-    note_sections = "\n\n".join(
-        f"## {title}\n\n" + "\n".join(f"* {item}" for item in items)
-        for title, items in sections
-    )
-    release_note = f"# data-olympus {version}\n\n{note_sections}\n"
     note_path = repository_root / "docs" / "releases" / f"v{version}.md"
-    if note_path.exists():
-        raise ValueError(f"release note already exists for {version}")
+    target_pattern = re.compile(
+        rf"(?m)^## \[{re.escape(version)}\] - [0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$"
+    )
+    target_matches = list(target_pattern.finditer(changelog))
+    note_exists = note_path.exists()
+    changelog_sections = _render_change_sections(sections, heading_level=3)
+    note_sections = _render_change_sections(sections, heading_level=2)
+    release_note = f"# data-olympus {version}\n\n{note_sections}\n"
+
+    if current_version != version and not note_exists and not target_matches:
+        document_mode = "normal"
+        replacement = (
+            f"{marker}\n\n## [{version}] - {release_date.isoformat()}\n\n"
+            f"{changelog_sections}\n"
+        )
+        updated_changelog = changelog.replace(marker, replacement, 1)
+    elif current_version == version and note_exists and len(target_matches) == 1:
+        document_mode = "roll_forward"
+        prior_sections = _parse_release_note(
+            note_path.read_text(encoding="utf-8"),
+            version,
+        )
+        prior_items = _section_items(prior_sections)
+        current_items = _section_items(sections)
+        for title, items in prior_items.items():
+            available = current_items.get(title, [])
+            if any(item not in available for item in items):
+                raise ValueError(
+                    "prepared release note item is absent from current computation"
+                )
+        has_new_item = any(
+            item not in prior_items.get(title, [])
+            for title, items in sections
+            for item in items
+        )
+        if not has_new_item:
+            raise ValueError("roll forward requires at least one new release item")
+
+        target = target_matches[0]
+        marker_start = changelog.index(marker)
+        marker_end = marker_start + len(marker)
+        if target.start() <= marker_end:
+            raise ValueError("prepared changelog target must follow Unreleased")
+        release_header = re.compile(
+            r"(?m)^## \[[0-9]+\.[0-9]+\.[0-9]+\] - "
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        )
+        first_release = release_header.search(changelog, marker_end)
+        if first_release is None or first_release.start() != target.start():
+            raise ValueError("prepared changelog target must be the first release")
+        body_start = target.end()
+        if changelog[body_start : body_start + 2] != "\n\n":
+            raise ValueError("prepared changelog target spacing is invalid")
+        body_start += 2
+        next_release = release_header.search(changelog, body_start)
+        body_end = next_release.start() if next_release is not None else len(changelog)
+        target_body = changelog[body_start:body_end]
+        prior_changelog = _render_change_sections(prior_sections, heading_level=3)
+        prefix_boundary = target_body[len(prior_changelog) : len(prior_changelog) + 1]
+        if not target_body.startswith(prior_changelog) or prefix_boundary not in {
+            "",
+            "\n",
+        }:
+            raise ValueError("prepared changelog canonical prefix is invalid")
+
+        prior_detail = target_body[len(prior_changelog) :].strip("\n")
+        unreleased_detail = changelog[marker_end : target.start()].strip("\n")
+        target_parts = [changelog_sections]
+        if prior_detail:
+            target_parts.append(prior_detail)
+        if unreleased_detail:
+            target_parts.append(unreleased_detail)
+        suffix = changelog[body_end:]
+        updated_changelog = (
+            f"{changelog[:marker_start]}{marker}\n\n"
+            f"## [{version}] - {release_date.isoformat()}\n\n"
+            f"{'\n\n'.join(target_parts)}\n\n{suffix}"
+        )
+    else:
+        raise ValueError("release documents are in an inconsistent prepared state")
+
+    pyproject_path.write_text(updated_project, encoding="utf-8")
+    changelog_path.write_text(updated_changelog, encoding="utf-8")
     note_path.parent.mkdir(parents=True, exist_ok=True)
     note_path.write_text(release_note, encoding="utf-8")
     note_hash = _sha256_text(release_note)
     return {
         "changelog_hash": _sha256_text(updated_changelog),
         "content_hash": note_hash,
+        "document_mode": document_mode,
         "release_note_hash": note_hash,
     }
 
@@ -1506,6 +1640,7 @@ class ReleaseRuntime:
             "changelog": {
                 "source_revision": head_revision,
                 "content_hash": document_evidence["changelog_hash"],
+                "document_mode": document_evidence["document_mode"],
             },
             "security": gates["security"],
             "tests": gates["tests"],

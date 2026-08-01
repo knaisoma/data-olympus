@@ -14,6 +14,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* Resume a merged but still unpublished release preparation by validating its
+  prior canonical documents, rebuilding them atomically from the complete
+  current computation, and then reusing the ordinary reviewed release path.
 * Retry one transient unbound FastMCP response during the idempotent postmerge
   tag inventory, while preserving strict tool binding and exact merge evidence
   when the bounded retry still fails.

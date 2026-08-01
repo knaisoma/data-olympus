@@ -105,6 +105,20 @@ The release host requires:
 5. Set `pyproject.toml` to `X.Y.Z`, update `uv.lock`, close the matching
    changelog block, open a
    new empty `[Unreleased]` block, and write `docs/releases/vX.Y.Z.md`.
+   A prepared version that merged but has no public tag, release, package,
+   image, or candidate may roll forward that same version exactly once per new
+   computed release item. Recovery requires the existing release note items to
+   be a heading preserving subset of the current computation and the existing
+   changelog target to begin with their exact canonical rendering. It rebuilds
+   both canonical sections from the full current computation, preserves prior
+   detailed target prose, moves current Unreleased prose under the target,
+   records the actual preparation date, and leaves one empty Unreleased block.
+   Every document state check and output render completes in memory before the
+   first file write. A missing counterpart, mismatch, duplicate target, or
+   replay without a new item blocks there. The unchanged version availability
+   gate blocks every public collision before review or merge. The resulting
+   commit then follows the complete ordinary review, merge, publication,
+   deployment, and notification sequence without a special delivery path.
 6. Open one public pull request through FastMCP. Keep it open and unmerged.
    Require every observed repository check to reach a successful terminal
    conclusion. Require the aggregate `CodeQL` check, all three CodeQL language
