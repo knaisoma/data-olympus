@@ -35,7 +35,7 @@
       }
     ],
     "path": "uv.lock",
-    "sha256": "b8f39d5183c1a26561bb549cd866a4d40e278f042f54e62f508286b1e0c90363"
+    "sha256": "b108a6c64cb2abe227d70716983d54b9c681cedfc4609845401449003e8dd2cc"
   },
   "environment": {
     "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
