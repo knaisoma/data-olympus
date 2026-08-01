@@ -16,61 +16,81 @@ to release when the evidence says no release is due.
 
 ## Command interface
 
-The project command is:
+The complete project command is:
 
-`python3.13 scripts/operations/release.py <stage>`
+`python3.13 scripts/operations/release.py`
 
-It reads one JSON object from `AI_OPERATIONS_STAGE_INPUT` and emits one JSON
-object with these fields:
+It reads the bounded run document from `AI_OPERATIONS_RUN_INPUT`. It emits
+newline delimited JSON with contiguous sequence numbers. The only event types
+are:
 
-* `status`
-* `reason`
-* `evidence`
-* `outputs`
+* `heartbeat`
+* `milestone`
+* `result`
 
-Accepted statuses are:
+The terminal result status is one of:
 
-* `pass`
+* `delivered`
 * `no_action`
 * `blocked`
 * `failed`
 
-`no_action` is valid only during admission. The command supports the fixed
-lifecycle stages plus rollback:
+The fixed milestones are:
 
-* `authority`
 * `admission`
 * `prepare`
 * `validate`
-* `review`
+* `domain_review`
 * `deliver`
 * `verify`
-* `notify`
-* `rollback`
 
-The command validates supplied evidence. It does not fetch Git, Data Olympus,
-GitHub, registry, cluster, or Telegram state by itself. The central runner
-adapter must fetch those sources, compare the real revisions, and supply the
-bounded stage input. A format valid SHA is not proof that a remote or authority
-revision exists.
+The project command owns Git, release artifact, workflow, registry, and kn dev
+evidence. Supported external mutations and reads go through FastMCP. The three
+current GitHub capability gaps are security alert enumeration, container
+package digest lookup, and a pull request merge with an expected head SHA
+precondition. They reuse governed repository commands and record the direct
+GitHub fallback because the gateway exposes none of those exact operations.
+An unconditional gateway merge is not an acceptable substitute for the
+expected head precondition.
+After the conditional merge mutation begins, an unknown merge outcome or any
+confirmed postmerge gate failure is `failed`, never `blocked`. Its result
+records the pull request, reviewed head, merge confirmation state, resulting
+revision when known, and incomplete recovery state.
+Workflow preflight reads remain safely retryable and `blocked`. The delivery
+mutation boundary begins immediately before the first workflow dispatch;
+dispatch ambiguity and every later failure are `failed`.
+The deployment mutation boundary begins immediately before the Kubernetes
+apply. A rollback preflight read may block without recovery evidence. Once the
+apply begins, an ambiguous apply or failed postapply acceptance returns a
+failed recovery result that records the rollback digest, apply confirmation,
+rollout state, acceptance state, and incomplete recovery.
+
+The central runner owns authority admission, immutable run control, model
+tickets, exact candidate approval, the durable ledger, Telegram delivery, and
+exact Telegram readback.
+
+Rollback is the same executable with the `rollback` argument. It reads
+`AI_OPERATIONS_RECOVERY_INPUT` and returns one closed recovery result.
 
 ## Monday sequence
 
-1. Load the single private release issue and the exact Friday source SHA.
-2. Fetch `origin/main` and rerun `scripts/compute_release.py`.
-3. Stop as `Blocked` when the source SHA, computed version, changelog, security
-   state, test evidence, or rollback point changed.
-4. If the repository now proves that no unreleased work exists, close the
+1. Bind the authority revision, contract digest, run identifier, and exact
+   `origin/main` source SHA.
+2. Rerun `scripts/compute_release.py` from that exact clean source.
+3. If the repository proves that no unreleased work exists, close the
    candidate as `No action`. Never manufacture a release to satisfy the
    schedule.
-5. Prepare the version change and release notes on one short lived
-   `chore/release-vX.Y.Z` branch from the approved source SHA.
-6. Set `pyproject.toml` to `X.Y.Z`, close the matching changelog block, open a
+4. Prepare the version change and release notes on one short lived
+   `chore/release-vX.Y.Z-RUN` branch from the admitted source SHA.
+5. Set `pyproject.toml` to `X.Y.Z`, update `uv.lock`, close the matching
+   changelog block, open a
    new empty `[Unreleased]` block, and write `docs/releases/vX.Y.Z.md`.
-7. Obtain independent crossed review of the exact branch SHA, merge the one
-   logical release change through the repository rules, and bind the candidate
-   source to the resulting exact `main` SHA.
-8. Rerun all release gates against that SHA:
+6. Open one public pull request through FastMCP. Require every repository check
+   to complete successfully. Confirm that remote `main` still equals the
+   admitted SHA, then squash merge the one deterministic release change.
+7. Bind the candidate to the resulting exact `main` SHA and require its parent
+   to equal the admitted SHA. A concurrent main change blocks the run.
+8. Rerun all release gates against that final SHA:
 
    * Complete test suite.
    * Ruff.
@@ -82,9 +102,12 @@ revision exists.
    * `scripts/ci_status.py`.
    * Version availability across PyPI, GHCR, GitHub tags, and GitHub releases.
 
-9. Require one Claude and Codex crossed pair. One family executes and the other
-   independently reviews. Self review is prohibited.
-10. Require operator approval bound to the exact candidate source SHA.
+9. The deterministic executor requests one central, run controlled Claude
+   review of the exact final SHA. Self review is prohibited. Review evidence
+   hashes both the submitted packet and the ticket bound Claude response.
+10. Require the candidate approval ledger entry to bind the run, contract
+    digest, final SHA, and consumed Claude review. The approved standing
+    delegation may materialize that exact entry only after the review passes.
 11. Dispatch `rc-publish.yml` for that SHA and the next unused candidate
     number. Do not reproduce version computation or publication logic in the
     runner.
@@ -108,17 +131,21 @@ revision exists.
     Keel is `never`.
 16. Deploy the same stable digest explicitly to kn dev and run the full
     external verification stage.
-17. Send one Telegram completion message to the semantic destination
-    `data-olympus-operations`. Completion requires exact independent readback
-    of the destination, message identifier, run marker, and content.
-18. Update the private release issue with immutable evidence and the truthful
-    terminal state.
+17. Return a delivered project result with the release pull request, previous
+   rollback digest, published version, exact candidate SHA, image digest, and
+   verification receipts.
+18. The central runner sends one Telegram completion message to the semantic
+   destination `data-olympus-operations`. Completion requires exact independent
+   readback of the destination, message identifier, run marker, and content.
+19. The durable runner ledger records the truthful terminal state. No private
+   issue is an authority or completion dependency.
 
 ## Exact source rule
 
-Candidate preparation, review, operator approval, workflow receipts,
-provenance, tags, artifacts, deployment, verification, and notification all
-name the same source SHA.
+The release branch SHA is premerge evidence only because squash merge produces
+a new commit. Final review, exact approval, workflow receipts, provenance,
+tags, artifacts, deployment, verification, and notification all name the same
+resulting `main` source SHA.
 
 Any source change invalidates approval and restarts the release assessment.
 
@@ -156,4 +183,5 @@ The release is complete only when:
 * kn dev runs that exact digest in both containers.
 * Health, readiness, MCP search, enforcement, and documentation pass.
 * Telegram send and exact readback are confirmed.
-* The runner ledger and private release issue record the same terminal state.
+* The runner ledger records the same terminal project, review, approval,
+  deployment, and notification evidence.

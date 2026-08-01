@@ -46,8 +46,9 @@ Friday planning must produce a Monday release.
 
 When a release is due:
 
-1. Create one short lived `chore/release-vX.Y.Z` branch from the approved main
-   SHA.
+1. Create one short lived `chore/release-vX.Y.Z-RUN` branch from the approved
+   main SHA. The run suffix prevents a failed clean retry from colliding with a
+   prior local or remote branch.
 2. Update `pyproject.toml`, the changelog, and the release note in one logical
    release change.
 3. Review and merge that change through the current repository rules.
@@ -95,9 +96,9 @@ Published versions, Git tags, GitHub releases, and OCI version tags are
 immutable.
 
 `v0.6.0` is already published and reconciled into `main`. It must never be
-rebuilt, retagged, or republished. The next valid release is a forward version,
-currently expected to be `v0.6.1` when the exact main history remains
-releasable.
+rebuilt, retagged, or republished. The next valid release is always the forward
+version returned by `scripts/compute_release.py` for the exact admitted
+`origin/main` history. No rule document hard codes the next version.
 
 Any collision or source mismatch blocks the release. Recovery uses a new
 version or a higher candidate number, never replacement of an existing

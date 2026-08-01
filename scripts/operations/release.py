@@ -6,9 +6,16 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from hashlib import sha256
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 DEFAULT_EXTRA_CONTEXT = "No extra context for this run"
 
@@ -332,34 +339,38 @@ def _prepare(input_document: dict[str, Any]) -> StageResult:
     if rollback.get("keel_policy") != "never":
         raise ReleaseInputError("rollback_point.keel_policy must be never")
 
-    issue = _object(
-        input_document.get("release_issue"),
-        "release_issue",
+    release_pr = _object(
+        input_document.get("release_pr"),
+        "release_pr",
     )
-    if _integer(issue.get("count"), "release_issue.count") != 1:
-        raise ReleaseInputError("exactly one private release issue is required")
-    _true(issue.get("private"), "release_issue.private")
-    number = _integer(issue.get("number"), "release_issue.number")
+    number = _integer(release_pr.get("number"), "release_pr.number")
     if number <= 0:
-        raise ReleaseInputError("release_issue.number must be positive")
-    url = _string(issue.get("url"), "release_issue.url")
-    if not url.startswith("https://github.com/knaisoma/data-olympus/issues/"):
-        raise ReleaseInputError("release_issue.url is outside the repository")
+        raise ReleaseInputError("release_pr.number must be positive")
+    url = _string(release_pr.get("url"), "release_pr.url")
+    if url != f"https://github.com/knaisoma/data-olympus/pull/{number}":
+        raise ReleaseInputError("release_pr.url is outside the Data Olympus repository")
+    _true(release_pr.get("merged"), "release_pr.merged")
+    base_revision = _sha40(
+        release_pr.get("base_source_revision"),
+        "release_pr.base_source_revision",
+    )
+    head_revision = _sha40(
+        release_pr.get("head_revision"),
+        "release_pr.head_revision",
+    )
+    if base_revision == head_revision or head_revision == source_revision:
+        raise ReleaseInputError("release_pr revisions do not prove a squash merge")
     _same_source(
         source_revision,
-        issue.get("source_revision"),
-        "release_issue.source_revision",
+        release_pr.get("source_revision"),
+        "release_pr.source_revision",
     )
-    if issue.get("candidate_version") != version:
-        raise ReleaseInputError("release_issue.candidate_version does not match the candidate")
-    issue_hash = _hash(
-        issue.get("body_hash"),
-        "release_issue.body_hash",
-    )
+    if release_pr.get("candidate_version") != version:
+        raise ReleaseInputError("release_pr.candidate_version does not match the candidate")
 
     return _result(
         "pass",
-        f"private release issue {number} records candidate {version}",
+        f"release pull request {number} produced candidate {version}",
         {
             "source_revision": source_revision,
             "version": version,
@@ -368,11 +379,12 @@ def _prepare(input_document: dict[str, Any]) -> StageResult:
             "security_hash": security_hash,
             "tests_hash": tests_hash,
             "rollback_digest": rollback_digest,
-            "release_issue_hash": issue_hash,
+            "release_pr_head_revision": head_revision,
+            "release_pr_base_revision": base_revision,
         },
         {
-            "release_issue_number": number,
-            "release_issue_url": url,
+            "release_pr_number": number,
+            "release_pr_url": url,
         },
     )
 
@@ -380,7 +392,7 @@ def _prepare(input_document: dict[str, Any]) -> StageResult:
 def _validate(input_document: dict[str, Any]) -> StageResult:
     _, version, source_revision = _candidate(
         input_document.get("candidate"),
-        require_artifact=True,
+        require_artifact=False,
     )
     _same_source(
         source_revision,
@@ -434,7 +446,7 @@ def _validate(input_document: dict[str, Any]) -> StageResult:
 def _review(input_document: dict[str, Any]) -> StageResult:
     _, version, source_revision = _candidate(
         input_document.get("candidate"),
-        require_artifact=True,
+        require_artifact=False,
     )
     _same_source(
         source_revision,
@@ -444,8 +456,8 @@ def _review(input_document: dict[str, Any]) -> StageResult:
 
     executor = _object(input_document.get("executor"), "executor")
     executor_family = _string(executor.get("family"), "executor.family")
-    if executor_family not in {"claude", "codex"}:
-        raise ReleaseInputError("executor.family must be claude or codex for a red release")
+    if executor_family != "deterministic":
+        raise ReleaseInputError("executor.family must be deterministic")
     _same_source(
         source_revision,
         executor.get("source_revision"),
@@ -460,8 +472,8 @@ def _review(input_document: dict[str, Any]) -> StageResult:
         review.get("family"),
         "companion_review.family",
     )
-    if {executor_family, reviewer_family} != {"claude", "codex"}:
-        raise ReleaseInputError("release execution and review must cross Claude and Codex families")
+    if reviewer_family != "claude":
+        raise ReleaseInputError("release review must use Claude")
     if review.get("verdict") != "APPROVE":
         raise ReleaseInputError("companion_review.verdict must be APPROVE")
     _same_source(
@@ -474,30 +486,53 @@ def _review(input_document: dict[str, Any]) -> StageResult:
         "companion_review.evidence_hash",
     )
 
-    approval = _object(
-        input_document.get("operator_approval"),
-        "operator_approval",
+    review_model_use_id = _integer(
+        input_document.get("review_model_use_id"),
+        "review_model_use_id",
     )
-    _true(approval.get("approved"), "operator_approval.approved")
+    if review_model_use_id <= 0:
+        raise ReleaseInputError("review_model_use_id must be positive")
+
+    approval = _object(
+        input_document.get("candidate_approval"),
+        "candidate_approval",
+    )
+    authority = _string(
+        approval.get("authority"),
+        "candidate_approval.authority",
+    )
+    if authority not in {"operator", "standing-delegation"}:
+        raise ReleaseInputError("candidate_approval.authority is invalid")
     _same_source(
         source_revision,
-        approval.get("source_revision"),
-        "operator_approval.source_revision",
+        approval.get("candidate_revision"),
+        "candidate_approval.candidate_revision",
     )
-    approval_id = _string(
-        approval.get("approval_id"),
-        "operator_approval.approval_id",
+    contract_digest = _hash(
+        approval.get("contract_digest"),
+        "candidate_approval.contract_digest",
     )
+    if contract_digest != input_document.get("contract_revision"):
+        raise ReleaseInputError("candidate approval contract digest changed")
+    approval_hash = _hash(
+        approval.get("approval_id_hash"),
+        "candidate_approval.approval_id_hash",
+    )
+    if approval.get("review_model_use_id") != review_model_use_id:
+        raise ReleaseInputError("candidate approval review evidence changed")
+    if approval.get("run_id") != input_document.get("run_id"):
+        raise ReleaseInputError("candidate approval run changed")
 
     return _result(
         "pass",
-        f"candidate {version} has crossed review and SHA bound approval",
+        f"candidate {version} has independent review and SHA bound approval",
         {
             "source_revision": source_revision,
             "executor_family": executor_family,
             "reviewer_family": reviewer_family,
             "review_hash": review_hash,
-            "operator_approval_id": approval_id,
+            "approval_authority": authority,
+            "approval_id_hash": approval_hash,
         },
     )
 
@@ -794,6 +829,618 @@ _EVALUATORS = {
     "rollback": _rollback,
 }
 
+_RUN_INPUT_FIELDS = {
+    "authority_revision",
+    "contract_id",
+    "contract_revision",
+    "executor_capability",
+    "extra_context",
+    "model_request",
+    "notification",
+    "outcome",
+    "project",
+    "reviewer_capability",
+    "run_id",
+    "source_revision",
+}
+_MODEL_REQUEST_FIELDS = {
+    "command",
+    "control_environment",
+    "ticket_environment",
+}
+_ISSUED_TICKET_FIELDS = {
+    "model_use_id",
+    "purpose",
+    "route_id",
+    "source_revision",
+    "ticket",
+}
+_MODEL_RESPONSE_FIELDS = {
+    "model_use_id",
+    "route_id",
+    "status",
+    "verdict",
+}
+_CANDIDATE_APPROVAL_FIELDS = {
+    "approval_id_hash",
+    "authority",
+    "candidate_revision",
+    "contract_digest",
+    "review_model_use_id",
+    "run_id",
+}
+_EXPECTED_OUTCOME = (
+    "One immutable reviewed release is published and every channel and "
+    "deployment matches its source revision."
+)
+
+
+def _exact_fields(value: dict[str, Any], fields: set[str], name: str) -> None:
+    unknown = sorted(set(value) - fields)
+    missing = sorted(fields - set(value))
+    if unknown:
+        raise ReleaseInputError(f"unknown {name} field: {unknown[0]}")
+    if missing:
+        raise ReleaseInputError(f"missing {name} field: {missing[0]}")
+
+
+def parse_release_run_input(raw_input: str) -> dict[str, Any]:
+    """Parse the exact bounded input emitted by the central runner."""
+    try:
+        parsed = json.loads(raw_input)
+    except json.JSONDecodeError as error:
+        raise ReleaseInputError("AI_OPERATIONS_RUN_INPUT must be valid JSON") from error
+    value = _object(parsed, "run input")
+    _exact_fields(value, _RUN_INPUT_FIELDS, "run input")
+    if value["contract_id"] != "data-olympus-release":
+        raise ReleaseInputError("contract identifier does not match Data Olympus release")
+    if value["project"] != "data-olympus" or value["outcome"] != _EXPECTED_OUTCOME:
+        raise ReleaseInputError("run input does not match the Data Olympus release outcome")
+    if value["executor_capability"] != "deterministic-release-execution":
+        raise ReleaseInputError("executor capability does not match Data Olympus release")
+    if value["reviewer_capability"] != "high-risk-review":
+        raise ReleaseInputError("reviewer capability does not match Data Olympus release")
+    _sha40(value["authority_revision"], "authority_revision")
+    _sha40(value["source_revision"], "source_revision")
+    _hash(value["contract_revision"], "contract_revision")
+    if re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+        r"[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+        _string(value["run_id"], "run_id"),
+    ) is None:
+        raise ReleaseInputError("run_id must be a UUID")
+    _extra_context(value["extra_context"])
+
+    notification = _object(value["notification"], "notification")
+    _exact_fields(
+        notification,
+        {"confirmation", "destination", "transport"},
+        "notification",
+    )
+    if notification != {
+        "transport": "telegram",
+        "destination": "data-olympus-operations",
+        "confirmation": "send_and_readback",
+    }:
+        raise ReleaseInputError("notification does not match Data Olympus operations")
+
+    model_request = _object(value["model_request"], "model_request")
+    _exact_fields(model_request, _MODEL_REQUEST_FIELDS, "model_request")
+    command = model_request["command"]
+    if (
+        type(command) is not list
+        or len(command) < 2
+        or any(type(item) is not str or not item.strip() for item in command)
+        or command[-2:] != ["models", "request"]
+        or model_request["control_environment"] != "AI_OPERATIONS_RUN_CONTROL"
+        or model_request["ticket_environment"] != "AI_OPERATIONS_MODEL_TICKET"
+    ):
+        raise ReleaseInputError("model_request does not match the runner boundary")
+    if not Path(command[0]).is_absolute():
+        raise ReleaseInputError("model request executable must be absolute")
+    return value
+
+
+def _issued_model_ticket(value: Any) -> dict[str, Any]:
+    ticket = _object(value, "model ticket")
+    _exact_fields(ticket, _ISSUED_TICKET_FIELDS, "model ticket")
+    if type(ticket["model_use_id"]) is not int or ticket["model_use_id"] < 1:
+        raise ReleaseInputError("model ticket identifier must be a positive integer")
+    if ticket["purpose"] != "review":
+        raise ReleaseInputError("release model ticket purpose must be review")
+    route_id = _string(ticket["route_id"], "model ticket route")
+    if route_id != "claude-code":
+        raise ReleaseInputError(
+            "release review ticket must use the qualified Claude route"
+        )
+    _sha40(ticket["source_revision"], "model ticket source_revision")
+    _string(ticket["ticket"], "model ticket")
+    return ticket
+
+
+def _approved_model_response(value: Any, ticket: dict[str, Any]) -> dict[str, Any]:
+    response = _object(value, "review response")
+    _exact_fields(response, _MODEL_RESPONSE_FIELDS, "review response")
+    if response["model_use_id"] != ticket["model_use_id"]:
+        raise ReleaseInputError("review response model use does not match its ticket")
+    if response["route_id"] != ticket["route_id"]:
+        raise ReleaseInputError("review response route does not match its ticket")
+    if response["status"] != "approved" or response["verdict"] != "APPROVE":
+        raise ReleaseInputError("independent review blocked the release")
+    return response
+
+
+def _candidate_approval_response(
+    value: Any,
+    run_input: dict[str, Any],
+    candidate_revision: str,
+    review_model_use_id: int,
+) -> dict[str, Any]:
+    approval = _object(value, "candidate approval")
+    _exact_fields(
+        approval,
+        _CANDIDATE_APPROVAL_FIELDS,
+        "candidate approval",
+    )
+    if approval["authority"] not in {"operator", "standing-delegation"}:
+        raise ReleaseInputError("candidate approval authority is invalid")
+    if approval["run_id"] != run_input["run_id"]:
+        raise ReleaseInputError("candidate approval run does not match")
+    if approval["contract_digest"] != run_input["contract_revision"]:
+        raise ReleaseInputError("candidate approval contract does not match")
+    if approval["candidate_revision"] != candidate_revision:
+        raise ReleaseInputError("candidate approval revision does not match")
+    if approval["review_model_use_id"] != review_model_use_id:
+        raise ReleaseInputError("candidate approval review evidence does not match")
+    _hash(approval["approval_id_hash"], "candidate approval identifier hash")
+    return approval
+
+
+def _collect_candidate_approval(
+    run_input: dict[str, Any],
+    dependencies: dict[str, Any],
+    candidate: dict[str, Any],
+    review: dict[str, Any],
+) -> dict[str, Any]:
+    candidate_revision = _sha40(
+        candidate.get("source_revision"),
+        "candidate.source_revision",
+    )
+    if "collect_candidate_approval" in dependencies:
+        response = dependencies["collect_candidate_approval"](
+            run_input,
+            candidate,
+            review,
+        )
+    else:
+        command = run_input["model_request"]["command"]
+        process = subprocess.run(
+            [
+                *command[:-2],
+                "approvals",
+                "check",
+                run_input["run_id"],
+                candidate_revision,
+                "--contract-digest",
+                run_input["contract_revision"],
+            ],
+            cwd=Path(dependencies.get("workspace", Path.cwd())).resolve(),
+            env=dict(os.environ),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if process.returncode != 0:
+            raise ReleaseInputError("candidate approval check failed")
+        try:
+            response = json.loads(process.stdout.strip())
+        except json.JSONDecodeError as error:
+            raise ReleaseInputError(
+                "candidate approval check returned invalid JSON"
+            ) from error
+    return _candidate_approval_response(
+        response,
+        run_input,
+        candidate_revision,
+        review["model_use_id"],
+    )
+
+
+def _request_model_ticket_from_runner(
+    run_input: dict[str, Any],
+    source_revision: str,
+    workspace: Path,
+) -> dict[str, Any]:
+    model_request = run_input["model_request"]
+    command = model_request["command"]
+    environment = dict(os.environ)
+    environment.pop(model_request["ticket_environment"], None)
+    process = subprocess.run(
+        [
+            *command,
+            run_input["run_id"],
+            "review",
+            str(workspace),
+            source_revision,
+        ],
+        cwd=workspace,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if process.returncode != 0:
+        raise ReleaseInputError("review model ticket request failed")
+    try:
+        return _issued_model_ticket(json.loads(process.stdout.strip()))
+    except json.JSONDecodeError as error:
+        raise ReleaseInputError("review model ticket request returned invalid JSON") from error
+
+
+def _invoke_ticketed_model_from_runner(
+    run_input: dict[str, Any],
+    ticket: dict[str, Any],
+    packet: dict[str, Any],
+    workspace: Path,
+) -> dict[str, Any]:
+    model_request = run_input["model_request"]
+    scratch_root = workspace / "to-delete"
+    scratch_root.mkdir(exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="aiops-release-review-", dir=scratch_root))
+    try:
+        packet_path = scratch / "review.json"
+        packet_path.write_text(
+            json.dumps(packet, separators=(",", ":"), sort_keys=True),
+            encoding="utf-8",
+        )
+        packet_path.chmod(0o600)
+        command = model_request["command"]
+        environment = dict(os.environ)
+        environment[model_request["ticket_environment"]] = ticket["ticket"]
+        process = subprocess.run(
+            [
+                *command[:-1],
+                "invoke",
+                run_input["run_id"],
+                "review",
+                str(packet_path),
+                str(workspace),
+            ],
+            cwd=workspace,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=900,
+            check=False,
+        )
+        try:
+            response = json.loads(process.stdout.strip())
+        except json.JSONDecodeError as error:
+            raise ReleaseInputError("review model invocation returned invalid JSON") from error
+        parsed = _approved_model_response(response, ticket)
+        if process.returncode != 0:
+            raise ReleaseInputError("review model invocation failed")
+        return parsed
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _milestone(
+    sequence: int,
+    name: str,
+    reason: str,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "milestone",
+        "sequence": sequence,
+        "name": name,
+        "status": "pass",
+        "reason": reason,
+        "evidence": evidence or {},
+    }
+
+
+def _project_result(
+    sequence: int,
+    status: str,
+    reason: str,
+    run_input: dict[str, Any],
+    evidence: dict[str, Any] | None = None,
+    candidate_revision: str | None = None,
+    review_model_use_id: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "result",
+        "sequence": sequence,
+        "status": status,
+        "reason": reason,
+        "evidence": evidence or {},
+        "source_revision": run_input["source_revision"],
+        "candidate_revision": candidate_revision,
+        "review_model_use_id": review_model_use_id,
+    }
+
+
+def _request_review_ticket(
+    run_input: dict[str, Any],
+    dependencies: dict[str, Any],
+    source_revision: str,
+) -> dict[str, Any]:
+    workspace = Path(dependencies.get("workspace", Path.cwd())).resolve()
+    request = {
+        "purpose": "review",
+        "run_id": run_input["run_id"],
+        "source_revision": source_revision,
+        "workspace": str(workspace),
+    }
+    if "request_model_ticket" in dependencies:
+        ticket = _issued_model_ticket(dependencies["request_model_ticket"](request))
+    else:
+        ticket = _request_model_ticket_from_runner(run_input, source_revision, workspace)
+    if ticket["source_revision"] != source_revision:
+        raise ReleaseInputError("review model ticket source does not match the candidate")
+    return ticket
+
+
+def _invoke_review(
+    run_input: dict[str, Any],
+    dependencies: dict[str, Any],
+    ticket: dict[str, Any],
+    packet: dict[str, Any],
+) -> dict[str, Any]:
+    workspace = Path(dependencies.get("workspace", Path.cwd())).resolve()
+    request = {
+        "packet": packet,
+        "purpose": "review",
+        "run_input": run_input,
+        "ticket": ticket,
+        "workspace": str(workspace),
+    }
+    if "invoke_model" in dependencies:
+        response = dependencies["invoke_model"](request)
+    else:
+        response = _invoke_ticketed_model_from_runner(
+            run_input,
+            ticket,
+            packet,
+            workspace,
+        )
+    return _approved_model_response(response, ticket)
+
+
+def execute_release_run(
+    raw_input: str,
+    dependencies: dict[str, Any],
+    *,
+    emit: Callable[[dict[str, Any]], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Execute one complete project-owned release outcome."""
+    run_input: dict[str, Any] | None = None
+    events: list[dict[str, Any]] = []
+    candidate_revision: str | None = None
+
+    def record(event: dict[str, Any]) -> dict[str, Any]:
+        event["sequence"] = len(events) + 1
+        events.append(event)
+        if emit is not None:
+            emit(event)
+        return event
+
+    def heartbeat() -> None:
+        record({"type": "heartbeat", "sequence": 0})
+
+    try:
+        run_input = parse_release_run_input(raw_input)
+        if "set_heartbeat" in dependencies:
+            dependencies["set_heartbeat"](heartbeat)
+        if dependencies["source_revision"]() != run_input["source_revision"]:
+            raise ReleaseInputError("source revision does not match the admitted run")
+        admission_input = dependencies["collect_admission"](run_input)
+        admission = evaluate_stage("admission", admission_input)
+        if admission["status"] in {"blocked", "failed"}:
+            record(
+                _project_result(
+                    1,
+                    admission["status"],
+                    admission["reason"],
+                    run_input,
+                    admission["evidence"],
+                )
+            )
+            return events
+        record(
+            _milestone(1, "admission", admission["reason"], admission["evidence"])
+        )
+        if admission["status"] == "no_action":
+            ticket = _request_review_ticket(
+                run_input,
+                dependencies,
+                run_input["source_revision"],
+            )
+            review = _invoke_review(
+                run_input,
+                dependencies,
+                ticket,
+                {
+                    "admission": admission,
+                    "instruction": (
+                        "Approve only when exact current remote main evidence proves "
+                        "that no Data Olympus release is due."
+                    ),
+                    "source_revision": run_input["source_revision"],
+                },
+            )
+            record(
+                _project_result(
+                    2,
+                    "no_action",
+                    admission["reason"],
+                    run_input,
+                    admission["evidence"],
+                    review_model_use_id=review["model_use_id"],
+                )
+            )
+            return events
+
+        prepared_input = dependencies["prepare"](run_input, admission)
+        prepared = evaluate_stage("prepare", prepared_input)
+        if prepared["status"] != "pass":
+            raise ReleaseInputError(prepared["reason"])
+        candidate = _object(prepared_input["candidate"], "candidate")
+        candidate_revision = _sha40(
+            candidate.get("source_revision"),
+            "candidate.source_revision",
+        )
+        record(
+            _milestone(2, "prepare", prepared["reason"], prepared["evidence"])
+        )
+
+        validation_input = dependencies["validate"](run_input, admission, prepared)
+        validation = evaluate_stage("validate", validation_input)
+        if validation["status"] != "pass":
+            raise ReleaseInputError(validation["reason"])
+        record(
+            _milestone(3, "validate", validation["reason"], validation["evidence"])
+        )
+        revision_reader = dependencies.get(
+            "candidate_revision",
+            dependencies["source_revision"],
+        )
+        if revision_reader() != candidate_revision:
+            raise ReleaseInputError("candidate revision changed during validation")
+
+        ticket = _request_review_ticket(run_input, dependencies, candidate_revision)
+        packet = {
+            "candidate": candidate,
+            "instruction": (
+                "Independently review the exact deterministic Data Olympus release "
+                "candidate. Approve only when source identity, tests, security, "
+                "version, rollback point, and immutable release procedures pass."
+            ),
+            "prepared_evidence": prepared["evidence"],
+            "source_revision": candidate_revision,
+            "validation_evidence": validation["evidence"],
+        }
+        review = _invoke_review(run_input, dependencies, ticket, packet)
+        approval = _collect_candidate_approval(
+            run_input,
+            dependencies,
+            candidate,
+            review,
+        )
+        reviewed = evaluate_stage(
+            "review",
+            {
+                "candidate": candidate,
+                "current_source_revision": candidate_revision,
+                "contract_revision": run_input["contract_revision"],
+                "run_id": run_input["run_id"],
+                "review_model_use_id": review["model_use_id"],
+                "executor": {
+                    "family": "deterministic",
+                    "source_revision": candidate_revision,
+                },
+                "companion_review": {
+                    "family": "claude",
+                    "verdict": "APPROVE",
+                    "reviewed_source_revision": candidate_revision,
+                    "evidence_hash": sha256(
+                        json.dumps(
+                            {"packet": packet, "response": review},
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ).encode()
+                    ).hexdigest(),
+                },
+                "candidate_approval": approval,
+            },
+        )
+        if reviewed["status"] != "pass":
+            raise ReleaseInputError(reviewed["reason"])
+        record(
+            _milestone(4, "domain_review", reviewed["reason"], reviewed["evidence"])
+        )
+        if revision_reader() != candidate_revision:
+            raise ReleaseInputError("candidate revision changed before delivery")
+
+        delivery_input = dependencies["deliver"](
+            run_input,
+            admission,
+            prepared,
+            reviewed,
+        )
+        delivery = evaluate_stage("deliver", delivery_input)
+        if delivery["status"] != "pass":
+            raise ReleaseInputError(delivery["reason"])
+        record(
+            _milestone(5, "deliver", delivery["reason"], delivery["evidence"])
+        )
+
+        verification_input = dependencies["verify"](run_input, admission, delivery)
+        verification = evaluate_stage("verify", verification_input)
+        if verification["status"] != "pass":
+            raise ReleaseInputError(verification["reason"])
+        record(
+            _milestone(6, "verify", verification["reason"], verification["evidence"])
+        )
+        record(
+            _project_result(
+                7,
+                "delivered",
+                verification["reason"],
+                run_input,
+                {
+                    **delivery["outputs"],
+                    **verification["evidence"],
+                    "rollback_digest": prepared["evidence"][
+                        "rollback_digest"
+                    ],
+                    "release_pr_number": prepared["outputs"][
+                        "release_pr_number"
+                    ],
+                },
+                candidate_revision=candidate_revision,
+                review_model_use_id=review["model_use_id"],
+            )
+        )
+        return events
+    except (
+        KeyError,
+        OSError,
+        ReleaseInputError,
+        ValueError,
+        subprocess.SubprocessError,
+    ) as error:
+        if run_input is None:
+            raise
+        delivered = any(event.get("name") == "deliver" for event in events)
+        external_state_changed = bool(
+            getattr(error, "external_state_changed", False)
+        )
+        failure_evidence = getattr(error, "evidence", {})
+        if type(failure_evidence) is not dict:
+            failure_evidence = {}
+        record(
+            _project_result(
+                len(events) + 1,
+                "failed" if delivered or external_state_changed else "blocked",
+                str(error),
+                run_input,
+                failure_evidence,
+                candidate_revision=candidate_revision,
+            )
+        )
+        return events
+
+
+def _default_dependencies() -> dict[str, Any]:
+    from scripts.operations.release_runtime import default_release_dependencies
+
+    return default_release_dependencies()
+
 
 def evaluate_stage(stage: str, input_document: Any) -> StageResult:
     """Evaluate one release lifecycle stage without trusting shortcut booleans."""
@@ -811,33 +1458,98 @@ def evaluate_stage(stage: str, input_document: Any) -> StageResult:
         return _result(status, str(error))
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    dependencies: dict[str, Any] | None = None,
+) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if len(arguments) != 1:
-        output = _result("failed", "exactly one release stage is required")
-        print(json.dumps(output, separators=(",", ":"), sort_keys=True))
-        return 2
-    stage = arguments[0]
-    raw_input = os.environ.get("AI_OPERATIONS_STAGE_INPUT")
-    if raw_input is None:
-        output = _result(
-            "failed",
-            "AI_OPERATIONS_STAGE_INPUT is required",
+    if arguments == ["rollback"]:
+        active_dependencies = (
+            dependencies if dependencies is not None else _default_dependencies()
         )
-        print(json.dumps(output, separators=(",", ":"), sort_keys=True))
-        return 2
-    try:
-        input_document = json.loads(raw_input)
-    except json.JSONDecodeError:
-        output = _result(
-            "failed",
-            "AI_OPERATIONS_STAGE_INPUT must be valid JSON",
+        raw_recovery = os.environ.get("AI_OPERATIONS_RECOVERY_INPUT")
+        if raw_recovery is None:
+            output = {
+                "status": "failed",
+                "reason": "AI_OPERATIONS_RECOVERY_INPUT is required",
+                "evidence": {},
+                "source_revision": "unavailable",
+            }
+            print(json.dumps(output, separators=(",", ":"), sort_keys=True))
+            return 2
+        recovery_input: Any = None
+        try:
+            recovery_input = json.loads(raw_recovery)
+            recovery = active_dependencies["rollback"](recovery_input)
+        except (
+            KeyError,
+            OSError,
+            ReleaseInputError,
+            ValueError,
+            json.JSONDecodeError,
+            subprocess.SubprocessError,
+        ) as error:
+            recovery_source = (
+                recovery_input.get("source_revision")
+                if type(recovery_input) is dict
+                else None
+            )
+            failure_evidence = getattr(error, "evidence", {})
+            if type(failure_evidence) is not dict:
+                failure_evidence = {}
+            recovery = {
+                "status": (
+                    "failed"
+                    if bool(getattr(error, "external_state_changed", False))
+                    else "blocked"
+                ),
+                "reason": str(error),
+                "evidence": failure_evidence,
+                "source_revision": (
+                    recovery_source
+                    if type(recovery_source) is str
+                    and re.fullmatch(r"[0-9a-f]{40}", recovery_source)
+                    else "unavailable"
+                ),
+            }
+        print(json.dumps(recovery, separators=(",", ":"), sort_keys=True))
+        return 0 if recovery.get("status") == "pass" else 1
+    if not arguments:
+        raw_run = os.environ.get("AI_OPERATIONS_RUN_INPUT")
+        if raw_run is None:
+            output = _result("failed", "AI_OPERATIONS_RUN_INPUT is required")
+            print(json.dumps(output, separators=(",", ":"), sort_keys=True))
+            return 2
+        active_dependencies = (
+            dependencies if dependencies is not None else _default_dependencies()
         )
-        print(json.dumps(output, separators=(",", ":"), sort_keys=True))
-        return 2
-    output = evaluate_stage(stage, input_document)
+        def emit_event(event: dict[str, Any]) -> None:
+            print(
+                json.dumps(event, separators=(",", ":"), sort_keys=True),
+                flush=True,
+            )
+
+        try:
+            events = execute_release_run(
+                raw_run,
+                active_dependencies,
+                emit=emit_event,
+            )
+        except ReleaseInputError as error:
+            print(
+                json.dumps(
+                    _result("failed", str(error)),
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+            return 1
+        final = events[-1]
+        return 0 if final["status"] in {"delivered", "no_action"} else 1
+    output = _result("failed", "unsupported Data Olympus release operation")
     print(json.dumps(output, separators=(",", ":"), sort_keys=True))
-    return 0 if output["status"] in {"pass", "no_action"} else 1
+    return 2
 
 
 if __name__ == "__main__":
