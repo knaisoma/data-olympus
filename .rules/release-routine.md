@@ -18,7 +18,7 @@ to release when the evidence says no release is due.
 
 The complete project command is:
 
-`python3.13 scripts/operations/release.py`
+`python3.13 -m scripts.operations.release`
 
 It reads the bounded run document from `AI_OPERATIONS_RUN_INPUT`. It emits
 newline delimited JSON with contiguous sequence numbers. The only event types
