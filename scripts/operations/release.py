@@ -472,8 +472,8 @@ def _review(input_document: dict[str, Any]) -> StageResult:
         review.get("family"),
         "companion_review.family",
     )
-    if reviewer_family not in {"claude", "codex"}:
-        raise ReleaseInputError("release review must use Claude or Codex")
+    if reviewer_family != "claude":
+        raise ReleaseInputError("release review must use Claude")
     if review.get("verdict") != "APPROVE":
         raise ReleaseInputError("companion_review.verdict must be APPROVE")
     _same_source(
@@ -948,7 +948,11 @@ def _issued_model_ticket(value: Any) -> dict[str, Any]:
         raise ReleaseInputError("model ticket identifier must be a positive integer")
     if ticket["purpose"] != "review":
         raise ReleaseInputError("release model ticket purpose must be review")
-    _string(ticket["route_id"], "model ticket route")
+    route_id = _string(ticket["route_id"], "model ticket route")
+    if route_id != "claude-code":
+        raise ReleaseInputError(
+            "release review ticket must use the qualified Claude route"
+        )
     _sha40(ticket["source_revision"], "model ticket source_revision")
     _string(ticket["ticket"], "model ticket")
     return ticket
@@ -1409,12 +1413,19 @@ def execute_release_run(
         if run_input is None:
             raise
         delivered = any(event.get("name") == "deliver" for event in events)
+        external_state_changed = bool(
+            getattr(error, "external_state_changed", False)
+        )
+        failure_evidence = getattr(error, "evidence", {})
+        if type(failure_evidence) is not dict:
+            failure_evidence = {}
         record(
             _project_result(
                 len(events) + 1,
-                "failed" if delivered else "blocked",
+                "failed" if delivered or external_state_changed else "blocked",
                 str(error),
                 run_input,
+                failure_evidence,
                 candidate_revision=candidate_revision,
             )
         )

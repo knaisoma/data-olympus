@@ -59,6 +59,16 @@ CommandOutput = Callable[[list[str], Path, int], str]
 JsonFetch = Callable[[str, int], dict[str, Any]]
 
 
+class ReleaseDeliveryError(ValueError):
+    """A delivery failure after externally visible release side effects."""
+
+    external_state_changed = True
+
+    def __init__(self, reason: str, evidence: dict[str, Any]) -> None:
+        super().__init__(reason)
+        self.evidence = evidence
+
+
 def _default_command_output(command: list[str], cwd: Path, timeout: int) -> str:
     process = subprocess.run(
         command,
@@ -668,6 +678,35 @@ class ReleaseRuntime:
             return {"checks": check_evidence, "pull": pull}
         raise ValueError(last_error)
 
+    def _merge_exact(
+        self,
+        number: int,
+        version: str,
+        head_revision: str,
+    ) -> dict[str, Any]:
+        if _SHA40.fullmatch(head_revision) is None:
+            raise ValueError("release pull request head revision is invalid")
+        raw = self.command(
+            [
+                "gh",
+                "api",
+                "--method",
+                "PUT",
+                f"repos/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/pulls/{number}/merge",
+                "--field",
+                "merge_method=squash",
+                "--field",
+                f"commit_title=chore(release): prepare v{version}",
+                "--field",
+                f"sha={head_revision}",
+            ],
+            timeout=120,
+        )
+        try:
+            return _object(json.loads(raw), "release merge result")
+        except json.JSONDecodeError as error:
+            raise ValueError("release merge result is invalid") from error
+
     def _wait_main_checks(self, source_revision: str) -> dict[str, Any]:
         required = ",".join(sorted(REQUIRED_MAIN_CHECKS))
         for _attempt in range(120):
@@ -874,16 +913,7 @@ class ReleaseRuntime:
         self.command(["git", "fetch", "origin", "main"], timeout=120)
         if self.candidate_revision() != admitted:
             raise ValueError("remote main changed before release merge")
-        merged = self.gateway_object(
-            "merge_pull_request",
-            {
-                "commit_title": f"chore(release): prepare v{version}",
-                "merge_method": "squash",
-                "owner": GITHUB_OWNER,
-                "pullNumber": number,
-                "repo": GITHUB_REPOSITORY,
-            },
-        )
+        merged = self._merge_exact(number, version, head_revision)
         final_revision = merged.get("sha")
         if merged.get("merged") is not True or not isinstance(final_revision, str):
             raise ValueError("release pull request did not merge")
@@ -1275,7 +1305,10 @@ class ReleaseRuntime:
         candidate_tag = f"{version}-rc.{rc_number}"
         rollback_digest = self._prepared["raw"]["rollback_point"]["digest"]
         deployment_started = False
+        external_state_changed = False
+        rollback_completed = False
         try:
+            external_state_changed = True
             rc_receipt = self._workflow_run(
                 "rc-publish.yml",
                 source_revision,
@@ -1311,11 +1344,26 @@ class ReleaseRuntime:
                 try:
                     self._apply_digest(rollback_digest)
                     self._service_acceptance()
+                    rollback_completed = True
                 except (OSError, subprocess.SubprocessError, ValueError) as rollback_error:
-                    raise ValueError(
-                        "release delivery failed and exact digest rollback also failed"
+                    raise ReleaseDeliveryError(
+                        "release delivery failed and exact digest rollback also failed",
+                        {
+                            "deployment_started": True,
+                            "external_state_changed": True,
+                            "rollback_completed": False,
+                        },
                     ) from rollback_error
-            raise error
+            if external_state_changed:
+                raise ReleaseDeliveryError(
+                    str(error),
+                    {
+                        "deployment_started": deployment_started,
+                        "external_state_changed": True,
+                        "rollback_completed": rollback_completed,
+                    },
+                ) from error
+            raise
         final_candidate = {
             **candidate,
             "candidate_tag": candidate_tag,

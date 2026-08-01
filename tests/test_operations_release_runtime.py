@@ -8,6 +8,7 @@ import pytest
 
 from scripts.operations.release_runtime import (
     FastMCPGateway,
+    ReleaseDeliveryError,
     ReleaseRuntime,
     candidate_release_evidence,
     completed_check_evidence,
@@ -483,6 +484,39 @@ def test_workflow_receipt_is_new_completed_and_bound_to_exact_source(
     )
 
 
+def test_merge_uses_github_expected_head_precondition(tmp_path: Path) -> None:
+    commands: list[list[str]] = []
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        commands.append(command)
+        return json.dumps({"merged": True, "sha": SOURCE_SHA})
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway(),
+        command_output=command_output,
+    )
+
+    result = runtime._merge_exact(182, "0.7.0", "f" * 40)
+
+    assert result == {"merged": True, "sha": SOURCE_SHA}
+    assert commands == [
+        [
+            "gh",
+            "api",
+            "--method",
+            "PUT",
+            "repos/knaisoma/data-olympus/pulls/182/merge",
+            "--field",
+            "merge_method=squash",
+            "--field",
+            "commit_title=chore(release): prepare v0.7.0",
+            "--field",
+            "sha=" + "f" * 40,
+        ]
+    ]
+
+
 def test_partial_delivery_failure_restores_the_exact_previous_digest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -533,7 +567,13 @@ def test_partial_delivery_failure_restores_the_exact_previous_digest(
         lambda _source, _version: (_ for _ in ()).throw(ValueError("stable failed")),
     )
 
-    with pytest.raises(ValueError, match="stable failed"):
+    with pytest.raises(ReleaseDeliveryError, match="stable failed") as raised:
         runtime.deliver({}, {}, {}, {})
 
     assert applied == [DIGEST, previous]
+    assert raised.value.external_state_changed is True
+    assert raised.value.evidence == {
+        "deployment_started": True,
+        "external_state_changed": True,
+        "rollback_completed": True,
+    }

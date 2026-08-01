@@ -45,10 +45,13 @@ The fixed milestones are:
 * `verify`
 
 The project command owns Git, release artifact, workflow, registry, and kn dev
-evidence. Supported external mutations and reads go through FastMCP. The two
-current GitHub evidence gaps, security alert enumeration and container package
-digest lookup, reuse the governed repository scripts and record the direct
-GitHub fallback because the gateway exposes neither operation.
+evidence. Supported external mutations and reads go through FastMCP. The three
+current GitHub capability gaps are security alert enumeration, container
+package digest lookup, and a pull request merge with an expected head SHA
+precondition. They reuse governed repository commands and record the direct
+GitHub fallback because the gateway exposes none of those exact operations.
+An unconditional gateway merge is not an acceptable substitute for the
+expected head precondition.
 
 The central runner owns authority admission, immutable run control, model
 tickets, exact candidate approval, the durable ledger, Telegram delivery, and

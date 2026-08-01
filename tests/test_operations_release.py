@@ -324,6 +324,7 @@ def test_review_requires_independent_claude_and_exact_ledger_approval() -> None:
     "mutate",
     [
         lambda value: value["companion_review"].__setitem__("family", "local"),
+        lambda value: value["companion_review"].__setitem__("family", "codex"),
         lambda value: value["companion_review"].__setitem__(
             "verdict",
             "BLOCK",
@@ -1031,6 +1032,42 @@ def test_release_blocks_when_ledger_approval_is_not_bound_to_candidate() -> None
     assert events[-1]["status"] == "blocked"
     assert events[-1]["candidate_revision"] == CANDIDATE_SHA
     assert "candidate approval revision does not match" in events[-1]["reason"]
+
+
+def test_release_blocks_when_review_ticket_is_not_the_qualified_claude_route() -> None:
+    dependencies = _release_dependencies()
+    dependencies["request_model_ticket"] = lambda request: {
+        "model_use_id": 71,
+        "purpose": request["purpose"],
+        "route_id": "codex",
+        "source_revision": request["source_revision"],
+        "ticket": "opaque-run-scoped-ticket",
+    }
+
+    events = execute_release_run(json.dumps(RUN_INPUT), dependencies)
+
+    assert events[-1]["status"] == "blocked"
+    assert "qualified Claude route" in events[-1]["reason"]
+
+
+def test_release_marks_external_delivery_failure_as_failed_with_recovery_evidence() -> None:
+    dependencies = _release_dependencies()
+
+    class ExternalFailure(ValueError):
+        external_state_changed = True
+        evidence = {
+            "external_state_changed": True,
+            "rollback_completed": True,
+        }
+
+    dependencies["deliver"] = lambda *_arguments: (_ for _ in ()).throw(
+        ExternalFailure("stable publication failed")
+    )
+
+    events = execute_release_run(json.dumps(RUN_INPUT), dependencies)
+
+    assert events[-1]["status"] == "failed"
+    assert events[-1]["evidence"] == ExternalFailure.evidence
 
 
 def test_release_cli_default_invocation_reads_complete_run_input(
