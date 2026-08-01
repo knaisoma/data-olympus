@@ -14,6 +14,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* **Moved autonomous release approval before merge.** The release routine now
+  reviews and approves the exact unmerged candidate, rederives every control
+  replaced by the deliberate GitHub ruleset bypass, conditionally merges the
+  expected head, and proves exact parent and tree transfer before any
+  publication or deployment. An unavailable Code Quality result blocks the
+  release instead of being treated as satisfied.
 * **Accepted the canonical FastMCP pull request receipt.** The automated
   release routine now derives the new pull request number from the exact
   repository URL when the gateway receipt omits a separate numeric field.
