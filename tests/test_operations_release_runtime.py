@@ -74,7 +74,6 @@ def _release_ruleset() -> dict[str, object]:
                     ]
                 },
             },
-            {"type": "code_quality", "parameters": {"severity": "errors"}},
         ],
         "bypass_actors": [
             {"actor_id": 18280424, "actor_type": "Team", "bypass_mode": "always"}
@@ -84,11 +83,10 @@ def _release_ruleset() -> dict[str, object]:
 
 
 def _successful_pull_checks() -> dict[str, object]:
-    names = REQUIRED_PULL_REQUEST_CHECKS | {"CodeQL - Code Quality"}
     return {
         "check_runs": [
             {"name": name, "status": "completed", "conclusion": "success"}
-            for name in sorted(names)
+            for name in sorted(REQUIRED_PULL_REQUEST_CHECKS)
         ]
     }
 
@@ -147,10 +145,6 @@ def test_governed_release_controls_rederive_every_bypassed_rule() -> None:
         admitted_revision=SOURCE_SHA,
         candidate_revision=CANDIDATE_SHA,
         checks=_successful_pull_checks(),
-        code_quality_setup={
-            "state": "configured",
-            "languages": ["javascript-typescript", "python"],
-        },
         codeql_alerts=[],
         codeql_analyses=_codeql_analyses(),
         review_state=_review_state(),
@@ -158,7 +152,6 @@ def test_governed_release_controls_rederive_every_bypassed_rule() -> None:
     )
 
     assert evidence["candidate_revision"] == CANDIDATE_SHA
-    assert evidence["code_quality_check"] == "CodeQL - Code Quality"
     assert evidence["codeql_languages"] == [
         "actions",
         "javascript-typescript",
@@ -169,21 +162,45 @@ def test_governed_release_controls_rederive_every_bypassed_rule() -> None:
     assert len(evidence["ruleset_fingerprint"]) == 64
 
 
-def test_governed_release_controls_block_unconfigured_code_quality() -> None:
-    with pytest.raises(ValueError, match="Code Quality is not configured"):
+def test_governed_release_controls_block_missing_codeql_ruleset_threshold() -> None:
+    ruleset = _release_ruleset()
+    ruleset["rules"] = [
+        rule for rule in ruleset["rules"] if rule["type"] != "code_scanning"
+    ]
+
+    with pytest.raises(ValueError, match="CodeQL ruleset thresholds"):
         governed_release_controls(
             admitted_revision=SOURCE_SHA,
             candidate_revision=CANDIDATE_SHA,
             checks=_successful_pull_checks(),
-            code_quality_setup={
-                "state": "not-configured",
-                "languages": ["javascript-typescript", "python"],
-            },
             codeql_alerts=[],
             codeql_analyses=_codeql_analyses(),
             review_state=_review_state(),
-            rulesets=[_release_ruleset()],
+            rulesets=[ruleset],
         )
+
+
+def test_governed_release_controls_do_not_depend_on_paid_code_quality() -> None:
+    ruleset = _release_ruleset()
+    checks = _successful_pull_checks()
+
+    evidence = governed_release_controls(
+        admitted_revision=SOURCE_SHA,
+        candidate_revision=CANDIDATE_SHA,
+        checks=checks,
+        codeql_alerts=[],
+        codeql_analyses=_codeql_analyses(),
+        review_state=_review_state(),
+        rulesets=[ruleset],
+    )
+
+    assert "code_quality_check" not in evidence
+    assert "code_quality_state" not in evidence
+    assert evidence["codeql_languages"] == [
+        "actions",
+        "javascript-typescript",
+        "python",
+    ]
 
 
 def test_governed_release_controls_block_ruleset_or_candidate_drift() -> None:
@@ -199,10 +216,6 @@ def test_governed_release_controls_block_ruleset_or_candidate_drift() -> None:
             admitted_revision=SOURCE_SHA,
             candidate_revision=CANDIDATE_SHA,
             checks=_successful_pull_checks(),
-            code_quality_setup={
-                "state": "configured",
-                "languages": ["javascript-typescript", "python"],
-            },
             codeql_alerts=[],
             codeql_analyses=_codeql_analyses(),
             review_state=_review_state(),
@@ -232,10 +245,6 @@ def test_ruleset_fingerprint_excludes_transport_metadata() -> None:
         "admitted_revision": SOURCE_SHA,
         "candidate_revision": CANDIDATE_SHA,
         "checks": _successful_pull_checks(),
-        "code_quality_setup": {
-            "state": "configured",
-            "languages": ["javascript-typescript", "python"],
-        },
         "codeql_alerts": [],
         "codeql_analyses": _codeql_analyses(),
         "review_state": _review_state(),
@@ -245,6 +254,46 @@ def test_ruleset_fingerprint_excludes_transport_metadata() -> None:
     second = governed_release_controls(**arguments, rulesets=[refreshed])
 
     assert first["ruleset_fingerprint"] == second["ruleset_fingerprint"]
+
+
+def test_collect_release_controls_queries_codeql_without_code_quality(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway(),
+        command_output=lambda _command, _cwd, _timeout: "",
+    )
+
+    def github_json(arguments: list[str], *, timeout: int = 60) -> object:
+        del timeout
+        commands.append(arguments)
+        endpoint = arguments[-1]
+        if "analyses" in endpoint:
+            return [_codeql_analyses()]
+        if "alerts" in endpoint:
+            return [[]]
+        raise AssertionError(f"unexpected GitHub API call: {arguments}")
+
+    monkeypatch.setattr(runtime, "_github_json", github_json)
+    monkeypatch.setattr(runtime, "_review_state", lambda _number: _review_state())
+    monkeypatch.setattr(runtime, "_active_rulesets", lambda: [_release_ruleset()])
+
+    evidence = runtime._collect_release_controls(
+        number=195,
+        head_revision=CANDIDATE_SHA,
+        base_revision=SOURCE_SHA,
+        checks=_successful_pull_checks(),
+    )
+
+    assert evidence["codeql_languages"] == [
+        "actions",
+        "javascript-typescript",
+        "python",
+    ]
+    assert all("code-quality" not in " ".join(command) for command in commands)
 
 
 class StubGateway:
@@ -1202,7 +1251,6 @@ def test_prepare_stops_at_the_unmerged_review_candidate(
             ),
             "controls": {
                 "candidate_revision": CANDIDATE_SHA,
-                "code_quality_state": "configured",
                 "ruleset_fingerprint": "4" * 64,
             },
             "pull": {},
@@ -1304,7 +1352,6 @@ def test_deliver_merges_only_after_review_and_proves_exact_tree_transfer(
     order: list[str] = []
     controls = {
         "candidate_revision": CANDIDATE_SHA,
-        "code_quality_state": "configured",
         "ruleset_fingerprint": "4" * 64,
     }
     runtime = ReleaseRuntime(

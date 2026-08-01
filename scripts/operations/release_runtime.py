@@ -51,10 +51,6 @@ REQUIRED_MAIN_CHECKS = {
     "doc-consistency-guard",
     "test",
 }
-CODE_QUALITY_CHECK_NAMES = {
-    "CodeQL - Code Quality",
-    "CodeQL - Code Quality / Analyze",
-}
 EXPECTED_CODEQL_LANGUAGES = {
     "actions",
     "javascript-typescript",
@@ -372,7 +368,6 @@ def governed_release_controls(
     admitted_revision: str,
     candidate_revision: str,
     checks: dict[str, Any],
-    code_quality_setup: dict[str, Any],
     codeql_alerts: list[dict[str, Any]],
     codeql_analyses: list[dict[str, Any]],
     review_state: dict[str, Any],
@@ -383,15 +378,6 @@ def governed_release_controls(
         raise ValueError("admitted release revision is invalid")
     if _SHA40.fullmatch(candidate_revision) is None:
         raise ValueError("release candidate revision is invalid")
-
-    if code_quality_setup.get("state") != "configured":
-        raise ValueError("GitHub Code Quality is not configured")
-    quality_languages = code_quality_setup.get("languages")
-    if type(quality_languages) is not list or not {
-        "javascript-typescript",
-        "python",
-    } <= set(quality_languages):
-        raise ValueError("GitHub Code Quality languages are incomplete")
 
     check_evidence = completed_check_evidence(
         checks,
@@ -404,21 +390,6 @@ def governed_release_controls(
             key=lambda check: str(check.get("name")),
         ),
     }
-    check_runs = checks["check_runs"]
-    quality_checks = [
-        run
-        for run in check_runs
-        if run.get("name") in CODE_QUALITY_CHECK_NAMES
-    ]
-    if len(quality_checks) != 1:
-        raise ValueError("exact GitHub Code Quality check is unavailable")
-    quality_check = quality_checks[0]
-    if (
-        quality_check.get("status") != "completed"
-        or quality_check.get("conclusion") != "success"
-    ):
-        raise ValueError("GitHub Code Quality check did not succeed")
-
     pull = _object(
         _object(
             _object(review_state.get("data"), "review state data").get(
@@ -545,13 +516,6 @@ def governed_release_controls(
         for rule in scanning_rules
     ):
         raise ValueError("GitHub CodeQL ruleset thresholds changed")
-    quality_rules = [rule for rule in all_rules if rule.get("type") == "code_quality"]
-    if not any(
-        type(rule.get("parameters")) is dict
-        and rule["parameters"].get("severity") == "errors"
-        for rule in quality_rules
-    ):
-        raise ValueError("GitHub Code Quality ruleset threshold changed")
     if not any(
         ruleset.get("current_user_can_bypass") == "always"
         and type(ruleset.get("bypass_actors")) is list
@@ -604,8 +568,6 @@ def governed_release_controls(
     return {
         "candidate_revision": candidate_revision,
         "check_evidence": check_evidence,
-        "code_quality_check": quality_check["name"],
-        "code_quality_state": "configured",
         "codeql_analysis_hash": sha256(
             json.dumps(analysis_summary, separators=(",", ":"), sort_keys=True).encode()
         ).hexdigest(),
@@ -1098,16 +1060,6 @@ class ReleaseRuntime:
         base_revision: str,
         checks: dict[str, Any],
     ) -> dict[str, Any]:
-        setup = _object(
-            self._github_json(
-                [
-                    "-H",
-                    "X-GitHub-Api-Version: 2026-03-10",
-                    f"repos/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/code-quality/setup",
-                ]
-            ),
-            "GitHub Code Quality setup",
-        )
         analyses = self._flatten_pages(
             self._github_json(
                 [
@@ -1136,7 +1088,6 @@ class ReleaseRuntime:
             admitted_revision=base_revision,
             candidate_revision=head_revision,
             checks=checks,
-            code_quality_setup=setup,
             codeql_alerts=alerts,
             codeql_analyses=analyses,
             review_state=self._review_state(number),

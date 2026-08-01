@@ -18,8 +18,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reviews and approves the exact unmerged candidate, rederives every control
   replaced by the deliberate GitHub ruleset bypass, conditionally merges the
   expected head, and proves exact parent and tree transfer before any
-  publication or deployment. An unavailable Code Quality result blocks the
-  release instead of being treated as satisfied.
+  publication or deployment. The routine preserves exact CodeQL, alert,
+  review, ruleset, and tree transfer evidence without depending on the paid
+  GitHub Code Quality product, which is unavailable on the approved Free plan.
 * **Accepted the canonical FastMCP pull request receipt.** The automated
   release routine now derives the new pull request number from the exact
   repository URL when the gateway receipt omits a separate numeric field.

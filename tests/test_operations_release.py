@@ -66,8 +66,6 @@ def _release_controls(candidate_revision: str) -> dict[str, object]:
     return {
         "candidate_revision": candidate_revision,
         "check_evidence": {"all_success": True, "missing_required": []},
-        "code_quality_check": "CodeQL - Code Quality",
-        "code_quality_state": "configured",
         "codeql_analysis_hash": "4" * 64,
         "codeql_languages": ["actions", "javascript-typescript", "python"],
         "open_codeql_alerts": 0,
