@@ -925,6 +925,169 @@ def test_render_release_documents_updates_only_the_governed_release_files(
     assert note.startswith("# data-olympus 0.7.0")
     assert evidence["content_hash"] == evidence["release_note_hash"]
     assert len(evidence["changelog_hash"]) == 64
+    assert evidence["document_mode"] == "normal"
+
+
+def _write_prepared_release_documents(
+    root: Path,
+    *,
+    changelog_fixed_item: str = "fix(mcp): preserve exact source evidence",
+    include_note: bool = True,
+    include_target: bool = True,
+) -> tuple[Path, Path, Path]:
+    note_path = root / "docs" / "releases" / "v0.7.0.md"
+    note_path.parent.mkdir(parents=True)
+    pyproject_path = root / "pyproject.toml"
+    pyproject_path.write_text(
+        '[project]\nname = "data-olympus"\nversion = "0.7.0"\n',
+        encoding="utf-8",
+    )
+    target = ""
+    if include_target:
+        target = (
+            "## [0.7.0] - 2026-08-01\n\n"
+            "### New features\n\n"
+            "* feat(automation): make releases outcome based\n"
+            "### Fixed\n\n"
+            f"* {changelog_fixed_item}\n\n\n"
+            "### Fixed\n\n"
+            "* **Preserved prior detailed release prose.** Exact details remain.\n\n"
+        )
+    changelog_path = root / "CHANGELOG.md"
+    changelog_path.write_text(
+        "# Changelog\n\n"
+        "## [Unreleased]\n\n"
+        "### Fixed\n\n"
+        "* Retry one transient bound tag inventory response.\n\n"
+        f"{target}"
+        "## [0.6.0] - 2026-07-18\n",
+        encoding="utf-8",
+    )
+    if include_note:
+        note_path.write_text(
+            "# data-olympus 0.7.0\n\n"
+            "## New features\n\n"
+            "* feat(automation): make releases outcome based\n\n"
+            "## Fixed\n\n"
+            "* fix(mcp): preserve exact source evidence\n",
+            encoding="utf-8",
+        )
+    return pyproject_path, changelog_path, note_path
+
+
+def _roll_forward_changes() -> dict[str, list[str]]:
+    return {
+        "breaking": [],
+        "features": ["feat(automation): make releases outcome based"],
+        "fixes": [
+            "fix(mcp): preserve exact source evidence",
+            "fix(release): retry bound tag inventory read (#208)",
+        ],
+    }
+
+
+def test_render_release_documents_rolls_forward_one_unpublished_preparation(
+    tmp_path: Path,
+) -> None:
+    _, changelog_path, note_path = _write_prepared_release_documents(tmp_path)
+
+    evidence = render_release_documents(
+        tmp_path,
+        "0.7.0",
+        _roll_forward_changes(),
+        date(2026, 8, 2),
+    )
+
+    changelog = changelog_path.read_text(encoding="utf-8")
+    note = note_path.read_text(encoding="utf-8")
+    assert evidence["document_mode"] == "roll_forward"
+    assert changelog.count("## [Unreleased]") == 1
+    assert "## [Unreleased]\n\n## [0.7.0] - 2026-08-02" in changelog
+    assert changelog.count("## [0.7.0] - 2026-08-02") == 1
+    assert changelog.count("fix(release): retry bound tag inventory read (#208)") == 1
+    assert note.count("fix(release): retry bound tag inventory read (#208)") == 1
+    assert "**Preserved prior detailed release prose.**" in changelog
+    assert "Retry one transient bound tag inventory response." in changelog
+    assert changelog.index("**Preserved prior detailed release prose.**") < (
+        changelog.index("Retry one transient bound tag inventory response.")
+    )
+
+
+@pytest.mark.parametrize(
+    ("include_note", "include_target", "current_fixed", "changelog_fixed"),
+    [
+        (True, False, "fix(mcp): preserve exact source evidence", None),
+        (False, True, "fix(mcp): preserve exact source evidence", None),
+        (True, True, "fix(other): absent from current computation", None),
+        (
+            True,
+            True,
+            "fix(mcp): preserve exact source evidence",
+            "fix(mcp): preserve exact source evidence but altered",
+        ),
+    ],
+)
+def test_render_release_documents_rejects_inconsistent_preparation_atomically(
+    tmp_path: Path,
+    include_note: bool,
+    include_target: bool,
+    current_fixed: str,
+    changelog_fixed: str | None,
+) -> None:
+    paths = _write_prepared_release_documents(
+        tmp_path,
+        include_note=include_note,
+        include_target=include_target,
+        changelog_fixed_item=(
+            changelog_fixed or "fix(mcp): preserve exact source evidence"
+        ),
+    )
+    note_path = paths[2]
+    if include_note and current_fixed != "fix(mcp): preserve exact source evidence":
+        note_path.write_text(
+            "# data-olympus 0.7.0\n\n"
+            "## New features\n\n"
+            "* feat(automation): make releases outcome based\n\n"
+            "## Fixed\n\n"
+            f"* {current_fixed}\n",
+            encoding="utf-8",
+        )
+    before = {
+        path: path.read_bytes() if path.exists() else None
+        for path in paths
+    }
+
+    with pytest.raises(ValueError):
+        render_release_documents(
+            tmp_path,
+            "0.7.0",
+            _roll_forward_changes(),
+            date(2026, 8, 2),
+        )
+
+    assert {
+        path: path.read_bytes() if path.exists() else None
+        for path in paths
+    } == before
+
+
+def test_render_release_documents_rejects_roll_forward_replay_atomically(
+    tmp_path: Path,
+) -> None:
+    paths = _write_prepared_release_documents(tmp_path)
+    before = {path: path.read_bytes() for path in paths}
+    changes = _roll_forward_changes()
+    changes["fixes"] = ["fix(mcp): preserve exact source evidence"]
+
+    with pytest.raises(ValueError, match="new release item"):
+        render_release_documents(
+            tmp_path,
+            "0.7.0",
+            changes,
+            date(2026, 8, 2),
+        )
+
+    assert {path: path.read_bytes() for path in paths} == before
 
 
 def test_completed_check_evidence_requires_every_expected_check_and_no_failures() -> None:
@@ -1415,6 +1578,7 @@ def test_prepare_stops_at_the_unmerged_review_candidate(
         lambda *_arguments: {
             "changelog_hash": "1" * 64,
             "content_hash": "2" * 64,
+            "document_mode": "normal",
             "release_note_hash": "2" * 64,
         },
     )
@@ -1497,6 +1661,11 @@ def test_prepare_stops_at_the_unmerged_review_candidate(
         "number": 182,
         "source_revision": CANDIDATE_SHA,
         "url": "https://github.com/knaisoma/data-olympus/pull/182",
+    }
+    assert result["changelog"] == {
+        "content_hash": "1" * 64,
+        "document_mode": "normal",
+        "source_revision": CANDIDATE_SHA,
     }
     assert runtime.candidate_revision() == CANDIDATE_SHA
     assert consultations == [
