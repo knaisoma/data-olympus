@@ -75,6 +75,18 @@ exact Telegram readback.
 Rollback is the same executable with the `rollback` argument. It reads
 `AI_OPERATIONS_RECOVERY_INPUT` and returns one closed recovery result.
 
+## Runtime prerequisites
+
+The release host requires:
+
+* Python 3.13 and `uv` for project gates and artifact builds.
+* GitHub CLI authentication for supported GitHub reads and mutations.
+* Docker CLI with the Buildx plugin for exact public GHCR tag inspection and
+  release digest verification. Registry inspection is bounded and
+  noninteractive.
+* Bats for the shell test suite.
+* Explicit access to the kn dev kubeconfig and the FastMCP gateway.
+
 ## Monday sequence
 
 1. Bind the authority revision, contract digest, run identifier, and exact
@@ -117,6 +129,12 @@ Rollback is the same executable with the `rollback` argument. It reads
 
    Ruff, mypy, and pytest run through `uv` with the declared `dev` extra so the
    release can never select an unrelated global executable.
+
+   GHCR availability uses an exact public registry tag inspection for
+   `ghcr.io/knaisoma/data-olympus:vX.Y.Z`. Only an explicit missing manifest
+   proves the tag is free. Client, permission, registry, and unrecognized
+   failures block the release. This check does not depend on GitHub Packages
+   API scopes or a truncated package version listing.
 
    Each isolated wheel or sdist smoke gets one fresh retry because environment
    creation and dependency retrieval can fail transiently. A second failure

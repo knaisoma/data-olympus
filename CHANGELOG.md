@@ -14,6 +14,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* **Made the GHCR immutability guard exact and credential independent.** The
+  release gate now inspects the public `vX.Y.Z` registry tag directly instead
+  of requiring GitHub Packages API scope or scanning a bounded version list.
+  Only an explicit missing manifest proves the version is free; every other
+  client, timeout, or registry failure still blocks the bounded, noninteractive
+  check without exposing command diagnostics.
 * **Isolated autonomous release quality tools.** The release runtime now installs
   the declared `dev` extra when it runs Ruff, mypy, and pytest. This prevents a
   missing project executable from falling through to an unrelated global Python
