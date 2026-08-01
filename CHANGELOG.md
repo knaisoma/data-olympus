@@ -12,6 +12,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-01
+
+### New features
+
+* feat(automation): execute weekly release outcome
+* feat(automation): make weekly releases outcome based
+### Fixed
+
+* fix(automation): bind release consultation to run
+* fix(automation): accept FastMCP text content
+* fix(automation): read pull number from gateway receipt
+* fix(automation): make release imports deterministic (#182)
+* fix(automation): align final main checks
+* fix(security): update setuptools to 83.0.0
+* fix(ci): allow immutable history reconciliation
+
+
 ### Fixed
 
 * **Accepted the canonical FastMCP pull request receipt.** The automated
