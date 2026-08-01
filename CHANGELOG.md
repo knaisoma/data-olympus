@@ -77,9 +77,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-* Resume a merged but still unpublished release preparation by validating its
-  prior canonical documents, rebuilding them atomically from the complete
-  current computation, and then reusing the ordinary reviewed release path.
+* Resume a merged but still unpublished release preparation only when its
+  version, empty Unreleased block, release note, canonical changelog prefix,
+  source SHA, and tree exactly match the current computation. The current main
+  SHA receives fresh independent review without inventing a branch, pull
+  request, merge, or parent. Candidate spelling is then confirmed absent from
+  PyPI, public GHCR manifest inspection, and GitHub releases before the
+  ordinary publication, deployment, verification, and notification tail runs.
 * Retry one transient unbound FastMCP response during the idempotent postmerge
   tag inventory, while preserving strict tool binding and exact merge evidence
   when the bounded retry still fails.

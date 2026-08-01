@@ -102,19 +102,27 @@ def _pypi_present(version: str, package: str = "data-olympus") -> bool | None:
 
 
 def _ghcr_present(tag: str, package: str = "data-olympus") -> bool | None:
-    out = subprocess.run(
-        [
-            "gh", "api",
-            "--paginate",
-            f"/orgs/knaisoma/packages/container/{package}/versions",
-            "--jq", ".[].metadata.container.tags[]",
-        ],
-        capture_output=True, text=True,
-    )
-    if out.returncode != 0:
+    reference = f"ghcr.io/knaisoma/{package}:{tag}"
+    try:
+        out = subprocess.run(
+            ["docker", "buildx", "imagetools", "inspect", reference],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return None
-    tags = {line.strip() for line in out.stdout.splitlines() if line.strip()}
-    return tag in tags
+    if out.returncode == 0:
+        return True
+    diagnostic = f"{out.stdout}\n{out.stderr}".lower()
+    if (
+        "manifest unknown" in diagnostic
+        or "no such manifest" in diagnostic
+        or f"{reference.lower()}: not found" in diagnostic
+    ):
+        return False
+    return None
 
 
 def _gh_release_present(tag: str, repo: str = "knaisoma/data-olympus") -> bool | None:

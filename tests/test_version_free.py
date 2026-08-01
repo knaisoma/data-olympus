@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import pytest
 
-from scripts.version_free import evaluate, main, registry_versions
-
-if TYPE_CHECKING:
-    import pytest
+from scripts.version_free import _ghcr_present, evaluate, main, registry_versions
 
 
 def test_evaluate_all_absent_is_free() -> None:
@@ -104,3 +101,66 @@ def test_main_queries_candidate_registry_spellings(
         "ghcr": "0.6.0-rc.3",
         "github": "0.6.0-rc.3",
     }
+
+
+def test_ghcr_present_uses_public_manifest_inspection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.version_free as module
+
+    seen: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs) -> object:
+        seen.append(command)
+        return module.subprocess.CompletedProcess(command, 0, "manifest", "")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    assert _ghcr_present("0.7.0-rc.1") is True
+    assert seen == [[
+        "docker",
+        "buildx",
+        "imagetools",
+        "inspect",
+        "ghcr.io/knaisoma/data-olympus:0.7.0-rc.1",
+    ]]
+
+
+def test_ghcr_present_accepts_only_explicit_missing_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.version_free as module
+
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: module.subprocess.CompletedProcess(
+            [], 1, "", "manifest unknown"
+        ),
+    )
+
+    assert _ghcr_present("0.7.0-rc.1") is False
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "unauthorized",
+        "connection refused",
+    ],
+)
+def test_ghcr_present_fails_closed_on_client_or_registry_error(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    import scripts.version_free as module
+
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: module.subprocess.CompletedProcess(
+            [], 1, "", failure
+        ),
+    )
+
+    assert _ghcr_present("0.7.0-rc.1") is None
