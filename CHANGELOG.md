@@ -14,6 +14,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* **Separated deterministic release controls from model review.** The release
+  review packet now carries an explicit compact response contract and omits the
+  already validated native prereview decision, which is not a model judged
+  release gate. A failed model subprocess is now reported as an invocation
+  failure instead of being misclassified as invalid JSON.
 * **Made the GHCR immutability guard exact and credential independent.** The
   release gate now inspects the public `vX.Y.Z` registry tag directly instead
   of requiring GitHub Packages API scope or scanning a bounded version list.
