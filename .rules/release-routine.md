@@ -141,6 +141,13 @@ The release host requires:
    blocks the release. The other local gates remain single attempt so a real
    validation failure is never hidden.
 
+   The first postmerge GitHub tag inventory is an idempotent FastMCP read. It
+   gets one retry only when text content omits the required gateway tool binding.
+   A mismatched tool, malformed result, different gateway failure, or second
+   omission still fails closed. A final failure preserves the already proven
+   merge parent and tree evidence and is never misclassified as a premerge
+   block. No mutation call is retried by this rule.
+
    Pull request checks require the aggregate `CodeQL` signal and all three
    language analyses. The review packet includes `H`, `T`, `B`, exact checks,
    security evidence, release gates, rollback point, ruleset fingerprint, and

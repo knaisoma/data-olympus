@@ -12,6 +12,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* Retry one transient unbound FastMCP response during the idempotent postmerge
+  tag inventory, while preserving strict tool binding and exact merge evidence
+  when the bounded retry still fails.
+
 ## [0.7.0] - 2026-08-01
 
 ### New features

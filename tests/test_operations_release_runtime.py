@@ -12,6 +12,7 @@ from scripts.operations.release_runtime import (
     FastMCPGateway,
     ReleaseDeliveryError,
     ReleaseRuntime,
+    UnboundGatewayResultError,
     _authority_consult,
     _authority_gate_check,
     candidate_release_evidence,
@@ -481,7 +482,7 @@ def test_fastmcp_gateway_rejects_unbound_text_content() -> None:
             }
         )
 
-    with pytest.raises(ValueError, match="omitted gateway result"):
+    with pytest.raises(UnboundGatewayResultError, match="omitted gateway result"):
         FastMCPGateway(run_command=run_command).execute(
             "create_pull_request",
             {"owner": "knaisoma", "repo": "data-olympus"},
@@ -509,6 +510,93 @@ def test_fastmcp_gateway_rejects_a_different_tool_result() -> None:
             "create_pull_request",
             {"owner": "knaisoma", "repo": "data-olympus"},
         )
+
+
+def test_list_tags_retries_one_unbound_fastmcp_text_response(
+    tmp_path: Path,
+) -> None:
+    class FlakyReadGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute(self, name: str, arguments: dict[str, object]) -> object:
+            assert name == "list_tags"
+            assert arguments == {
+                "owner": "knaisoma",
+                "page": 1,
+                "perPage": 100,
+                "repo": "data-olympus",
+            }
+            self.calls += 1
+            if self.calls == 1:
+                raise UnboundGatewayResultError(
+                    "FastMCP text content omitted gateway result"
+                )
+            return [{"name": "v0.6.0"}]
+
+    sleeps: list[float] = []
+    gateway = FlakyReadGateway()
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=gateway,
+        sleep=sleeps.append,
+    )
+
+    assert runtime._list_tags() == [{"name": "v0.6.0"}]
+    assert gateway.calls == 2
+    assert sleeps == [1.0]
+
+
+def test_list_tags_does_not_retry_other_gateway_failures(tmp_path: Path) -> None:
+    class InvalidGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute(self, _name: str, _arguments: dict[str, object]) -> object:
+            self.calls += 1
+            raise ValueError("FastMCP result tool does not match request")
+
+    sleeps: list[float] = []
+    gateway = InvalidGateway()
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=gateway,
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(ValueError, match="tool does not match request"):
+        runtime._list_tags()
+
+    assert gateway.calls == 1
+    assert sleeps == []
+
+
+def test_list_tags_stops_after_one_unbound_response_retry(
+    tmp_path: Path,
+) -> None:
+    class UnboundGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute(self, _name: str, _arguments: dict[str, object]) -> object:
+            self.calls += 1
+            raise UnboundGatewayResultError(
+                "FastMCP text content omitted gateway result"
+            )
+
+    sleeps: list[float] = []
+    gateway = UnboundGateway()
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=gateway,
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(ValueError, match="omitted gateway result"):
+        runtime._list_tags()
+
+    assert gateway.calls == 2
+    assert sleeps == [1.0]
 
 
 def test_prepare_fails_before_mutation_without_authority_consult_receipt(
@@ -1773,6 +1861,36 @@ def _prime_approved_delivery(
             "reviewer_family": "claude",
             "source_revision": CANDIDATE_SHA,
         },
+    }
+
+
+def test_postmerge_tag_inventory_failure_preserves_delivery_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous = "sha256:" + "e" * 64
+    runtime = ReleaseRuntime(tmp_path, gateway=StubGateway())
+    reviewed = _prime_approved_delivery(runtime, monkeypatch, previous)
+
+    def fail_tags() -> list[object]:
+        raise ValueError("FastMCP text content omitted gateway result")
+
+    monkeypatch.setattr(runtime, "_list_tags", fail_tags)
+
+    with pytest.raises(ReleaseDeliveryError, match="omitted gateway result") as raised:
+        runtime.deliver({}, {}, {}, reviewed)
+
+    assert raised.value.evidence == {
+        "admitted_revision": SOURCE_SHA,
+        "approved_candidate_revision": CANDIDATE_SHA,
+        "delivery_revision": DELIVERY_SHA,
+        "delivery_tree_revision": CANDIDATE_TREE,
+        "external_state_changed": True,
+        "merge_confirmed": True,
+        "release_pr_number": 182,
+        "reviewed_tree_revision": CANDIDATE_TREE,
+        "rollback_completed": False,
+        "sole_parent_revision": SOURCE_SHA,
     }
 
 
