@@ -522,15 +522,19 @@ def test_completed_check_evidence_requires_every_expected_check_and_no_failures(
         )
 
 
-def test_pull_request_waiter_polls_completed_check_without_conclusion(
+def test_pull_request_waiter_waits_for_complete_check_matrix(
     tmp_path: Path,
 ) -> None:
     pending = {
         "check_runs": [
             {
                 "name": name,
-                "status": "completed",
-                "conclusion": None if name == "CodeQL" else "success",
+                "status": "in_progress" if name == "test" else "completed",
+                "conclusion": (
+                    "failure"
+                    if name == "CodeQL"
+                    else None if name == "test" else "success"
+                ),
             }
             for name in sorted(REQUIRED_PULL_REQUEST_CHECKS)
         ]
@@ -568,6 +572,32 @@ def test_pull_request_waiter_polls_completed_check_without_conclusion(
         required=REQUIRED_PULL_REQUEST_CHECKS,
     ), "pull": pull}
     assert sleeps == [10]
+
+
+def test_pull_request_waiter_fails_when_complete_matrix_is_not_green(
+    tmp_path: Path,
+) -> None:
+    failed = {
+        "check_runs": [
+            {
+                "name": name,
+                "status": "completed",
+                "conclusion": "failure" if name == "CodeQL" else "success",
+            }
+            for name in sorted(REQUIRED_PULL_REQUEST_CHECKS)
+        ]
+    }
+    sleeps: list[float] = []
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway({"pull_request_read": failed}),
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(ValueError, match="GitHub check runs did not succeed"):
+        runtime._wait_pull_request(192, SOURCE_SHA)
+
+    assert sleeps == []
 
 
 def test_deployment_state_parses_gateway_yaml_and_binds_both_images() -> None:
