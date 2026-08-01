@@ -147,7 +147,11 @@ The release host requires:
    immutable delivery procedure.
 8. The deterministic executor requests one central, run controlled Claude
    review of `H`. Self review is prohibited. Review evidence hashes both the
-   exact submitted packet and the ticket bound Claude response.
+   exact submitted packet and the ticket bound Claude response. The packet
+   states the compact runner response contract and includes only controls that
+   require model judgment. The native `REVIEW_REQUIRED` value is validated
+   deterministically before review and is omitted from the model packet because
+   it is the expected prereview state, not a release finding.
 9. Require the candidate approval ledger entry to bind the run, contract
    digest, `H`, and consumed Claude review. The approved standing delegation
    may materialize that exact entry only after the review passes.

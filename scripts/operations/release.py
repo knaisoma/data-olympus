@@ -1225,6 +1225,8 @@ def _invoke_ticketed_model_from_runner(
         try:
             response = json.loads(process.stdout.strip())
         except json.JSONDecodeError as error:
+            if process.returncode != 0:
+                raise ReleaseInputError("review model invocation failed") from error
             raise ReleaseInputError("review model invocation returned invalid JSON") from error
         parsed = _approved_model_response(response, ticket)
         if process.returncode != 0:
@@ -1425,10 +1427,22 @@ def execute_release_run(
             "instruction": (
                 "Independently review the exact deterministic Data Olympus release "
                 "candidate. Approve only when source identity, tests, security, "
-                "version, rollback point, and immutable release procedures pass."
+                "version, rollback point, and immutable release procedures pass. "
+                "Return exactly one compact JSON object matching "
+                "response_contract with no markdown or prose."
             ),
             "prepared_evidence": prepared["evidence"],
-            "release_controls": prepared_input["release_controls"],
+            "release_controls": {
+                key: value
+                for key, value in prepared_input["release_controls"].items()
+                if key != "review_decision"
+            },
+            "response_contract": {
+                "actual_model": "exact invoked model identifier",
+                "verdict": "pass or fail",
+                "reason": "nonempty concise string",
+                "evidence": "JSON object",
+            },
             "source_revision": candidate_revision,
             "validation_evidence": validation["evidence"],
         }

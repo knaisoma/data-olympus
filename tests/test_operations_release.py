@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from hashlib import sha256
 
 import pytest
 
+from scripts.operations import release as release_module
 from scripts.operations.release import (
     DEFAULT_EXTRA_CONTEXT,
     evaluate_stage,
@@ -1046,6 +1048,149 @@ def test_review_evidence_hash_binds_the_packet_and_claude_response() -> None:
         ).encode()
     ).hexdigest()
     assert review_event["evidence"]["review_hash"] == expected_hash
+
+
+def test_release_review_packet_omits_the_validated_prereview_state() -> None:
+    dependencies = _release_dependencies()
+    captured: dict[str, object] = {}
+
+    def invoke_model(request: dict[str, object]) -> dict[str, object]:
+        captured["packet"] = request["packet"]
+        return _approved_review(request)
+
+    dependencies["invoke_model"] = invoke_model
+
+    events = execute_release_run(json.dumps(RUN_INPUT), dependencies)
+
+    packet = captured["packet"]
+    assert isinstance(packet, dict)
+    assert packet["response_contract"] == {
+        "actual_model": "exact invoked model identifier",
+        "verdict": "pass or fail",
+        "reason": "nonempty concise string",
+        "evidence": "JSON object",
+    }
+    instruction = packet["instruction"]
+    assert isinstance(instruction, str)
+    assert "exactly one compact JSON object" in instruction
+    release_controls = packet["release_controls"]
+    assert isinstance(release_controls, dict)
+    assert "review_decision" not in release_controls
+    assert events[-1]["status"] == "delivered"
+
+
+def test_failed_model_process_is_not_misreported_as_invalid_json(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        release_module.subprocess,
+        "run",
+        lambda *_arguments, **_keywords: subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="error: qualified routes exhausted\n",
+        ),
+    )
+    ticket = {
+        "model_use_id": 71,
+        "purpose": "review",
+        "route_id": "claude-code",
+        "source_revision": SOURCE_SHA,
+        "ticket": "opaque-run-scoped-ticket",
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="^review model invocation failed$",
+    ):
+        release_module._invoke_ticketed_model_from_runner(
+            RUN_INPUT,
+            ticket,
+            {"instruction": "review"},
+            tmp_path,
+        )
+
+
+def test_nonzero_model_block_remains_an_independent_review_block(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    response = {
+        "model_use_id": 71,
+        "route_id": "claude-code",
+        "status": "blocked",
+        "verdict": "BLOCK",
+    }
+    monkeypatch.setattr(
+        release_module.subprocess,
+        "run",
+        lambda *_arguments, **_keywords: subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=json.dumps(response),
+            stderr="",
+        ),
+    )
+    ticket = {
+        "model_use_id": 71,
+        "purpose": "review",
+        "route_id": "claude-code",
+        "source_revision": SOURCE_SHA,
+        "ticket": "opaque-run-scoped-ticket",
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="^independent review blocked the release$",
+    ):
+        release_module._invoke_ticketed_model_from_runner(
+            RUN_INPUT,
+            ticket,
+            {"instruction": "review"},
+            tmp_path,
+        )
+
+
+def test_nonzero_model_approval_is_still_an_invocation_failure(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    response = {
+        "model_use_id": 71,
+        "route_id": "claude-code",
+        "status": "approved",
+        "verdict": "APPROVE",
+    }
+    monkeypatch.setattr(
+        release_module.subprocess,
+        "run",
+        lambda *_arguments, **_keywords: subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=json.dumps(response),
+            stderr="",
+        ),
+    )
+    ticket = {
+        "model_use_id": 71,
+        "purpose": "review",
+        "route_id": "claude-code",
+        "source_revision": SOURCE_SHA,
+        "ticket": "opaque-run-scoped-ticket",
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="^review model invocation failed$",
+    ):
+        release_module._invoke_ticketed_model_from_runner(
+            RUN_INPUT,
+            ticket,
+            {"instruction": "review"},
+            tmp_path,
+        )
 
 
 def test_runtime_heartbeats_keep_one_contiguous_protocol_sequence() -> None:
