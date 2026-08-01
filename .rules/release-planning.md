@@ -1,11 +1,23 @@
 # Data Olympus release planning
 
-Status: active
+Status: retired
 Since: 2026-07-31
-Schedule: Friday at 18:00 Europe/Bucharest
-Automation status: disabled until baseline certification
+Retired: 2026-07-31
+Replacement: `.rules/release-routine.md`
 
-## Purpose
+## Retirement
+
+The separate Friday planning handoff and private release issue were removed
+before baseline certification. They duplicated admission state, created a stale
+handoff between routines, and could not provide exact candidate approval after
+a squash merge.
+
+The single outcome based Monday routine now performs admission, deterministic
+release preparation, exact final review, ledger bound standing approval,
+delivery, verification, and notification as one controlled run. This file is
+retained only as decision history and does not govern execution.
+
+## Former purpose
 
 The planning run identifies one release candidate from work that is already
 merged, reviewed, green, and unreleased on `origin/main`.

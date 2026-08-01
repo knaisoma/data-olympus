@@ -7,10 +7,14 @@ import pytest
 from scripts.operations.release import (
     DEFAULT_EXTRA_CONTEXT,
     evaluate_stage,
+    execute_release_run,
     main,
+    parse_release_run_input,
 )
 
 SOURCE_SHA = "a" * 40
+CANDIDATE_SHA = "f" * 40
+BRANCH_SHA = "9" * 40
 AUTHORITY_SHA = "b" * 40
 CONTRACT_SHA = "c" * 64
 IMAGE_DIGEST = "sha256:" + "d" * 64
@@ -149,7 +153,7 @@ def test_admission_blocks_unmerged_changed_or_v060_candidate(
     assert reason in result["reason"]
 
 
-def test_prepare_confirms_one_private_issue_and_hashes_extra_context() -> None:
+def test_prepare_confirms_one_merged_release_pr_and_hashes_extra_context() -> None:
     result = evaluate_stage(
         "prepare",
         {
@@ -170,14 +174,14 @@ def test_prepare_confirms_one_private_issue_and_hashes_extra_context() -> None:
                 "digest": PREVIOUS_DIGEST,
                 "keel_policy": "never",
             },
-            "release_issue": {
-                "count": 1,
-                "private": True,
-                "number": 177,
-                "url": "https://github.com/knaisoma/data-olympus/issues/177",
+            "release_pr": {
+                "number": 178,
+                "url": "https://github.com/knaisoma/data-olympus/pull/178",
+                "merged": True,
+                "base_source_revision": "8" * 40,
+                "head_revision": BRANCH_SHA,
                 "source_revision": SOURCE_SHA,
                 "candidate_version": "0.6.1",
-                "body_hash": "4" * 64,
             },
         },
     )
@@ -188,10 +192,10 @@ def test_prepare_confirms_one_private_issue_and_hashes_extra_context() -> None:
     assert context["length"] == len(DEFAULT_EXTRA_CONTEXT)
     assert len(context["sha256"]) == 64
     assert DEFAULT_EXTRA_CONTEXT not in json.dumps(result)
-    assert result["outputs"]["release_issue_number"] == 177
+    assert result["outputs"]["release_pr_number"] == 178
 
 
-def test_prepare_blocks_when_the_private_release_issue_is_missing() -> None:
+def test_prepare_blocks_when_the_release_pr_is_not_merged() -> None:
     input_document = {
         "candidate": _candidate(),
         "extra_context": DEFAULT_EXTRA_CONTEXT,
@@ -210,21 +214,21 @@ def test_prepare_blocks_when_the_private_release_issue_is_missing() -> None:
             "digest": PREVIOUS_DIGEST,
             "keel_policy": "never",
         },
-        "release_issue": {
-            "count": 0,
-            "private": True,
-            "number": 177,
-            "url": "https://github.com/knaisoma/data-olympus/issues/177",
+        "release_pr": {
+            "number": 178,
+            "url": "https://github.com/knaisoma/data-olympus/pull/178",
+            "merged": False,
+            "base_source_revision": "8" * 40,
+            "head_revision": BRANCH_SHA,
             "source_revision": SOURCE_SHA,
             "candidate_version": "0.6.1",
-            "body_hash": "4" * 64,
         },
     }
 
     result = evaluate_stage("prepare", input_document)
 
     assert result["status"] == "blocked"
-    assert "exactly one private release issue" in result["reason"]
+    assert "release_pr.merged" in result["reason"]
 
 
 def test_validate_requires_unchanged_candidate_and_all_exact_gates() -> None:
@@ -284,39 +288,42 @@ def test_validate_fails_closed_when_any_gate_changes(mutate) -> None:
     assert result["status"] == "blocked"
 
 
-def test_review_requires_crossed_claude_codex_families_and_sha_approval() -> None:
+def test_review_requires_independent_claude_and_exact_ledger_approval() -> None:
     result = evaluate_stage(
         "review",
         {
             "candidate": _candidate(),
             "current_source_revision": SOURCE_SHA,
-            "executor": {"family": "codex", "source_revision": SOURCE_SHA},
+            "contract_revision": CONTRACT_SHA,
+            "run_id": "11111111-2222-4333-8444-555555555555",
+            "executor": {"family": "deterministic", "source_revision": SOURCE_SHA},
             "companion_review": {
                 "family": "claude",
                 "verdict": "APPROVE",
                 "reviewed_source_revision": SOURCE_SHA,
                 "evidence_hash": "5" * 64,
             },
-            "operator_approval": {
-                "approved": True,
-                "source_revision": SOURCE_SHA,
-                "approval_id": "approval-0.6.1",
+            "candidate_approval": {
+                "authority": "standing-delegation",
+                "candidate_revision": SOURCE_SHA,
+                "contract_digest": CONTRACT_SHA,
+                "approval_id_hash": "6" * 64,
+                "review_model_use_id": 71,
+                "run_id": "11111111-2222-4333-8444-555555555555",
             },
+            "review_model_use_id": 71,
         },
     )
 
     assert result["status"] == "pass"
     assert result["evidence"]["reviewer_family"] == "claude"
-    assert result["evidence"]["executor_family"] == "codex"
+    assert result["evidence"]["executor_family"] == "deterministic"
 
 
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda value: value["companion_review"].__setitem__(
-            "family",
-            "codex",
-        ),
+        lambda value: value["companion_review"].__setitem__("family", "local"),
         lambda value: value["companion_review"].__setitem__(
             "verdict",
             "BLOCK",
@@ -325,12 +332,12 @@ def test_review_requires_crossed_claude_codex_families_and_sha_approval() -> Non
             "reviewed_source_revision",
             "f" * 40,
         ),
-        lambda value: value["operator_approval"].__setitem__(
-            "approved",
-            False,
+        lambda value: value["candidate_approval"].__setitem__(
+            "authority",
+            "forged",
         ),
-        lambda value: value["operator_approval"].__setitem__(
-            "source_revision",
+        lambda value: value["candidate_approval"].__setitem__(
+            "candidate_revision",
             "f" * 40,
         ),
     ],
@@ -341,18 +348,24 @@ def test_review_blocks_self_review_changed_sha_or_missing_approval(
     input_document = {
         "candidate": _candidate(),
         "current_source_revision": SOURCE_SHA,
-        "executor": {"family": "codex", "source_revision": SOURCE_SHA},
+        "contract_revision": CONTRACT_SHA,
+        "run_id": "11111111-2222-4333-8444-555555555555",
+        "executor": {"family": "deterministic", "source_revision": SOURCE_SHA},
         "companion_review": {
             "family": "claude",
             "verdict": "APPROVE",
             "reviewed_source_revision": SOURCE_SHA,
             "evidence_hash": "5" * 64,
         },
-        "operator_approval": {
-            "approved": True,
-            "source_revision": SOURCE_SHA,
-            "approval_id": "approval-0.6.1",
+        "candidate_approval": {
+            "authority": "standing-delegation",
+            "candidate_revision": SOURCE_SHA,
+            "contract_digest": CONTRACT_SHA,
+            "approval_id_hash": "6" * 64,
+            "review_model_use_id": 71,
+            "run_id": "11111111-2222-4333-8444-555555555555",
         },
+        "review_model_use_id": 71,
     }
     mutate(input_document)
 
@@ -676,46 +689,397 @@ def test_cli_emits_one_failed_json_object_when_input_is_missing(
     monkeypatch,
     capsys,
 ) -> None:
-    monkeypatch.delenv("AI_OPERATIONS_STAGE_INPUT", raising=False)
+    monkeypatch.delenv("AI_OPERATIONS_RUN_INPUT", raising=False)
 
-    exit_code = main(["authority"])
+    exit_code = main([], dependencies={})
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 2
     assert output == {
         "status": "failed",
-        "reason": "AI_OPERATIONS_STAGE_INPUT is required",
+        "reason": "AI_OPERATIONS_RUN_INPUT is required",
         "evidence": {},
         "outputs": {},
     }
 
 
-def test_cli_rejects_wrong_argument_count(capsys) -> None:
-    exit_code = main([])
-    output = json.loads(capsys.readouterr().out)
-
-    assert exit_code == 2
-    assert output["status"] == "failed"
-    assert output["reason"] == "exactly one release stage is required"
-
-
-def test_cli_rejects_malformed_json(monkeypatch, capsys) -> None:
-    monkeypatch.setenv("AI_OPERATIONS_STAGE_INPUT", "{")
-
+def test_cli_rejects_retired_stage_invocation(capsys) -> None:
     exit_code = main(["authority"])
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 2
     assert output["status"] == "failed"
-    assert output["reason"] == "AI_OPERATIONS_STAGE_INPUT must be valid JSON"
+    assert output["reason"] == "unsupported Data Olympus release operation"
 
 
-def test_cli_rejects_unknown_stage(monkeypatch, capsys) -> None:
-    monkeypatch.setenv("AI_OPERATIONS_STAGE_INPUT", "{}")
+def test_cli_rejects_malformed_json(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AI_OPERATIONS_RUN_INPUT", "{")
 
-    exit_code = main(["not-a-stage"])
+    exit_code = main([], dependencies={})
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
     assert output["status"] == "failed"
-    assert output["reason"] == "unknown release stage: not-a-stage"
+    assert output["reason"] == "AI_OPERATIONS_RUN_INPUT must be valid JSON"
+
+
+def test_cli_rejects_unknown_operation(capsys) -> None:
+    exit_code = main(["not-a-stage"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert output["status"] == "failed"
+    assert output["reason"] == "unsupported Data Olympus release operation"
+
+
+RUN_INPUT = {
+    "authority_revision": AUTHORITY_SHA,
+    "contract_id": "data-olympus-release",
+    "contract_revision": CONTRACT_SHA,
+    "executor_capability": "deterministic-release-execution",
+    "extra_context": DEFAULT_EXTRA_CONTEXT,
+    "model_request": {
+        "command": [
+            "/usr/bin/python3",
+            "-m",
+            "ai_operations",
+            "models",
+            "request",
+        ],
+        "control_environment": "AI_OPERATIONS_RUN_CONTROL",
+        "ticket_environment": "AI_OPERATIONS_MODEL_TICKET",
+    },
+    "notification": {
+        "confirmation": "send_and_readback",
+        "destination": "data-olympus-operations",
+        "transport": "telegram",
+    },
+    "outcome": (
+        "One immutable reviewed release is published and every channel and "
+        "deployment matches its source revision."
+    ),
+    "project": "data-olympus",
+    "reviewer_capability": "high-risk-review",
+    "run_id": "11111111-2222-4333-8444-555555555555",
+    "source_revision": SOURCE_SHA,
+}
+
+
+def _approved_review(request: dict[str, object]) -> dict[str, object]:
+    assert request["purpose"] == "review"
+    ticket = request["ticket"]
+    assert isinstance(ticket, dict)
+    return {
+        "model_use_id": ticket["model_use_id"],
+        "route_id": ticket["route_id"],
+        "status": "approved",
+        "verdict": "APPROVE",
+    }
+
+
+def _release_dependencies(*, source_revision: str = SOURCE_SHA) -> dict[str, object]:
+    state = {"head": source_revision}
+    prepared_candidate = {
+        "version": "0.6.1",
+        "source_revision": CANDIDATE_SHA,
+    }
+    artifact_candidate = {
+        **prepared_candidate,
+        "candidate_tag": "0.6.1-rc.1",
+        "image_digest": IMAGE_DIGEST,
+    }
+
+    def prepare(run, _admitted):
+        state["head"] = CANDIDATE_SHA
+        return {
+            "candidate": prepared_candidate,
+            "extra_context": run["extra_context"],
+            "changelog": {
+                "source_revision": CANDIDATE_SHA,
+                "content_hash": "1" * 64,
+            },
+            "security": {"exit_code": 0, "report_hash": "2" * 64},
+            "tests": {
+                "source_revision": CANDIDATE_SHA,
+                "passed": True,
+                "evidence_hash": "3" * 64,
+            },
+            "rollback_point": {
+                "image": f"ghcr.io/knaisoma/data-olympus@{PREVIOUS_DIGEST}",
+                "digest": PREVIOUS_DIGEST,
+                "keel_policy": "never",
+            },
+            "release_pr": {
+                "number": 178,
+                "url": "https://github.com/knaisoma/data-olympus/pull/178",
+                "merged": True,
+                "base_source_revision": SOURCE_SHA,
+                "head_revision": BRANCH_SHA,
+                "source_revision": CANDIDATE_SHA,
+                "candidate_version": "0.6.1",
+            },
+        }
+
+    return {
+        "source_revision": lambda: source_revision,
+        "candidate_revision": lambda: state["head"],
+        "collect_admission": lambda _run: _admission_input(),
+        "prepare": prepare,
+        "validate": lambda _run, _admitted, _prepared: {
+            "candidate": prepared_candidate,
+            "current_source_revision": CANDIDATE_SHA,
+            "ci": {
+                "source_revision": CANDIDATE_SHA,
+                "all_success": True,
+                "missing_required": [],
+            },
+            "security": {"exit_code": 0},
+            "version_free": {"version": "0.6.1", "free": True},
+            "tests": {"source_revision": CANDIDATE_SHA, "passed": True},
+        },
+        "request_model_ticket": lambda request: {
+            "model_use_id": 71,
+            "purpose": request["purpose"],
+            "route_id": "claude-code",
+            "source_revision": request["source_revision"],
+            "ticket": "opaque-run-scoped-ticket",
+        },
+        "invoke_model": _approved_review,
+        "collect_candidate_approval": lambda run, _candidate, review: {
+            "approval_id_hash": "6" * 64,
+            "authority": "standing-delegation",
+            "candidate_revision": CANDIDATE_SHA,
+            "contract_digest": run["contract_revision"],
+            "review_model_use_id": review["model_use_id"],
+            "run_id": run["run_id"],
+        },
+        "deliver": lambda _run, _admitted, _prepared, _review: {
+            "candidate": artifact_candidate,
+            "current_source_revision": CANDIDATE_SHA,
+            "workflows": [
+                {
+                    "name": "rc-publish.yml",
+                    "conclusion": "success",
+                    "source_revision": CANDIDATE_SHA,
+                    "candidate_tag": "0.6.1-rc.1",
+                },
+                {
+                    "name": "tag-release.yml",
+                    "conclusion": "success",
+                    "source_revision": CANDIDATE_SHA,
+                    "candidate_tag": "0.6.1-rc.1",
+                },
+                {
+                    "name": "set-channel.yml",
+                    "conclusion": "success",
+                    "source_revision": CANDIDATE_SHA,
+                    "source_tag": "v0.6.1",
+                },
+            ],
+            "canary": {
+                "candidate_tag": "0.6.1-rc.1",
+                "source_revision": CANDIDATE_SHA,
+                "digest": IMAGE_DIGEST,
+                "keel_policy": "never",
+                "rollout_complete": True,
+                "healthy": True,
+                "ready": True,
+                "mcp_search": True,
+                "enforcement": True,
+            },
+            "deployment": {
+                "keel_policy": "never",
+                "image_digest": IMAGE_DIGEST,
+                "source_revision": CANDIDATE_SHA,
+                "rollout_complete": True,
+            },
+        },
+        "verify": lambda _run, _admitted, _delivery: {
+            "candidate": artifact_candidate,
+            "github_release": {
+                "tag": "v0.6.1",
+                "source_revision": CANDIDATE_SHA,
+            },
+            "pypi": {
+                "version": "0.6.1",
+                "provenance_source_revision": CANDIDATE_SHA,
+            },
+            "image": {"tag": "v0.6.1", "digest": IMAGE_DIGEST},
+            "deployment": {
+                "source_revision": CANDIDATE_SHA,
+                "digest": IMAGE_DIGEST,
+                "healthy": True,
+                "ready": True,
+                "mcp_search": True,
+                "enforcement": True,
+                "documentation": True,
+            },
+        },
+    }
+
+
+def test_run_input_matches_the_current_runner_boundary() -> None:
+    parsed = parse_release_run_input(json.dumps(RUN_INPUT))
+
+    assert parsed["model_request"]["ticket_environment"] == (
+        "AI_OPERATIONS_MODEL_TICKET"
+    )
+    forged = dict(RUN_INPUT)
+    forged["model_tickets"] = []
+
+    with pytest.raises(ValueError, match="unknown run input field: model_tickets"):
+        parse_release_run_input(json.dumps(forged))
+
+
+def test_one_release_command_emits_the_exact_runner_protocol() -> None:
+    events = execute_release_run(json.dumps(RUN_INPUT), _release_dependencies())
+
+    assert [event["name"] for event in events[:-1]] == [
+        "admission",
+        "prepare",
+        "validate",
+        "domain_review",
+        "deliver",
+        "verify",
+    ]
+    assert events[-1] == {
+        "type": "result",
+        "sequence": 7,
+        "status": "delivered",
+        "reason": "release 0.6.1 and kn dev match the reviewed source",
+        "evidence": {
+            "published_version": "0.6.1",
+            "source_revision": CANDIDATE_SHA,
+            "version": "0.6.1",
+            "digest": IMAGE_DIGEST,
+            "health": "verified",
+                "mcp": "verified",
+                "documentation": "verified",
+                "rollback_digest": PREVIOUS_DIGEST,
+                "release_pr_number": 178,
+            },
+        "source_revision": SOURCE_SHA,
+        "candidate_revision": CANDIDATE_SHA,
+        "review_model_use_id": 71,
+    }
+
+
+def test_runtime_heartbeats_keep_one_contiguous_protocol_sequence() -> None:
+    dependencies = _release_dependencies()
+    original_prepare = dependencies["prepare"]
+    heartbeat = None
+
+    def set_heartbeat(callback):
+        nonlocal heartbeat
+        heartbeat = callback
+
+    def prepare(run, admitted):
+        assert heartbeat is not None
+        heartbeat()
+        heartbeat()
+        return original_prepare(run, admitted)
+
+    dependencies["set_heartbeat"] = set_heartbeat
+    dependencies["prepare"] = prepare
+    emitted: list[dict[str, object]] = []
+
+    events = execute_release_run(
+        json.dumps(RUN_INPUT),
+        dependencies,
+        emit=emitted.append,
+    )
+
+    assert events == emitted
+    assert [event["sequence"] for event in events] == list(
+        range(1, len(events) + 1)
+    )
+    assert [event["type"] for event in events[:4]] == [
+        "milestone",
+        "heartbeat",
+        "heartbeat",
+        "milestone",
+    ]
+
+
+def test_no_action_is_reviewed_and_has_no_candidate_revision() -> None:
+    dependencies = _release_dependencies()
+    dependencies["collect_admission"] = lambda _run: _admission_input(
+        releasable=False
+    )
+
+    events = execute_release_run(json.dumps(RUN_INPUT), dependencies)
+
+    assert [event["type"] for event in events] == ["milestone", "result"]
+    assert events[-1]["status"] == "no_action"
+    assert events[-1]["candidate_revision"] is None
+    assert events[-1]["review_model_use_id"] == 71
+
+
+def test_release_blocks_when_ledger_approval_is_not_bound_to_candidate() -> None:
+    dependencies = _release_dependencies()
+    dependencies["collect_candidate_approval"] = lambda run, _candidate, review: {
+        "approval_id_hash": "6" * 64,
+        "authority": "standing-delegation",
+        "candidate_revision": SOURCE_SHA,
+        "contract_digest": run["contract_revision"],
+        "review_model_use_id": review["model_use_id"],
+        "run_id": run["run_id"],
+    }
+
+    events = execute_release_run(json.dumps(RUN_INPUT), dependencies)
+
+    assert events[-1]["status"] == "blocked"
+    assert events[-1]["candidate_revision"] == CANDIDATE_SHA
+    assert "candidate approval revision does not match" in events[-1]["reason"]
+
+
+def test_release_cli_default_invocation_reads_complete_run_input(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("AI_OPERATIONS_RUN_INPUT", json.dumps(RUN_INPUT))
+
+    exit_code = main([], dependencies=_release_dependencies())
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+    assert exit_code == 0
+    assert lines[-1]["status"] == "delivered"
+    assert "candidate_revision" in lines[-1]
+
+
+def test_release_cli_rollback_failure_is_one_closed_recovery_result(
+    monkeypatch,
+    capsys,
+) -> None:
+    recovery_input = {
+        "authority_revision": AUTHORITY_SHA,
+        "candidate_revision": CANDIDATE_SHA,
+        "contract_id": "data-olympus-release",
+        "contract_revision": CONTRACT_SHA,
+        "failure_reason": "notification failed",
+        "outcome_evidence": {
+            "digest": IMAGE_DIGEST,
+            "rollback_digest": PREVIOUS_DIGEST,
+        },
+        "run_id": RUN_INPUT["run_id"],
+        "source_revision": SOURCE_SHA,
+    }
+    monkeypatch.setenv(
+        "AI_OPERATIONS_RECOVERY_INPUT",
+        json.dumps(recovery_input),
+    )
+    dependencies = _release_dependencies()
+    dependencies["rollback"] = lambda _recovery: (_ for _ in ()).throw(
+        ValueError("gateway unavailable")
+    )
+
+    exit_code = main(["rollback"], dependencies=dependencies)
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert output == {
+        "status": "failed",
+        "reason": "gateway unavailable",
+        "evidence": {},
+        "source_revision": SOURCE_SHA,
+    }

@@ -87,7 +87,7 @@ When a stable release is unsuitable:
 * Restore kn dev first.
 * Yank the PyPI stable version when required.
 * Mark the GitHub release as a prerelease when required.
-* Open or update the private release issue with the failure evidence.
+* Record the immutable failure and recovery evidence in the runner ledger.
 * Prepare a new patch version. Do not move the existing stable tag.
 
 ## Failure

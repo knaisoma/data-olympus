@@ -63,8 +63,8 @@ def test_versioning_rule_uses_one_linear_release_change() -> None:
     versioning = _read(".rules/versioning.md")
     routine = _read(".rules/release-routine.md")
 
-    assert "`chore/release-vX.Y.Z`" in versioning
-    assert "`chore/release-vX.Y.Z`" in routine
+    assert "`chore/release-vX.Y.Z-RUN`" in versioning
+    assert "`chore/release-vX.Y.Z-RUN`" in routine
     assert "linear history" in versioning
     assert "squash merged" in versioning
     assert "feature/<release-epic-id>" not in versioning
