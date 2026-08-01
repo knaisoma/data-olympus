@@ -710,6 +710,59 @@ def test_collect_admission_fails_when_the_managed_worktree_is_stale(
         runtime.collect_admission({"source_revision": SOURCE_SHA})
 
 
+def test_distribution_smoke_retries_one_transient_failure(
+    tmp_path: Path,
+) -> None:
+    commands: list[list[str]] = []
+    sleeps: list[float] = []
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        commands.append(command)
+        if len(commands) == 1:
+            raise ValueError("command failed: uv")
+        return "installed artifact smoke: ok"
+
+    runtime = ReleaseRuntime(
+        repository_root=tmp_path,
+        gateway=StubGateway(),
+        command_output=command_output,
+        sleep=sleeps.append,
+    )
+    artifact = tmp_path / "data_olympus-0.7.0.tar.gz"
+
+    output = runtime._smoke_distribution(artifact, "0.7.0")
+
+    assert output == "installed artifact smoke: ok"
+    assert len(commands) == 2
+    assert commands[0] == commands[1]
+    assert sleeps == [2.0]
+
+
+def test_distribution_smoke_stops_after_one_retry(
+    tmp_path: Path,
+) -> None:
+    commands: list[list[str]] = []
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        commands.append(command)
+        raise ValueError("command failed: uv")
+
+    runtime = ReleaseRuntime(
+        repository_root=tmp_path,
+        gateway=StubGateway(),
+        command_output=command_output,
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(ValueError, match="command failed: uv"):
+        runtime._smoke_distribution(
+            tmp_path / "data_olympus-0.7.0.tar.gz",
+            "0.7.0",
+        )
+
+    assert len(commands) == 2
+
+
 def test_render_release_documents_updates_only_the_governed_release_files(
     tmp_path: Path,
 ) -> None:

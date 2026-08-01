@@ -115,6 +115,11 @@ Rollback is the same executable with the `rollback` argument. It reads
    * `scripts/ci_status.py`.
    * Version availability across PyPI, GHCR, GitHub tags, and GitHub releases.
 
+   Each isolated wheel or sdist smoke gets one fresh retry because environment
+   creation and dependency retrieval can fail transiently. A second failure
+   blocks the release. The other local gates remain single attempt so a real
+   validation failure is never hidden.
+
    Pull request checks require the aggregate `CodeQL` signal and all three
    language analyses. The review packet includes `H`, `T`, `B`, exact checks,
    security evidence, release gates, rollback point, ruleset fingerprint, and
