@@ -1239,6 +1239,29 @@ class ReleaseRuntime:
                 self.heartbeat()
         raise ValueError("exact main CI did not become green")
 
+    def _smoke_distribution(self, artifact: Path, version: str) -> str:
+        command = [
+            "uv",
+            "run",
+            "--python",
+            "3.13",
+            "python",
+            "scripts/smoke_installed_wheel.py",
+            "--artifact",
+            str(artifact),
+            "--expected-version",
+            version,
+        ]
+        for attempt in range(2):
+            try:
+                return self.command(command, timeout=300)
+            except (ValueError, subprocess.TimeoutExpired):
+                if attempt == 1:
+                    raise
+                self.sleep(2.0)
+                self.heartbeat()
+        raise AssertionError("distribution smoke retry loop exhausted")
+
     def _final_local_gates(self, source_revision: str, version: str) -> dict[str, Any]:
         scratch = self.repository_root / "to-delete" / "aiops-release-build"
         shutil.rmtree(scratch, ignore_errors=True)
@@ -1275,23 +1298,7 @@ class ReleaseRuntime:
             if len(artifacts) != 2:
                 raise ValueError("release build did not create one wheel and one sdist")
             for artifact in artifacts:
-                outputs.append(
-                    self.command(
-                        [
-                            "uv",
-                            "run",
-                            "--python",
-                            "3.13",
-                            "python",
-                            "scripts/smoke_installed_wheel.py",
-                            "--artifact",
-                            str(artifact),
-                            "--expected-version",
-                            version,
-                        ],
-                        timeout=300,
-                    )
-                )
+                outputs.append(self._smoke_distribution(artifact, version))
             security_report = self.command(
                 [
                     "uv",
