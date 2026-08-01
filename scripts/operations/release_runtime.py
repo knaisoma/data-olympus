@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -60,6 +61,10 @@ _PULL_REQUEST_URL = re.compile(
 CommandOutput = Callable[[list[str], Path, int], str]
 JsonFetch = Callable[[str, int], dict[str, Any]]
 AuthorityConsult = Callable[[dict[str, object]], dict[str, Any]]
+AuthorityGateCheck = Callable[[dict[str, object]], dict[str, Any]]
+
+MAX_AUTHORITY_CONSULT_AGE_SECONDS = 300.0
+MAX_AUTHORITY_CLOCK_SKEW_SECONDS = 5.0
 
 
 class ReleaseDeliveryError(ValueError):
@@ -105,6 +110,13 @@ def _object(value: Any, name: str) -> dict[str, Any]:
     return value
 
 
+def _positive_finite_number(value: Any) -> float | None:
+    if type(value) not in {int, float}:
+        return None
+    number = float(value)
+    return number if number > 0 and math.isfinite(number) else None
+
+
 def _parse_nested_json(value: Any) -> Any:
     current = value
     for _ in range(4):
@@ -117,9 +129,10 @@ def _parse_nested_json(value: Any) -> Any:
     return current
 
 
-def _authority_consult(
+def _data_olympus_call(
+    target: str,
     arguments: dict[str, object],
-    run_command: CommandOutput = _default_command_output,
+    run_command: CommandOutput,
 ) -> dict[str, Any]:
     command = [
         "fastmcp",
@@ -127,7 +140,7 @@ def _authority_consult(
         "--server-spec",
         f"{DATA_OLYMPUS_URL}/mcp",
         "--target",
-        "kb_consult",
+        target,
         "--input-json",
         json.dumps(arguments, separators=(",", ":"), sort_keys=True),
         "--json",
@@ -143,11 +156,25 @@ def _authority_consult(
         raise ValueError("Data Olympus MCP returned invalid JSON") from error
     is_error = envelope.get("is_error")
     if type(is_error) is not bool or is_error:
-        raise ValueError("Data Olympus MCP consultation failed")
+        raise ValueError(f"Data Olympus MCP {target} failed")
     return _object(
         envelope.get("structured_content"),
         "Data Olympus MCP structured content",
     )
+
+
+def _authority_consult(
+    arguments: dict[str, object],
+    run_command: CommandOutput = _default_command_output,
+) -> dict[str, Any]:
+    return _data_olympus_call("kb_consult", arguments, run_command)
+
+
+def _authority_gate_check(
+    arguments: dict[str, object],
+    run_command: CommandOutput = _default_command_output,
+) -> dict[str, Any]:
+    return _data_olympus_call("kb_gate_check", arguments, run_command)
 
 
 class FastMCPGateway:
@@ -565,17 +592,21 @@ class ReleaseRuntime:
         gateway: FastMCPGateway,
         command_output: CommandOutput = _default_command_output,
         authority_consult: AuthorityConsult = _authority_consult,
+        authority_gate_check: AuthorityGateCheck = _authority_gate_check,
         fetch_json: JsonFetch = _default_json_fetch,
         sleep: Callable[[float], None] = time.sleep,
         today: Callable[[], dt.date] = dt.date.today,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self.repository_root = repository_root.resolve()
         self.gateway = gateway
         self.command_output = command_output
         self.authority_consult = authority_consult
+        self.authority_gate_check = authority_gate_check
         self.fetch_json = fetch_json
         self.sleep = sleep
         self.today = today
+        self.clock = clock
         self._heartbeat: Callable[[], None] = lambda: None
         self._prepared: dict[str, Any] | None = None
         self._delivery: dict[str, Any] | None = None
@@ -938,28 +969,48 @@ class ReleaseRuntime:
         changes = _object(computed.get("changes"), "computed release changes")
         if self.command(["git", "status", "--porcelain"]):
             raise ValueError("managed release worktree is not clean")
+        run_id = str(run_input["run_id"])
+        authority_intent = (
+            f"Prepare governed Data Olympus release v{version} from "
+            f"exact source {admitted}."
+        )
         consultation = self.authority_consult(
             {
                 "agent_identity": "ai-operations-release",
-                "intent": (
-                    f"Prepare governed Data Olympus release v{version} from "
-                    f"exact source {admitted}."
-                ),
-                "source_session": str(run_input["run_id"]),
+                "intent": authority_intent,
+                "source_session": run_id,
                 "trigger": "explicit",
                 "workspace": GITHUB_REPOSITORY,
             }
         )
-        consulted_at = consultation.get("consulted_at")
-        ttl_seconds = consultation.get("ttl_seconds")
-        if (
-            type(consulted_at) not in {int, float}
-            or consulted_at <= 0
-            or type(ttl_seconds) not in {int, float}
-            or ttl_seconds <= 0
-        ):
+        consulted_at = _positive_finite_number(consultation.get("consulted_at"))
+        ttl_seconds = _positive_finite_number(consultation.get("ttl_seconds"))
+        if consulted_at is None or ttl_seconds is None:
             raise ValueError("authority consultation receipt is invalid")
-        run_suffix = str(run_input["run_id"]).split("-", 1)[0]
+        consultation_age = self.clock() - consulted_at
+        if (
+            not math.isfinite(consultation_age)
+            or consultation_age < -MAX_AUTHORITY_CLOCK_SKEW_SECONDS
+            or consultation_age
+            > min(ttl_seconds, MAX_AUTHORITY_CONSULT_AGE_SECONDS)
+        ):
+            raise ValueError("authority consultation is not fresh")
+        gate_receipt = self.authority_gate_check(
+            {
+                "action_diff": authority_intent,
+                "action_path": "pyproject.toml",
+                "session_id": run_id,
+                "tool_name": "git commit",
+                "workspace": GITHUB_REPOSITORY,
+            }
+        )
+        if (
+            gate_receipt.get("verdict") != "allow"
+            or gate_receipt.get("session_id") != run_id
+            or gate_receipt.get("workspace") != GITHUB_REPOSITORY
+        ):
+            raise ValueError("authority gate receipt is invalid")
+        run_suffix = run_id.split("-", 1)[0]
         branch = f"chore/release-v{version}-{run_suffix}"
         self.command(["git", "switch", "-c", branch, admitted])
         document_evidence = render_release_documents(

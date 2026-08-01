@@ -22,7 +22,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   structured content is absent, while rejecting unbound or mismatched output.
 * **Made release commits satisfy the governance gate autonomously.** Before
   changing release files, the routine now records a run scoped Data Olympus
-  MCP consultation and validates its bounded receipt.
+  MCP consultation, validates receipt freshness, and requires a server side
+  gate receipt bound to the exact run and workspace. The unchanged precommit
+  audit gate still verifies the staged governed change.
 
 ## [0.6.0] - 2026-07-18
 
