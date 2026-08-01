@@ -572,7 +572,14 @@ def test_prepare_reports_failed_recovery_evidence_after_merge_boundary(
 ) -> None:
     head_revision = "c" * 40
     final_revision = "d" * 40
-    gateway = StubGateway({"create_pull_request": {"number": 182}})
+    gateway = StubGateway(
+        {
+            "create_pull_request": {
+                "id": "PR_kwDOQFQYxM6Yxw",
+                "url": "https://github.com/knaisoma/data-olympus/pull/182",
+            }
+        }
+    )
     runtime = ReleaseRuntime(
         tmp_path,
         gateway=gateway,
