@@ -1052,6 +1052,8 @@ class ReleaseRuntime:
         workflow_id: str,
         source_revision: str,
         inputs: dict[str, object],
+        *,
+        on_dispatch: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         listed = self.gateway_object(
             "actions_list",
@@ -1073,6 +1075,8 @@ class ReleaseRuntime:
             if type(run) is dict and type(run.get("id")) is int
         }
         self.heartbeat()
+        if on_dispatch is not None:
+            on_dispatch()
         self.gateway.execute(
             "actions_run_trigger",
             {
@@ -1357,13 +1361,19 @@ class ReleaseRuntime:
         deployment_started = False
         external_state_changed = False
         rollback_completed = False
-        try:
+
+        def mark_external_state_changed() -> None:
+            nonlocal external_state_changed
             external_state_changed = True
+
+        try:
             rc_receipt = self._workflow_run(
                 "rc-publish.yml",
                 source_revision,
                 {"number": rc_number, "ref": source_revision},
+                on_dispatch=mark_external_state_changed,
             )
+            external_state_changed = True
             publication = self._candidate_publication(
                 source_revision,
                 version,
@@ -1377,6 +1387,7 @@ class ReleaseRuntime:
                 "tag-release.yml",
                 source_revision,
                 {"candidate_tag": candidate_tag},
+                on_dispatch=mark_external_state_changed,
             )
             stable = self._stable_publication(source_revision, version)
             stable_digest = self._registry_digest(f"v{version}")
@@ -1386,6 +1397,7 @@ class ReleaseRuntime:
                 "set-channel.yml",
                 source_revision,
                 {"channel": "kndev", "source": f"v{version}"},
+                on_dispatch=mark_external_state_changed,
             )
             stable_rollout = self._apply_digest(digest)
             stable_acceptance = self._service_acceptance()

@@ -598,6 +598,50 @@ def test_prepare_reports_failed_recovery_evidence_after_merge_boundary(
         assert raised.value.evidence["merged_revision"] == final_revision
 
 
+@pytest.mark.parametrize("dispatch_started", [False, True])
+def test_delivery_failure_classification_tracks_the_workflow_dispatch_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dispatch_started: bool,
+) -> None:
+    previous = "sha256:" + "e" * 64
+    runtime = ReleaseRuntime(tmp_path, gateway=StubGateway({"list_tags": []}))
+    runtime._prepared = {
+        "raw": {
+            "candidate": {"version": "0.7.0", "source_revision": SOURCE_SHA},
+            "rollback_point": {"digest": previous},
+        }
+    }
+
+    def workflow_run(
+        _name: str,
+        _source: str,
+        _inputs: dict[str, object],
+        *,
+        on_dispatch: object = None,
+    ) -> dict[str, object]:
+        if dispatch_started:
+            assert callable(on_dispatch)
+            on_dispatch()
+        raise ValueError("workflow preflight or dispatch failed")
+
+    monkeypatch.setattr(runtime, "_workflow_run", workflow_run)
+
+    with pytest.raises(ValueError) as raised:
+        runtime.deliver({}, {}, {}, {})
+
+    if dispatch_started:
+        assert isinstance(raised.value, ReleaseDeliveryError)
+        assert raised.value.evidence == {
+            "deployment_started": False,
+            "external_state_changed": True,
+            "rollback_completed": False,
+        }
+    else:
+        assert type(raised.value) is ValueError
+        assert getattr(raised.value, "external_state_changed", False) is False
+
+
 def test_partial_delivery_failure_restores_the_exact_previous_digest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -619,15 +663,22 @@ def test_partial_delivery_failure_restores_the_exact_previous_digest(
         "mcp_search": True,
         "ready": True,
     }
-    monkeypatch.setattr(
-        runtime,
-        "_workflow_run",
-        lambda _name, source, _inputs: {
+    def workflow_run(
+        _name: str,
+        source: str,
+        _inputs: dict[str, object],
+        *,
+        on_dispatch: object = None,
+    ) -> dict[str, object]:
+        assert callable(on_dispatch)
+        on_dispatch()
+        return {
             "conclusion": "success",
             "run_id": 1,
             "source_revision": source,
-        },
-    )
+        }
+
+    monkeypatch.setattr(runtime, "_workflow_run", workflow_run)
     monkeypatch.setattr(
         runtime,
         "_candidate_publication",

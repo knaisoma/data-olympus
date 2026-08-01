@@ -56,6 +56,9 @@ After the conditional merge mutation begins, an unknown merge outcome or any
 confirmed postmerge gate failure is `failed`, never `blocked`. Its result
 records the pull request, reviewed head, merge confirmation state, resulting
 revision when known, and incomplete recovery state.
+Workflow preflight reads remain safely retryable and `blocked`. The delivery
+mutation boundary begins immediately before the first workflow dispatch;
+dispatch ambiguity and every later failure are `failed`.
 
 The central runner owns authority admission, immutable run control, model
 tickets, exact candidate approval, the durable ledger, Telegram delivery, and
