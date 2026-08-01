@@ -82,6 +82,10 @@ class ReleaseDeliveryError(ValueError):
         self.evidence = evidence
 
 
+class UnboundGatewayResultError(ValueError):
+    """A text fallback omitted the gateway's requested tool binding."""
+
+
 def _default_command_output(command: list[str], cwd: Path, timeout: int) -> str:
     process = subprocess.run(
         command,
@@ -244,7 +248,9 @@ class FastMCPGateway:
         if used_text_content and not (
             type(result) is dict and set(result) >= {"tool", "result"}
         ):
-            raise ValueError("FastMCP text content omitted gateway result")
+            raise UnboundGatewayResultError(
+                "FastMCP text content omitted gateway result"
+            )
         if type(result) is dict and set(result) >= {"tool", "result"}:
             if result["tool"] != name:
                 raise ValueError("FastMCP result tool does not match request")
@@ -1663,6 +1669,27 @@ class ReleaseRuntime:
             {"owner": GITHUB_OWNER, "repo": GITHUB_REPOSITORY, "tag": tag},
         )
 
+    def _list_tags(self) -> list[Any]:
+        arguments = {
+            "owner": GITHUB_OWNER,
+            "page": 1,
+            "perPage": 100,
+            "repo": GITHUB_REPOSITORY,
+        }
+        for attempt in range(2):
+            try:
+                tags = self.gateway.execute("list_tags", arguments)
+            except UnboundGatewayResultError:
+                if attempt != 0:
+                    raise
+                self.sleep(1.0)
+                self.heartbeat()
+                continue
+            if type(tags) is not list:
+                raise ValueError("GitHub tags are unavailable")
+            return tags
+        raise AssertionError("list tags retry loop exhausted")
+
     def _release_asset_json(
         self,
         release: dict[str, Any],
@@ -2029,6 +2056,7 @@ class ReleaseRuntime:
         )
         try:
             final_gates = self._final_local_gates(source_revision, version)
+            tags = self._list_tags()
         except (OSError, subprocess.SubprocessError, ValueError) as error:
             raise ReleaseDeliveryError(
                 str(error),
@@ -2039,17 +2067,6 @@ class ReleaseRuntime:
                     "rollback_completed": False,
                 },
             ) from error
-        tags = self.gateway.execute(
-            "list_tags",
-            {
-                "owner": GITHUB_OWNER,
-                "page": 1,
-                "perPage": 100,
-                "repo": GITHUB_REPOSITORY,
-            },
-        )
-        if type(tags) is not list:
-            raise ValueError("GitHub tags are unavailable")
         tag_names: list[str] = []
         for raw_tag in tags:
             if type(raw_tag) is dict and type(raw_tag.get("name")) is str:
