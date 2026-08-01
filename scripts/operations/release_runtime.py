@@ -340,6 +340,24 @@ def completed_check_evidence(
     return evidence
 
 
+def _check_matrix_concluded(
+    check_runs: list[dict[str, Any]],
+    required: set[str],
+) -> bool:
+    """Return true only after every observed check has a final conclusion."""
+    if not check_runs:
+        return False
+    names = {run.get("name") for run in check_runs}
+    if not required <= names:
+        return False
+    return all(
+        run.get("status") == "completed"
+        and type(run.get("conclusion")) is str
+        and bool(run.get("conclusion"))
+        for run in check_runs
+    )
+
+
 def _asset_names(release: dict[str, Any]) -> set[str]:
     assets = release.get("assets")
     if type(assets) is not list:
@@ -734,13 +752,11 @@ class ReleaseRuntime:
             except ValueError as error:
                 last_error = str(error)
                 runs = checks.get("check_runs")
-                if type(runs) is list and any(
-                    type(run) is dict
-                    and run.get("status") == "completed"
-                    and type(run.get("conclusion")) is str
-                    and run.get("conclusion") not in {"success", "skipped"}
-                    for run in runs
+                if type(runs) is not list or any(
+                    type(run) is not dict for run in runs
                 ):
+                    raise
+                if _check_matrix_concluded(runs, REQUIRED_PULL_REQUEST_CHECKS):
                     raise
                 self.sleep(10)
                 self.heartbeat()
