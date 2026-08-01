@@ -7,9 +7,10 @@ Automation status: disabled until baseline certification
 
 ## Outcome
 
-Publish one immutable release from already merged, reviewed, green,
-unreleased work, then prove that every artifact and the kn dev service match
-one exact reviewed source revision.
+Publish one immutable release from already merged, green, unreleased work.
+Review the deterministic release candidate before it can merge, prove that the
+squash merge transferred the exact reviewed tree, then prove that every
+artifact and the kn dev service name the resulting delivery revision.
 
 The routine is outcome based. It is not a weekly cutter and has no obligation
 to release when the evidence says no release is due.
@@ -45,11 +46,13 @@ The fixed milestones are:
 * `verify`
 
 The project command owns Git, release artifact, workflow, registry, and kn dev
-evidence. Supported external mutations and reads go through FastMCP. The three
-current GitHub capability gaps are security alert enumeration, container
-package digest lookup, and a pull request merge with an expected head SHA
-precondition. They reuse governed repository commands and record the direct
-GitHub fallback because the gateway exposes none of those exact operations.
+evidence. Supported external mutations and reads go through FastMCP. Current
+gateway capability gaps are CodeQL analysis and alert enumeration, Code
+Quality setup, ruleset details, GraphQL review threads, container package
+digest lookup, and a pull request merge with an expected head SHA precondition.
+They reuse governed repository commands and record the direct GitHub fallback
+because the gateway exposes none of those exact operations. These gaps remain
+tracked platform work and do not weaken the release gates.
 An unconditional gateway merge is not an acceptable substitute for the
 expected head precondition.
 After the conditional merge mutation begins, an unknown merge outcome or any
@@ -90,12 +93,16 @@ Rollback is the same executable with the `rollback` argument. It reads
 5. Set `pyproject.toml` to `X.Y.Z`, update `uv.lock`, close the matching
    changelog block, open a
    new empty `[Unreleased]` block, and write `docs/releases/vX.Y.Z.md`.
-6. Open one public pull request through FastMCP. Require every repository check
-   to complete successfully. Confirm that remote `main` still equals the
-   admitted SHA, then squash merge the one deterministic release change.
-7. Bind the candidate to the resulting exact `main` SHA and require its parent
-   to equal the admitted SHA. A concurrent main change blocks the run.
-8. Rerun all release gates against that final SHA:
+6. Open one public pull request through FastMCP. Keep it open and unmerged.
+   Require every observed repository check to reach a successful terminal
+   conclusion. Require the exact `CodeQL - Code Quality` check, all three
+   CodeQL language analyses with zero results, no open CodeQL alert for the
+   pull request, no unresolved review thread, and the complete active default
+   branch ruleset fingerprint. Code Quality must be configured. Missing or
+   unverifiable evidence blocks before review or merge.
+7. Bind the review candidate to the exact pull request head SHA `H`, its Git
+   tree `T`, and admitted main SHA `B`. Require `H` to have sole parent `B`.
+   Rerun all local release gates against `H`:
 
    * Complete test suite.
    * Ruff.
@@ -108,19 +115,32 @@ Rollback is the same executable with the `rollback` argument. It reads
    * Version availability across PyPI, GHCR, GitHub tags, and GitHub releases.
 
    Pull request checks require the aggregate `CodeQL` signal and all three
-   language analyses. Default branch pushes do not emit the aggregate signal,
-   so final main CI requires the three successful language analyses directly.
-
-9. The deterministic executor requests one central, run controlled Claude
-   review of the exact final SHA. Self review is prohibited. Review evidence
-   hashes both the submitted packet and the ticket bound Claude response.
-10. Require the candidate approval ledger entry to bind the run, contract
-    digest, final SHA, and consumed Claude review. The approved standing
-    delegation may materialize that exact entry only after the review passes.
-11. Dispatch `rc-publish.yml` for that SHA and the next unused candidate
+   language analyses. The review packet includes `H`, `T`, `B`, exact checks,
+   security evidence, release gates, rollback point, ruleset fingerprint, and
+   immutable delivery procedure.
+8. The deterministic executor requests one central, run controlled Claude
+   review of `H`. Self review is prohibited. Review evidence hashes both the
+   exact submitted packet and the ticket bound Claude response.
+9. Require the candidate approval ledger entry to bind the run, contract
+   digest, `H`, and consumed Claude review. The approved standing delegation
+   may materialize that exact entry only after the review passes.
+10. In the same execution, rederive `H`, `T`, `B`, remote `main`, every check
+    and security result, every review thread, Code Quality setup and result,
+    and the complete ruleset fingerprint. Any change requires a new run and
+    review. The deliberate team bypass bypasses the entire GitHub ruleset, not
+    only native approval, so these routine owned controls are load bearing.
+11. Submit a conditional squash merge naming expected head `H`. Reconcile an
+    ambiguous response only from the same pull request and current remote
+    `main`. An open unchanged pull request stops safely. Every other ambiguous
+    state fails closed.
+12. Fetch resulting remote main SHA `M`. Require `M` to have sole parent `B`
+    and exact tree `T`. Rerun final CI and every release gate against `M`.
+    Publication is a direct continuation after these freshly derived proofs,
+    never a replay from stored evidence.
+13. Dispatch `rc-publish.yml` for `M` and the next unused candidate
     number. Do not reproduce version computation or publication logic in the
     runner.
-12. Verify the complete candidate transaction:
+14. Verify the complete candidate transaction:
 
     * GitHub prerelease.
     * Candidate wheel.
@@ -129,32 +149,36 @@ Rollback is the same executable with the `rollback` argument. It reads
     * `release-provenance.json`.
     * GHCR image digest.
 
-13. Keep Keel at `never`. Deploy the candidate exact digest to both StatefulSet
+15. Keep Keel at `never`. Deploy the candidate exact digest to both StatefulSet
     containers through the kn dev FastMCP gateway, wait for rollout, and verify
     health, readiness, MCP search, enforcement, and documentation.
-14. If canary verification passes, dispatch `tag-release.yml` with the exact
+16. If canary verification passes, dispatch `tag-release.yml` with the exact
     candidate tag. The workflow promotes the existing candidate and must not
     rebuild the OCI image.
-15. Dispatch `set-channel.yml` with `source=vX.Y.Z` for registry channel
+17. Dispatch `set-channel.yml` with `source=vX.Y.Z` for registry channel
     traceability. The moving channel does not drive the kn dev deployment while
     Keel is `never`.
-16. Deploy the same stable digest explicitly to kn dev and run the full
+18. Deploy the same stable digest explicitly to kn dev and run the full
     external verification stage.
-17. Return a delivered project result with the release pull request, previous
-   rollback digest, published version, exact candidate SHA, image digest, and
-   verification receipts.
-18. The central runner sends one Telegram completion message to the semantic
+19. Return a delivered project result whose immutable candidate revision is
+   `H`. Evidence separately records `B`, `T`, `M`, exact tree equality, the
+   previous rollback digest, published version, image digest, and verification
+   receipts.
+20. The central runner sends one Telegram completion message to the semantic
    destination `data-olympus-operations`. Completion requires exact independent
    readback of the destination, message identifier, run marker, and content.
-19. The durable runner ledger records the truthful terminal state. No private
+21. The durable runner ledger records the truthful terminal state. No private
    issue is an authority or completion dependency.
 
 ## Exact source rule
 
-The release branch SHA is premerge evidence only because squash merge produces
-a new commit. Final review, exact approval, workflow receipts, provenance,
-tags, artifacts, deployment, verification, and notification all name the same
-resulting `main` source SHA.
+The release branch head `H` is the immutable reviewed candidate. The approval
+stays bound to `H`. The squash merge produces delivery revision `M`, which is
+authorized only when its sole parent is admitted SHA `B` and its tree exactly
+equals reviewed tree `T`. Workflow receipts, provenance, tags, artifacts,
+deployment, verification, and notification all name `M`. Project and central
+candidate fields remain `H`; delivery evidence records both revisions and the
+content transfer proof.
 
 Any source change invalidates approval and restarts the release assessment.
 
@@ -186,8 +210,8 @@ is never relabeled as complete because a workflow started.
 
 The release is complete only when:
 
-* GitHub release `vX.Y.Z` points at the reviewed SHA.
-* PyPI `X.Y.Z` provenance points at the reviewed SHA.
+* GitHub release `vX.Y.Z` points at the proven delivery SHA.
+* PyPI `X.Y.Z` provenance points at the proven delivery SHA.
 * GHCR `vX.Y.Z` points at the reviewed candidate digest.
 * kn dev runs that exact digest in both containers.
 * Health, readiness, MCP search, enforcement, and documentation pass.

@@ -186,6 +186,63 @@ def _extra_context(value: Any) -> dict[str, Any]:
     }
 
 
+def _release_control_evidence(value: Any, source_revision: str) -> dict[str, Any]:
+    controls = _object(value, "release_controls")
+    _same_source(
+        source_revision,
+        controls.get("candidate_revision"),
+        "release_controls.candidate_revision",
+    )
+    checks = _object(controls.get("check_evidence"), "release_controls.check_evidence")
+    _true(checks.get("all_success"), "release_controls.check_evidence.all_success")
+    if checks.get("missing_required") != []:
+        raise ReleaseInputError(
+            "release_controls.check_evidence.missing_required must be empty"
+        )
+    if controls.get("code_quality_check") not in {
+        "CodeQL - Code Quality",
+        "CodeQL - Code Quality / Analyze",
+    }:
+        raise ReleaseInputError("release_controls.code_quality_check is invalid")
+    if controls.get("code_quality_state") != "configured":
+        raise ReleaseInputError("release_controls.code_quality_state must be configured")
+    codeql_hash = _hash(
+        controls.get("codeql_analysis_hash"),
+        "release_controls.codeql_analysis_hash",
+    )
+    if controls.get("codeql_languages") != [
+        "actions",
+        "javascript-typescript",
+        "python",
+    ]:
+        raise ReleaseInputError("release_controls.codeql_languages is incomplete")
+    if controls.get("open_codeql_alerts") != 0:
+        raise ReleaseInputError("release_controls.open_codeql_alerts must be zero")
+    if controls.get("review_decision") != "REVIEW_REQUIRED":
+        raise ReleaseInputError("release_controls.review_decision changed")
+    if controls.get("unresolved_review_threads") != 0:
+        raise ReleaseInputError(
+            "release_controls.unresolved_review_threads must be zero"
+        )
+    fingerprint = _hash(
+        controls.get("ruleset_fingerprint"),
+        "release_controls.ruleset_fingerprint",
+    )
+    ruleset_ids = controls.get("ruleset_ids")
+    if (
+        type(ruleset_ids) is not list
+        or not ruleset_ids
+        or any(type(ruleset_id) is not int or ruleset_id <= 0 for ruleset_id in ruleset_ids)
+    ):
+        raise ReleaseInputError("release_controls.ruleset_ids is invalid")
+    return {
+        "code_quality_check": controls["code_quality_check"],
+        "codeql_analysis_hash": codeql_hash,
+        "ruleset_fingerprint": fingerprint,
+        "ruleset_ids": ruleset_ids,
+    }
+
+
 def _authority(input_document: dict[str, Any]) -> StageResult:
     authority_revision = _sha40(
         input_document.get("authority_revision"),
@@ -294,6 +351,10 @@ def _prepare(input_document: dict[str, Any]) -> StageResult:
         require_artifact=False,
     )
     context = _extra_context(input_document.get("extra_context"))
+    release_controls = _release_control_evidence(
+        input_document.get("release_controls"),
+        source_revision,
+    )
 
     changelog = _object(input_document.get("changelog"), "changelog")
     _same_source(
@@ -349,7 +410,8 @@ def _prepare(input_document: dict[str, Any]) -> StageResult:
     url = _string(release_pr.get("url"), "release_pr.url")
     if url != f"https://github.com/knaisoma/data-olympus/pull/{number}":
         raise ReleaseInputError("release_pr.url is outside the Data Olympus repository")
-    _true(release_pr.get("merged"), "release_pr.merged")
+    if release_pr.get("merged") is not False:
+        raise ReleaseInputError("release pull request must remain unmerged before review")
     base_revision = _sha40(
         release_pr.get("base_source_revision"),
         "release_pr.base_source_revision",
@@ -358,8 +420,12 @@ def _prepare(input_document: dict[str, Any]) -> StageResult:
         release_pr.get("head_revision"),
         "release_pr.head_revision",
     )
-    if base_revision == head_revision or head_revision == source_revision:
-        raise ReleaseInputError("release_pr revisions do not prove a squash merge")
+    if base_revision == head_revision or head_revision != source_revision:
+        raise ReleaseInputError("release_pr revisions do not bind the unmerged candidate")
+    head_tree_revision = _sha40(
+        release_pr.get("head_tree_revision"),
+        "release_pr.head_tree_revision",
+    )
     _same_source(
         source_revision,
         release_pr.get("source_revision"),
@@ -370,7 +436,7 @@ def _prepare(input_document: dict[str, Any]) -> StageResult:
 
     return _result(
         "pass",
-        f"release pull request {number} produced candidate {version}",
+        f"release pull request {number} prepared candidate {version} for review",
         {
             "source_revision": source_revision,
             "version": version,
@@ -380,7 +446,9 @@ def _prepare(input_document: dict[str, Any]) -> StageResult:
             "tests_hash": tests_hash,
             "rollback_digest": rollback_digest,
             "release_pr_head_revision": head_revision,
+            "release_pr_head_tree_revision": head_tree_revision,
             "release_pr_base_revision": base_revision,
+            **release_controls,
         },
         {
             "release_pr_number": number,
@@ -547,6 +615,43 @@ def _deliver(input_document: dict[str, Any]) -> StageResult:
         input_document.get("current_source_revision"),
         "current_source_revision",
     )
+    delivery_proof = _object(
+        input_document.get("delivery_proof"),
+        "delivery_proof",
+    )
+    admitted_revision = _sha40(
+        delivery_proof.get("admitted_revision"),
+        "delivery_proof.admitted_revision",
+    )
+    approved_candidate_revision = _sha40(
+        delivery_proof.get("approved_candidate_revision"),
+        "delivery_proof.approved_candidate_revision",
+    )
+    delivery_revision = _sha40(
+        delivery_proof.get("delivery_revision"),
+        "delivery_proof.delivery_revision",
+    )
+    reviewed_tree_revision = _sha40(
+        delivery_proof.get("reviewed_tree_revision"),
+        "delivery_proof.reviewed_tree_revision",
+    )
+    delivery_tree_revision = _sha40(
+        delivery_proof.get("delivery_tree_revision"),
+        "delivery_proof.delivery_tree_revision",
+    )
+    sole_parent_revision = _sha40(
+        delivery_proof.get("sole_parent_revision"),
+        "delivery_proof.sole_parent_revision",
+    )
+    _true(delivery_proof.get("merge_confirmed"), "delivery_proof.merge_confirmed")
+    if delivery_revision != source_revision:
+        raise ReleaseInputError("delivery proof revision does not match delivered source")
+    if approved_candidate_revision == delivery_revision:
+        raise ReleaseInputError("approved candidate and squash delivery revisions must differ")
+    if reviewed_tree_revision != delivery_tree_revision:
+        raise ReleaseInputError("delivery tree does not match the reviewed candidate tree")
+    if sole_parent_revision != admitted_revision:
+        raise ReleaseInputError("delivery parent does not match the admitted revision")
     candidate_tag = candidate["candidate_tag"]
 
     workflows = input_document.get("workflows")
@@ -627,12 +732,22 @@ def _deliver(input_document: dict[str, Any]) -> StageResult:
         "pass",
         f"release {version} was delivered by the approved workflows",
         {
+            "admitted_revision": admitted_revision,
+            "approved_candidate_revision": approved_candidate_revision,
             "source_revision": source_revision,
             "candidate_tag": candidate_tag,
+            "delivery_revision": delivery_revision,
+            "delivery_tree_revision": delivery_tree_revision,
             "digest": digest,
             "workflows": sorted(required),
         },
-        {"published_version": version},
+        {
+            "admitted_revision": admitted_revision,
+            "approved_candidate_revision": approved_candidate_revision,
+            "delivery_revision": delivery_revision,
+            "delivery_tree_revision": delivery_tree_revision,
+            "published_version": version,
+        },
     )
 
 
@@ -692,7 +807,7 @@ def _verify(input_document: dict[str, Any]) -> StageResult:
 
     return _result(
         "pass",
-        f"release {version} and kn dev match the reviewed source",
+        f"release {version} and kn dev match the approved release content",
         {
             "source_revision": source_revision,
             "version": version,
@@ -1321,6 +1436,7 @@ def execute_release_run(
                 "version, rollback point, and immutable release procedures pass."
             ),
             "prepared_evidence": prepared["evidence"],
+            "release_controls": prepared_input["release_controls"],
             "source_revision": candidate_revision,
             "validation_evidence": validation["evidence"],
         }

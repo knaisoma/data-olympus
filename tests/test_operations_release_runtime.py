@@ -19,6 +19,7 @@ from scripts.operations.release_runtime import (
     default_release_dependencies,
     deployment_manifest_for_digest,
     deployment_state,
+    governed_release_controls,
     render_release_documents,
     stable_release_evidence,
 )
@@ -28,6 +29,104 @@ if TYPE_CHECKING:
 
 SOURCE_SHA = "a" * 40
 DIGEST = "sha256:" + "b" * 64
+CANDIDATE_SHA = "c" * 40
+CANDIDATE_TREE = "1" * 40
+DELIVERY_SHA = "d" * 40
+
+
+def _release_ruleset() -> dict[str, object]:
+    return {
+        "id": 18080131,
+        "name": "main protection",
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {
+            "ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH"]}
+        },
+        "rules": [
+            {"type": "deletion"},
+            {"type": "non_fast_forward"},
+            {
+                "type": "pull_request",
+                "parameters": {
+                    "required_approving_review_count": 1,
+                    "require_code_owner_review": True,
+                    "require_last_push_approval": True,
+                    "required_review_thread_resolution": True,
+                },
+            },
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [{"context": "test"}]
+                },
+            },
+            {"type": "required_linear_history"},
+            {
+                "type": "code_scanning",
+                "parameters": {
+                    "code_scanning_tools": [
+                        {
+                            "tool": "CodeQL",
+                            "security_alerts_threshold": "high_or_higher",
+                            "alerts_threshold": "errors",
+                        }
+                    ]
+                },
+            },
+            {"type": "code_quality", "parameters": {"severity": "errors"}},
+        ],
+        "bypass_actors": [
+            {"actor_id": 18280424, "actor_type": "Team", "bypass_mode": "always"}
+        ],
+        "current_user_can_bypass": "always",
+    }
+
+
+def _successful_pull_checks() -> dict[str, object]:
+    names = REQUIRED_PULL_REQUEST_CHECKS | {"CodeQL - Code Quality"}
+    return {
+        "check_runs": [
+            {"name": name, "status": "completed", "conclusion": "success"}
+            for name in sorted(names)
+        ]
+    }
+
+
+def _review_state() -> dict[str, object]:
+    return {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "baseRefOid": SOURCE_SHA,
+                    "headRefOid": CANDIDATE_SHA,
+                    "isDraft": False,
+                    "mergeStateStatus": "BLOCKED",
+                    "merged": False,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "state": "OPEN",
+                    "reviewThreads": {
+                        "nodes": [],
+                        "pageInfo": {"hasNextPage": False},
+                        "totalCount": 0,
+                    },
+                }
+            }
+        }
+    }
+
+
+def _codeql_analyses() -> list[dict[str, object]]:
+    return [
+        {
+            "analysis_key": "dynamic/github-code-scanning/codeql:analyze",
+            "category": f"/language:{language}",
+            "commit_sha": CANDIDATE_SHA,
+            "error": "",
+            "results_count": 0,
+        }
+        for language in ("actions", "javascript-typescript", "python")
+    ]
 
 
 def test_required_checks_match_pull_request_and_main_github_surfaces() -> None:
@@ -41,6 +140,111 @@ def test_required_checks_match_pull_request_and_main_github_surfaces() -> None:
     assert codeql_analyses <= REQUIRED_MAIN_CHECKS
     assert "CodeQL" in REQUIRED_PULL_REQUEST_CHECKS
     assert "CodeQL" not in REQUIRED_MAIN_CHECKS
+
+
+def test_governed_release_controls_rederive_every_bypassed_rule() -> None:
+    evidence = governed_release_controls(
+        admitted_revision=SOURCE_SHA,
+        candidate_revision=CANDIDATE_SHA,
+        checks=_successful_pull_checks(),
+        code_quality_setup={
+            "state": "configured",
+            "languages": ["javascript-typescript", "python"],
+        },
+        codeql_alerts=[],
+        codeql_analyses=_codeql_analyses(),
+        review_state=_review_state(),
+        rulesets=[_release_ruleset()],
+    )
+
+    assert evidence["candidate_revision"] == CANDIDATE_SHA
+    assert evidence["code_quality_check"] == "CodeQL - Code Quality"
+    assert evidence["codeql_languages"] == [
+        "actions",
+        "javascript-typescript",
+        "python",
+    ]
+    assert evidence["review_decision"] == "REVIEW_REQUIRED"
+    assert evidence["unresolved_review_threads"] == 0
+    assert len(evidence["ruleset_fingerprint"]) == 64
+
+
+def test_governed_release_controls_block_unconfigured_code_quality() -> None:
+    with pytest.raises(ValueError, match="Code Quality is not configured"):
+        governed_release_controls(
+            admitted_revision=SOURCE_SHA,
+            candidate_revision=CANDIDATE_SHA,
+            checks=_successful_pull_checks(),
+            code_quality_setup={
+                "state": "not-configured",
+                "languages": ["javascript-typescript", "python"],
+            },
+            codeql_alerts=[],
+            codeql_analyses=_codeql_analyses(),
+            review_state=_review_state(),
+            rulesets=[_release_ruleset()],
+        )
+
+
+def test_governed_release_controls_block_ruleset_or_candidate_drift() -> None:
+    changed = _release_ruleset()
+    changed["rules"] = [
+        rule
+        for rule in changed["rules"]
+        if rule["type"] != "required_linear_history"
+    ]
+
+    with pytest.raises(ValueError, match="required linear history"):
+        governed_release_controls(
+            admitted_revision=SOURCE_SHA,
+            candidate_revision=CANDIDATE_SHA,
+            checks=_successful_pull_checks(),
+            code_quality_setup={
+                "state": "configured",
+                "languages": ["javascript-typescript", "python"],
+            },
+            codeql_alerts=[],
+            codeql_analyses=_codeql_analyses(),
+            review_state=_review_state(),
+            rulesets=[changed],
+        )
+
+
+def test_ruleset_fingerprint_excludes_transport_metadata() -> None:
+    original = _release_ruleset()
+    original.update(
+        {
+            "_links": {"self": {"href": "https://api.github.test/old"}},
+            "created_at": "2026-06-24T18:47:03Z",
+            "node_id": "old-node",
+            "updated_at": "2026-07-01T09:08:06Z",
+        }
+    )
+    refreshed = {**original}
+    refreshed.update(
+        {
+            "_links": {"self": {"href": "https://api.github.test/new"}},
+            "node_id": "new-node",
+            "updated_at": "2026-08-01T16:00:00Z",
+        }
+    )
+    arguments = {
+        "admitted_revision": SOURCE_SHA,
+        "candidate_revision": CANDIDATE_SHA,
+        "checks": _successful_pull_checks(),
+        "code_quality_setup": {
+            "state": "configured",
+            "languages": ["javascript-typescript", "python"],
+        },
+        "codeql_alerts": [],
+        "codeql_analyses": _codeql_analyses(),
+        "review_state": _review_state(),
+    }
+
+    first = governed_release_controls(**arguments, rulesets=[original])
+    second = governed_release_controls(**arguments, rulesets=[refreshed])
+
+    assert first["ruleset_fingerprint"] == second["ruleset_fingerprint"]
 
 
 class StubGateway:
@@ -550,9 +754,11 @@ def test_pull_request_waiter_waits_for_complete_check_matrix(
         ]
     }
     pull = {
+        "base": {"sha": "b" * 40},
         "draft": False,
         "head": {"sha": SOURCE_SHA},
-        "mergeable_state": "clean",
+        "mergeable_state": "blocked",
+        "merged": False,
         "state": "open",
     }
     gateway = StubGateway(
@@ -564,13 +770,15 @@ def test_pull_request_waiter_waits_for_complete_check_matrix(
         gateway=gateway,
         sleep=sleeps.append,
     )
+    controls = {"ruleset_fingerprint": "4" * 64}
+    runtime._collect_release_controls = lambda **_arguments: controls
 
-    result = runtime._wait_pull_request(190, SOURCE_SHA)
+    result = runtime._wait_pull_request(190, SOURCE_SHA, "b" * 40)
 
     assert result == {"checks": completed_check_evidence(
         completed,
         required=REQUIRED_PULL_REQUEST_CHECKS,
-    ), "pull": pull}
+    ), "controls": controls, "pull": pull}
     assert sleeps == [10]
 
 
@@ -595,7 +803,7 @@ def test_pull_request_waiter_fails_when_complete_matrix_is_not_green(
     )
 
     with pytest.raises(ValueError, match="GitHub check runs did not succeed"):
-        runtime._wait_pull_request(192, SOURCE_SHA)
+        runtime._wait_pull_request(192, SOURCE_SHA, "b" * 40)
 
     assert sleeps == []
 
@@ -940,14 +1148,10 @@ def test_merge_response_distinguishes_no_merge_from_confirmed_missing_identity(
     }
 
 
-@pytest.mark.parametrize("merge_confirmed", [False, True])
-def test_prepare_reports_failed_recovery_evidence_after_merge_boundary(
+def test_prepare_stops_at_the_unmerged_review_candidate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    merge_confirmed: bool,
 ) -> None:
-    head_revision = "c" * 40
-    final_revision = "d" * 40
     consultations: list[dict[str, object]] = []
     gate_checks: list[dict[str, object]] = []
     gateway = StubGateway(
@@ -984,61 +1188,88 @@ def test_prepare_reports_failed_recovery_evidence_after_merge_boundary(
             "release_note_hash": "2" * 64,
         },
     )
-    monkeypatch.setattr(runtime, "source_revision", lambda: head_revision)
-    remote_revisions = iter([SOURCE_SHA, final_revision])
-    monkeypatch.setattr(runtime, "candidate_revision", lambda: next(remote_revisions))
+    monkeypatch.setattr(runtime, "source_revision", lambda: CANDIDATE_SHA)
+    monkeypatch.setattr(runtime, "remote_main_revision", lambda: SOURCE_SHA)
+    monkeypatch.setattr(runtime, "_tree_revision", lambda _revision: CANDIDATE_TREE)
+    monkeypatch.setattr(runtime, "_parent_revisions", lambda _revision: [SOURCE_SHA])
     monkeypatch.setattr(
         runtime,
         "_wait_pull_request",
-        lambda _number, _head: {"checks": {}, "pull": {}},
+        lambda _number, _head, _base: {
+            "checks": completed_check_evidence(
+                _successful_pull_checks(),
+                required=REQUIRED_PULL_REQUEST_CHECKS,
+            ),
+            "controls": {
+                "candidate_revision": CANDIDATE_SHA,
+                "code_quality_state": "configured",
+                "ruleset_fingerprint": "4" * 64,
+            },
+            "pull": {},
+        },
     )
-    if merge_confirmed:
-        monkeypatch.setattr(
-            runtime,
-            "_merge_exact",
-            lambda _number, _version, _head: {
-                "merged": True,
-                "sha": final_revision,
+    monkeypatch.setattr(
+        runtime,
+        "_final_local_gates",
+        lambda _source, _version: {
+            "ci": {"all_success": True, "missing_required": []},
+            "security": {"exit_code": 0, "report_hash": "5" * 64},
+            "tests": {
+                "source_revision": CANDIDATE_SHA,
+                "passed": True,
+                "evidence_hash": "6" * 64,
             },
-        )
-        monkeypatch.setattr(
-            runtime,
-            "_final_local_gates",
-            lambda _source, _version: (_ for _ in ()).throw(
-                ValueError("post merge gates failed")
-            ),
-        )
-    else:
-        monkeypatch.setattr(
-            runtime,
-            "_merge_exact",
-            lambda _number, _version, _head: (_ for _ in ()).throw(
-                ValueError("merge response lost")
-            ),
-        )
+            "version_free": {"version": "0.7.0", "free": True},
+        },
+    )
+    monkeypatch.setattr(
+        "scripts.operations.release_runtime.deployment_state",
+        lambda _statefulset: {
+            "digest": DIGEST,
+            "keel_policy": "never",
+            "rollout_complete": True,
+        },
+    )
+    monkeypatch.setattr(runtime, "live_statefulset", lambda: {})
+    monkeypatch.setattr(
+        runtime,
+        "_merge_exact",
+        lambda *_arguments: (_ for _ in ()).throw(
+            AssertionError("prepare must not merge")
+        ),
+    )
 
-    with pytest.raises(ReleaseDeliveryError) as raised:
-        runtime.prepare(
-            {
-                "extra_context": "No extra context for this run",
-                "run_id": "11111111-2222-4333-8444-555555555555",
-                "source_revision": SOURCE_SHA,
+    result = runtime.prepare(
+        {
+            "extra_context": "No extra context for this run",
+            "run_id": "11111111-2222-4333-8444-555555555555",
+            "source_revision": SOURCE_SHA,
+        },
+        {
+            "evidence": {
+                "computed_release": {
+                    "changes": {"breaking": [], "features": [], "fixes": []}
+                }
             },
-            {
-                "evidence": {
-                    "computed_release": {
-                        "changes": {"breaking": [], "features": [], "fixes": []}
-                    }
-                },
-                "outputs": {"candidate": {"version": "0.7.0"}},
-            },
-        )
+            "outputs": {"candidate": {"version": "0.7.0"}},
+        },
+    )
 
-    assert raised.value.external_state_changed is True
-    assert raised.value.evidence["external_state_changed"] is True
-    assert raised.value.evidence["merge_confirmed"] is merge_confirmed
-    assert raised.value.evidence["release_pr_number"] == 182
-    assert raised.value.evidence["rollback_completed"] is False
+    assert result["candidate"] == {
+        "source_revision": CANDIDATE_SHA,
+        "version": "0.7.0",
+    }
+    assert result["release_pr"] == {
+        "base_source_revision": SOURCE_SHA,
+        "candidate_version": "0.7.0",
+        "head_revision": CANDIDATE_SHA,
+        "head_tree_revision": CANDIDATE_TREE,
+        "merged": False,
+        "number": 182,
+        "source_revision": CANDIDATE_SHA,
+        "url": "https://github.com/knaisoma/data-olympus/pull/182",
+    }
+    assert runtime.candidate_revision() == CANDIDATE_SHA
     assert consultations == [
         {
             "agent_identity": "ai-operations-release",
@@ -1063,8 +1294,346 @@ def test_prepare_reports_failed_recovery_evidence_after_merge_boundary(
             "workspace": "data-olympus",
         }
     ]
-    if merge_confirmed:
-        assert raised.value.evidence["merged_revision"] == final_revision
+
+
+def test_deliver_merges_only_after_review_and_proves_exact_tree_transfer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous = "sha256:" + "e" * 64
+    order: list[str] = []
+    controls = {
+        "candidate_revision": CANDIDATE_SHA,
+        "code_quality_state": "configured",
+        "ruleset_fingerprint": "4" * 64,
+    }
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway({"list_tags": []}),
+        command_output=lambda _command, _cwd, _timeout: "",
+    )
+    runtime._prepared = {
+        "raw": {
+            "candidate": {
+                "source_revision": CANDIDATE_SHA,
+                "version": "0.7.0",
+            },
+            "release_pr": {
+                "base_source_revision": SOURCE_SHA,
+                "head_revision": CANDIDATE_SHA,
+                "head_tree_revision": CANDIDATE_TREE,
+                "number": 182,
+            },
+            "rollback_point": {"digest": previous},
+        },
+        "release_controls": controls,
+    }
+    monkeypatch.setattr(
+        runtime,
+        "_wait_pull_request",
+        lambda _number, _head, _base: (
+            order.append("controls")
+            or {
+                "checks": {},
+                "controls": controls,
+                "pull": {},
+            }
+        ),
+    )
+    remote_revisions = iter([SOURCE_SHA, DELIVERY_SHA])
+    monkeypatch.setattr(
+        runtime,
+        "remote_main_revision",
+        lambda: next(remote_revisions),
+    )
+    monkeypatch.setattr(runtime, "source_revision", lambda: CANDIDATE_SHA)
+    monkeypatch.setattr(
+        runtime,
+        "_tree_revision",
+        lambda revision: (
+            order.append(f"tree:{revision}") or CANDIDATE_TREE
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_parent_revisions",
+        lambda revision: (
+            order.append(f"parents:{revision}") or [SOURCE_SHA]
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_merge_exact",
+        lambda _number, _version, _head: (
+            order.append("merge")
+            or {"merged": True, "sha": DELIVERY_SHA}
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_final_local_gates",
+        lambda revision, version: (
+            order.append("final-gates")
+            or {
+                "ci": {"all_success": True, "missing_required": []},
+                "security": {"exit_code": 0},
+                "tests": {"source_revision": revision, "passed": True},
+                "version_free": {"version": version, "free": True},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_workflow_run",
+        lambda name, revision, _inputs, **_kwargs: (
+            order.append(f"workflow:{name}")
+            or {
+                "conclusion": "success",
+                "run_id": len(order),
+                "source_revision": revision,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_candidate_publication",
+        lambda revision, _version, tag: {
+            "candidate_tag": tag,
+            "image_digest": DIGEST,
+            "source_revision": revision,
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_stable_publication",
+        lambda revision, version: {
+            "pypi_version": version,
+            "source_revision": revision,
+        },
+    )
+    monkeypatch.setattr(runtime, "_registry_digest", lambda _tag: DIGEST)
+    monkeypatch.setattr(
+        runtime,
+        "_apply_digest",
+        lambda _digest, **_kwargs: {
+            "keel_policy": "never",
+            "rollout_complete": True,
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_service_acceptance",
+        lambda: {
+            "enforcement": True,
+            "healthy": True,
+            "mcp_search": True,
+            "ready": True,
+        },
+    )
+
+    result = runtime.deliver(
+        {},
+        {},
+        {},
+        {
+            "status": "pass",
+            "evidence": {
+                "reviewer_family": "claude",
+                "source_revision": CANDIDATE_SHA,
+            },
+        },
+    )
+
+    assert result["candidate"]["source_revision"] == DELIVERY_SHA
+    assert result["delivery_proof"] == {
+        "admitted_revision": SOURCE_SHA,
+        "approved_candidate_revision": CANDIDATE_SHA,
+        "delivery_revision": DELIVERY_SHA,
+        "delivery_tree_revision": CANDIDATE_TREE,
+        "merge_confirmed": True,
+        "reviewed_tree_revision": CANDIDATE_TREE,
+        "sole_parent_revision": SOURCE_SHA,
+    }
+    assert order.index("controls") < order.index("merge")
+    assert order.index("merge") < order.index(f"tree:{DELIVERY_SHA}")
+    assert order.index(f"tree:{DELIVERY_SHA}") < order.index("final-gates")
+    assert order.index("final-gates") < order.index("workflow:rc-publish.yml")
+
+
+def test_delivery_blocks_ruleset_drift_without_attempting_merge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway({"list_tags": []}),
+    )
+    reviewed = _prime_approved_delivery(
+        runtime,
+        monkeypatch,
+        "sha256:" + "e" * 64,
+    )
+    changed_controls = {"ruleset_fingerprint": "9" * 64}
+    monkeypatch.setattr(
+        runtime,
+        "_wait_pull_request",
+        lambda *_arguments: {
+            "checks": {},
+            "controls": changed_controls,
+            "pull": {},
+        },
+    )
+    merge_attempted = False
+
+    def merge(**_arguments):
+        nonlocal merge_attempted
+        merge_attempted = True
+        return DELIVERY_SHA, {}
+
+    monkeypatch.setattr(runtime, "_merge_and_prove_delivery", merge)
+
+    with pytest.raises(ValueError, match="controls changed"):
+        runtime.deliver({}, {}, {}, reviewed)
+
+    assert merge_attempted is False
+
+
+def test_merge_proof_rejects_a_different_delivery_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway(),
+        command_output=lambda _command, _cwd, _timeout: "",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_merge_exact",
+        lambda *_arguments: {"merged": True, "sha": DELIVERY_SHA},
+    )
+    monkeypatch.setattr(runtime, "remote_main_revision", lambda: DELIVERY_SHA)
+    monkeypatch.setattr(
+        runtime,
+        "_parent_revisions",
+        lambda _revision: [SOURCE_SHA],
+    )
+    monkeypatch.setattr(runtime, "_tree_revision", lambda _revision: "8" * 40)
+
+    with pytest.raises(ReleaseDeliveryError, match="tree does not match") as raised:
+        runtime._merge_and_prove_delivery(
+            number=182,
+            version="0.7.0",
+            head_revision=CANDIDATE_SHA,
+            head_tree_revision=CANDIDATE_TREE,
+            base_revision=SOURCE_SHA,
+        )
+
+    assert raised.value.evidence["merge_confirmed"] is True
+    assert raised.value.evidence["merged_revision"] == DELIVERY_SHA
+
+
+def test_ambiguous_merge_response_reconciles_only_the_same_confirmed_pull(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = StubGateway(
+        {
+            "pull_request_read": {
+                "base": {"sha": SOURCE_SHA},
+                "head": {"sha": CANDIDATE_SHA},
+                "merge_commit_sha": DELIVERY_SHA,
+                "merged": True,
+            }
+        }
+    )
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=gateway,
+        command_output=lambda _command, _cwd, _timeout: "",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_merge_exact",
+        lambda *_arguments: (_ for _ in ()).throw(ValueError("response lost")),
+    )
+    monkeypatch.setattr(runtime, "remote_main_revision", lambda: DELIVERY_SHA)
+    monkeypatch.setattr(
+        runtime,
+        "_parent_revisions",
+        lambda _revision: [SOURCE_SHA],
+    )
+    monkeypatch.setattr(runtime, "_tree_revision", lambda _revision: CANDIDATE_TREE)
+
+    revision, proof = runtime._merge_and_prove_delivery(
+        number=182,
+        version="0.7.0",
+        head_revision=CANDIDATE_SHA,
+        head_tree_revision=CANDIDATE_TREE,
+        base_revision=SOURCE_SHA,
+    )
+
+    assert revision == DELIVERY_SHA
+    assert proof["delivery_revision"] == DELIVERY_SHA
+
+
+def _prime_approved_delivery(
+    runtime: ReleaseRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    previous: str,
+) -> dict[str, object]:
+    controls = {"ruleset_fingerprint": "4" * 64}
+    runtime._prepared = {
+        "raw": {
+            "candidate": {
+                "version": "0.7.0",
+                "source_revision": CANDIDATE_SHA,
+            },
+            "release_pr": {
+                "base_source_revision": SOURCE_SHA,
+                "head_revision": CANDIDATE_SHA,
+                "head_tree_revision": CANDIDATE_TREE,
+                "number": 182,
+            },
+            "rollback_point": {"digest": previous},
+        },
+        "release_controls": controls,
+    }
+    monkeypatch.setattr(
+        runtime,
+        "_wait_pull_request",
+        lambda *_arguments: {"checks": {}, "controls": controls, "pull": {}},
+    )
+    monkeypatch.setattr(runtime, "remote_main_revision", lambda: SOURCE_SHA)
+    monkeypatch.setattr(runtime, "source_revision", lambda: CANDIDATE_SHA)
+    monkeypatch.setattr(runtime, "command", lambda *_arguments, **_kwargs: "")
+    monkeypatch.setattr(runtime, "_tree_revision", lambda _revision: CANDIDATE_TREE)
+    proof = {
+        "admitted_revision": SOURCE_SHA,
+        "approved_candidate_revision": CANDIDATE_SHA,
+        "delivery_revision": DELIVERY_SHA,
+        "delivery_tree_revision": CANDIDATE_TREE,
+        "merge_confirmed": True,
+        "reviewed_tree_revision": CANDIDATE_TREE,
+        "sole_parent_revision": SOURCE_SHA,
+    }
+    monkeypatch.setattr(
+        runtime,
+        "_merge_and_prove_delivery",
+        lambda **_arguments: (DELIVERY_SHA, proof),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_final_local_gates",
+        lambda _revision, _version: {},
+    )
+    return {
+        "status": "pass",
+        "evidence": {
+            "reviewer_family": "claude",
+            "source_revision": CANDIDATE_SHA,
+        },
+    }
 
 
 @pytest.mark.parametrize("dispatch_started", [False, True])
@@ -1075,12 +1644,7 @@ def test_delivery_failure_classification_tracks_the_workflow_dispatch_boundary(
 ) -> None:
     previous = "sha256:" + "e" * 64
     runtime = ReleaseRuntime(tmp_path, gateway=StubGateway({"list_tags": []}))
-    runtime._prepared = {
-        "raw": {
-            "candidate": {"version": "0.7.0", "source_revision": SOURCE_SHA},
-            "rollback_point": {"digest": previous},
-        }
-    }
+    reviewed = _prime_approved_delivery(runtime, monkeypatch, previous)
 
     def workflow_run(
         _name: str,
@@ -1097,7 +1661,7 @@ def test_delivery_failure_classification_tracks_the_workflow_dispatch_boundary(
     monkeypatch.setattr(runtime, "_workflow_run", workflow_run)
 
     with pytest.raises(ValueError) as raised:
-        runtime.deliver({}, {}, {}, {})
+        runtime.deliver({}, {}, {}, reviewed)
 
     if dispatch_started:
         assert isinstance(raised.value, ReleaseDeliveryError)
@@ -1118,12 +1682,7 @@ def test_partial_delivery_failure_restores_the_exact_previous_digest(
     previous = "sha256:" + "e" * 64
     gateway = StubGateway({"list_tags": []})
     runtime = ReleaseRuntime(tmp_path, gateway=gateway)
-    runtime._prepared = {
-        "raw": {
-            "candidate": {"version": "0.7.0", "source_revision": SOURCE_SHA},
-            "rollback_point": {"digest": previous},
-        }
-    }
+    reviewed = _prime_approved_delivery(runtime, monkeypatch, previous)
     applied: list[str] = []
     acceptance = {
         "documentation": True,
@@ -1173,7 +1732,7 @@ def test_partial_delivery_failure_restores_the_exact_previous_digest(
     )
 
     with pytest.raises(ReleaseDeliveryError, match="stable failed") as raised:
-        runtime.deliver({}, {}, {}, {})
+        runtime.deliver({}, {}, {}, reviewed)
 
     assert applied == [DIGEST, previous]
     assert raised.value.external_state_changed is True

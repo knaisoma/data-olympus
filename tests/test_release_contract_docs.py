@@ -71,6 +71,26 @@ def test_versioning_rule_uses_one_linear_release_change() -> None:
     assert "feature/<release-epic-id>" not in routine
 
 
+def test_release_routine_reviews_before_merge_and_proves_content_transfer() -> None:
+    routine = _read(".rules/release-routine.md")
+    normalized = " ".join(routine.split())
+
+    for required in (
+        "Keep it open and unmerged",
+        "Code Quality must be configured",
+        "review of `H`",
+        "expected head `H`",
+        "sole parent `B`",
+        "tree exactly equals reviewed tree `T`",
+        "entire GitHub ruleset",
+        "direct continuation",
+        "candidate fields remain `H`",
+    ):
+        assert required in normalized
+    assert "review of the exact final SHA" not in normalized
+    assert "bypass only the native approval" not in normalized
+
+
 def test_release_planning_is_outcome_based() -> None:
     planning = _read(".rules/release-planning.md")
 

@@ -15,6 +15,7 @@ from scripts.operations.release import (
 
 SOURCE_SHA = "a" * 40
 CANDIDATE_SHA = "f" * 40
+DELIVERY_SHA = "7" * 40
 BRANCH_SHA = "9" * 40
 AUTHORITY_SHA = "b" * 40
 CONTRACT_SHA = "c" * 64
@@ -58,6 +59,22 @@ def _admission_input(*, releasable: bool = True) -> dict[str, object]:
                 "breaking": [],
             },
         },
+    }
+
+
+def _release_controls(candidate_revision: str) -> dict[str, object]:
+    return {
+        "candidate_revision": candidate_revision,
+        "check_evidence": {"all_success": True, "missing_required": []},
+        "code_quality_check": "CodeQL - Code Quality",
+        "code_quality_state": "configured",
+        "codeql_analysis_hash": "4" * 64,
+        "codeql_languages": ["actions", "javascript-typescript", "python"],
+        "open_codeql_alerts": 0,
+        "review_decision": "REVIEW_REQUIRED",
+        "ruleset_fingerprint": "5" * 64,
+        "ruleset_ids": [18080131],
+        "unresolved_review_threads": 0,
     }
 
 
@@ -154,19 +171,21 @@ def test_admission_blocks_unmerged_changed_or_v060_candidate(
     assert reason in result["reason"]
 
 
-def test_prepare_confirms_one_merged_release_pr_and_hashes_extra_context() -> None:
+def test_prepare_confirms_one_unmerged_release_candidate_and_hashes_extra_context() -> None:
+    candidate = {**_candidate(), "source_revision": CANDIDATE_SHA}
     result = evaluate_stage(
         "prepare",
         {
-            "candidate": _candidate(),
+            "candidate": candidate,
+            "release_controls": _release_controls(CANDIDATE_SHA),
             "extra_context": DEFAULT_EXTRA_CONTEXT,
             "changelog": {
-                "source_revision": SOURCE_SHA,
+                "source_revision": CANDIDATE_SHA,
                 "content_hash": "1" * 64,
             },
             "security": {"exit_code": 0, "report_hash": "2" * 64},
             "tests": {
-                "source_revision": SOURCE_SHA,
+                "source_revision": CANDIDATE_SHA,
                 "passed": True,
                 "evidence_hash": "3" * 64,
             },
@@ -178,10 +197,11 @@ def test_prepare_confirms_one_merged_release_pr_and_hashes_extra_context() -> No
             "release_pr": {
                 "number": 178,
                 "url": "https://github.com/knaisoma/data-olympus/pull/178",
-                "merged": True,
-                "base_source_revision": "8" * 40,
-                "head_revision": BRANCH_SHA,
-                "source_revision": SOURCE_SHA,
+                "merged": False,
+                "base_source_revision": SOURCE_SHA,
+                "head_revision": CANDIDATE_SHA,
+                "head_tree_revision": BRANCH_SHA,
+                "source_revision": CANDIDATE_SHA,
                 "candidate_version": "0.6.1",
             },
         },
@@ -194,19 +214,23 @@ def test_prepare_confirms_one_merged_release_pr_and_hashes_extra_context() -> No
     assert len(context["sha256"]) == 64
     assert DEFAULT_EXTRA_CONTEXT not in json.dumps(result)
     assert result["outputs"]["release_pr_number"] == 178
+    assert result["evidence"]["release_pr_head_tree_revision"] == BRANCH_SHA
+    assert result["evidence"]["ruleset_fingerprint"] == "5" * 64
 
 
-def test_prepare_blocks_when_the_release_pr_is_not_merged() -> None:
+def test_prepare_blocks_when_the_release_pr_was_merged_before_review() -> None:
+    candidate = {**_candidate(), "source_revision": CANDIDATE_SHA}
     input_document = {
-        "candidate": _candidate(),
+        "candidate": candidate,
+        "release_controls": _release_controls(CANDIDATE_SHA),
         "extra_context": DEFAULT_EXTRA_CONTEXT,
         "changelog": {
-            "source_revision": SOURCE_SHA,
+            "source_revision": CANDIDATE_SHA,
             "content_hash": "1" * 64,
         },
         "security": {"exit_code": 0, "report_hash": "2" * 64},
         "tests": {
-            "source_revision": SOURCE_SHA,
+            "source_revision": CANDIDATE_SHA,
             "passed": True,
             "evidence_hash": "3" * 64,
         },
@@ -218,10 +242,11 @@ def test_prepare_blocks_when_the_release_pr_is_not_merged() -> None:
         "release_pr": {
             "number": 178,
             "url": "https://github.com/knaisoma/data-olympus/pull/178",
-            "merged": False,
-            "base_source_revision": "8" * 40,
-            "head_revision": BRANCH_SHA,
-            "source_revision": SOURCE_SHA,
+            "merged": True,
+            "base_source_revision": SOURCE_SHA,
+            "head_revision": CANDIDATE_SHA,
+            "head_tree_revision": BRANCH_SHA,
+            "source_revision": CANDIDATE_SHA,
             "candidate_version": "0.6.1",
         },
     }
@@ -229,7 +254,7 @@ def test_prepare_blocks_when_the_release_pr_is_not_merged() -> None:
     result = evaluate_stage("prepare", input_document)
 
     assert result["status"] == "blocked"
-    assert "release_pr.merged" in result["reason"]
+    assert "must remain unmerged" in result["reason"]
 
 
 def test_validate_requires_unchanged_candidate_and_all_exact_gates() -> None:
@@ -382,6 +407,15 @@ def test_deliver_accepts_only_existing_workflows_bound_to_candidate() -> None:
         {
             "candidate": _candidate(),
             "current_source_revision": SOURCE_SHA,
+            "delivery_proof": {
+                "admitted_revision": "8" * 40,
+                "approved_candidate_revision": CANDIDATE_SHA,
+                "delivery_revision": SOURCE_SHA,
+                "delivery_tree_revision": BRANCH_SHA,
+                "merge_confirmed": True,
+                "reviewed_tree_revision": BRANCH_SHA,
+                "sole_parent_revision": "8" * 40,
+            },
             "workflows": [
                 {
                     "name": "rc-publish.yml",
@@ -430,6 +464,15 @@ def test_deliver_fails_stable_promotion_without_verified_canary() -> None:
     input_document = {
         "candidate": _candidate(),
         "current_source_revision": SOURCE_SHA,
+        "delivery_proof": {
+            "admitted_revision": "8" * 40,
+            "approved_candidate_revision": CANDIDATE_SHA,
+            "delivery_revision": SOURCE_SHA,
+            "delivery_tree_revision": BRANCH_SHA,
+            "merge_confirmed": True,
+            "reviewed_tree_revision": BRANCH_SHA,
+            "sole_parent_revision": "8" * 40,
+        },
         "workflows": [
             {
                 "name": "rc-publish.yml",
@@ -786,7 +829,8 @@ def _release_dependencies(*, source_revision: str = SOURCE_SHA) -> dict[str, obj
         "source_revision": CANDIDATE_SHA,
     }
     artifact_candidate = {
-        **prepared_candidate,
+        "version": "0.6.1",
+        "source_revision": DELIVERY_SHA,
         "candidate_tag": "0.6.1-rc.1",
         "image_digest": IMAGE_DIGEST,
     }
@@ -795,6 +839,7 @@ def _release_dependencies(*, source_revision: str = SOURCE_SHA) -> dict[str, obj
         state["head"] = CANDIDATE_SHA
         return {
             "candidate": prepared_candidate,
+            "release_controls": _release_controls(CANDIDATE_SHA),
             "extra_context": run["extra_context"],
             "changelog": {
                 "source_revision": CANDIDATE_SHA,
@@ -814,9 +859,10 @@ def _release_dependencies(*, source_revision: str = SOURCE_SHA) -> dict[str, obj
             "release_pr": {
                 "number": 178,
                 "url": "https://github.com/knaisoma/data-olympus/pull/178",
-                "merged": True,
+                "merged": False,
                 "base_source_revision": SOURCE_SHA,
-                "head_revision": BRANCH_SHA,
+                "head_revision": CANDIDATE_SHA,
+                "head_tree_revision": BRANCH_SHA,
                 "source_revision": CANDIDATE_SHA,
                 "candidate_version": "0.6.1",
             },
@@ -857,30 +903,39 @@ def _release_dependencies(*, source_revision: str = SOURCE_SHA) -> dict[str, obj
         },
         "deliver": lambda _run, _admitted, _prepared, _review: {
             "candidate": artifact_candidate,
-            "current_source_revision": CANDIDATE_SHA,
+            "current_source_revision": DELIVERY_SHA,
+            "delivery_proof": {
+                "admitted_revision": SOURCE_SHA,
+                "approved_candidate_revision": CANDIDATE_SHA,
+                "delivery_revision": DELIVERY_SHA,
+                "delivery_tree_revision": BRANCH_SHA,
+                "merge_confirmed": True,
+                "reviewed_tree_revision": BRANCH_SHA,
+                "sole_parent_revision": SOURCE_SHA,
+            },
             "workflows": [
                 {
                     "name": "rc-publish.yml",
                     "conclusion": "success",
-                    "source_revision": CANDIDATE_SHA,
+                    "source_revision": DELIVERY_SHA,
                     "candidate_tag": "0.6.1-rc.1",
                 },
                 {
                     "name": "tag-release.yml",
                     "conclusion": "success",
-                    "source_revision": CANDIDATE_SHA,
+                    "source_revision": DELIVERY_SHA,
                     "candidate_tag": "0.6.1-rc.1",
                 },
                 {
                     "name": "set-channel.yml",
                     "conclusion": "success",
-                    "source_revision": CANDIDATE_SHA,
+                    "source_revision": DELIVERY_SHA,
                     "source_tag": "v0.6.1",
                 },
             ],
             "canary": {
                 "candidate_tag": "0.6.1-rc.1",
-                "source_revision": CANDIDATE_SHA,
+                "source_revision": DELIVERY_SHA,
                 "digest": IMAGE_DIGEST,
                 "keel_policy": "never",
                 "rollout_complete": True,
@@ -892,7 +947,7 @@ def _release_dependencies(*, source_revision: str = SOURCE_SHA) -> dict[str, obj
             "deployment": {
                 "keel_policy": "never",
                 "image_digest": IMAGE_DIGEST,
-                "source_revision": CANDIDATE_SHA,
+                "source_revision": DELIVERY_SHA,
                 "rollout_complete": True,
             },
         },
@@ -900,15 +955,15 @@ def _release_dependencies(*, source_revision: str = SOURCE_SHA) -> dict[str, obj
             "candidate": artifact_candidate,
             "github_release": {
                 "tag": "v0.6.1",
-                "source_revision": CANDIDATE_SHA,
+                "source_revision": DELIVERY_SHA,
             },
             "pypi": {
                 "version": "0.6.1",
-                "provenance_source_revision": CANDIDATE_SHA,
+                "provenance_source_revision": DELIVERY_SHA,
             },
             "image": {"tag": "v0.6.1", "digest": IMAGE_DIGEST},
             "deployment": {
-                "source_revision": CANDIDATE_SHA,
+                "source_revision": DELIVERY_SHA,
                 "digest": IMAGE_DIGEST,
                 "healthy": True,
                 "ready": True,
@@ -948,10 +1003,14 @@ def test_one_release_command_emits_the_exact_runner_protocol() -> None:
         "type": "result",
         "sequence": 7,
         "status": "delivered",
-        "reason": "release 0.6.1 and kn dev match the reviewed source",
+        "reason": "release 0.6.1 and kn dev match the approved release content",
         "evidence": {
+            "admitted_revision": SOURCE_SHA,
+            "approved_candidate_revision": CANDIDATE_SHA,
+            "delivery_revision": DELIVERY_SHA,
+            "delivery_tree_revision": BRANCH_SHA,
             "published_version": "0.6.1",
-            "source_revision": CANDIDATE_SHA,
+            "source_revision": DELIVERY_SHA,
             "version": "0.6.1",
             "digest": IMAGE_DIGEST,
             "health": "verified",

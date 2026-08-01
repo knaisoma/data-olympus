@@ -51,6 +51,15 @@ REQUIRED_MAIN_CHECKS = {
     "doc-consistency-guard",
     "test",
 }
+CODE_QUALITY_CHECK_NAMES = {
+    "CodeQL - Code Quality",
+    "CodeQL - Code Quality / Analyze",
+}
+EXPECTED_CODEQL_LANGUAGES = {
+    "actions",
+    "javascript-typescript",
+    "python",
+}
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -356,6 +365,257 @@ def _check_matrix_concluded(
         and bool(run.get("conclusion"))
         for run in check_runs
     )
+
+
+def governed_release_controls(
+    *,
+    admitted_revision: str,
+    candidate_revision: str,
+    checks: dict[str, Any],
+    code_quality_setup: dict[str, Any],
+    codeql_alerts: list[dict[str, Any]],
+    codeql_analyses: list[dict[str, Any]],
+    review_state: dict[str, Any],
+    rulesets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Rederive every control replaced by the deliberate ruleset bypass."""
+    if _SHA40.fullmatch(admitted_revision) is None:
+        raise ValueError("admitted release revision is invalid")
+    if _SHA40.fullmatch(candidate_revision) is None:
+        raise ValueError("release candidate revision is invalid")
+
+    if code_quality_setup.get("state") != "configured":
+        raise ValueError("GitHub Code Quality is not configured")
+    quality_languages = code_quality_setup.get("languages")
+    if type(quality_languages) is not list or not {
+        "javascript-typescript",
+        "python",
+    } <= set(quality_languages):
+        raise ValueError("GitHub Code Quality languages are incomplete")
+
+    check_evidence = completed_check_evidence(
+        checks,
+        required=REQUIRED_PULL_REQUEST_CHECKS,
+    )
+    check_evidence = {
+        **check_evidence,
+        "checks": sorted(
+            check_evidence["checks"],
+            key=lambda check: str(check.get("name")),
+        ),
+    }
+    check_runs = checks["check_runs"]
+    quality_checks = [
+        run
+        for run in check_runs
+        if run.get("name") in CODE_QUALITY_CHECK_NAMES
+    ]
+    if len(quality_checks) != 1:
+        raise ValueError("exact GitHub Code Quality check is unavailable")
+    quality_check = quality_checks[0]
+    if (
+        quality_check.get("status") != "completed"
+        or quality_check.get("conclusion") != "success"
+    ):
+        raise ValueError("GitHub Code Quality check did not succeed")
+
+    pull = _object(
+        _object(
+            _object(review_state.get("data"), "review state data").get(
+                "repository"
+            ),
+            "review state repository",
+        ).get("pullRequest"),
+        "review state pull request",
+    )
+    if (
+        pull.get("baseRefOid") != admitted_revision
+        or pull.get("headRefOid") != candidate_revision
+        or pull.get("isDraft") is not False
+        or pull.get("merged") is not False
+        or pull.get("state") != "OPEN"
+    ):
+        raise ValueError("release pull request identity changed")
+    if (
+        pull.get("mergeStateStatus") != "BLOCKED"
+        or pull.get("reviewDecision") != "REVIEW_REQUIRED"
+    ):
+        raise ValueError("release pull request review state changed")
+    threads = _object(pull.get("reviewThreads"), "review threads")
+    page_info = _object(threads.get("pageInfo"), "review thread page info")
+    nodes = threads.get("nodes")
+    if (
+        page_info.get("hasNextPage") is not False
+        or type(nodes) is not list
+        or any(type(node) is not dict for node in nodes)
+    ):
+        raise ValueError("release review thread evidence is incomplete")
+    unresolved_threads = sum(node.get("isResolved") is not True for node in nodes)
+    if unresolved_threads:
+        raise ValueError("release pull request has unresolved review threads")
+
+    if type(codeql_alerts) is not list or codeql_alerts:
+        raise ValueError("release pull request has open CodeQL alerts")
+    if type(codeql_analyses) is not list:
+        raise ValueError("CodeQL analysis evidence is invalid")
+    matched_analyses = [
+        analysis
+        for analysis in codeql_analyses
+        if type(analysis) is dict
+        and analysis.get("commit_sha") == candidate_revision
+        and analysis.get("analysis_key")
+        == "dynamic/github-code-scanning/codeql:analyze"
+    ]
+    languages = {
+        str(analysis.get("category", "")).removeprefix("/language:")
+        for analysis in matched_analyses
+    }
+    if languages != EXPECTED_CODEQL_LANGUAGES:
+        raise ValueError("exact candidate CodeQL language matrix is incomplete")
+    if any(
+        analysis.get("error") not in {None, ""}
+        or analysis.get("results_count") != 0
+        for analysis in matched_analyses
+    ):
+        raise ValueError("exact candidate CodeQL analysis did not pass")
+
+    active_rulesets = []
+    for ruleset in rulesets:
+        if type(ruleset) is not dict:
+            raise ValueError("GitHub ruleset evidence is invalid")
+        conditions = ruleset.get("conditions")
+        ref_name = conditions.get("ref_name") if type(conditions) is dict else None
+        includes = ref_name.get("include") if type(ref_name) is dict else None
+        if (
+            ruleset.get("target") == "branch"
+            and ruleset.get("enforcement") == "active"
+            and type(includes) is list
+            and "~DEFAULT_BRANCH" in includes
+        ):
+            active_rulesets.append(ruleset)
+    if not active_rulesets:
+        raise ValueError("active default branch ruleset is unavailable")
+    all_rules = [
+        rule
+        for ruleset in active_rulesets
+        for rule in ruleset.get("rules", [])
+        if type(rule) is dict
+    ]
+    rule_types = {rule.get("type") for rule in all_rules}
+    for required_type, description in (
+        ("deletion", "deletion protection"),
+        ("non_fast_forward", "non fast forward protection"),
+        ("required_linear_history", "required linear history"),
+    ):
+        if required_type not in rule_types:
+            raise ValueError(f"GitHub ruleset lost {description}")
+
+    pull_rules = [rule for rule in all_rules if rule.get("type") == "pull_request"]
+    if not any(
+        type(rule.get("parameters")) is dict
+        and rule["parameters"].get("required_approving_review_count", 0) >= 1
+        and rule["parameters"].get("require_code_owner_review") is True
+        and rule["parameters"].get("require_last_push_approval") is True
+        and rule["parameters"].get("required_review_thread_resolution") is True
+        for rule in pull_rules
+    ):
+        raise ValueError("GitHub pull request review rules changed")
+    status_rules = [
+        rule for rule in all_rules if rule.get("type") == "required_status_checks"
+    ]
+    if not any(
+        type(rule.get("parameters")) is dict
+        and any(
+            type(item) is dict and item.get("context") == "test"
+            for item in rule["parameters"].get("required_status_checks", [])
+        )
+        for rule in status_rules
+    ):
+        raise ValueError("GitHub ruleset lost the required test status")
+    scanning_rules = [rule for rule in all_rules if rule.get("type") == "code_scanning"]
+    if not any(
+        type(rule.get("parameters")) is dict
+        and any(
+            type(tool) is dict
+            and tool.get("tool") == "CodeQL"
+            and tool.get("security_alerts_threshold") == "high_or_higher"
+            and tool.get("alerts_threshold") == "errors"
+            for tool in rule["parameters"].get("code_scanning_tools", [])
+        )
+        for rule in scanning_rules
+    ):
+        raise ValueError("GitHub CodeQL ruleset thresholds changed")
+    quality_rules = [rule for rule in all_rules if rule.get("type") == "code_quality"]
+    if not any(
+        type(rule.get("parameters")) is dict
+        and rule["parameters"].get("severity") == "errors"
+        for rule in quality_rules
+    ):
+        raise ValueError("GitHub Code Quality ruleset threshold changed")
+    if not any(
+        ruleset.get("current_user_can_bypass") == "always"
+        and type(ruleset.get("bypass_actors")) is list
+        and any(
+            type(actor) is dict
+            and actor.get("actor_type") == "Team"
+            and actor.get("bypass_mode") == "always"
+            for actor in ruleset["bypass_actors"]
+        )
+        for ruleset in active_rulesets
+    ):
+        raise ValueError("authorized release ruleset bypass is unavailable")
+
+    canonical_rulesets = sorted(
+        (
+            {
+                field: ruleset.get(field)
+                for field in (
+                    "id",
+                    "target",
+                    "source_type",
+                    "source",
+                    "enforcement",
+                    "conditions",
+                    "rules",
+                    "bypass_actors",
+                    "current_user_can_bypass",
+                )
+            }
+            for ruleset in active_rulesets
+        ),
+        key=lambda ruleset: int(ruleset.get("id", 0)),
+    )
+    ruleset_fingerprint = sha256(
+        json.dumps(canonical_rulesets, separators=(",", ":"), sort_keys=True).encode()
+    ).hexdigest()
+    analysis_summary = sorted(
+        (
+            {
+                "analysis_key": analysis["analysis_key"],
+                "category": analysis["category"],
+                "commit_sha": analysis["commit_sha"],
+                "error": analysis.get("error", ""),
+                "results_count": analysis["results_count"],
+            }
+            for analysis in matched_analyses
+        ),
+        key=lambda analysis: analysis["category"],
+    )
+    return {
+        "candidate_revision": candidate_revision,
+        "check_evidence": check_evidence,
+        "code_quality_check": quality_check["name"],
+        "code_quality_state": "configured",
+        "codeql_analysis_hash": sha256(
+            json.dumps(analysis_summary, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest(),
+        "codeql_languages": sorted(languages),
+        "open_codeql_alerts": 0,
+        "review_decision": pull["reviewDecision"],
+        "ruleset_fingerprint": ruleset_fingerprint,
+        "ruleset_ids": sorted(ruleset["id"] for ruleset in active_rulesets),
+        "unresolved_review_threads": unresolved_threads,
+    }
 
 
 def _asset_names(release: dict[str, Any]) -> set[str]:
@@ -691,11 +951,40 @@ class ReleaseRuntime:
             raise ValueError("managed worktree source revision is invalid")
         return revision
 
-    def candidate_revision(self) -> str:
+    def remote_main_revision(self) -> str:
         revision = self.command(["git", "rev-parse", "origin/main"])
         if _SHA40.fullmatch(revision) is None:
             raise ValueError("remote main revision is invalid")
         return revision
+
+    def candidate_revision(self) -> str:
+        if self._prepared is None:
+            return self.source_revision()
+        candidate = _object(self._prepared["raw"].get("candidate"), "candidate")
+        revision = candidate.get("source_revision")
+        if type(revision) is not str or _SHA40.fullmatch(revision) is None:
+            raise ValueError("prepared candidate revision is invalid")
+        return revision
+
+    def _tree_revision(self, revision: str) -> str:
+        if _SHA40.fullmatch(revision) is None:
+            raise ValueError("git tree source revision is invalid")
+        tree = self.command(["git", "rev-parse", f"{revision}^{{tree}}"])
+        if _SHA40.fullmatch(tree) is None:
+            raise ValueError("git tree revision is invalid")
+        return tree
+
+    def _parent_revisions(self, revision: str) -> list[str]:
+        if _SHA40.fullmatch(revision) is None:
+            raise ValueError("git parent source revision is invalid")
+        parts = self.command(
+            ["git", "rev-list", "--parents", "-n", "1", revision]
+        ).split()
+        if not parts or parts[0] != revision or any(
+            _SHA40.fullmatch(part) is None for part in parts
+        ):
+            raise ValueError("git parent evidence is invalid")
+        return parts[1:]
 
     def collect_admission(self, run_input: dict[str, Any]) -> dict[str, Any]:
         admitted = run_input.get("source_revision")
@@ -704,7 +993,7 @@ class ReleaseRuntime:
         self.command(["git", "fetch", "--tags", "origin", "main"], timeout=120)
         if self.source_revision() != admitted:
             raise ValueError("managed worktree changed after admission")
-        remote_main = self.candidate_revision()
+        remote_main = self.remote_main_revision()
         if remote_main != admitted:
             raise ValueError("remote main changed after admission")
         raw_computation = self.command(
@@ -732,7 +1021,134 @@ class ReleaseRuntime:
             "computed_release": computation,
         }
 
-    def _wait_pull_request(self, number: int, head_revision: str) -> dict[str, Any]:
+    def _github_json(self, arguments: list[str], *, timeout: int = 60) -> Any:
+        raw = self.command(["gh", "api", *arguments], timeout=timeout)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError("GitHub API returned invalid JSON") from error
+
+    @staticmethod
+    def _flatten_pages(value: Any, name: str) -> list[dict[str, Any]]:
+        if type(value) is not list:
+            raise ValueError(f"{name} is invalid")
+        pages = value if all(type(page) is list for page in value) else [value]
+        flattened = [item for page in pages for item in page]
+        if any(type(item) is not dict for item in flattened):
+            raise ValueError(f"{name} is invalid")
+        return flattened
+
+    def _review_state(self, number: int) -> dict[str, Any]:
+        query = (
+            "query($owner:String!,$repo:String!,$number:Int!){"
+            "repository(owner:$owner,name:$repo){pullRequest(number:$number){"
+            "baseRefOid headRefOid isDraft mergeStateStatus merged reviewDecision "
+            "state reviewThreads(first:100){totalCount pageInfo{hasNextPage} "
+            "nodes{isResolved}}}}}"
+        )
+        value = self._github_json(
+            [
+                "graphql",
+                "-f",
+                f"query={query}",
+                "-F",
+                f"owner={GITHUB_OWNER}",
+                "-F",
+                f"repo={GITHUB_REPOSITORY}",
+                "-F",
+                f"number={number}",
+            ]
+        )
+        return _object(value, "GitHub pull request review state")
+
+    def _active_rulesets(self) -> list[dict[str, Any]]:
+        summaries = self._github_json(
+            [
+                f"repos/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/rulesets"
+                "?includes_parents=true&targets=branch&per_page=100",
+            ]
+        )
+        if type(summaries) is not list or any(
+            type(summary) is not dict for summary in summaries
+        ):
+            raise ValueError("GitHub ruleset list is invalid")
+        details = []
+        for summary in summaries:
+            ruleset_id = summary.get("id")
+            if type(ruleset_id) is not int:
+                raise ValueError("GitHub ruleset identity is invalid")
+            details.append(
+                _object(
+                    self._github_json(
+                        [
+                            f"repos/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/rulesets/"
+                            f"{ruleset_id}"
+                        ]
+                    ),
+                    "GitHub ruleset",
+                )
+            )
+        return details
+
+    def _collect_release_controls(
+        self,
+        *,
+        number: int,
+        head_revision: str,
+        base_revision: str,
+        checks: dict[str, Any],
+    ) -> dict[str, Any]:
+        setup = _object(
+            self._github_json(
+                [
+                    "-H",
+                    "X-GitHub-Api-Version: 2026-03-10",
+                    f"repos/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/code-quality/setup",
+                ]
+            ),
+            "GitHub Code Quality setup",
+        )
+        analyses = self._flatten_pages(
+            self._github_json(
+                [
+                    "--paginate",
+                    "--slurp",
+                    f"repos/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/"
+                    "code-scanning/analyses?per_page=100",
+                ],
+                timeout=120,
+            ),
+            "CodeQL analyses",
+        )
+        alerts = self._flatten_pages(
+            self._github_json(
+                [
+                    "--paginate",
+                    "--slurp",
+                    f"repos/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/"
+                    f"code-scanning/alerts?state=open&pr={number}&per_page=100",
+                ],
+                timeout=120,
+            ),
+            "CodeQL alerts",
+        )
+        return governed_release_controls(
+            admitted_revision=base_revision,
+            candidate_revision=head_revision,
+            checks=checks,
+            code_quality_setup=setup,
+            codeql_alerts=alerts,
+            codeql_analyses=analyses,
+            review_state=self._review_state(number),
+            rulesets=self._active_rulesets(),
+        )
+
+    def _wait_pull_request(
+        self,
+        number: int,
+        head_revision: str,
+        base_revision: str,
+    ) -> dict[str, Any]:
         last_error = "pull request checks did not appear"
         for _attempt in range(120):
             checks = self.gateway_object(
@@ -771,14 +1187,23 @@ class ReleaseRuntime:
                 },
             )
             head = _object(pull.get("head"), "pull request head")
+            base = _object(pull.get("base"), "pull request base")
             if (
                 head.get("sha") != head_revision
+                or base.get("sha") != base_revision
                 or pull.get("draft") is not False
                 or pull.get("state") != "open"
-                or pull.get("mergeable_state") not in {"clean", "unstable"}
+                or pull.get("merged") is not False
+                or pull.get("mergeable_state") != "blocked"
             ):
                 raise ValueError("release pull request identity or merge state changed")
-            return {"checks": check_evidence, "pull": pull}
+            controls = self._collect_release_controls(
+                number=number,
+                head_revision=head_revision,
+                base_revision=base_revision,
+                checks=checks,
+            )
+            return {"checks": check_evidence, "controls": controls, "pull": pull}
         raise ValueError(last_error)
 
     def _merge_exact(
@@ -1082,90 +1507,30 @@ class ReleaseRuntime:
                 number = int(match.group(1))
         if type(number) is not int or number <= 0:
             raise ValueError("release pull request number is invalid")
-        ready = self._wait_pull_request(number, head_revision)
+        head_tree_revision = self._tree_revision(head_revision)
+        if self._parent_revisions(head_revision) != [admitted]:
+            raise ValueError("release candidate parent does not match admission")
+        ready = self._wait_pull_request(number, head_revision, admitted)
         self.command(["git", "fetch", "origin", "main"], timeout=120)
-        if self.candidate_revision() != admitted:
-            raise ValueError("remote main changed before release merge")
-        try:
-            merged = self._merge_exact(number, version, head_revision)
-        except (OSError, subprocess.SubprocessError, ValueError) as error:
-            raise ReleaseDeliveryError(
-                "release merge outcome could not be confirmed",
-                {
-                    "external_state_changed": True,
-                    "merge_confirmed": False,
-                    "merge_outcome": "unknown",
-                    "release_pr_head_revision": head_revision,
-                    "release_pr_number": number,
-                    "rollback_completed": False,
-                },
-            ) from error
-        final_revision = self._confirmed_merge_revision(
-            merged,
-            number=number,
-            head_revision=head_revision,
-        )
-        try:
-            return self._finish_preparation_after_merge(
-                run_input=run_input,
-                admitted=admitted,
-                version=version,
-                head_revision=head_revision,
-                final_revision=final_revision,
-                number=number,
-                ready=ready,
-                document_evidence=document_evidence,
-            )
-        except (OSError, subprocess.SubprocessError, ValueError) as error:
-            raise ReleaseDeliveryError(
-                str(error),
-                {
-                    "external_state_changed": True,
-                    "merge_confirmed": True,
-                    "merge_outcome": "merged",
-                    "merged_revision": final_revision,
-                    "release_pr_head_revision": head_revision,
-                    "release_pr_number": number,
-                    "rollback_completed": False,
-                },
-            ) from error
-
-    def _finish_preparation_after_merge(
-        self,
-        *,
-        run_input: dict[str, Any],
-        admitted: str,
-        version: str,
-        head_revision: str,
-        final_revision: str,
-        number: int,
-        ready: dict[str, Any],
-        document_evidence: dict[str, Any],
-    ) -> dict[str, Any]:
-        if _SHA40.fullmatch(final_revision) is None:
-            raise ValueError("release merge returned an invalid source revision")
-        self.command(["git", "fetch", "origin", "main"], timeout=120)
-        if self.candidate_revision() != final_revision:
-            raise ValueError("release merge SHA does not match remote main")
-        self.command(["git", "switch", "--detach", final_revision])
-        if self.command(["git", "rev-parse", f"{final_revision}^"]) != admitted:
-            raise ValueError("release squash merge parent does not match admission")
+        if self.remote_main_revision() != admitted:
+            raise ValueError("remote main changed before release review")
         if self.command(["git", "status", "--porcelain"]):
             raise ValueError("release candidate worktree is not clean")
-        gates = self._final_local_gates(final_revision, version)
+        gates = self._final_local_gates(head_revision, version)
         live = self.live_statefulset()
         rollback = deployment_state(live)
         if not rollback["rollout_complete"]:
             raise ValueError("current Data Olympus rollback point is not ready")
-        final_candidate = {
+        review_candidate = {
             "version": version,
-            "source_revision": final_revision,
+            "source_revision": head_revision,
         }
         raw = {
-            "candidate": final_candidate,
+            "candidate": review_candidate,
             "extra_context": run_input["extra_context"],
+            "release_controls": ready["controls"],
             "changelog": {
-                "source_revision": final_revision,
+                "source_revision": head_revision,
                 "content_hash": document_evidence["changelog_hash"],
             },
             "security": gates["security"],
@@ -1178,10 +1543,11 @@ class ReleaseRuntime:
             "release_pr": {
                 "number": number,
                 "url": f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/pull/{number}",
-                "merged": True,
+                "merged": False,
                 "base_source_revision": admitted,
                 "head_revision": head_revision,
-                "source_revision": final_revision,
+                "head_tree_revision": head_tree_revision,
+                "source_revision": head_revision,
                 "candidate_version": version,
             },
         }
@@ -1190,6 +1556,7 @@ class ReleaseRuntime:
             "gates": gates,
             "document_evidence": document_evidence,
             "pull_checks": ready["checks"],
+            "release_controls": ready["controls"],
         }
         return raw
 
@@ -1203,9 +1570,12 @@ class ReleaseRuntime:
             raise ValueError("release preparation evidence is unavailable")
         candidate = _object(self._prepared["raw"]["candidate"], "candidate")
         source_revision = candidate["source_revision"]
+        base_revision = self._prepared["raw"]["release_pr"]["base_source_revision"]
         if (
-            self.candidate_revision() != source_revision
+            self.remote_main_revision() != base_revision
             or self.source_revision() != source_revision
+            or self._tree_revision(source_revision)
+            != self._prepared["raw"]["release_pr"]["head_tree_revision"]
         ):
             raise ValueError("release candidate changed before validation")
         gates = self._prepared["gates"]
@@ -1510,6 +1880,135 @@ class ReleaseRuntime:
             version=version,
         )
 
+    def _reconcile_merge_result(
+        self,
+        *,
+        number: int,
+        head_revision: str,
+        base_revision: str,
+    ) -> str | None:
+        pull = self.gateway_object(
+            "pull_request_read",
+            {
+                "method": "get",
+                "owner": GITHUB_OWNER,
+                "repo": GITHUB_REPOSITORY,
+                "pullNumber": number,
+            },
+        )
+        head = _object(pull.get("head"), "pull request head")
+        base = _object(pull.get("base"), "pull request base")
+        self.command(["git", "fetch", "origin", "main"], timeout=120)
+        remote_main = self.remote_main_revision()
+        if head.get("sha") != head_revision or base.get("sha") != base_revision:
+            raise ReleaseDeliveryError(
+                "release merge reconciliation found changed pull request identity",
+                {
+                    "external_state_changed": True,
+                    "merge_confirmed": False,
+                    "merge_outcome": "unknown",
+                    "release_pr_head_revision": head_revision,
+                    "release_pr_number": number,
+                    "rollback_completed": False,
+                },
+            )
+        merge_revision = pull.get("merge_commit_sha")
+        if (
+            pull.get("merged") is True
+            and type(merge_revision) is str
+            and _SHA40.fullmatch(merge_revision) is not None
+            and remote_main == merge_revision
+        ):
+            return merge_revision
+        if (
+            pull.get("merged") is False
+            and pull.get("state") == "open"
+            and remote_main == base_revision
+        ):
+            return None
+        raise ReleaseDeliveryError(
+            "release merge outcome could not be reconciled",
+            {
+                "external_state_changed": True,
+                "merge_confirmed": False,
+                "merge_outcome": "unknown",
+                "release_pr_head_revision": head_revision,
+                "release_pr_number": number,
+                "rollback_completed": False,
+            },
+        )
+
+    def _merge_and_prove_delivery(
+        self,
+        *,
+        number: int,
+        version: str,
+        head_revision: str,
+        head_tree_revision: str,
+        base_revision: str,
+    ) -> tuple[str, dict[str, Any]]:
+        try:
+            merged = self._merge_exact(number, version, head_revision)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            final_revision = self._reconcile_merge_result(
+                number=number,
+                head_revision=head_revision,
+                base_revision=base_revision,
+            )
+            if final_revision is None:
+                raise ValueError("release pull request did not merge") from None
+        else:
+            try:
+                final_revision = self._confirmed_merge_revision(
+                    merged,
+                    number=number,
+                    head_revision=head_revision,
+                )
+            except ValueError:
+                final_revision = self._reconcile_merge_result(
+                    number=number,
+                    head_revision=head_revision,
+                    base_revision=base_revision,
+                )
+                if final_revision is None:
+                    raise ValueError("release pull request did not merge") from None
+
+        try:
+            self.command(["git", "fetch", "origin", "main"], timeout=120)
+            if self.remote_main_revision() != final_revision:
+                raise ValueError("release merge SHA does not match remote main")
+            if self._parent_revisions(final_revision) != [base_revision]:
+                raise ValueError("release squash merge parent does not match admission")
+            final_tree_revision = self._tree_revision(final_revision)
+            if final_tree_revision != head_tree_revision:
+                raise ValueError("release squash merge tree does not match reviewed content")
+            self.command(["git", "switch", "--detach", final_revision])
+            if self.command(["git", "status", "--porcelain"]):
+                raise ValueError("delivered release worktree is not clean")
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            raise ReleaseDeliveryError(
+                str(error),
+                {
+                    "external_state_changed": True,
+                    "merge_confirmed": True,
+                    "merge_outcome": "merged",
+                    "merged_revision": final_revision,
+                    "release_pr_head_revision": head_revision,
+                    "release_pr_number": number,
+                    "rollback_completed": False,
+                },
+            ) from error
+        proof = {
+            "admitted_revision": base_revision,
+            "approved_candidate_revision": head_revision,
+            "delivery_revision": final_revision,
+            "delivery_tree_revision": final_tree_revision,
+            "merge_confirmed": True,
+            "reviewed_tree_revision": head_tree_revision,
+            "sole_parent_revision": base_revision,
+        }
+        return final_revision, proof
+
     def deliver(
         self,
         _run_input: dict[str, Any],
@@ -1519,9 +2018,59 @@ class ReleaseRuntime:
     ) -> dict[str, Any]:
         if self._prepared is None:
             raise ValueError("release preparation evidence is unavailable")
-        candidate = _object(self._prepared["raw"]["candidate"], "candidate")
-        source_revision = candidate["source_revision"]
-        version = candidate["version"]
+        prepared_candidate = _object(
+            self._prepared["raw"]["candidate"],
+            "candidate",
+        )
+        candidate_revision = prepared_candidate["source_revision"]
+        version = prepared_candidate["version"]
+        review_evidence = _object(_reviewed.get("evidence"), "release review evidence")
+        if (
+            _reviewed.get("status") != "pass"
+            or review_evidence.get("reviewer_family") != "claude"
+            or review_evidence.get("source_revision") != candidate_revision
+        ):
+            raise ValueError("independent candidate approval is unavailable")
+        release_pr = _object(
+            self._prepared["raw"].get("release_pr"),
+            "release pull request",
+        )
+        number = release_pr["number"]
+        base_revision = release_pr["base_source_revision"]
+        head_tree_revision = release_pr["head_tree_revision"]
+        ready = self._wait_pull_request(
+            number,
+            candidate_revision,
+            base_revision,
+        )
+        if ready["controls"] != self._prepared["release_controls"]:
+            raise ValueError("release controls changed after independent review")
+        self.command(["git", "fetch", "origin", "main"], timeout=120)
+        if (
+            self.remote_main_revision() != base_revision
+            or self.source_revision() != candidate_revision
+            or self._tree_revision(candidate_revision) != head_tree_revision
+        ):
+            raise ValueError("release candidate changed before approved merge")
+        source_revision, delivery_proof = self._merge_and_prove_delivery(
+            number=number,
+            version=version,
+            head_revision=candidate_revision,
+            head_tree_revision=head_tree_revision,
+            base_revision=base_revision,
+        )
+        try:
+            final_gates = self._final_local_gates(source_revision, version)
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            raise ReleaseDeliveryError(
+                str(error),
+                {
+                    **delivery_proof,
+                    "external_state_changed": True,
+                    "release_pr_number": number,
+                    "rollback_completed": False,
+                },
+            ) from error
         tags = self.gateway.execute(
             "list_tags",
             {
@@ -1619,13 +2168,15 @@ class ReleaseRuntime:
                 ) from error
             raise
         final_candidate = {
-            **candidate,
+            "source_revision": source_revision,
+            "version": version,
             "candidate_tag": candidate_tag,
             "image_digest": digest,
         }
         raw = {
             "candidate": final_candidate,
             "current_source_revision": source_revision,
+            "delivery_proof": delivery_proof,
             "workflows": [
                 {
                     **rc_receipt,
@@ -1662,6 +2213,7 @@ class ReleaseRuntime:
             "raw": raw,
             "acceptance": stable_acceptance,
             "candidate_publication": publication,
+            "final_gates": final_gates,
             "stable_publication": stable,
         }
         return raw
