@@ -12,6 +12,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* **Accepted the canonical FastMCP pull request receipt.** The automated
+  release routine now derives the new pull request number from the exact
+  repository URL when the gateway receipt omits a separate numeric field.
+
 ## [0.6.0] - 2026-07-18
 
 ### Added

@@ -53,6 +53,9 @@ REQUIRED_MAIN_CHECKS = {
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_PULL_REQUEST_URL = re.compile(
+    r"^https://github[.]com/knaisoma/data-olympus/pull/([1-9][0-9]*)$"
+)
 
 CommandOutput = Callable[[list[str], Path, int], str]
 JsonFetch = Callable[[str, int], dict[str, Any]]
@@ -930,6 +933,11 @@ class ReleaseRuntime:
             },
         )
         number = pull.get("number")
+        if type(number) is not int:
+            url = pull.get("url")
+            match = _PULL_REQUEST_URL.fullmatch(url) if type(url) is str else None
+            if match is not None:
+                number = int(match.group(1))
         if type(number) is not int or number <= 0:
             raise ValueError("release pull request number is invalid")
         ready = self._wait_pull_request(number, head_revision)
