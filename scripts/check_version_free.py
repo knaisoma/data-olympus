@@ -121,22 +121,41 @@ def _gh_json(path: str) -> object:
 
 
 def _on_ghcr(version: str, repo: str) -> bool:
-    """True if the ghcr image tag :vX.Y.Z exists for the org's container package."""
-    org = repo.split("/", 1)[0]
-    versions = _gh_json(
-        f"/orgs/{org}/packages/container/data-olympus/versions?per_page=100"
+    """True if the exact public ghcr image tag :vX.Y.Z exists.
+
+    Only an explicit missing-manifest response means the tag is free. Registry
+    and client failures raise RegistryError so the release remains fail closed.
+    """
+    reference = f"ghcr.io/{repo}:v{version}"
+    command = ["docker", "buildx", "imagetools", "inspect", reference]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RegistryError(f"ghcr query for {reference} timed out") from exc
+    except OSError as exc:
+        raise RegistryError(
+            f"ghcr registry client unavailable for {reference}"
+        ) from exc
+
+    if result.returncode == 0:
+        return True
+
+    diagnostic = f"{result.stdout}\n{result.stderr}".lower()
+    explicit_missing = (
+        "manifest unknown" in diagnostic
+        or "no such manifest" in diagnostic
+        or f"{reference.lower()}: not found" in diagnostic
     )
-    if versions is None:
-        # Package does not exist yet: the version cannot be published there.
+    if explicit_missing:
         return False
-    if not isinstance(versions, list):
-        raise RegistryError("unexpected ghcr package versions payload")
-    wanted = f"v{version}"
-    for entry in versions:
-        tags = (((entry or {}).get("metadata") or {}).get("container") or {}).get("tags") or []
-        if wanted in tags:
-            return True
-    return False
+
+    raise RegistryError(f"ghcr query for {reference} failed")
 
 
 def _on_github(version: str, repo: str) -> bool:

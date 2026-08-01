@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import scripts.check_version_free as version_guard
 from scripts.check_version_free import (
     RegistryError,
     VersionTaken,
@@ -57,6 +58,152 @@ def test_idempotent_rerun_false_when_tag_elsewhere() -> None:
 
 def test_idempotent_rerun_false_when_tag_absent() -> None:
     assert idempotent_rerun("0.5.0", tag_commit=None, head_commit="new456") is False
+
+
+def test_ghcr_checks_the_exact_public_registry_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(command: list[str], **kwargs: object) -> object:
+        calls.append((command, kwargs))
+        return version_guard.subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="Name: ghcr.io/knaisoma/data-olympus:v0.7.0",
+            stderr="",
+        )
+
+    monkeypatch.setattr(version_guard.subprocess, "run", run)
+
+    assert version_guard._on_ghcr("0.7.0", "knaisoma/data-olympus") is True
+    assert calls == [
+        (
+            [
+                "docker",
+                "buildx",
+                "imagetools",
+                "inspect",
+                "ghcr.io/knaisoma/data-olympus:v0.7.0",
+            ],
+            {
+                "capture_output": True,
+                "stdin": version_guard.subprocess.DEVNULL,
+                "text": True,
+                "timeout": 30,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "manifest unknown",
+        "no such manifest",
+        "ERROR: ghcr.io/knaisoma/data-olympus:v0.7.0: not found",
+    ],
+)
+def test_ghcr_treats_only_an_explicit_missing_manifest_as_free(
+    monkeypatch: pytest.MonkeyPatch,
+    diagnostic: str,
+) -> None:
+    monkeypatch.setattr(
+        version_guard.subprocess,
+        "run",
+        lambda command, **_kwargs: version_guard.subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr=diagnostic,
+        ),
+    )
+
+    assert version_guard._on_ghcr("0.7.0", "knaisoma/data-olympus") is False
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        'error getting credentials: executable file not found in $PATH',
+        "",
+    ],
+)
+def test_ghcr_does_not_misclassify_client_or_unknown_errors_as_free(
+    monkeypatch: pytest.MonkeyPatch,
+    diagnostic: str,
+) -> None:
+    monkeypatch.setattr(
+        version_guard.subprocess,
+        "run",
+        lambda command, **_kwargs: version_guard.subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr=diagnostic,
+        ),
+    )
+
+    with pytest.raises(RegistryError):
+        version_guard._on_ghcr("0.7.0", "knaisoma/data-olympus")
+
+
+def test_ghcr_timeout_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def timeout(command: list[str], **_kwargs: object) -> object:
+        raise version_guard.subprocess.TimeoutExpired(command, timeout=30)
+
+    monkeypatch.setattr(version_guard.subprocess, "run", timeout)
+
+    with pytest.raises(RegistryError, match="timed out"):
+        version_guard._on_ghcr("0.7.0", "knaisoma/data-olympus")
+
+
+def test_ghcr_registry_failure_does_not_leak_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive_diagnostic = "denied with credential marker do-not-expose"
+    monkeypatch.setattr(
+        version_guard.subprocess,
+        "run",
+        lambda command, **_kwargs: version_guard.subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr=sensitive_diagnostic,
+        ),
+    )
+
+    with pytest.raises(RegistryError) as captured:
+        version_guard._on_ghcr("0.7.0", "knaisoma/data-olympus")
+    assert sensitive_diagnostic not in str(captured.value)
+
+
+def test_ghcr_fails_closed_when_registry_client_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_executable(*_args: object, **_kwargs: object) -> object:
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(version_guard.subprocess, "run", missing_executable)
+    with pytest.raises(RegistryError, match="registry client unavailable"):
+        version_guard._on_ghcr("0.7.0", "knaisoma/data-olympus")
+
+
+def test_ghcr_fails_closed_on_registry_authorization_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        version_guard.subprocess,
+        "run",
+        lambda command, **_kwargs: version_guard.subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr="denied: requested access to the resource is denied",
+        ),
+    )
+    with pytest.raises(RegistryError, match="ghcr.io/knaisoma/data-olympus:v0.7.0"):
+        version_guard._on_ghcr("0.7.0", "knaisoma/data-olympus")
 
 
 def _patch_registry(
