@@ -737,6 +737,7 @@ class ReleaseRuntime:
                 if type(runs) is list and any(
                     type(run) is dict
                     and run.get("status") == "completed"
+                    and type(run.get("conclusion")) is str
                     and run.get("conclusion") not in {"success", "skipped"}
                     for run in runs
                 ):

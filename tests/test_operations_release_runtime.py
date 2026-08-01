@@ -522,6 +522,54 @@ def test_completed_check_evidence_requires_every_expected_check_and_no_failures(
         )
 
 
+def test_pull_request_waiter_polls_completed_check_without_conclusion(
+    tmp_path: Path,
+) -> None:
+    pending = {
+        "check_runs": [
+            {
+                "name": name,
+                "status": "completed",
+                "conclusion": None if name == "CodeQL" else "success",
+            }
+            for name in sorted(REQUIRED_PULL_REQUEST_CHECKS)
+        ]
+    }
+    completed = {
+        "check_runs": [
+            {
+                "name": name,
+                "status": "completed",
+                "conclusion": "success",
+            }
+            for name in sorted(REQUIRED_PULL_REQUEST_CHECKS)
+        ]
+    }
+    pull = {
+        "draft": False,
+        "head": {"sha": SOURCE_SHA},
+        "mergeable_state": "clean",
+        "state": "open",
+    }
+    gateway = StubGateway(
+        {"pull_request_read": (pending, completed, pull)}
+    )
+    sleeps: list[float] = []
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=gateway,
+        sleep=sleeps.append,
+    )
+
+    result = runtime._wait_pull_request(190, SOURCE_SHA)
+
+    assert result == {"checks": completed_check_evidence(
+        completed,
+        required=REQUIRED_PULL_REQUEST_CHECKS,
+    ), "pull": pull}
+    assert sleeps == [10]
+
+
 def test_deployment_state_parses_gateway_yaml_and_binds_both_images() -> None:
     state = deployment_state(
         f"""
