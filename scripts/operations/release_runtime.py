@@ -1268,8 +1268,18 @@ class ReleaseRuntime:
         scratch.mkdir(parents=True, exist_ok=True)
         outputs: list[str] = []
         commands = [
-            ["uv", "run", "--python", "3.13", "ruff", "check", "."],
-            ["uv", "run", "--python", "3.13", "mypy", "src"],
+            [
+                "uv",
+                "run",
+                "--extra",
+                "dev",
+                "--python",
+                "3.13",
+                "ruff",
+                "check",
+                ".",
+            ],
+            ["uv", "run", "--extra", "dev", "--python", "3.13", "mypy", "src"],
             [
                 "uv",
                 "run",
@@ -1278,7 +1288,7 @@ class ReleaseRuntime:
                 "python",
                 "scripts/check_benchmark_docs.py",
             ],
-            ["uv", "run", "--python", "3.13", "pytest", "-q"],
+            ["uv", "run", "--extra", "dev", "--python", "3.13", "pytest", "-q"],
             ["bats", "-r", "tests"],
             ["uv", "run", "--python", "3.13", "data-olympus", "lint", "example-bundle"],
             [

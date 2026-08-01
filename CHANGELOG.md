@@ -14,6 +14,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* **Isolated autonomous release quality tools.** The release runtime now installs
+  the declared `dev` extra when it runs Ruff, mypy, and pytest. This prevents a
+  missing project executable from falling through to an unrelated global Python
+  environment and validating the wrong installed Data Olympus version.
 * **Moved autonomous release approval before merge.** The release routine now
   reviews and approves the exact unmerged candidate, rederives every control
   replaced by the deliberate GitHub ruleset bypass, conditionally merges the

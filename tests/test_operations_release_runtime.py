@@ -763,6 +763,46 @@ def test_distribution_smoke_stops_after_one_retry(
     assert len(commands) == 2
 
 
+def test_final_local_gates_install_declared_dev_extra_for_python_test_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        commands.append(command)
+        if command[:2] == ["uv", "build"]:
+            output_directory = tmp_path / "to-delete" / "aiops-release-build"
+            (output_directory / "data_olympus-0.7.0-py3-none-any.whl").touch()
+            (output_directory / "data_olympus-0.7.0.tar.gz").touch()
+        return "ok"
+
+    runtime = ReleaseRuntime(
+        repository_root=tmp_path,
+        gateway=StubGateway(),
+        command_output=command_output,
+    )
+    monkeypatch.setattr(runtime, "_smoke_distribution", lambda *_arguments: "ok")
+    monkeypatch.setattr(
+        runtime,
+        "_wait_main_checks",
+        lambda _revision: {"all_success": True, "missing_required": []},
+    )
+
+    runtime._final_local_gates(SOURCE_SHA, "0.7.0")
+
+    expected_prefix = ["uv", "run", "--extra", "dev", "--python", "3.13"]
+    expected_tools = {"ruff", "mypy", "pytest"}
+    actual = {
+        command[len(expected_prefix)]
+        for command in commands
+        if command[: len(expected_prefix)] == expected_prefix
+        and len(command) > len(expected_prefix)
+        and command[len(expected_prefix)] in expected_tools
+    }
+    assert actual == expected_tools
+
+
 def test_render_release_documents_updates_only_the_governed_release_files(
     tmp_path: Path,
 ) -> None:
