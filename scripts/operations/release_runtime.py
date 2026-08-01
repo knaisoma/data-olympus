@@ -470,6 +470,109 @@ def render_release_documents(
     }
 
 
+def validate_prepared_release_documents(
+    repository_root: Path,
+    version: str,
+    changes: dict[str, Any],
+) -> dict[str, str]:
+    """Prove an exact prepared release state without changing any file."""
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
+        raise ValueError("release version must be X.Y.Z")
+    sections = _release_sections(changes)
+
+    pyproject = (repository_root / "pyproject.toml").read_text(encoding="utf-8")
+    project_versions = re.findall(r'(?m)^version = "([^"]+)"\s*$', pyproject)
+    if project_versions != [version]:
+        raise ValueError("prepared pyproject version does not match the release")
+
+    note_path = repository_root / "docs" / "releases" / f"v{version}.md"
+    if not note_path.is_file():
+        raise ValueError("prepared release note is missing")
+    release_note = note_path.read_text(encoding="utf-8")
+    if _parse_release_note(release_note, version) != sections:
+        raise ValueError("prepared release note does not match current computation")
+
+    changelog = (repository_root / "CHANGELOG.md").read_text(encoding="utf-8")
+    marker = "## [Unreleased]"
+    if changelog.count(marker) != 1:
+        raise ValueError("prepared changelog must contain one Unreleased section")
+    target_pattern = re.compile(
+        rf"(?m)^## \[{re.escape(version)}\] - "
+        r"([0-9]{4}-[0-9]{2}-[0-9]{2})$"
+    )
+    target_matches = list(target_pattern.finditer(changelog))
+    if len(target_matches) != 1:
+        raise ValueError("prepared changelog must contain one target release")
+    target = target_matches[0]
+    marker_start = changelog.index(marker)
+    marker_end = marker_start + len(marker)
+    if target.start() <= marker_end:
+        raise ValueError("prepared changelog target must follow Unreleased")
+    if changelog[marker_end : target.start()] != "\n\n":
+        raise ValueError("prepared changelog Unreleased section must be empty")
+
+    release_header = re.compile(
+        r"(?m)^## \[[0-9]+\.[0-9]+\.[0-9]+\] - "
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    )
+    first_release = release_header.search(changelog, marker_end)
+    if first_release is None or first_release.start() != target.start():
+        raise ValueError("prepared changelog target must be the first release")
+    body_start = target.end()
+    if changelog[body_start : body_start + 2] != "\n\n":
+        raise ValueError("prepared changelog target spacing is invalid")
+    body_start += 2
+    next_release = release_header.search(changelog, body_start)
+    body_end = next_release.start() if next_release is not None else len(changelog)
+    target_body = changelog[body_start:body_end]
+    canonical = _render_change_sections(sections, heading_level=3)
+    boundary = target_body[len(canonical) : len(canonical) + 1]
+    if not target_body.startswith(canonical) or boundary not in {"", "\n"}:
+        raise ValueError("prepared changelog canonical prefix is invalid")
+
+    release_date = target.group(1)
+    try:
+        dt.date.fromisoformat(release_date)
+    except ValueError as error:
+        raise ValueError("prepared changelog release date is invalid") from error
+    note_hash = _sha256_text(release_note)
+    return {
+        "changelog_hash": _sha256_text(changelog),
+        "content_hash": note_hash,
+        "document_mode": "prepared_unpublished",
+        "release_date": release_date,
+        "release_note_hash": note_hash,
+    }
+
+
+def _has_prepared_release_indicators(
+    repository_root: Path,
+    version: str,
+) -> bool:
+    pyproject_path = repository_root / "pyproject.toml"
+    pyproject = (
+        pyproject_path.read_text(encoding="utf-8")
+        if pyproject_path.is_file()
+        else ""
+    )
+    declared_versions = re.findall(r'(?m)^version = "([^"]+)"\s*$', pyproject)
+    note_exists = (
+        repository_root / "docs" / "releases" / f"v{version}.md"
+    ).exists()
+    changelog_path = repository_root / "CHANGELOG.md"
+    changelog = (
+        changelog_path.read_text(encoding="utf-8")
+        if changelog_path.is_file()
+        else ""
+    )
+    target_exists = re.search(
+        rf"(?m)^## \[{re.escape(version)}\] - "
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+        changelog,
+    ) is not None
+    return declared_versions == [version] or note_exists or target_exists
+
+
 def completed_check_evidence(
     payload: dict[str, Any],
     *,
@@ -1497,6 +1600,36 @@ class ReleaseRuntime:
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
 
+    def _strict_version_free(self, version: str) -> dict[str, Any]:
+        raw = self.command(
+            [
+                "uv",
+                "run",
+                "--python",
+                "3.13",
+                "python",
+                "scripts/version_free.py",
+                "--version",
+                version,
+                "--json",
+            ],
+            timeout=120,
+        )
+        try:
+            evidence = _object(json.loads(raw), "candidate version evidence")
+        except json.JSONDecodeError as error:
+            raise ValueError("candidate version evidence is invalid") from error
+        expected = {
+            "free": True,
+            "ghcr_taken": False,
+            "github_release_taken": False,
+            "pypi_taken": False,
+            "unreachable": [],
+        }
+        if evidence != expected:
+            raise ValueError("candidate version is taken or a registry is unreachable")
+        return evidence
+
     def prepare(
         self,
         run_input: dict[str, Any],
@@ -1520,8 +1653,15 @@ class ReleaseRuntime:
         if self.command(["git", "status", "--porcelain"]):
             raise ValueError("managed release worktree is not clean")
         run_id = str(run_input["run_id"])
+        prepared_unpublished = _has_prepared_release_indicators(
+            self.repository_root,
+            version,
+        )
         authority_intent = (
-            f"Prepare governed Data Olympus release v{version} from "
+            f"Resume governed prepared unpublished Data Olympus release v{version} "
+            f"from exact source {admitted}."
+            if prepared_unpublished
+            else f"Prepare governed Data Olympus release v{version} from "
             f"exact source {admitted}."
         )
         consultation = self.authority_consult(
@@ -1548,9 +1688,17 @@ class ReleaseRuntime:
         gate_receipt = self.authority_gate_check(
             {
                 "action_diff": authority_intent,
-                "action_path": "pyproject.toml",
+                "action_path": (
+                    f"docs/releases/v{version}.md"
+                    if prepared_unpublished
+                    else "pyproject.toml"
+                ),
                 "session_id": run_id,
-                "tool_name": "git commit",
+                "tool_name": (
+                    "release prepared state validation"
+                    if prepared_unpublished
+                    else "git commit"
+                ),
                 "workspace": GITHUB_REPOSITORY,
             }
         )
@@ -1560,6 +1708,59 @@ class ReleaseRuntime:
             or gate_receipt.get("workspace") != GITHUB_REPOSITORY
         ):
             raise ValueError("authority gate receipt is invalid")
+        if prepared_unpublished:
+            document_evidence = validate_prepared_release_documents(
+                self.repository_root,
+                version,
+                changes,
+            )
+            self.command(["git", "fetch", "origin", "main"], timeout=120)
+            if (
+                self.source_revision() != admitted
+                or self.remote_main_revision() != admitted
+            ):
+                raise ValueError("prepared unpublished source changed")
+            tree_revision = self._tree_revision(admitted)
+            gates = self._final_local_gates(admitted, version)
+            live = self.live_statefulset()
+            rollback = deployment_state(live)
+            if not rollback["rollout_complete"]:
+                raise ValueError("current Data Olympus rollback point is not ready")
+            raw = {
+                "candidate": {
+                    "version": version,
+                    "source_revision": admitted,
+                },
+                "preparation_mode": "prepared_unpublished",
+                "extra_context": run_input["extra_context"],
+                "prepared_main": {
+                    "source_revision": admitted,
+                    "tree_revision": tree_revision,
+                    "version": version,
+                    "changelog_hash": document_evidence["changelog_hash"],
+                    "release_note_hash": document_evidence["release_note_hash"],
+                    "release_date": document_evidence["release_date"],
+                },
+                "changelog": {
+                    "source_revision": admitted,
+                    "content_hash": document_evidence["changelog_hash"],
+                    "document_mode": "prepared_unpublished",
+                },
+                "security": gates["security"],
+                "tests": gates["tests"],
+                "rollback_point": {
+                    "digest": rollback["digest"],
+                    "image": f"{IMAGE_REPOSITORY}@{rollback['digest']}",
+                    "keel_policy": "never",
+                },
+            }
+            self._prepared = {
+                "raw": raw,
+                "gates": gates,
+                "document_evidence": document_evidence,
+                "preparation_mode": "prepared_unpublished",
+            }
+            return raw
         run_suffix = run_id.split("-", 1)[0]
         branch = f"chore/release-v{version}-{run_suffix}"
         self.command(["git", "switch", "-c", branch, admitted])
@@ -1679,6 +1880,45 @@ class ReleaseRuntime:
             raise ValueError("release preparation evidence is unavailable")
         candidate = _object(self._prepared["raw"]["candidate"], "candidate")
         source_revision = candidate["source_revision"]
+        if self._prepared["raw"].get("preparation_mode") == "prepared_unpublished":
+            prepared_main = _object(
+                self._prepared["raw"].get("prepared_main"),
+                "prepared main",
+            )
+            self.command(["git", "fetch", "origin", "main"], timeout=120)
+            if (
+                self.remote_main_revision() != source_revision
+                or self.source_revision() != source_revision
+                or self._tree_revision(source_revision)
+                != prepared_main["tree_revision"]
+            ):
+                raise ValueError("prepared unpublished candidate changed")
+            computation = _object(
+                _object(_admission.get("evidence"), "admission evidence").get(
+                    "computed_release"
+                ),
+                "computed release",
+            )
+            current_documents = validate_prepared_release_documents(
+                self.repository_root,
+                candidate["version"],
+                _object(computation.get("changes"), "computed release changes"),
+            )
+            if current_documents != self._prepared["document_evidence"]:
+                raise ValueError("prepared unpublished documents changed")
+            gates = self._prepared["gates"]
+            return {
+                "candidate": candidate,
+                "current_source_revision": source_revision,
+                "ci": {
+                    "source_revision": source_revision,
+                    "all_success": gates["ci"]["all_success"],
+                    "missing_required": gates["ci"]["missing_required"],
+                },
+                "security": {"exit_code": gates["security"]["exit_code"]},
+                "version_free": gates["version_free"],
+                "tests": gates["tests"],
+            }
         base_revision = self._prepared["raw"]["release_pr"]["base_source_revision"]
         if (
             self.remote_main_revision() != base_revision
@@ -2161,38 +2401,85 @@ class ReleaseRuntime:
             or review_evidence.get("source_revision") != candidate_revision
         ):
             raise ValueError("independent candidate approval is unavailable")
-        release_pr = _object(
-            self._prepared["raw"].get("release_pr"),
-            "release pull request",
+        preparation_mode = self._prepared["raw"].get(
+            "preparation_mode",
+            "pull_request",
         )
-        number = release_pr["number"]
-        base_revision = release_pr["base_source_revision"]
-        head_tree_revision = release_pr["head_tree_revision"]
-        ready = self._wait_pull_request(
-            number,
-            candidate_revision,
-            base_revision,
-        )
-        if ready["controls"] != self._prepared["release_controls"]:
-            raise ValueError("release controls changed after independent review")
-        self.command(["git", "fetch", "origin", "main"], timeout=120)
-        if (
-            self.remote_main_revision() != base_revision
-            or self.source_revision() != candidate_revision
-            or self._tree_revision(candidate_revision) != head_tree_revision
-        ):
-            raise ValueError("release candidate changed before approved merge")
-        source_revision, delivery_proof = self._merge_and_prove_delivery(
-            number=number,
-            version=version,
-            head_revision=candidate_revision,
-            head_tree_revision=head_tree_revision,
-            base_revision=base_revision,
-        )
+        number: int | None = None
+        if preparation_mode == "prepared_unpublished":
+            prepared_main = _object(
+                self._prepared["raw"].get("prepared_main"),
+                "prepared main",
+            )
+            self.command(["git", "fetch", "origin", "main"], timeout=120)
+            if (
+                self.remote_main_revision() != candidate_revision
+                or self.source_revision() != candidate_revision
+                or self._tree_revision(candidate_revision)
+                != prepared_main["tree_revision"]
+            ):
+                raise ValueError("prepared unpublished candidate changed before delivery")
+            admission_changes = _object(
+                _object(_admission.get("evidence"), "admission evidence").get(
+                    "computed_release"
+                ),
+                "computed release",
+            ).get("changes")
+            documents = validate_prepared_release_documents(
+                self.repository_root,
+                version,
+                _object(admission_changes, "computed release changes"),
+            )
+            if documents != self._prepared["document_evidence"]:
+                raise ValueError("prepared unpublished documents changed before delivery")
+            source_revision = candidate_revision
+            delivery_proof = {
+                "preparation_mode": "prepared_unpublished",
+                "admitted_revision": candidate_revision,
+                "approved_candidate_revision": candidate_revision,
+                "delivery_revision": candidate_revision,
+                "delivery_tree_revision": prepared_main["tree_revision"],
+                "merge_confirmed": False,
+                "merge_skipped": True,
+                "reviewed_tree_revision": prepared_main["tree_revision"],
+            }
+        elif preparation_mode == "pull_request":
+            release_pr = _object(
+                self._prepared["raw"].get("release_pr"),
+                "release pull request",
+            )
+            number = release_pr["number"]
+            base_revision = release_pr["base_source_revision"]
+            head_tree_revision = release_pr["head_tree_revision"]
+            ready = self._wait_pull_request(
+                number,
+                candidate_revision,
+                base_revision,
+            )
+            if ready["controls"] != self._prepared["release_controls"]:
+                raise ValueError("release controls changed after independent review")
+            self.command(["git", "fetch", "origin", "main"], timeout=120)
+            if (
+                self.remote_main_revision() != base_revision
+                or self.source_revision() != candidate_revision
+                or self._tree_revision(candidate_revision) != head_tree_revision
+            ):
+                raise ValueError("release candidate changed before approved merge")
+            source_revision, delivery_proof = self._merge_and_prove_delivery(
+                number=number,
+                version=version,
+                head_revision=candidate_revision,
+                head_tree_revision=head_tree_revision,
+                base_revision=base_revision,
+            )
+        else:
+            raise ValueError("release preparation mode is invalid")
         try:
             final_gates = self._final_local_gates(source_revision, version)
             tags = self._list_tags()
         except (OSError, subprocess.SubprocessError, ValueError) as error:
+            if preparation_mode == "prepared_unpublished":
+                raise
             raise ReleaseDeliveryError(
                 str(error),
                 {
@@ -2208,6 +2495,20 @@ class ReleaseRuntime:
                 tag_names.append(raw_tag["name"])
         rc_number = next_rc_number(version, tag_names)
         candidate_tag = f"{version}-rc.{rc_number}"
+        try:
+            candidate_availability = self._strict_version_free(candidate_tag)
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            if preparation_mode == "prepared_unpublished":
+                raise
+            raise ReleaseDeliveryError(
+                str(error),
+                {
+                    **delivery_proof,
+                    "external_state_changed": True,
+                    "release_pr_number": number,
+                    "rollback_completed": False,
+                },
+            ) from error
         rollback_digest = self._prepared["raw"]["rollback_point"]["digest"]
         deployment_started = False
         external_state_changed = False
@@ -2333,6 +2634,7 @@ class ReleaseRuntime:
             "raw": raw,
             "acceptance": stable_acceptance,
             "candidate_publication": publication,
+            "candidate_version_free": candidate_availability,
             "final_gates": final_gates,
             "stable_publication": stable,
         }

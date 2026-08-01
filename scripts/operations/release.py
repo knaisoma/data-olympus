@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import re
@@ -343,10 +344,9 @@ def _prepare(input_document: dict[str, Any]) -> StageResult:
         require_artifact=False,
     )
     context = _extra_context(input_document.get("extra_context"))
-    release_controls = _release_control_evidence(
-        input_document.get("release_controls"),
-        source_revision,
-    )
+    preparation_mode = input_document.get("preparation_mode", "pull_request")
+    if preparation_mode not in {"pull_request", "prepared_unpublished"}:
+        raise ReleaseInputError("preparation_mode is invalid")
 
     changelog = _object(input_document.get("changelog"), "changelog")
     _same_source(
@@ -391,6 +391,80 @@ def _prepare(input_document: dict[str, Any]) -> StageResult:
         raise ReleaseInputError("rollback_point.image does not match rollback_point.digest")
     if rollback.get("keel_policy") != "never":
         raise ReleaseInputError("rollback_point.keel_policy must be never")
+
+    if preparation_mode == "prepared_unpublished":
+        if "release_pr" in input_document or "release_controls" in input_document:
+            raise ReleaseInputError(
+                "prepared unpublished evidence must not contain pull request controls"
+            )
+        if changelog.get("document_mode") != "prepared_unpublished":
+            raise ReleaseInputError(
+                "prepared unpublished changelog document mode is invalid"
+            )
+        prepared_main = _object(
+            input_document.get("prepared_main"),
+            "prepared_main",
+        )
+        expected_fields = {
+            "changelog_hash",
+            "release_date",
+            "release_note_hash",
+            "source_revision",
+            "tree_revision",
+            "version",
+        }
+        if set(prepared_main) != expected_fields:
+            raise ReleaseInputError("prepared_main fields are invalid")
+        _same_source(
+            source_revision,
+            prepared_main.get("source_revision"),
+            "prepared_main.source_revision",
+        )
+        if prepared_main.get("version") != version:
+            raise ReleaseInputError("prepared_main.version does not match the candidate")
+        tree_revision = _sha40(
+            prepared_main.get("tree_revision"),
+            "prepared_main.tree_revision",
+        )
+        if _hash(
+            prepared_main.get("changelog_hash"),
+            "prepared_main.changelog_hash",
+        ) != changelog_hash:
+            raise ReleaseInputError("prepared_main changelog hash changed")
+        release_note_hash = _hash(
+            prepared_main.get("release_note_hash"),
+            "prepared_main.release_note_hash",
+        )
+        release_date = _string(
+            prepared_main.get("release_date"),
+            "prepared_main.release_date",
+        )
+        try:
+            dt.date.fromisoformat(release_date)
+        except ValueError as error:
+            raise ReleaseInputError("prepared_main.release_date is invalid") from error
+        return _result(
+            "pass",
+            f"prepared unpublished release {version} is bound to current main",
+            {
+                "source_revision": source_revision,
+                "version": version,
+                "preparation_mode": preparation_mode,
+                "prepared_tree_revision": tree_revision,
+                "release_note_hash": release_note_hash,
+                "extra_context": context,
+                "changelog_hash": changelog_hash,
+                "security_hash": security_hash,
+                "tests_hash": tests_hash,
+                "rollback_digest": rollback_digest,
+            },
+            {"preparation_reference": f"origin/main@{source_revision}"},
+        )
+
+    release_controls = _release_control_evidence(
+        input_document.get("release_controls"),
+        source_revision,
+    )
 
     release_pr = _object(
         input_document.get("release_pr"),
@@ -631,19 +705,48 @@ def _deliver(input_document: dict[str, Any]) -> StageResult:
         delivery_proof.get("delivery_tree_revision"),
         "delivery_proof.delivery_tree_revision",
     )
-    sole_parent_revision = _sha40(
-        delivery_proof.get("sole_parent_revision"),
-        "delivery_proof.sole_parent_revision",
-    )
-    _true(delivery_proof.get("merge_confirmed"), "delivery_proof.merge_confirmed")
     if delivery_revision != source_revision:
         raise ReleaseInputError("delivery proof revision does not match delivered source")
-    if approved_candidate_revision == delivery_revision:
-        raise ReleaseInputError("approved candidate and squash delivery revisions must differ")
     if reviewed_tree_revision != delivery_tree_revision:
         raise ReleaseInputError("delivery tree does not match the reviewed candidate tree")
-    if sole_parent_revision != admitted_revision:
-        raise ReleaseInputError("delivery parent does not match the admitted revision")
+    preparation_mode = delivery_proof.get("preparation_mode", "pull_request")
+    if preparation_mode == "prepared_unpublished":
+        if "sole_parent_revision" in delivery_proof:
+            raise ReleaseInputError(
+                "prepared unpublished delivery must not invent a merge parent"
+            )
+        if delivery_proof.get("merge_confirmed") is not False:
+            raise ReleaseInputError(
+                "prepared unpublished delivery must not claim a merge"
+            )
+        _true(delivery_proof.get("merge_skipped"), "delivery_proof.merge_skipped")
+        if not (
+            admitted_revision
+            == approved_candidate_revision
+            == delivery_revision
+        ):
+            raise ReleaseInputError(
+                "prepared unpublished delivery source identity changed"
+            )
+    elif preparation_mode == "pull_request":
+        sole_parent_revision = _sha40(
+            delivery_proof.get("sole_parent_revision"),
+            "delivery_proof.sole_parent_revision",
+        )
+        _true(
+            delivery_proof.get("merge_confirmed"),
+            "delivery_proof.merge_confirmed",
+        )
+        if approved_candidate_revision == delivery_revision:
+            raise ReleaseInputError(
+                "approved candidate and squash delivery revisions must differ"
+            )
+        if sole_parent_revision != admitted_revision:
+            raise ReleaseInputError(
+                "delivery parent does not match the admitted revision"
+            )
+    else:
+        raise ReleaseInputError("delivery_proof.preparation_mode is invalid")
     candidate_tag = candidate["candidate_tag"]
 
     workflows = input_document.get("workflows")
@@ -730,6 +833,7 @@ def _deliver(input_document: dict[str, Any]) -> StageResult:
             "candidate_tag": candidate_tag,
             "delivery_revision": delivery_revision,
             "delivery_tree_revision": delivery_tree_revision,
+            "preparation_mode": preparation_mode,
             "digest": digest,
             "workflows": sorted(required),
         },
@@ -1432,11 +1536,6 @@ def execute_release_run(
                 "response_contract with no markdown or prose."
             ),
             "prepared_evidence": prepared["evidence"],
-            "release_controls": {
-                key: value
-                for key, value in prepared_input["release_controls"].items()
-                if key != "review_decision"
-            },
             "response_contract": {
                 "actual_model": "exact invoked model identifier",
                 "verdict": "pass or fail",
@@ -1446,6 +1545,20 @@ def execute_release_run(
             "source_revision": candidate_revision,
             "validation_evidence": validation["evidence"],
         }
+        if prepared_input.get("preparation_mode") == "prepared_unpublished":
+            packet["preparation_controls"] = _object(
+                prepared_input.get("prepared_main"),
+                "prepared_main",
+            )
+        else:
+            packet["release_controls"] = {
+                key: value
+                for key, value in _object(
+                    prepared_input.get("release_controls"),
+                    "release_controls",
+                ).items()
+                if key != "review_decision"
+            }
         review = _invoke_review(run_input, dependencies, ticket, packet)
         approval = _collect_candidate_approval(
             run_input,
@@ -1508,6 +1621,15 @@ def execute_release_run(
         record(
             _milestone(6, "verify", verification["reason"], verification["evidence"])
         )
+        preparation_reference: dict[str, Any] = {}
+        if "release_pr_number" in prepared["outputs"]:
+            preparation_reference["release_pr_number"] = prepared["outputs"][
+                "release_pr_number"
+            ]
+        if "preparation_reference" in prepared["outputs"]:
+            preparation_reference["preparation_reference"] = prepared["outputs"][
+                "preparation_reference"
+            ]
         record(
             _project_result(
                 7,
@@ -1520,9 +1642,7 @@ def execute_release_run(
                     "rollback_digest": prepared["evidence"][
                         "rollback_digest"
                     ],
-                    "release_pr_number": prepared["outputs"][
-                        "release_pr_number"
-                    ],
+                    **preparation_reference,
                 },
                 candidate_revision=candidate_revision,
                 review_model_use_id=review["model_use_id"],

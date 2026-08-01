@@ -23,6 +23,7 @@ from scripts.operations.release_runtime import (
     governed_release_controls,
     render_release_documents,
     stable_release_evidence,
+    validate_prepared_release_documents,
 )
 
 if TYPE_CHECKING:
@@ -1090,6 +1091,91 @@ def test_render_release_documents_rejects_roll_forward_replay_atomically(
     assert {path: path.read_bytes() for path in paths} == before
 
 
+def _write_resumable_release_documents(root: Path) -> None:
+    _write_prepared_release_documents(root)
+    changelog_path = root / "CHANGELOG.md"
+    changelog_path.write_text(
+        changelog_path.read_text(encoding="utf-8").replace(
+            "## [Unreleased]\n\n"
+            "### Fixed\n\n"
+            "* Retry one transient bound tag inventory response.\n\n",
+            "## [Unreleased]\n\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_validate_prepared_release_documents_accepts_exact_unpublished_state(
+    tmp_path: Path,
+) -> None:
+    _write_resumable_release_documents(tmp_path)
+
+    evidence = validate_prepared_release_documents(
+        tmp_path,
+        "0.7.0",
+        {
+            "breaking": [],
+            "features": ["feat(automation): make releases outcome based"],
+            "fixes": ["fix(mcp): preserve exact source evidence"],
+        },
+    )
+
+    assert evidence["document_mode"] == "prepared_unpublished"
+    assert evidence["release_date"] == "2026-08-01"
+    assert len(evidence["changelog_hash"]) == 64
+    assert len(evidence["release_note_hash"]) == 64
+
+
+@pytest.mark.parametrize(
+    ("target", "replacement", "reason"),
+    [
+        (
+            "## [Unreleased]\n\n",
+            "## [Unreleased]\n\n### Fixed\n\n* late change\n\n",
+            "Unreleased",
+        ),
+        (
+            "* fix(mcp): preserve exact source evidence\n",
+            "* fix(mcp): altered release note\n",
+            "release note",
+        ),
+        (
+            "* fix(mcp): preserve exact source evidence\n\n\n### Fixed",
+            "* fix(mcp): altered canonical prefix\n\n\n### Fixed",
+            "canonical prefix",
+        ),
+    ],
+)
+def test_validate_prepared_release_documents_rejects_any_state_drift(
+    tmp_path: Path,
+    target: str,
+    replacement: str,
+    reason: str,
+) -> None:
+    _write_resumable_release_documents(tmp_path)
+    path = (
+        tmp_path / "docs" / "releases" / "v0.7.0.md"
+        if "release note" in reason
+        else tmp_path / "CHANGELOG.md"
+    )
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(target, replacement, 1),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=reason):
+        validate_prepared_release_documents(
+            tmp_path,
+            "0.7.0",
+            {
+                "breaking": [],
+                "features": ["feat(automation): make releases outcome based"],
+                "fixes": ["fix(mcp): preserve exact source evidence"],
+            },
+        )
+
+
 def test_completed_check_evidence_requires_every_expected_check_and_no_failures() -> None:
     payload = {
         "check_runs": [
@@ -1694,6 +1780,148 @@ def test_prepare_stops_at_the_unmerged_review_candidate(
     ]
 
 
+def test_prepare_recognizes_exact_prepared_unpublished_main_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_resumable_release_documents(tmp_path)
+    commands: list[list[str]] = []
+    gateway = StubGateway()
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        commands.append(command)
+        return ""
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=gateway,
+        command_output=command_output,
+        authority_consult=lambda _arguments: {
+            "consulted_at": 1.0,
+            "ttl_seconds": 300,
+        },
+        authority_gate_check=lambda arguments: {
+            "verdict": "allow",
+            "session_id": arguments["session_id"],
+            "workspace": "data-olympus",
+        },
+        clock=lambda: 1.0,
+    )
+    monkeypatch.setattr(runtime, "source_revision", lambda: SOURCE_SHA)
+    monkeypatch.setattr(runtime, "remote_main_revision", lambda: SOURCE_SHA)
+    monkeypatch.setattr(runtime, "_tree_revision", lambda _revision: CANDIDATE_TREE)
+    monkeypatch.setattr(
+        runtime,
+        "_final_local_gates",
+        lambda source, version: {
+            "ci": {"all_success": True, "missing_required": []},
+            "security": {"exit_code": 0, "report_hash": "5" * 64},
+            "tests": {
+                "source_revision": source,
+                "passed": True,
+                "evidence_hash": "6" * 64,
+            },
+            "version_free": {"version": version, "free": True},
+        },
+    )
+    monkeypatch.setattr(
+        "scripts.operations.release_runtime.deployment_state",
+        lambda _statefulset: {
+            "digest": DIGEST,
+            "keel_policy": "never",
+            "rollout_complete": True,
+        },
+    )
+    monkeypatch.setattr(runtime, "live_statefulset", lambda: {})
+
+    result = runtime.prepare(
+        {
+            "extra_context": "No extra context for this run",
+            "run_id": "11111111-2222-4333-8444-555555555555",
+            "source_revision": SOURCE_SHA,
+        },
+        {
+            "evidence": {
+                "computed_release": {
+                    "changes": {
+                        "breaking": [],
+                        "features": [
+                            "feat(automation): make releases outcome based"
+                        ],
+                        "fixes": ["fix(mcp): preserve exact source evidence"],
+                    }
+                }
+            },
+            "outputs": {"candidate": {"version": "0.7.0"}},
+        },
+    )
+
+    assert result["preparation_mode"] == "prepared_unpublished"
+    assert result["candidate"] == {
+        "source_revision": SOURCE_SHA,
+        "version": "0.7.0",
+    }
+    assert result["prepared_main"] == {
+        "changelog_hash": result["changelog"]["content_hash"],
+        "release_date": "2026-08-01",
+        "release_note_hash": result["prepared_main"]["release_note_hash"],
+        "source_revision": SOURCE_SHA,
+        "tree_revision": CANDIDATE_TREE,
+        "version": "0.7.0",
+    }
+    assert "release_pr" not in result
+    assert "release_controls" not in result
+    assert gateway.calls == []
+    assert not any(
+        command[:2] in {
+            ("git", "switch"),
+            ("git", "add"),
+            ("git", "commit"),
+            ("git", "push"),
+        }
+        for command in map(tuple, commands)
+    )
+
+
+def test_strict_version_free_requires_all_candidate_channels_absent(
+    tmp_path: Path,
+) -> None:
+    commands: list[list[str]] = []
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        commands.append(command)
+        return json.dumps(
+            {
+                "free": True,
+                "ghcr_taken": False,
+                "github_release_taken": False,
+                "pypi_taken": False,
+                "unreachable": [],
+            }
+        )
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway(),
+        command_output=command_output,
+    )
+
+    result = runtime._strict_version_free("0.7.0-rc.1")
+
+    assert result["free"] is True
+    assert commands == [[
+        "uv",
+        "run",
+        "--python",
+        "3.13",
+        "python",
+        "scripts/version_free.py",
+        "--version",
+        "0.7.0-rc.1",
+        "--json",
+    ]]
+
+
 def test_deliver_merges_only_after_review_and_proves_exact_tree_transfer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1793,6 +2021,20 @@ def test_deliver_merges_only_after_review_and_proves_exact_tree_transfer(
     )
     monkeypatch.setattr(
         runtime,
+        "_strict_version_free",
+        lambda version: (
+            order.append(f"candidate-free:{version}")
+            or {
+                "free": True,
+                "ghcr_taken": False,
+                "github_release_taken": False,
+                "pypi_taken": False,
+                "unreachable": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
         "_candidate_publication",
         lambda revision, _version, tag: {
             "candidate_tag": tag,
@@ -1830,7 +2072,17 @@ def test_deliver_merges_only_after_review_and_proves_exact_tree_transfer(
 
     result = runtime.deliver(
         {},
-        {},
+        {
+            "evidence": {
+                "computed_release": {
+                    "changes": {
+                        "breaking": [],
+                        "features": [],
+                        "fixes": ["fix(release): resume prepared release"],
+                    }
+                }
+            }
+        },
         {},
         {
             "status": "pass",
@@ -1855,6 +2107,170 @@ def test_deliver_merges_only_after_review_and_proves_exact_tree_transfer(
     assert order.index("merge") < order.index(f"tree:{DELIVERY_SHA}")
     assert order.index(f"tree:{DELIVERY_SHA}") < order.index("final-gates")
     assert order.index("final-gates") < order.index("workflow:rc-publish.yml")
+
+
+def test_deliver_resumes_exact_prepared_main_and_never_attempts_merge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous = "sha256:" + "e" * 64
+    order: list[str] = []
+    documents = {
+        "changelog_hash": "1" * 64,
+        "content_hash": "2" * 64,
+        "document_mode": "prepared_unpublished",
+        "release_date": "2026-08-02",
+        "release_note_hash": "2" * 64,
+    }
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway({"list_tags": []}),
+        command_output=lambda _command, _cwd, _timeout: "",
+    )
+    runtime._prepared = {
+        "raw": {
+            "candidate": {"source_revision": SOURCE_SHA, "version": "0.7.0"},
+            "preparation_mode": "prepared_unpublished",
+            "prepared_main": {
+                "source_revision": SOURCE_SHA,
+                "tree_revision": CANDIDATE_TREE,
+                "version": "0.7.0",
+                "changelog_hash": "1" * 64,
+                "release_note_hash": "2" * 64,
+                "release_date": "2026-08-02",
+            },
+            "rollback_point": {"digest": previous},
+        },
+        "document_evidence": documents,
+    }
+    monkeypatch.setattr(runtime, "remote_main_revision", lambda: SOURCE_SHA)
+    monkeypatch.setattr(runtime, "source_revision", lambda: SOURCE_SHA)
+    monkeypatch.setattr(runtime, "_tree_revision", lambda _revision: CANDIDATE_TREE)
+    monkeypatch.setattr(
+        "scripts.operations.release_runtime.validate_prepared_release_documents",
+        lambda *_arguments: documents,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_merge_and_prove_delivery",
+        lambda **_arguments: (_ for _ in ()).throw(
+            AssertionError("prepared unpublished delivery must not merge")
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_final_local_gates",
+        lambda revision, version: (
+            order.append("final-gates")
+            or {
+                "ci": {"all_success": True, "missing_required": []},
+                "security": {"exit_code": 0},
+                "tests": {"source_revision": revision, "passed": True},
+                "version_free": {"version": version, "free": True},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_strict_version_free",
+        lambda version: (
+            order.append(f"candidate-free:{version}")
+            or {
+                "free": True,
+                "ghcr_taken": False,
+                "github_release_taken": False,
+                "pypi_taken": False,
+                "unreachable": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_workflow_run",
+        lambda name, revision, _inputs, **_kwargs: (
+            order.append(f"workflow:{name}")
+            or {
+                "conclusion": "success",
+                "run_id": len(order),
+                "source_revision": revision,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_candidate_publication",
+        lambda revision, _version, tag: {
+            "candidate_tag": tag,
+            "image_digest": DIGEST,
+            "source_revision": revision,
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_stable_publication",
+        lambda revision, version: {
+            "pypi_version": version,
+            "source_revision": revision,
+        },
+    )
+    monkeypatch.setattr(runtime, "_registry_digest", lambda _tag: DIGEST)
+    monkeypatch.setattr(
+        runtime,
+        "_apply_digest",
+        lambda _digest, **_kwargs: {
+            "keel_policy": "never",
+            "rollout_complete": True,
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_service_acceptance",
+        lambda: {
+            "enforcement": True,
+            "healthy": True,
+            "mcp_search": True,
+            "ready": True,
+        },
+    )
+
+    result = runtime.deliver(
+        {},
+        {
+            "evidence": {
+                "computed_release": {
+                    "changes": {
+                        "breaking": [],
+                        "features": [],
+                        "fixes": ["fix(release): resume prepared release"],
+                    }
+                }
+            }
+        },
+        {},
+        {
+            "status": "pass",
+            "evidence": {
+                "reviewer_family": "claude",
+                "source_revision": SOURCE_SHA,
+            },
+        },
+    )
+
+    assert result["candidate"]["source_revision"] == SOURCE_SHA
+    assert result["delivery_proof"] == {
+        "preparation_mode": "prepared_unpublished",
+        "admitted_revision": SOURCE_SHA,
+        "approved_candidate_revision": SOURCE_SHA,
+        "delivery_revision": SOURCE_SHA,
+        "delivery_tree_revision": CANDIDATE_TREE,
+        "merge_confirmed": False,
+        "merge_skipped": True,
+        "reviewed_tree_revision": CANDIDATE_TREE,
+    }
+    assert order.index("final-gates") < order.index("candidate-free:0.7.0-rc.1")
+    assert order.index("candidate-free:0.7.0-rc.1") < order.index(
+        "workflow:rc-publish.yml"
+    )
 
 
 def test_delivery_blocks_ruleset_drift_without_attempting_merge(
@@ -2024,6 +2440,17 @@ def _prime_approved_delivery(
         "_final_local_gates",
         lambda _revision, _version: {},
     )
+    monkeypatch.setattr(
+        runtime,
+        "_strict_version_free",
+        lambda _version: {
+            "free": True,
+            "ghcr_taken": False,
+            "github_release_taken": False,
+            "pypi_taken": False,
+            "unreachable": [],
+        },
+    )
     return {
         "status": "pass",
         "evidence": {
@@ -2061,6 +2488,33 @@ def test_postmerge_tag_inventory_failure_preserves_delivery_proof(
         "rollback_completed": False,
         "sole_parent_revision": SOURCE_SHA,
     }
+
+
+def test_postmerge_candidate_collision_failure_preserves_delivery_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = ReleaseRuntime(tmp_path, gateway=StubGateway({"list_tags": []}))
+    reviewed = _prime_approved_delivery(
+        runtime,
+        monkeypatch,
+        "sha256:" + "e" * 64,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_strict_version_free",
+        lambda _version: (_ for _ in ()).throw(
+            ValueError("candidate version is taken")
+        ),
+    )
+
+    with pytest.raises(ReleaseDeliveryError, match="candidate version is taken") as raised:
+        runtime.deliver({}, {}, {}, reviewed)
+
+    assert raised.value.evidence["delivery_revision"] == DELIVERY_SHA
+    assert raised.value.evidence["merge_confirmed"] is True
+    assert raised.value.evidence["release_pr_number"] == 182
+    assert raised.value.evidence["rollback_completed"] is False
 
 
 @pytest.mark.parametrize("dispatch_started", [False, True])

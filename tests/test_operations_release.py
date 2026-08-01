@@ -257,6 +257,68 @@ def test_prepare_blocks_when_the_release_pr_was_merged_before_review() -> None:
     assert "must remain unmerged" in result["reason"]
 
 
+def _prepared_unpublished_input() -> dict[str, object]:
+    return {
+        "candidate": {"version": "0.6.1", "source_revision": SOURCE_SHA},
+        "preparation_mode": "prepared_unpublished",
+        "extra_context": DEFAULT_EXTRA_CONTEXT,
+        "prepared_main": {
+            "source_revision": SOURCE_SHA,
+            "tree_revision": BRANCH_SHA,
+            "version": "0.6.1",
+            "changelog_hash": "1" * 64,
+            "release_note_hash": "2" * 64,
+            "release_date": "2026-08-02",
+        },
+        "changelog": {
+            "source_revision": SOURCE_SHA,
+            "content_hash": "1" * 64,
+            "document_mode": "prepared_unpublished",
+        },
+        "security": {"exit_code": 0, "report_hash": "3" * 64},
+        "tests": {
+            "source_revision": SOURCE_SHA,
+            "passed": True,
+            "evidence_hash": "4" * 64,
+        },
+        "rollback_point": {
+            "image": f"ghcr.io/knaisoma/data-olympus@{PREVIOUS_DIGEST}",
+            "digest": PREVIOUS_DIGEST,
+            "keel_policy": "never",
+        },
+    }
+
+
+def test_prepare_accepts_only_exact_prepared_unpublished_main_without_a_pr() -> None:
+    result = evaluate_stage("prepare", _prepared_unpublished_input())
+
+    assert result["status"] == "pass"
+    assert result["evidence"]["preparation_mode"] == "prepared_unpublished"
+    assert result["evidence"]["prepared_tree_revision"] == BRANCH_SHA
+    assert result["outputs"] == {
+        "preparation_reference": f"origin/main@{SOURCE_SHA}"
+    }
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value.__setitem__("release_pr", {"number": 178}),
+        lambda value: value["prepared_main"].__setitem__(
+            "source_revision", CANDIDATE_SHA
+        ),
+        lambda value: value["changelog"].__setitem__("document_mode", "normal"),
+    ],
+)
+def test_prepare_rejects_ambiguous_prepared_unpublished_evidence(mutate) -> None:
+    input_document = _prepared_unpublished_input()
+    mutate(input_document)
+
+    result = evaluate_stage("prepare", input_document)
+
+    assert result["status"] == "blocked"
+
+
 def test_validate_requires_unchanged_candidate_and_all_exact_gates() -> None:
     result = evaluate_stage(
         "validate",
@@ -458,6 +520,68 @@ def test_deliver_accepts_only_existing_workflows_bound_to_candidate() -> None:
 
     assert result["status"] == "pass"
     assert result["outputs"]["published_version"] == "0.6.1"
+
+
+def test_deliver_accepts_reviewed_prepared_unpublished_source_without_merge() -> None:
+    input_document = {
+        "candidate": _candidate(),
+        "current_source_revision": SOURCE_SHA,
+        "delivery_proof": {
+            "preparation_mode": "prepared_unpublished",
+            "admitted_revision": SOURCE_SHA,
+            "approved_candidate_revision": SOURCE_SHA,
+            "delivery_revision": SOURCE_SHA,
+            "delivery_tree_revision": BRANCH_SHA,
+            "merge_confirmed": False,
+            "merge_skipped": True,
+            "reviewed_tree_revision": BRANCH_SHA,
+        },
+        "workflows": [
+            {
+                "name": "rc-publish.yml",
+                "conclusion": "success",
+                "source_revision": SOURCE_SHA,
+                "candidate_tag": "0.6.1-rc.1",
+            },
+            {
+                "name": "tag-release.yml",
+                "conclusion": "success",
+                "source_revision": SOURCE_SHA,
+                "candidate_tag": "0.6.1-rc.1",
+            },
+            {
+                "name": "set-channel.yml",
+                "conclusion": "success",
+                "source_revision": SOURCE_SHA,
+                "source_tag": "v0.6.1",
+            },
+        ],
+        "canary": {
+            "candidate_tag": "0.6.1-rc.1",
+            "source_revision": SOURCE_SHA,
+            "digest": IMAGE_DIGEST,
+            "keel_policy": "never",
+            "rollout_complete": True,
+            "healthy": True,
+            "ready": True,
+            "mcp_search": True,
+            "enforcement": True,
+        },
+        "deployment": {
+            "keel_policy": "never",
+            "image_digest": IMAGE_DIGEST,
+            "source_revision": SOURCE_SHA,
+            "rollout_complete": True,
+        },
+    }
+
+    result = evaluate_stage("deliver", input_document)
+
+    assert result["status"] == "pass"
+    assert result["evidence"]["preparation_mode"] == "prepared_unpublished"
+
+    input_document["delivery_proof"]["merge_confirmed"] = True
+    assert evaluate_stage("deliver", input_document)["status"] == "failed"
 
 
 def test_deliver_fails_stable_promotion_without_verified_canary() -> None:
@@ -1023,6 +1147,128 @@ def test_one_release_command_emits_the_exact_runner_protocol() -> None:
         "candidate_revision": CANDIDATE_SHA,
         "review_model_use_id": 71,
     }
+
+
+def test_release_command_reviews_and_delivers_prepared_unpublished_main() -> None:
+    dependencies = _release_dependencies()
+    captured: dict[str, object] = {}
+    artifact_candidate = _candidate()
+    prepared = _prepared_unpublished_input()
+
+    dependencies.update(
+        {
+            "candidate_revision": lambda: SOURCE_SHA,
+            "prepare": lambda _run, _admitted: prepared,
+            "validate": lambda _run, _admitted, _prepared: {
+                "candidate": prepared["candidate"],
+                "current_source_revision": SOURCE_SHA,
+                "ci": {
+                    "source_revision": SOURCE_SHA,
+                    "all_success": True,
+                    "missing_required": [],
+                },
+                "security": {"exit_code": 0},
+                "version_free": {"version": "0.6.1", "free": True},
+                "tests": {"source_revision": SOURCE_SHA, "passed": True},
+            },
+            "invoke_model": lambda request: (
+                captured.__setitem__("packet", request["packet"])
+                or _approved_review(request)
+            ),
+            "collect_candidate_approval": lambda run, _candidate, review: {
+                "approval_id_hash": "6" * 64,
+                "authority": "standing-delegation",
+                "candidate_revision": SOURCE_SHA,
+                "contract_digest": run["contract_revision"],
+                "review_model_use_id": review["model_use_id"],
+                "run_id": run["run_id"],
+            },
+            "deliver": lambda _run, _admitted, _prepared, _review: {
+                "candidate": artifact_candidate,
+                "current_source_revision": SOURCE_SHA,
+                "delivery_proof": {
+                    "preparation_mode": "prepared_unpublished",
+                    "admitted_revision": SOURCE_SHA,
+                    "approved_candidate_revision": SOURCE_SHA,
+                    "delivery_revision": SOURCE_SHA,
+                    "delivery_tree_revision": BRANCH_SHA,
+                    "merge_confirmed": False,
+                    "merge_skipped": True,
+                    "reviewed_tree_revision": BRANCH_SHA,
+                },
+                "workflows": [
+                    {
+                        "name": "rc-publish.yml",
+                        "conclusion": "success",
+                        "source_revision": SOURCE_SHA,
+                        "candidate_tag": "0.6.1-rc.1",
+                    },
+                    {
+                        "name": "tag-release.yml",
+                        "conclusion": "success",
+                        "source_revision": SOURCE_SHA,
+                        "candidate_tag": "0.6.1-rc.1",
+                    },
+                    {
+                        "name": "set-channel.yml",
+                        "conclusion": "success",
+                        "source_revision": SOURCE_SHA,
+                        "source_tag": "v0.6.1",
+                    },
+                ],
+                "canary": {
+                    "candidate_tag": "0.6.1-rc.1",
+                    "source_revision": SOURCE_SHA,
+                    "digest": IMAGE_DIGEST,
+                    "keel_policy": "never",
+                    "rollout_complete": True,
+                    "healthy": True,
+                    "ready": True,
+                    "mcp_search": True,
+                    "enforcement": True,
+                },
+                "deployment": {
+                    "keel_policy": "never",
+                    "image_digest": IMAGE_DIGEST,
+                    "source_revision": SOURCE_SHA,
+                    "rollout_complete": True,
+                },
+            },
+            "verify": lambda _run, _admitted, _delivery: {
+                "candidate": artifact_candidate,
+                "github_release": {
+                    "tag": "v0.6.1",
+                    "source_revision": SOURCE_SHA,
+                },
+                "pypi": {
+                    "version": "0.6.1",
+                    "provenance_source_revision": SOURCE_SHA,
+                },
+                "image": {"tag": "v0.6.1", "digest": IMAGE_DIGEST},
+                "deployment": {
+                    "source_revision": SOURCE_SHA,
+                    "digest": IMAGE_DIGEST,
+                    "healthy": True,
+                    "ready": True,
+                    "mcp_search": True,
+                    "enforcement": True,
+                    "documentation": True,
+                },
+            },
+        }
+    )
+
+    events = execute_release_run(json.dumps(RUN_INPUT), dependencies)
+
+    assert events[-1]["status"] == "delivered", events[-1]
+    assert events[-1]["candidate_revision"] == SOURCE_SHA
+    assert events[-1]["evidence"]["preparation_reference"] == (
+        f"origin/main@{SOURCE_SHA}"
+    )
+    assert "release_pr_number" not in events[-1]["evidence"]
+    packet = captured["packet"]
+    assert isinstance(packet, dict)
+    assert packet["preparation_controls"] == prepared["prepared_main"]
 
 
 def test_review_evidence_hash_binds_the_packet_and_claude_response() -> None:

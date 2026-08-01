@@ -118,7 +118,7 @@ The release host requires:
    replay without a new item blocks there. The unchanged version availability
    gate blocks every public collision before review or merge. The resulting
    commit then follows the complete ordinary review, merge, publication,
-   deployment, and notification sequence without a special delivery path.
+   deployment, and notification sequence.
 6. Open one public pull request through FastMCP. Keep it open and unmerged.
    Require every observed repository check to reach a successful terminal
    conclusion. Require the aggregate `CodeQL` check, all three CodeQL language
@@ -221,6 +221,51 @@ The release host requires:
    readback of the destination, message identifier, run marker, and content.
 21. The durable runner ledger records the truthful terminal state. No private
    issue is an authority or completion dependency.
+
+## Prepared but unpublished recovery
+
+One narrow recovery state is supported when the exact release preparation is
+already on `origin/main`, but no candidate or stable public surface exists. It
+is not a generic resume engine.
+
+Any one of these indicators selects the recovery validator and prevents a
+fallback to ordinary preparation:
+
+* `pyproject.toml` already declares the computed target version.
+* `docs/releases/vX.Y.Z.md` already exists.
+* `CHANGELOG.md` already contains the computed target version.
+
+The state is valid only when all of these conditions hold:
+
+* The managed worktree, local source, and remote main are the same admitted
+  SHA.
+* The project version is exactly the computed target.
+* The release note is canonical and exactly matches the current deterministic
+  computation.
+* There is exactly one empty Unreleased block.
+* There is exactly one target release block, it is the first release, and its
+  canonical prefix exactly matches the current deterministic computation.
+* The document hashes and Git tree remain unchanged through validation and
+  delivery.
+* The full local gates and rollback point pass.
+
+This state creates no branch, commit, pull request, or merge. The current main
+SHA and tree become the review candidate. A fresh central Claude review and
+SHA bound standing approval are still mandatory. Delivery records
+`preparation_mode=prepared_unpublished`, `merge_skipped=true`, and
+`merge_confirmed=false`; it does not invent a pull request, merge parent, or
+different delivery revision.
+
+After review, the runner revalidates the source, tree, documents, full local
+gates, and public tag inventory. Before the first workflow dispatch, the exact
+candidate spelling must be confirmed absent from PyPI, public GHCR manifest
+inspection, and GitHub releases. Registry or client uncertainty blocks. The
+ordinary `rc-publish.yml`, canary, `tag-release.yml`, `set-channel.yml`, stable
+deployment, verification, Telegram readback, and ledger sequence then runs
+unchanged.
+
+Any other partially prepared, partially published, or mismatched state blocks
+for a separately reviewed recovery decision.
 
 ## Exact source rule
 

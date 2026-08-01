@@ -55,6 +55,13 @@ When a release is due:
 4. Bind the candidate to the resulting exact main SHA.
 5. Publish and promote only through the existing release workflows.
 
+The only exception is the fail closed prepared but unpublished recovery in
+`.rules/release-routine.md`. It applies when the complete deterministic release
+preparation is already on the admitted `origin/main` SHA and every candidate
+and stable public surface is still absent. That recovery reviews the exact main
+SHA, creates no replacement branch or merge, and reuses the same publication
+and promotion workflows after all evidence is revalidated.
+
 ## Pull request discipline
 
 Feature and fix pull requests contain one logical change and are squash merged.
