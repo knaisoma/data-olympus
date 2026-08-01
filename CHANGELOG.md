@@ -20,6 +20,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * **Accepted the FastMCP standard text content envelope.** Release automation
   now reads the gateway's legacy tool bound text result when optional
   structured content is absent, while rejecting unbound or mismatched output.
+* **Made release commits satisfy the governance gate autonomously.** Before
+  changing release files, the routine now records a run scoped Data Olympus
+  MCP consultation and validates its bounded receipt.
 
 ## [0.6.0] - 2026-07-18
 

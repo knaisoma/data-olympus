@@ -59,6 +59,7 @@ _PULL_REQUEST_URL = re.compile(
 
 CommandOutput = Callable[[list[str], Path, int], str]
 JsonFetch = Callable[[str, int], dict[str, Any]]
+AuthorityConsult = Callable[[dict[str, object]], dict[str, Any]]
 
 
 class ReleaseDeliveryError(ValueError):
@@ -114,6 +115,39 @@ def _parse_nested_json(value: Any) -> Any:
         except json.JSONDecodeError:
             break
     return current
+
+
+def _authority_consult(
+    arguments: dict[str, object],
+    run_command: CommandOutput = _default_command_output,
+) -> dict[str, Any]:
+    command = [
+        "fastmcp",
+        "call",
+        "--server-spec",
+        f"{DATA_OLYMPUS_URL}/mcp",
+        "--target",
+        "kb_consult",
+        "--input-json",
+        json.dumps(arguments, separators=(",", ":"), sort_keys=True),
+        "--json",
+        "--timeout",
+        "30",
+        "--auth",
+        "none",
+    ]
+    raw = run_command(command, Path.cwd(), 40)
+    try:
+        envelope = _object(json.loads(raw), "Data Olympus MCP response")
+    except json.JSONDecodeError as error:
+        raise ValueError("Data Olympus MCP returned invalid JSON") from error
+    is_error = envelope.get("is_error")
+    if type(is_error) is not bool or is_error:
+        raise ValueError("Data Olympus MCP consultation failed")
+    return _object(
+        envelope.get("structured_content"),
+        "Data Olympus MCP structured content",
+    )
 
 
 class FastMCPGateway:
@@ -530,6 +564,7 @@ class ReleaseRuntime:
         *,
         gateway: FastMCPGateway,
         command_output: CommandOutput = _default_command_output,
+        authority_consult: AuthorityConsult = _authority_consult,
         fetch_json: JsonFetch = _default_json_fetch,
         sleep: Callable[[float], None] = time.sleep,
         today: Callable[[], dt.date] = dt.date.today,
@@ -537,6 +572,7 @@ class ReleaseRuntime:
         self.repository_root = repository_root.resolve()
         self.gateway = gateway
         self.command_output = command_output
+        self.authority_consult = authority_consult
         self.fetch_json = fetch_json
         self.sleep = sleep
         self.today = today
@@ -902,6 +938,27 @@ class ReleaseRuntime:
         changes = _object(computed.get("changes"), "computed release changes")
         if self.command(["git", "status", "--porcelain"]):
             raise ValueError("managed release worktree is not clean")
+        consultation = self.authority_consult(
+            {
+                "agent_identity": "ai-operations-release",
+                "intent": (
+                    f"Prepare governed Data Olympus release v{version} from "
+                    f"exact source {admitted}."
+                ),
+                "source_session": str(run_input["run_id"]),
+                "trigger": "explicit",
+                "workspace": GITHUB_REPOSITORY,
+            }
+        )
+        consulted_at = consultation.get("consulted_at")
+        ttl_seconds = consultation.get("ttl_seconds")
+        if (
+            type(consulted_at) not in {int, float}
+            or consulted_at <= 0
+            or type(ttl_seconds) not in {int, float}
+            or ttl_seconds <= 0
+        ):
+            raise ValueError("authority consultation receipt is invalid")
         run_suffix = str(run_input["run_id"]).split("-", 1)[0]
         branch = f"chore/release-v{version}-{run_suffix}"
         self.command(["git", "switch", "-c", branch, admitted])
