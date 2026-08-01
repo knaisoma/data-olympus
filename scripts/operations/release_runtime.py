@@ -157,14 +157,31 @@ class FastMCPGateway:
             raise ValueError("FastMCP returned invalid JSON") from error
         if envelope.get("is_error") is True:
             raise ValueError("FastMCP returned an error result")
-        structured = _object(
-            envelope.get("structured_content"),
-            "FastMCP structured content",
-        )
-        if "result" not in structured:
-            raise ValueError("FastMCP structured content omitted result")
-        result = _parse_nested_json(structured["result"])
+        structured = envelope.get("structured_content")
+        used_text_content = structured is None
+        if structured is None:
+            content = envelope.get("content")
+            if type(content) is not list or len(content) != 1:
+                raise ValueError("FastMCP content must contain one item")
+            item = _object(content[0], "FastMCP content item")
+            if item.get("type") != "text" or type(item.get("text")) is not str:
+                raise ValueError("FastMCP content item must be text")
+            result = _parse_nested_json(item["text"])
+        else:
+            structured_object = _object(
+                structured,
+                "FastMCP structured content",
+            )
+            if "result" not in structured_object:
+                raise ValueError("FastMCP structured content omitted result")
+            result = _parse_nested_json(structured_object["result"])
+        if used_text_content and not (
+            type(result) is dict and set(result) >= {"tool", "result"}
+        ):
+            raise ValueError("FastMCP text content omitted gateway result")
         if type(result) is dict and set(result) >= {"tool", "result"}:
+            if result["tool"] != name:
+                raise ValueError("FastMCP result tool does not match request")
             result = _parse_nested_json(result["result"])
         return result
 
