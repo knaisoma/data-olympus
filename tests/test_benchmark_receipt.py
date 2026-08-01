@@ -277,6 +277,54 @@ def test_docs_guard_surfaces_receipt_drift(tmp_path: Path, monkeypatch) -> None:
     ]
 
 
+def test_docs_guard_allows_only_release_root_version_lock_drift(
+    tmp_path: Path,
+) -> None:
+    from benchmarks.receipt import build_receipt, verify_receipt
+    from scripts import check_benchmark_docs
+
+    root = _benchmark_repo(tmp_path)
+    _write(
+        root / "pyproject.toml",
+        '[project]\nname = "data-olympus"\nversion = "0.6.0"\n',
+    )
+    receipt = build_receipt(root, _commit_repo(root))
+    receipt_path = root / "benchmarks" / "results" / "receipt.json"
+    _write(receipt_path, json.dumps(receipt) + "\n")
+
+    lock_path = root / "uv.lock"
+    lock_path.write_text(
+        lock_path.read_text(encoding="utf-8").replace(
+            'name = "data-olympus"\nversion = "0.6.0"',
+            'name = "data-olympus"\nversion = "0.7.0"',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "data-olympus"\nversion = "0.7.0"\n',
+        encoding="utf-8",
+    )
+
+    assert verify_receipt(receipt, root) == [
+        "dependency_lock does not match uv.lock"
+    ]
+    assert check_benchmark_docs.receipt_problems(root) == []
+
+    lock_path.write_text(
+        lock_path.read_text(encoding="utf-8").replace(
+            'name = "fastmcp"\nversion = "3.4.4"',
+            'name = "fastmcp"\nversion = "3.4.5"',
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    assert check_benchmark_docs.receipt_problems(root) == [
+        "dependency_lock does not match uv.lock"
+    ]
+
+
 def test_public_claims_carry_independent_reproduction_label() -> None:
     root = Path(__file__).resolve().parent.parent
     label = "Maintainer-produced; not independently reproduced."
