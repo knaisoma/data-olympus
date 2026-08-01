@@ -90,6 +90,88 @@ def test_fastmcp_gateway_uses_the_gateway_control_plane() -> None:
     assert calls[0][5] == "execute_tool"
 
 
+def test_fastmcp_gateway_accepts_the_standard_text_content_envelope() -> None:
+    def run_command(_command: list[str], _cwd: Path, _timeout: int) -> str:
+        return json.dumps(
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "tool": "create_pull_request",
+                                "result": json.dumps(
+                                    {
+                                        "id": "PR_kwDOQFQYxM6Yxw",
+                                        "url": (
+                                            "https://github.com/knaisoma/"
+                                            "data-olympus/pull/185"
+                                        ),
+                                    }
+                                ),
+                            }
+                        ),
+                    }
+                ],
+                "is_error": False,
+            }
+        )
+
+    result = FastMCPGateway(run_command=run_command).execute(
+        "create_pull_request",
+        {"owner": "knaisoma", "repo": "data-olympus"},
+    )
+
+    assert result == {
+        "id": "PR_kwDOQFQYxM6Yxw",
+        "url": "https://github.com/knaisoma/data-olympus/pull/185",
+    }
+
+
+def test_fastmcp_gateway_rejects_unbound_text_content() -> None:
+    def run_command(_command: list[str], _cwd: Path, _timeout: int) -> str:
+        return json.dumps(
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps({"id": "unbound-result"}),
+                    }
+                ],
+                "is_error": False,
+            }
+        )
+
+    with pytest.raises(ValueError, match="omitted gateway result"):
+        FastMCPGateway(run_command=run_command).execute(
+            "create_pull_request",
+            {"owner": "knaisoma", "repo": "data-olympus"},
+        )
+
+
+def test_fastmcp_gateway_rejects_a_different_tool_result() -> None:
+    def run_command(_command: list[str], _cwd: Path, _timeout: int) -> str:
+        return json.dumps(
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {"tool": "list_tags", "result": "[]"}
+                        ),
+                    }
+                ],
+                "is_error": False,
+            }
+        )
+
+    with pytest.raises(ValueError, match="tool does not match request"):
+        FastMCPGateway(run_command=run_command).execute(
+            "create_pull_request",
+            {"owner": "knaisoma", "repo": "data-olympus"},
+        )
+
+
 def test_collect_admission_binds_exact_remote_main_and_governed_computation(
     tmp_path: Path,
 ) -> None:
