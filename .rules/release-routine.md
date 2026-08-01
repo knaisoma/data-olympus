@@ -115,6 +115,9 @@ Rollback is the same executable with the `rollback` argument. It reads
    * `scripts/ci_status.py`.
    * Version availability across PyPI, GHCR, GitHub tags, and GitHub releases.
 
+   Ruff, mypy, and pytest run through `uv` with the declared `dev` extra so the
+   release can never select an unrelated global executable.
+
    Each isolated wheel or sdist smoke gets one fresh retry because environment
    creation and dependency retrieval can fail transiently. A second failure
    blocks the release. The other local gates remain single attempt so a real
