@@ -1261,14 +1261,64 @@ def test_release_command_reviews_and_delivers_prepared_unpublished_main() -> Non
     events = execute_release_run(json.dumps(RUN_INPUT), dependencies)
 
     assert events[-1]["status"] == "delivered", events[-1]
-    assert events[-1]["candidate_revision"] == SOURCE_SHA
+    assert events[-1]["candidate_revision"] is None
     assert events[-1]["evidence"]["preparation_reference"] == (
         f"origin/main@{SOURCE_SHA}"
     )
+    assert events[-1]["evidence"]["approved_candidate_revision"] == SOURCE_SHA
+    assert events[-1]["evidence"]["delivery_revision"] == SOURCE_SHA
     assert "release_pr_number" not in events[-1]["evidence"]
     packet = captured["packet"]
     assert isinstance(packet, dict)
+    assert packet["source_revision"] == SOURCE_SHA
+    assert packet["candidate"]["source_revision"] == SOURCE_SHA
     assert packet["preparation_controls"] == prepared["prepared_main"]
+
+
+def test_prepared_unpublished_review_failure_keeps_central_candidate_null() -> None:
+    dependencies = _release_dependencies()
+    captured: dict[str, object] = {}
+    prepared = _prepared_unpublished_input()
+
+    def fail_review(request: dict[str, object]) -> dict[str, object]:
+        captured["packet"] = request["packet"]
+        raise ValueError("review model invocation failed")
+
+    dependencies.update(
+        {
+            "candidate_revision": lambda: SOURCE_SHA,
+            "prepare": lambda _run, _admitted: prepared,
+            "validate": lambda _run, _admitted, _prepared: {
+                "candidate": prepared["candidate"],
+                "current_source_revision": SOURCE_SHA,
+                "ci": {
+                    "source_revision": SOURCE_SHA,
+                    "all_success": True,
+                    "missing_required": [],
+                },
+                "security": {"exit_code": 0},
+                "version_free": {"version": "0.6.1", "free": True},
+                "tests": {"source_revision": SOURCE_SHA, "passed": True},
+            },
+            "invoke_model": fail_review,
+        }
+    )
+
+    events = execute_release_run(json.dumps(RUN_INPUT), dependencies)
+
+    assert [event.get("name") for event in events[:-1]] == [
+        "admission",
+        "prepare",
+        "validate",
+    ]
+    assert events[-1]["status"] == "blocked"
+    assert events[-1]["reason"] == "review model invocation failed"
+    assert events[-1]["source_revision"] == SOURCE_SHA
+    assert events[-1]["candidate_revision"] is None
+    packet = captured["packet"]
+    assert isinstance(packet, dict)
+    assert packet["source_revision"] == SOURCE_SHA
+    assert packet["candidate"]["source_revision"] == SOURCE_SHA
 
 
 def test_review_evidence_hash_binds_the_packet_and_claude_response() -> None:
