@@ -1627,10 +1627,11 @@ def test_merge_response_distinguishes_no_merge_from_confirmed_missing_identity(
     }
 
 
-def test_prepare_stops_at_the_unmerged_review_candidate(
+def test_prepare_rolls_forward_new_changes_to_unmerged_review_candidate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _write_prepared_release_documents(tmp_path)
     consultations: list[dict[str, object]] = []
     gate_checks: list[dict[str, object]] = []
     gateway = StubGateway(
@@ -1664,7 +1665,7 @@ def test_prepare_stops_at_the_unmerged_review_candidate(
         lambda *_arguments: {
             "changelog_hash": "1" * 64,
             "content_hash": "2" * 64,
-            "document_mode": "normal",
+            "document_mode": "roll_forward",
             "release_note_hash": "2" * 64,
         },
     )
@@ -1727,7 +1728,7 @@ def test_prepare_stops_at_the_unmerged_review_candidate(
         {
             "evidence": {
                 "computed_release": {
-                    "changes": {"breaking": [], "features": [], "fixes": []}
+                    "changes": _roll_forward_changes()
                 }
             },
             "outputs": {"candidate": {"version": "0.7.0"}},
@@ -1750,7 +1751,7 @@ def test_prepare_stops_at_the_unmerged_review_candidate(
     }
     assert result["changelog"] == {
         "content_hash": "1" * 64,
-        "document_mode": "normal",
+        "document_mode": "roll_forward",
         "source_revision": CANDIDATE_SHA,
     }
     assert runtime.candidate_revision() == CANDIDATE_SHA

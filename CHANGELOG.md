@@ -17,6 +17,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * Keep the operations runner candidate revision null when resuming a release
   that is already prepared on `main`, while retaining the exact admitted source
   revision throughout review, approval, delivery, and verification evidence.
+* Select exact prepared recovery only when the current release documents match
+  the complete computed change set. A new reviewed change now reaches the
+  existing atomic roll forward pull request path instead of blocking recovery.
 
 ## [0.7.0] - 2026-08-02
 

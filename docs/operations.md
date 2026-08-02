@@ -612,6 +612,15 @@ reports its distinct derived candidate revision. This separation prevents the
 central runner from mistaking a prepared source recovery for a newly created
 candidate while preserving end to end source identity.
 
+Exact recovery applies only while the prepared documents still match the
+complete computed release change set. If another reviewed commit reaches
+`main` before publication, the next run uses the ordinary isolated branch and
+the deterministic roll forward renderer. That renderer must preserve every
+prior release item, incorporate at least one newly computed item, empty the
+Unreleased section, and pass the full pull request gates before delivery. An
+incomplete, corrupt, replayed, or ambiguous prepared state still fails before
+any commit, push, merge, publication, or deployment.
+
 Yank an unsuitable PyPI candidate and publish a higher candidate number. Roll a
 moving GHCR channel back by applying the channel tag to a previously verified
 digest with `docker buildx imagetools create`. Keep the immutable version tag for

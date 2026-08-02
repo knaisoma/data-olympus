@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from contextlib import suppress
 from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
@@ -1653,10 +1654,19 @@ class ReleaseRuntime:
         if self.command(["git", "status", "--porcelain"]):
             raise ValueError("managed release worktree is not clean")
         run_id = str(run_input["run_id"])
-        prepared_unpublished = _has_prepared_release_indicators(
-            self.repository_root,
-            version,
-        )
+        prepared_document_evidence: dict[str, str] | None = None
+        if _has_prepared_release_indicators(self.repository_root, version):
+            # A valid post-preparation change belongs to the existing atomic
+            # roll-forward path. That renderer still rejects every incomplete,
+            # corrupt, or ambiguous prepared state before it changes a
+            # governed file.
+            with suppress(ValueError):
+                prepared_document_evidence = validate_prepared_release_documents(
+                    self.repository_root,
+                    version,
+                    changes,
+                )
+        prepared_unpublished = prepared_document_evidence is not None
         authority_intent = (
             f"Resume governed prepared unpublished Data Olympus release v{version} "
             f"from exact source {admitted}."
@@ -1709,11 +1719,9 @@ class ReleaseRuntime:
         ):
             raise ValueError("authority gate receipt is invalid")
         if prepared_unpublished:
-            document_evidence = validate_prepared_release_documents(
-                self.repository_root,
-                version,
-                changes,
-            )
+            document_evidence = prepared_document_evidence
+            if document_evidence is None:
+                raise ValueError("prepared unpublished evidence is unavailable")
             self.command(["git", "fetch", "origin", "main"], timeout=120)
             if (
                 self.source_revision() != admitted
