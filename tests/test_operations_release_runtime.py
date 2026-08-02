@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
 import pytest
@@ -1675,6 +1676,14 @@ def test_prepare_rolls_forward_new_changes_to_unmerged_review_candidate(
     monkeypatch.setattr(runtime, "_parent_revisions", lambda _revision: [SOURCE_SHA])
     monkeypatch.setattr(
         runtime,
+        "_review_material",
+        lambda _version, source, _base: {
+            "mode": "pull_request_diff",
+            "source_revision": source,
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
         "_wait_pull_request",
         lambda _number, _head, _base: {
             "checks": completed_check_evidence(
@@ -1752,6 +1761,11 @@ def test_prepare_rolls_forward_new_changes_to_unmerged_review_candidate(
     assert result["changelog"] == {
         "content_hash": "1" * 64,
         "document_mode": "roll_forward",
+        "release_note_hash": "2" * 64,
+        "source_revision": CANDIDATE_SHA,
+    }
+    assert result["review_material"] == {
+        "mode": "pull_request_diff",
         "source_revision": CANDIDATE_SHA,
     }
     assert runtime.candidate_revision() == CANDIDATE_SHA
@@ -1781,6 +1795,125 @@ def test_prepare_rolls_forward_new_changes_to_unmerged_review_candidate(
     ]
 
 
+def test_review_material_reads_documents_from_the_bound_revision(
+    tmp_path: Path,
+) -> None:
+    committed_changelog = (
+        "# Changelog\n\n## [Unreleased]\n\n"
+        "## [0.7.0] - 2026-08-02\n\n### Fixed\n\n"
+        "* Committed release evidence.\n\n"
+        "## [0.6.0] - 2026-07-18\n\n* Prior release.\n"
+    )
+    committed_note = (
+        "# data-olympus 0.7.0\n\n## Fixed\n\n"
+        "* Committed release evidence.\n"
+    )
+    candidate_diff = "diff --git a/CHANGELOG.md b/CHANGELOG.md\n+committed"
+    (tmp_path / "docs" / "releases").mkdir(parents=True)
+    (tmp_path / "CHANGELOG.md").write_text(
+        committed_changelog.replace("Committed", "Working tree drift"),
+        encoding="utf-8",
+    )
+    (tmp_path / "docs" / "releases" / "v0.7.0.md").write_text(
+        committed_note.replace("Committed", "Working tree drift"),
+        encoding="utf-8",
+    )
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        if command == ["git", "show", f"{CANDIDATE_SHA}:CHANGELOG.md"]:
+            return committed_changelog
+        if command == [
+            "git",
+            "show",
+            f"{CANDIDATE_SHA}:docs/releases/v0.7.0.md",
+        ]:
+            return committed_note
+        if command[:2] == ["git", "diff"]:
+            return candidate_diff
+        raise AssertionError(command)
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway(),
+        command_output=command_output,
+    )
+
+    material = runtime._review_material(
+        "0.7.0",
+        CANDIDATE_SHA,
+        SOURCE_SHA,
+    )
+
+    assert material["release_note"] == committed_note
+    assert "Committed release evidence" in material["changelog_section"]
+    assert "Working tree drift" not in json.dumps(material)
+    assert material["candidate_diff"] == candidate_diff
+
+
+def test_review_material_rejects_an_oversize_candidate_diff(
+    tmp_path: Path,
+) -> None:
+    changelog = (
+        "# Changelog\n\n## [Unreleased]\n\n"
+        "## [0.7.0] - 2026-08-02\n\n### Fixed\n\n* Evidence.\n"
+    )
+    note = "# data-olympus 0.7.0\n\n## Fixed\n\n* Evidence.\n"
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        if command == ["git", "show", f"{CANDIDATE_SHA}:CHANGELOG.md"]:
+            return changelog
+        if command == [
+            "git",
+            "show",
+            f"{CANDIDATE_SHA}:docs/releases/v0.7.0.md",
+        ]:
+            return note
+        if command[:2] == ["git", "diff"]:
+            return "x" * (128 * 1024)
+        raise AssertionError(command)
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway(),
+        command_output=command_output,
+    )
+
+    with pytest.raises(ValueError, match="bounded packet limit"):
+        runtime._review_material("0.7.0", CANDIDATE_SHA, SOURCE_SHA)
+
+
+def test_review_material_rejects_an_empty_pull_request_diff(
+    tmp_path: Path,
+) -> None:
+    changelog = (
+        "# Changelog\n\n## [Unreleased]\n\n"
+        "## [0.7.0] - 2026-08-02\n\n### Fixed\n\n* Evidence.\n"
+    )
+    note = "# data-olympus 0.7.0\n\n## Fixed\n\n* Evidence.\n"
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        if command == ["git", "show", f"{CANDIDATE_SHA}:CHANGELOG.md"]:
+            return changelog
+        if command == [
+            "git",
+            "show",
+            f"{CANDIDATE_SHA}:docs/releases/v0.7.0.md",
+        ]:
+            return note
+        if command[:2] == ["git", "diff"]:
+            return ""
+        raise AssertionError(command)
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway(),
+        command_output=command_output,
+    )
+
+    with pytest.raises(ValueError, match="release candidate review diff is empty"):
+        runtime._review_material("0.7.0", CANDIDATE_SHA, SOURCE_SHA)
+
+
 def test_prepare_recognizes_exact_prepared_unpublished_main_without_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1791,6 +1924,16 @@ def test_prepare_recognizes_exact_prepared_unpublished_main_without_mutation(
 
     def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
         commands.append(command)
+        if command == ["git", "show", f"{SOURCE_SHA}:CHANGELOG.md"]:
+            return (tmp_path / "CHANGELOG.md").read_text(encoding="utf-8")
+        if command == [
+            "git",
+            "show",
+            f"{SOURCE_SHA}:docs/releases/v0.7.0.md",
+        ]:
+            return (
+                tmp_path / "docs" / "releases" / "v0.7.0.md"
+            ).read_text(encoding="utf-8")
         return ""
 
     runtime = ReleaseRuntime(
@@ -1872,6 +2015,16 @@ def test_prepare_recognizes_exact_prepared_unpublished_main_without_mutation(
     }
     assert "release_pr" not in result
     assert "release_controls" not in result
+    material = result["review_material"]
+    assert material["mode"] == "prepared_main_documents"
+    assert material["source_revision"] == SOURCE_SHA
+    assert material["candidate_diff"] == ""
+    assert material["release_note_sha256"] == sha256(
+        material["release_note"].encode()
+    ).hexdigest()
+    assert material["changelog_section_sha256"] == sha256(
+        material["changelog_section"].encode()
+    ).hexdigest()
     assert gateway.calls == []
     assert not any(
         command[:2] in {
