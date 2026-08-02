@@ -299,6 +299,7 @@ def _admission(input_document: dict[str, Any]) -> StageResult:
 
     evidence = {
         "source_revision": source_revision,
+        "remote_main_revision": remote_main_revision,
         "current_version": current,
         "computed_release": {
             "releasable": releasable,

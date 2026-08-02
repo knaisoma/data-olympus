@@ -12,6 +12,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* **Bound no action review to current remote main.** Release admission now
+  preserves the freshly fetched `origin/main` revision in the compact review
+  evidence, so an independent reviewer can verify that the admitted source and
+  current remote source are identical before accepting that no release is due.
+
 ## [0.7.0] - 2026-08-02
 
 ### New features
