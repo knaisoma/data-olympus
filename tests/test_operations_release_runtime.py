@@ -1882,6 +1882,38 @@ def test_review_material_rejects_an_oversize_candidate_diff(
         runtime._review_material("0.7.0", CANDIDATE_SHA, SOURCE_SHA)
 
 
+def test_review_material_rejects_an_empty_pull_request_diff(
+    tmp_path: Path,
+) -> None:
+    changelog = (
+        "# Changelog\n\n## [Unreleased]\n\n"
+        "## [0.7.0] - 2026-08-02\n\n### Fixed\n\n* Evidence.\n"
+    )
+    note = "# data-olympus 0.7.0\n\n## Fixed\n\n* Evidence.\n"
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        if command == ["git", "show", f"{CANDIDATE_SHA}:CHANGELOG.md"]:
+            return changelog
+        if command == [
+            "git",
+            "show",
+            f"{CANDIDATE_SHA}:docs/releases/v0.7.0.md",
+        ]:
+            return note
+        if command[:2] == ["git", "diff"]:
+            return ""
+        raise AssertionError(command)
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=StubGateway(),
+        command_output=command_output,
+    )
+
+    with pytest.raises(ValueError, match="release candidate review diff is empty"):
+        runtime._review_material("0.7.0", CANDIDATE_SHA, SOURCE_SHA)
+
+
 def test_prepare_recognizes_exact_prepared_unpublished_main_without_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

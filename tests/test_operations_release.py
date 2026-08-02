@@ -1466,6 +1466,32 @@ def test_pull_request_review_rejects_prepared_main_material_mode() -> None:
     assert invoked is False
 
 
+def test_pull_request_review_rejects_an_empty_candidate_diff() -> None:
+    dependencies = _release_dependencies()
+    original_prepare = dependencies["prepare"]
+    invoked = False
+
+    def prepare(run, admitted):
+        prepared = original_prepare(run, admitted)
+        prepared["review_material"]["candidate_diff"] = ""
+        prepared["review_material"]["candidate_diff_sha256"] = sha256(b"").hexdigest()
+        return prepared
+
+    def invoke_model(_request):
+        nonlocal invoked
+        invoked = True
+        raise AssertionError("empty candidate diff must not reach a model")
+
+    dependencies["prepare"] = prepare
+    dependencies["invoke_model"] = invoke_model
+
+    events = execute_release_run(json.dumps(RUN_INPUT), dependencies)
+
+    assert events[-1]["status"] == "blocked"
+    assert "candidate_diff must be a bounded string" in events[-1]["reason"]
+    assert invoked is False
+
+
 def test_failed_model_process_is_not_misreported_as_invalid_json(
     monkeypatch,
     tmp_path,
