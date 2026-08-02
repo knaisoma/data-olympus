@@ -12,6 +12,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-02
+
+### Fixed
+
+* fix(release): bind no action review to remote main
+
+
 ### Fixed
 
 * **Bound no action review to current remote main.** Release admission now
