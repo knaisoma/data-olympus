@@ -190,8 +190,10 @@ The release host requires:
     Publication is a direct continuation after these freshly derived proofs,
     never a replay from stored evidence.
 13. Dispatch `rc-publish.yml` for `M` and the next unused candidate
-    number. Do not reproduce version computation or publication logic in the
-    runner.
+    number. Serialize the candidate number as a decimal string in the GitHub
+    workflow dispatch request, even though the workflow declares a numeric
+    input. GitHub rejects a JSON number for this endpoint. Do not reproduce
+    version computation or publication logic in the runner.
 14. Verify the complete candidate transaction:
 
     * GitHub prerelease.
