@@ -12,19 +12,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-
-* Give the autonomous release reviewer the exact bounded, hash bound candidate
-  diff, changelog section, and release note, and preserve its bounded reason
-  when it blocks a release instead of reducing the diagnosis to a generic
-  verdict.
-* Keep the operations runner candidate revision null when resuming a release
-  that is already prepared on `main`, while retaining the exact admitted source
-  revision throughout review, approval, delivery, and verification evidence.
-* Select exact prepared recovery only when the current release documents match
-  the complete computed change set. A new reviewed change now reaches the
-  existing atomic roll forward pull request path instead of blocking recovery.
-
 ## [0.7.0] - 2026-08-02
 
 ### New features
@@ -33,6 +20,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * feat(automation): make weekly releases outcome based
 ### Fixed
 
+* fix(release): ground autonomous review packets (#215)
+* fix(release): preserve prepared roll forward (#213)
+* fix(automation): preserve recovery result binding (#212)
 * fix(release): resume unpublished preparation
 * fix(release): retry bound tag inventory read (#208)
 * fix(release): isolate prereview model evidence (#206)
@@ -100,6 +90,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * Retry one transient unbound FastMCP response during the idempotent postmerge
   tag inventory, while preserving strict tool binding and exact merge evidence
   when the bounded retry still fails.
+
+### Fixed
+
+* Give the autonomous release reviewer the exact bounded, hash bound candidate
+  diff, changelog section, and release note, and preserve its bounded reason
+  when it blocks a release instead of reducing the diagnosis to a generic
+  verdict.
+* Keep the operations runner candidate revision null when resuming a release
+  that is already prepared on `main`, while retaining the exact admitted source
+  revision throughout review, approval, delivery, and verification evidence.
+* Select exact prepared recovery only when the current release documents match
+  the complete computed change set. A new reviewed change now reaches the
+  existing atomic roll forward pull request path instead of blocking recovery.
 
 ## [0.6.0] - 2026-07-18
 
