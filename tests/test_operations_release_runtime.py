@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
 import pytest
@@ -1675,6 +1676,14 @@ def test_prepare_rolls_forward_new_changes_to_unmerged_review_candidate(
     monkeypatch.setattr(runtime, "_parent_revisions", lambda _revision: [SOURCE_SHA])
     monkeypatch.setattr(
         runtime,
+        "_review_material",
+        lambda _version, source, _base: {
+            "mode": "pull_request_diff",
+            "source_revision": source,
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
         "_wait_pull_request",
         lambda _number, _head, _base: {
             "checks": completed_check_evidence(
@@ -1752,6 +1761,10 @@ def test_prepare_rolls_forward_new_changes_to_unmerged_review_candidate(
     assert result["changelog"] == {
         "content_hash": "1" * 64,
         "document_mode": "roll_forward",
+        "source_revision": CANDIDATE_SHA,
+    }
+    assert result["review_material"] == {
+        "mode": "pull_request_diff",
         "source_revision": CANDIDATE_SHA,
     }
     assert runtime.candidate_revision() == CANDIDATE_SHA
@@ -1872,6 +1885,16 @@ def test_prepare_recognizes_exact_prepared_unpublished_main_without_mutation(
     }
     assert "release_pr" not in result
     assert "release_controls" not in result
+    material = result["review_material"]
+    assert material["mode"] == "prepared_main_documents"
+    assert material["source_revision"] == SOURCE_SHA
+    assert material["candidate_diff"] == ""
+    assert material["release_note_sha256"] == sha256(
+        material["release_note"].encode()
+    ).hexdigest()
+    assert material["changelog_section_sha256"] == sha256(
+        material["changelog_section"].encode()
+    ).hexdigest()
     assert gateway.calls == []
     assert not any(
         command[:2] in {

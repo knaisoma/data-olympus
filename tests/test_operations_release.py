@@ -23,6 +23,35 @@ AUTHORITY_SHA = "b" * 40
 CONTRACT_SHA = "c" * 64
 IMAGE_DIGEST = "sha256:" + "d" * 64
 PREVIOUS_DIGEST = "sha256:" + "e" * 64
+RELEASE_NOTE = "# data-olympus 0.6.1\n\n## Fixed\n\n* Exact release evidence.\n"
+CHANGELOG_SECTION = (
+    "## [0.6.1] - 2026-08-02\n\n### Fixed\n\n"
+    "* Exact release evidence.\n"
+)
+CANDIDATE_DIFF = (
+    "diff --git a/CHANGELOG.md b/CHANGELOG.md\n"
+    "+## [0.6.1] - 2026-08-02\n"
+)
+
+
+def _review_material(
+    *,
+    mode: str = "pull_request_diff",
+    source_revision: str = CANDIDATE_SHA,
+) -> dict[str, object]:
+    candidate_diff = CANDIDATE_DIFF if mode == "pull_request_diff" else ""
+    return {
+        "mode": mode,
+        "source_revision": source_revision,
+        "candidate_diff": candidate_diff,
+        "candidate_diff_sha256": sha256(candidate_diff.encode()).hexdigest(),
+        "changelog_section": CHANGELOG_SECTION,
+        "changelog_section_sha256": sha256(
+            CHANGELOG_SECTION.encode()
+        ).hexdigest(),
+        "release_note": RELEASE_NOTE,
+        "release_note_sha256": sha256(RELEASE_NOTE.encode()).hexdigest(),
+    }
 
 
 def _candidate() -> dict[str, object]:
@@ -261,6 +290,10 @@ def _prepared_unpublished_input() -> dict[str, object]:
     return {
         "candidate": {"version": "0.6.1", "source_revision": SOURCE_SHA},
         "preparation_mode": "prepared_unpublished",
+        "review_material": _review_material(
+            mode="prepared_main_documents",
+            source_revision=SOURCE_SHA,
+        ),
         "extra_context": DEFAULT_EXTRA_CONTEXT,
         "prepared_main": {
             "source_revision": SOURCE_SHA,
@@ -940,6 +973,7 @@ def _approved_review(request: dict[str, object]) -> dict[str, object]:
     assert isinstance(ticket, dict)
     return {
         "model_use_id": ticket["model_use_id"],
+        "reason": "candidate approved",
         "route_id": ticket["route_id"],
         "status": "approved",
         "verdict": "APPROVE",
@@ -963,6 +997,7 @@ def _release_dependencies(*, source_revision: str = SOURCE_SHA) -> dict[str, obj
         state["head"] = CANDIDATE_SHA
         return {
             "candidate": prepared_candidate,
+            "review_material": _review_material(),
             "release_controls": _release_controls(CANDIDATE_SHA),
             "extra_context": run["extra_context"],
             "changelog": {
@@ -1372,7 +1407,33 @@ def test_release_review_packet_omits_the_validated_prereview_state() -> None:
     release_controls = packet["release_controls"]
     assert isinstance(release_controls, dict)
     assert "review_decision" not in release_controls
+    assert packet["candidate_material"] == _review_material()
     assert events[-1]["status"] == "delivered"
+
+
+def test_release_blocks_before_model_when_review_material_hash_changes() -> None:
+    dependencies = _release_dependencies()
+    original_prepare = dependencies["prepare"]
+    invoked = False
+
+    def prepare(run, admitted):
+        prepared = original_prepare(run, admitted)
+        prepared["review_material"]["release_note_sha256"] = "0" * 64
+        return prepared
+
+    def invoke_model(_request):
+        nonlocal invoked
+        invoked = True
+        raise AssertionError("invalid review material must not reach a model")
+
+    dependencies["prepare"] = prepare
+    dependencies["invoke_model"] = invoke_model
+
+    events = execute_release_run(json.dumps(RUN_INPUT), dependencies)
+
+    assert events[-1]["status"] == "blocked"
+    assert "release_note hash does not match" in events[-1]["reason"]
+    assert invoked is False
 
 
 def test_failed_model_process_is_not_misreported_as_invalid_json(
@@ -1415,6 +1476,7 @@ def test_nonzero_model_block_remains_an_independent_review_block(
 ) -> None:
     response = {
         "model_use_id": 71,
+        "reason": "release note content was absent from the review packet",
         "route_id": "claude-code",
         "status": "blocked",
         "verdict": "BLOCK",
@@ -1439,7 +1501,10 @@ def test_nonzero_model_block_remains_an_independent_review_block(
 
     with pytest.raises(
         ValueError,
-        match="^independent review blocked the release$",
+        match=(
+            "^independent review blocked the release: release note content "
+            "was absent from the review packet$"
+        ),
     ):
         release_module._invoke_ticketed_model_from_runner(
             RUN_INPUT,
@@ -1455,6 +1520,7 @@ def test_nonzero_model_approval_is_still_an_invocation_failure(
 ) -> None:
     response = {
         "model_use_id": 71,
+        "reason": "candidate approved",
         "route_id": "claude-code",
         "status": "approved",
         "verdict": "APPROVE",

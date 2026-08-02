@@ -1192,6 +1192,69 @@ class ReleaseRuntime:
             raise ValueError("git parent evidence is invalid")
         return parts[1:]
 
+    def _review_material(
+        self,
+        version: str,
+        source_revision: str,
+        base_revision: str,
+    ) -> dict[str, str]:
+        if (
+            _SHA40.fullmatch(source_revision) is None
+            or _SHA40.fullmatch(base_revision) is None
+        ):
+            raise ValueError("review material source revision is invalid")
+        changelog = (self.repository_root / "CHANGELOG.md").read_text(
+            encoding="utf-8"
+        )
+        heading = re.compile(
+            rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\n",
+            re.MULTILINE,
+        )
+        matches = list(heading.finditer(changelog))
+        if len(matches) != 1:
+            raise ValueError("review material release changelog section is ambiguous")
+        start = matches[0].start()
+        following = re.compile(r"^## \[", re.MULTILINE).search(
+            changelog,
+            matches[0].end(),
+        )
+        end = following.start() if following is not None else len(changelog)
+        changelog_section = changelog[start:end].rstrip() + "\n"
+        release_note_path = self.repository_root / "docs" / "releases" / f"v{version}.md"
+        release_note = release_note_path.read_text(encoding="utf-8")
+        if not release_note.strip():
+            raise ValueError("review material release note is empty")
+        if source_revision == base_revision:
+            mode = "prepared_main_documents"
+            candidate_diff = ""
+        else:
+            mode = "pull_request_diff"
+            candidate_diff = self.command(
+                [
+                    "git",
+                    "diff",
+                    "--no-ext-diff",
+                    "--unified=3",
+                    f"{base_revision}..{source_revision}",
+                    "--",
+                ],
+                timeout=120,
+            )
+            if not candidate_diff:
+                raise ValueError("release candidate review diff is empty")
+        return {
+            "mode": mode,
+            "source_revision": source_revision,
+            "candidate_diff": candidate_diff,
+            "candidate_diff_sha256": sha256(candidate_diff.encode()).hexdigest(),
+            "changelog_section": changelog_section,
+            "changelog_section_sha256": sha256(
+                changelog_section.encode()
+            ).hexdigest(),
+            "release_note": release_note,
+            "release_note_sha256": sha256(release_note.encode()).hexdigest(),
+        }
+
     def collect_admission(self, run_input: dict[str, Any]) -> dict[str, Any]:
         admitted = run_input.get("source_revision")
         if type(admitted) is not str or _SHA40.fullmatch(admitted) is None:
@@ -1740,6 +1803,11 @@ class ReleaseRuntime:
                     "source_revision": admitted,
                 },
                 "preparation_mode": "prepared_unpublished",
+                "review_material": self._review_material(
+                    version,
+                    admitted,
+                    admitted,
+                ),
                 "extra_context": run_input["extra_context"],
                 "prepared_main": {
                     "source_revision": admitted,
@@ -1844,6 +1912,11 @@ class ReleaseRuntime:
         }
         raw = {
             "candidate": review_candidate,
+            "review_material": self._review_material(
+                version,
+                head_revision,
+                admitted,
+            ),
             "extra_context": run_input["extra_context"],
             "release_controls": ready["controls"],
             "changelog": {

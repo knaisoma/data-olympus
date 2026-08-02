@@ -14,6 +14,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* Give the autonomous release reviewer the exact bounded, hash bound candidate
+  diff, changelog section, and release note, and preserve its bounded reason
+  when it blocks a release instead of reducing the diagnosis to a generic
+  verdict.
 * Keep the operations runner candidate revision null when resuming a release
   that is already prepared on `main`, while retaining the exact admitted source
   revision throughout review, approval, delivery, and verification evidence.

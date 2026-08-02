@@ -1068,10 +1068,22 @@ _ISSUED_TICKET_FIELDS = {
 }
 _MODEL_RESPONSE_FIELDS = {
     "model_use_id",
+    "reason",
     "route_id",
     "status",
     "verdict",
 }
+_REVIEW_MATERIAL_FIELDS = {
+    "candidate_diff",
+    "candidate_diff_sha256",
+    "changelog_section",
+    "changelog_section_sha256",
+    "mode",
+    "release_note",
+    "release_note_sha256",
+    "source_revision",
+}
+_MAX_REVIEW_MATERIAL_BYTES = 128 * 1024
 _CANDIDATE_APPROVAL_FIELDS = {
     "approval_id_hash",
     "authority",
@@ -1093,6 +1105,48 @@ def _exact_fields(value: dict[str, Any], fields: set[str], name: str) -> None:
         raise ReleaseInputError(f"unknown {name} field: {unknown[0]}")
     if missing:
         raise ReleaseInputError(f"missing {name} field: {missing[0]}")
+
+
+def _review_material(value: Any, candidate_revision: str) -> dict[str, Any]:
+    material = _object(value, "review material")
+    _exact_fields(material, _REVIEW_MATERIAL_FIELDS, "review material")
+    _same_source(
+        candidate_revision,
+        material.get("source_revision"),
+        "review material source_revision",
+    )
+    mode = material.get("mode")
+    if mode not in {"pull_request_diff", "prepared_main_documents"}:
+        raise ReleaseInputError("review material mode is invalid")
+    content_fields = (
+        ("candidate_diff", mode == "prepared_main_documents"),
+        ("changelog_section", False),
+        ("release_note", False),
+    )
+    total_bytes = 0
+    for field, allow_empty in content_fields:
+        content = material.get(field)
+        if type(content) is not str or (not allow_empty and not content.strip()):
+            raise ReleaseInputError(
+                f"review material {field} must be a bounded string"
+            )
+        encoded = content.encode("utf-8")
+        total_bytes += len(encoded)
+        expected_hash = _hash(
+            material.get(f"{field}_sha256"),
+            f"review material {field}_sha256",
+        )
+        if sha256(encoded).hexdigest() != expected_hash:
+            raise ReleaseInputError(
+                f"review material {field} hash does not match"
+            )
+    if mode == "prepared_main_documents" and material["candidate_diff"] != "":
+        raise ReleaseInputError(
+            "prepared main review material must not invent a candidate diff"
+        )
+    if total_bytes > _MAX_REVIEW_MATERIAL_BYTES:
+        raise ReleaseInputError("review material exceeds the bounded packet limit")
+    return material
 
 
 def parse_release_run_input(raw_input: str) -> dict[str, Any]:
@@ -1176,8 +1230,9 @@ def _approved_model_response(value: Any, ticket: dict[str, Any]) -> dict[str, An
         raise ReleaseInputError("review response model use does not match its ticket")
     if response["route_id"] != ticket["route_id"]:
         raise ReleaseInputError("review response route does not match its ticket")
+    reason = _string(response["reason"], "review response reason")
     if response["status"] != "approved" or response["verdict"] != "APPROVE":
-        raise ReleaseInputError("independent review blocked the release")
+        raise ReleaseInputError(f"independent review blocked the release: {reason}")
     return response
 
 
@@ -1528,9 +1583,15 @@ def execute_release_run(
         if revision_reader() != candidate_revision:
             raise ReleaseInputError("candidate revision changed during validation")
 
+        candidate_material = _review_material(
+            prepared_input.get("review_material"),
+            candidate_revision,
+        )
+
         ticket = _request_review_ticket(run_input, dependencies, candidate_revision)
         packet = {
             "candidate": candidate,
+            "candidate_material": candidate_material,
             "instruction": (
                 "Independently review the exact deterministic Data Olympus release "
                 "candidate. Approve only when source identity, tests, security, "
