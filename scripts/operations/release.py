@@ -1078,6 +1078,7 @@ _REVIEW_MATERIAL_FIELDS = {
     "candidate_diff_sha256",
     "changelog_section",
     "changelog_section_sha256",
+    "changelog_sha256",
     "mode",
     "release_note",
     "release_note_sha256",
@@ -1107,7 +1108,13 @@ def _exact_fields(value: dict[str, Any], fields: set[str], name: str) -> None:
         raise ReleaseInputError(f"missing {name} field: {missing[0]}")
 
 
-def _review_material(value: Any, candidate_revision: str) -> dict[str, Any]:
+def _review_material(
+    value: Any,
+    candidate_revision: str,
+    expected_mode: str,
+    expected_changelog_hash: str,
+    expected_release_note_hash: str,
+) -> dict[str, Any]:
     material = _object(value, "review material")
     _exact_fields(material, _REVIEW_MATERIAL_FIELDS, "review material")
     _same_source(
@@ -1118,8 +1125,12 @@ def _review_material(value: Any, candidate_revision: str) -> dict[str, Any]:
     mode = material.get("mode")
     if mode not in {"pull_request_diff", "prepared_main_documents"}:
         raise ReleaseInputError("review material mode is invalid")
+    if mode != expected_mode:
+        raise ReleaseInputError(
+            "review material mode does not match the release preparation"
+        )
     content_fields = (
-        ("candidate_diff", mode == "prepared_main_documents"),
+        ("candidate_diff", expected_mode == "prepared_main_documents"),
         ("changelog_section", False),
         ("release_note", False),
     )
@@ -1132,6 +1143,8 @@ def _review_material(value: Any, candidate_revision: str) -> dict[str, Any]:
             )
         encoded = content.encode("utf-8")
         total_bytes += len(encoded)
+        if total_bytes > _MAX_REVIEW_MATERIAL_BYTES:
+            raise ReleaseInputError("review material exceeds the bounded packet limit")
         expected_hash = _hash(
             material.get(f"{field}_sha256"),
             f"review material {field}_sha256",
@@ -1140,12 +1153,17 @@ def _review_material(value: Any, candidate_revision: str) -> dict[str, Any]:
             raise ReleaseInputError(
                 f"review material {field} hash does not match"
             )
-    if mode == "prepared_main_documents" and material["candidate_diff"] != "":
+    if (
+        _hash(material.get("changelog_sha256"), "review material changelog_sha256")
+        != expected_changelog_hash
+    ):
+        raise ReleaseInputError("review material changelog document hash changed")
+    if material["release_note_sha256"] != expected_release_note_hash:
+        raise ReleaseInputError("review material release note document hash changed")
+    if expected_mode == "prepared_main_documents" and material["candidate_diff"] != "":
         raise ReleaseInputError(
             "prepared main review material must not invent a candidate diff"
         )
-    if total_bytes > _MAX_REVIEW_MATERIAL_BYTES:
-        raise ReleaseInputError("review material exceeds the bounded packet limit")
     return material
 
 
@@ -1230,7 +1248,9 @@ def _approved_model_response(value: Any, ticket: dict[str, Any]) -> dict[str, An
         raise ReleaseInputError("review response model use does not match its ticket")
     if response["route_id"] != ticket["route_id"]:
         raise ReleaseInputError("review response route does not match its ticket")
-    reason = _string(response["reason"], "review response reason")
+    reason = " ".join(_string(response["reason"], "review response reason").split())
+    if len(reason) > 1024:
+        reason = reason[:1021] + "..."
     if response["status"] != "approved" or response["verdict"] != "APPROVE":
         raise ReleaseInputError(f"independent review blocked the release: {reason}")
     return response
@@ -1583,9 +1603,34 @@ def execute_release_run(
         if revision_reader() != candidate_revision:
             raise ReleaseInputError("candidate revision changed during validation")
 
+        changelog_input = _object(prepared_input.get("changelog"), "changelog")
+        expected_changelog_hash = _hash(
+            changelog_input.get("content_hash"),
+            "changelog.content_hash",
+        )
+        expected_release_note_hash = _hash(
+            changelog_input.get("release_note_hash"),
+            "changelog.release_note_hash",
+        )
+        if prepared_input.get("preparation_mode") == "prepared_unpublished":
+            expected_review_mode = "prepared_main_documents"
+            prepared_main = _object(
+                prepared_input.get("prepared_main"),
+                "prepared_main",
+            )
+            if prepared_main.get("release_note_hash") != expected_release_note_hash:
+                raise ReleaseInputError(
+                    "prepared main release note hash changed before review"
+                )
+        else:
+            expected_review_mode = "pull_request_diff"
+            _object(prepared_input.get("release_pr"), "release_pr")
         candidate_material = _review_material(
             prepared_input.get("review_material"),
             candidate_revision,
+            expected_review_mode,
+            expected_changelog_hash,
+            expected_release_note_hash,
         )
 
         ticket = _request_review_ticket(run_input, dependencies, candidate_revision)

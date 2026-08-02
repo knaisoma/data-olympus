@@ -71,6 +71,7 @@ AuthorityGateCheck = Callable[[dict[str, object]], dict[str, Any]]
 
 MAX_AUTHORITY_CONSULT_AGE_SECONDS = 300.0
 MAX_AUTHORITY_CLOCK_SKEW_SECONDS = 5.0
+MAX_REVIEW_MATERIAL_BYTES = 128 * 1024
 
 
 class ReleaseDeliveryError(ValueError):
@@ -1203,9 +1204,10 @@ class ReleaseRuntime:
             or _SHA40.fullmatch(base_revision) is None
         ):
             raise ValueError("review material source revision is invalid")
-        changelog = (self.repository_root / "CHANGELOG.md").read_text(
-            encoding="utf-8"
-        )
+        changelog = self.command(
+            ["git", "show", f"{source_revision}:CHANGELOG.md"],
+            timeout=120,
+        ) + "\n"
         heading = re.compile(
             rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\n",
             re.MULTILINE,
@@ -1220,8 +1222,14 @@ class ReleaseRuntime:
         )
         end = following.start() if following is not None else len(changelog)
         changelog_section = changelog[start:end].rstrip() + "\n"
-        release_note_path = self.repository_root / "docs" / "releases" / f"v{version}.md"
-        release_note = release_note_path.read_text(encoding="utf-8")
+        release_note = self.command(
+            [
+                "git",
+                "show",
+                f"{source_revision}:docs/releases/v{version}.md",
+            ],
+            timeout=120,
+        ) + "\n"
         if not release_note.strip():
             raise ValueError("review material release note is empty")
         if source_revision == base_revision:
@@ -1242,6 +1250,11 @@ class ReleaseRuntime:
             )
             if not candidate_diff:
                 raise ValueError("release candidate review diff is empty")
+        if sum(
+            len(content.encode("utf-8"))
+            for content in (candidate_diff, changelog_section, release_note)
+        ) > MAX_REVIEW_MATERIAL_BYTES:
+            raise ValueError("review material exceeds the bounded packet limit")
         return {
             "mode": mode,
             "source_revision": source_revision,
@@ -1251,6 +1264,7 @@ class ReleaseRuntime:
             "changelog_section_sha256": sha256(
                 changelog_section.encode()
             ).hexdigest(),
+            "changelog_sha256": sha256(changelog.encode()).hexdigest(),
             "release_note": release_note,
             "release_note_sha256": sha256(release_note.encode()).hexdigest(),
         }
@@ -1821,6 +1835,7 @@ class ReleaseRuntime:
                     "source_revision": admitted,
                     "content_hash": document_evidence["changelog_hash"],
                     "document_mode": "prepared_unpublished",
+                    "release_note_hash": document_evidence["release_note_hash"],
                 },
                 "security": gates["security"],
                 "tests": gates["tests"],
@@ -1923,6 +1938,7 @@ class ReleaseRuntime:
                 "source_revision": head_revision,
                 "content_hash": document_evidence["changelog_hash"],
                 "document_mode": document_evidence["document_mode"],
+                "release_note_hash": document_evidence["release_note_hash"],
             },
             "security": gates["security"],
             "tests": gates["tests"],

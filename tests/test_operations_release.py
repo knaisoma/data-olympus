@@ -45,6 +45,7 @@ def _review_material(
         "source_revision": source_revision,
         "candidate_diff": candidate_diff,
         "candidate_diff_sha256": sha256(candidate_diff.encode()).hexdigest(),
+        "changelog_sha256": "1" * 64,
         "changelog_section": CHANGELOG_SECTION,
         "changelog_section_sha256": sha256(
             CHANGELOG_SECTION.encode()
@@ -300,13 +301,14 @@ def _prepared_unpublished_input() -> dict[str, object]:
             "tree_revision": BRANCH_SHA,
             "version": "0.6.1",
             "changelog_hash": "1" * 64,
-            "release_note_hash": "2" * 64,
+            "release_note_hash": sha256(RELEASE_NOTE.encode()).hexdigest(),
             "release_date": "2026-08-02",
         },
         "changelog": {
             "source_revision": SOURCE_SHA,
             "content_hash": "1" * 64,
             "document_mode": "prepared_unpublished",
+            "release_note_hash": sha256(RELEASE_NOTE.encode()).hexdigest(),
         },
         "security": {"exit_code": 0, "report_hash": "3" * 64},
         "tests": {
@@ -1003,6 +1005,7 @@ def _release_dependencies(*, source_revision: str = SOURCE_SHA) -> dict[str, obj
             "changelog": {
                 "source_revision": CANDIDATE_SHA,
                 "content_hash": "1" * 64,
+                "release_note_hash": sha256(RELEASE_NOTE.encode()).hexdigest(),
             },
             "security": {"exit_code": 0, "report_hash": "2" * 64},
             "tests": {
@@ -1433,6 +1436,33 @@ def test_release_blocks_before_model_when_review_material_hash_changes() -> None
 
     assert events[-1]["status"] == "blocked"
     assert "release_note hash does not match" in events[-1]["reason"]
+    assert invoked is False
+
+
+def test_pull_request_review_rejects_prepared_main_material_mode() -> None:
+    dependencies = _release_dependencies()
+    original_prepare = dependencies["prepare"]
+    invoked = False
+
+    def prepare(run, admitted):
+        prepared = original_prepare(run, admitted)
+        prepared["review_material"] = _review_material(
+            mode="prepared_main_documents"
+        )
+        return prepared
+
+    def invoke_model(_request):
+        nonlocal invoked
+        invoked = True
+        raise AssertionError("mismatched review mode must not reach a model")
+
+    dependencies["prepare"] = prepare
+    dependencies["invoke_model"] = invoke_model
+
+    events = execute_release_run(json.dumps(RUN_INPUT), dependencies)
+
+    assert events[-1]["status"] == "blocked"
+    assert "mode does not match the release preparation" in events[-1]["reason"]
     assert invoked is False
 
 
