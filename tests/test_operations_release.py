@@ -144,6 +144,7 @@ def test_admission_returns_truthful_no_action_only_for_no_release() -> None:
 
     assert result["status"] == "no_action"
     assert result["evidence"]["source_revision"] == SOURCE_SHA
+    assert result["evidence"]["remote_main_revision"] == SOURCE_SHA
     assert result["outputs"] == {}
 
 
