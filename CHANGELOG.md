@@ -12,14 +12,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-
-* Resolve release image digests from the exact public GHCR tag without
-  requiring GitHub Packages API scope.
-* Advance only the exact reviewed release workflow through its single pending
-  `pypi` environment approval, preserving the protected environment gate while
-  removing a manual scheduled-run follow-up.
-
 ## [0.7.0] - 2026-08-02
 
 ### New features
@@ -28,6 +20,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * feat(automation): make weekly releases outcome based
 ### Fixed
 
+* fix(release): complete protected workflow delivery
 * fix(release): serialize workflow number input
 * fix(release): retry unbound gateway reads (#217)
 * fix(release): ground autonomous review packets (#215)
@@ -113,6 +106,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * Select exact prepared recovery only when the current release documents match
   the complete computed change set. A new reviewed change now reaches the
   existing atomic roll forward pull request path instead of blocking recovery.
+
+### Fixed
+
+* Resolve release image digests from the exact public GHCR tag without
+  requiring GitHub Packages API scope.
+* Advance only the exact reviewed release workflow through its single pending
+  `pypi` environment approval, preserving the protected environment gate while
+  removing a manual scheduled-run follow-up.
 
 ## [0.6.0] - 2026-07-18
 
