@@ -603,6 +603,15 @@ accepted only when its embedded revision matches the requested source. PyPI
 publishing uses `skip-existing`, followed by exact SHA256 verification. Never
 overwrite an immutable candidate or stable version.
 
+When the operations runner resumes a release that is already prepared and
+unpublished on `main`, it reviews and delivers the admitted source SHA directly.
+The final project result keeps `candidate_revision` null because no derived
+candidate commit exists. The exact source SHA remains mandatory in the review,
+approval, delivery, and verification evidence. Pull request preparation still
+reports its distinct derived candidate revision. This separation prevents the
+central runner from mistaking a prepared source recovery for a newly created
+candidate while preserving end to end source identity.
+
 Yank an unsuitable PyPI candidate and publish a higher candidate number. Roll a
 moving GHCR channel back by applying the channel tag to a previously verified
 digest with `docker buildx imagetools create`. Keep the immutable version tag for

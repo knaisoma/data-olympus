@@ -1434,6 +1434,7 @@ def execute_release_run(
     run_input: dict[str, Any] | None = None
     events: list[dict[str, Any]] = []
     candidate_revision: str | None = None
+    project_candidate_revision: str | None = None
 
     def record(event: dict[str, Any]) -> dict[str, Any]:
         event["sequence"] = len(events) + 1
@@ -1507,6 +1508,8 @@ def execute_release_run(
             candidate.get("source_revision"),
             "candidate.source_revision",
         )
+        if prepared_input.get("preparation_mode") != "prepared_unpublished":
+            project_candidate_revision = candidate_revision
         record(
             _milestone(2, "prepare", prepared["reason"], prepared["evidence"])
         )
@@ -1644,7 +1647,7 @@ def execute_release_run(
                     ],
                     **preparation_reference,
                 },
-                candidate_revision=candidate_revision,
+                candidate_revision=project_candidate_revision,
                 review_model_use_id=review["model_use_id"],
             )
         )
@@ -1672,7 +1675,7 @@ def execute_release_run(
                 str(error),
                 run_input,
                 failure_evidence,
-                candidate_revision=candidate_revision,
+                candidate_revision=project_candidate_revision,
             )
         )
         return events

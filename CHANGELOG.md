@@ -12,6 +12,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* Keep the operations runner candidate revision null when resuming a release
+  that is already prepared on `main`, while retaining the exact admitted source
+  revision throughout review, approval, delivery, and verification evidence.
+
 ## [0.7.0] - 2026-08-02
 
 ### New features
