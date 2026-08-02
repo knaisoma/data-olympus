@@ -2640,7 +2640,7 @@ class ReleaseRuntime:
             rc_receipt = self._workflow_run(
                 "rc-publish.yml",
                 source_revision,
-                {"number": rc_number, "ref": source_revision},
+                {"number": str(rc_number), "ref": source_revision},
                 on_dispatch=mark_external_state_changed,
             )
             external_state_changed = True

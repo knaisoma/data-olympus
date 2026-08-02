@@ -585,9 +585,11 @@ Set `KB_ENDPOINT` / `KB_AUTH_TOKEN` in the hook's environment the same way
 
 Candidate publication is a complete transaction across PyPI, GHCR, and GitHub.
 Dispatch `rc-publish.yml` from `main` with the reviewed source in `ref` and an
-explicit positive `number`. The workflow does not move `:rc` or create a public
-prerelease until the candidate wheel, source distribution, image, and provenance
-receipt have passed registry read back verification.
+explicit positive `number`. Send that number as a decimal string in the GitHub
+workflow dispatch request because GitHub rejects a JSON number even though the
+workflow input type is numeric. The workflow does not move `:rc` or create a
+public prerelease until the candidate wheel, source distribution, image, and
+provenance receipt have passed registry read back verification.
 
 Stable promotion runs only through an explicit `tag-release.yml` dispatch from
 `main`. Supply the highest complete candidate in `candidate_tag`; any lower or

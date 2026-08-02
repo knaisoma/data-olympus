@@ -2429,6 +2429,7 @@ def test_deliver_resumes_exact_prepared_main_and_never_attempts_merge(
 ) -> None:
     previous = "sha256:" + "e" * 64
     order: list[str] = []
+    workflow_inputs: dict[str, dict[str, object]] = {}
     documents = {
         "changelog_hash": "1" * 64,
         "content_hash": "2" * 64,
@@ -2498,18 +2499,21 @@ def test_deliver_resumes_exact_prepared_main_and_never_attempts_merge(
             }
         ),
     )
-    monkeypatch.setattr(
-        runtime,
-        "_workflow_run",
-        lambda name, revision, _inputs, **_kwargs: (
-            order.append(f"workflow:{name}")
-            or {
-                "conclusion": "success",
-                "run_id": len(order),
-                "source_revision": revision,
-            }
-        ),
-    )
+    def workflow_run(
+        name: str,
+        revision: str,
+        inputs: dict[str, object],
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        workflow_inputs[name] = inputs
+        order.append(f"workflow:{name}")
+        return {
+            "conclusion": "success",
+            "run_id": len(order),
+            "source_revision": revision,
+        }
+
+    monkeypatch.setattr(runtime, "_workflow_run", workflow_run)
     monkeypatch.setattr(
         runtime,
         "_candidate_publication",
@@ -2585,6 +2589,10 @@ def test_deliver_resumes_exact_prepared_main_and_never_attempts_merge(
     assert order.index("candidate-free:0.7.0-rc.1") < order.index(
         "workflow:rc-publish.yml"
     )
+    assert workflow_inputs["rc-publish.yml"] == {
+        "number": "1",
+        "ref": SOURCE_SHA,
+    }
 
 
 def test_delivery_blocks_ruleset_drift_without_attempting_merge(

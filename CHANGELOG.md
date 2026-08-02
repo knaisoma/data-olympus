@@ -20,6 +20,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * feat(automation): make weekly releases outcome based
 ### Fixed
 
+* fix(release): serialize workflow number input
 * fix(release): retry unbound gateway reads (#217)
 * fix(release): ground autonomous review packets (#215)
 * fix(release): preserve prepared roll forward (#213)
