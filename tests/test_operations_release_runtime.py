@@ -514,6 +514,34 @@ def test_fastmcp_gateway_rejects_a_different_tool_result() -> None:
         )
 
 
+def test_gateway_object_never_retries_an_unbound_mutation_response(
+    tmp_path: Path,
+) -> None:
+    class UnboundMutationGateway:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute(self, _name: str, _arguments: dict[str, object]) -> object:
+            self.calls += 1
+            raise UnboundGatewayResultError(
+                "FastMCP text content omitted gateway result"
+            )
+
+    sleeps: list[float] = []
+    gateway = UnboundMutationGateway()
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=gateway,
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(UnboundGatewayResultError, match="omitted gateway result"):
+        runtime.gateway_object("create_pull_request", {})
+
+    assert gateway.calls == 1
+    assert sleeps == []
+
+
 def test_list_tags_retries_one_unbound_fastmcp_text_response(
     tmp_path: Path,
 ) -> None:
@@ -1561,6 +1589,138 @@ def test_workflow_receipt_is_new_completed_and_bound_to_exact_source(
             "workflow_id": "rc-publish.yml",
         },
     )
+
+
+def test_workflow_retries_one_unbound_read_without_replaying_dispatch(
+    tmp_path: Path,
+) -> None:
+    class FlakyReadGateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+            self.list_calls = 0
+
+        def execute(self, name: str, arguments: dict[str, object]) -> object:
+            self.calls.append((name, arguments))
+            if name == "actions_list":
+                self.list_calls += 1
+                if self.list_calls == 1:
+                    raise UnboundGatewayResultError(
+                        "FastMCP text content omitted gateway result"
+                    )
+                if self.list_calls == 2:
+                    return {"workflow_runs": [{"id": 4, "head_sha": SOURCE_SHA}]}
+                return {
+                    "workflow_runs": [
+                        {
+                            "id": 5,
+                            "head_sha": SOURCE_SHA,
+                            "event": "workflow_dispatch",
+                            "status": "completed",
+                            "conclusion": "success",
+                        }
+                    ]
+                }
+            if name == "actions_run_trigger":
+                return {}
+            if name == "actions_get":
+                return {
+                    "id": 5,
+                    "head_sha": SOURCE_SHA,
+                    "conclusion": "success",
+                }
+            raise AssertionError(f"unexpected gateway tool: {name}")
+
+    sleeps: list[float] = []
+    gateway = FlakyReadGateway()
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=gateway,
+        sleep=sleeps.append,
+    )
+
+    receipt = runtime._workflow_run(
+        "rc-publish.yml",
+        SOURCE_SHA,
+        {"number": 1, "ref": SOURCE_SHA},
+    )
+
+    assert receipt == {
+        "conclusion": "success",
+        "run_id": 5,
+        "source_revision": SOURCE_SHA,
+    }
+    assert [name for name, _arguments in gateway.calls] == [
+        "actions_list",
+        "actions_list",
+        "actions_run_trigger",
+        "actions_list",
+        "actions_get",
+    ]
+    assert sleeps == [1.0]
+
+
+def test_workflow_stops_after_one_unbound_read_retry_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    class UnboundReadGateway:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def execute(self, name: str, _arguments: dict[str, object]) -> object:
+            self.calls.append(name)
+            raise UnboundGatewayResultError(
+                "FastMCP text content omitted gateway result"
+            )
+
+    sleeps: list[float] = []
+    gateway = UnboundReadGateway()
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=gateway,
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(UnboundGatewayResultError, match="omitted gateway result"):
+        runtime._workflow_run(
+            "rc-publish.yml",
+            SOURCE_SHA,
+            {"number": 1, "ref": SOURCE_SHA},
+        )
+
+    assert gateway.calls == ["actions_list", "actions_list"]
+    assert sleeps == [1.0]
+
+
+def test_workflow_never_retries_an_unbound_dispatch_response(tmp_path: Path) -> None:
+    class UnboundDispatchGateway:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def execute(self, name: str, _arguments: dict[str, object]) -> object:
+            self.calls.append(name)
+            if name == "actions_list":
+                return {"workflow_runs": []}
+            raise UnboundGatewayResultError(
+                "FastMCP text content omitted gateway result"
+            )
+
+    sleeps: list[float] = []
+    gateway = UnboundDispatchGateway()
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=gateway,
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(UnboundGatewayResultError, match="omitted gateway result"):
+        runtime._workflow_run(
+            "rc-publish.yml",
+            SOURCE_SHA,
+            {"number": 1, "ref": SOURCE_SHA},
+        )
+
+    assert gateway.calls == ["actions_list", "actions_run_trigger"]
+    assert sleeps == []
 
 
 def test_merge_uses_github_expected_head_precondition(tmp_path: Path) -> None:

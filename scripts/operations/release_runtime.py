@@ -1138,6 +1138,22 @@ class ReleaseRuntime:
         self.heartbeat()
         return _object(result, f"{name} response")
 
+    def gateway_read_object(
+        self,
+        name: str,
+        arguments: dict[str, object],
+    ) -> dict[str, Any]:
+        for attempt in range(2):
+            try:
+                return self.gateway_object(name, arguments)
+            except UnboundGatewayResultError:
+                self.heartbeat()
+                if attempt != 0:
+                    raise
+                self.sleep(1.0)
+                continue
+        raise AssertionError("gateway read retry loop exhausted")
+
     def live_statefulset(self) -> dict[str, Any]:
         self.heartbeat()
         result = self.gateway.execute(
@@ -1423,7 +1439,7 @@ class ReleaseRuntime:
     ) -> dict[str, Any]:
         last_error = "pull request checks did not appear"
         for _attempt in range(120):
-            checks = self.gateway_object(
+            checks = self.gateway_read_object(
                 "pull_request_read",
                 {
                     "method": "get_check_runs",
@@ -1449,7 +1465,7 @@ class ReleaseRuntime:
                 self.sleep(10)
                 self.heartbeat()
                 continue
-            pull = self.gateway_object(
+            pull = self.gateway_read_object(
                 "pull_request_read",
                 {
                     "method": "get",
@@ -2046,7 +2062,7 @@ class ReleaseRuntime:
         *,
         on_dispatch: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
-        listed = self.gateway_object(
+        listed = self.gateway_read_object(
             "actions_list",
             {
                 "method": "list_workflow_runs",
@@ -2081,7 +2097,7 @@ class ReleaseRuntime:
         )
         self.heartbeat()
         for _attempt in range(180):
-            listed = self.gateway_object(
+            listed = self.gateway_read_object(
                 "actions_list",
                 {
                     "method": "list_workflow_runs",
@@ -2111,7 +2127,7 @@ class ReleaseRuntime:
                     run_id = run.get("id")
                     if type(run_id) is not int:
                         raise ValueError(f"{workflow_id} run identifier is invalid")
-                    exact = self.gateway_object(
+                    exact = self.gateway_read_object(
                         "actions_get",
                         {
                             "method": "get_workflow_run",
@@ -2136,7 +2152,7 @@ class ReleaseRuntime:
         raise ValueError(f"{workflow_id} did not complete before timeout")
 
     def _release(self, tag: str) -> dict[str, Any]:
-        return self.gateway_object(
+        return self.gateway_read_object(
             "get_release_by_tag",
             {"owner": GITHUB_OWNER, "repo": GITHUB_REPOSITORY, "tag": tag},
         )
@@ -2354,7 +2370,7 @@ class ReleaseRuntime:
         head_revision: str,
         base_revision: str,
     ) -> str | None:
-        pull = self.gateway_object(
+        pull = self.gateway_read_object(
             "pull_request_read",
             {
                 "method": "get",
