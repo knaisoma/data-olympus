@@ -1591,6 +1591,373 @@ def test_workflow_receipt_is_new_completed_and_bound_to_exact_source(
     )
 
 
+def test_workflow_approves_only_exact_pending_pypi_environment(
+    tmp_path: Path,
+) -> None:
+    environment_id = 17641982902
+    gateway = StubGateway(
+        {
+            "actions_list": (
+                {"workflow_runs": []},
+                {
+                    "workflow_runs": [
+                        {
+                            "id": 5,
+                            "head_sha": SOURCE_SHA,
+                            "event": "workflow_dispatch",
+                            "status": "waiting",
+                            "conclusion": None,
+                        }
+                    ]
+                },
+                {
+                    "workflow_runs": [
+                        {
+                            "id": 5,
+                            "head_sha": SOURCE_SHA,
+                            "event": "workflow_dispatch",
+                            "status": "completed",
+                            "conclusion": "success",
+                        }
+                    ]
+                },
+            ),
+            "actions_run_trigger": {},
+            "actions_get": (
+                {
+                    "id": 5,
+                    "head_sha": SOURCE_SHA,
+                    "status": "waiting",
+                },
+                {
+                    "id": 5,
+                    "head_sha": SOURCE_SHA,
+                    "conclusion": "success",
+                },
+            ),
+        }
+    )
+    commands: list[list[str]] = []
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        commands.append(command)
+        if "--method" not in command:
+            return json.dumps(
+                [
+                    {
+                        "current_user_can_approve": True,
+                        "environment": {
+                            "id": environment_id,
+                            "name": "pypi",
+                        },
+                        "reviewers": [{"type": "User"}],
+                        "wait_timer": 0,
+                    }
+                ]
+            )
+        return json.dumps(
+            [
+                {
+                    "environment": "pypi",
+                    "id": 19,
+                    "sha": SOURCE_SHA,
+                }
+            ]
+        )
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=gateway,
+        command_output=command_output,
+        sleep=lambda _seconds: None,
+    )
+
+    receipt = runtime._workflow_run(
+        "tag-release.yml",
+        SOURCE_SHA,
+        {"candidate_tag": "0.7.0-rc.2"},
+    )
+
+    assert receipt == {
+        "conclusion": "success",
+        "environment_approval": {
+            "environment": "pypi",
+            "environment_id": environment_id,
+        },
+        "run_id": 5,
+        "source_revision": SOURCE_SHA,
+    }
+    assert commands == [
+        [
+            "gh",
+            "api",
+            "repos/knaisoma/data-olympus/actions/runs/5/pending_deployments",
+        ],
+        [
+            "gh",
+            "api",
+            "--method",
+            "POST",
+            "repos/knaisoma/data-olympus/actions/runs/5/pending_deployments",
+            "-F",
+            f"environment_ids[]={environment_id}",
+            "-f",
+            "state=approved",
+            "-f",
+            f"comment=Approved exact reviewed release source {SOURCE_SHA}.",
+        ],
+    ]
+
+
+def test_workflow_rejects_unexpected_pending_environment(
+    tmp_path: Path,
+) -> None:
+    gateway = StubGateway(
+        {
+            "actions_list": (
+                {"workflow_runs": []},
+                {
+                    "workflow_runs": [
+                        {
+                            "id": 5,
+                            "head_sha": SOURCE_SHA,
+                            "event": "workflow_dispatch",
+                            "status": "waiting",
+                            "conclusion": None,
+                        }
+                    ]
+                },
+            ),
+            "actions_run_trigger": {},
+            "actions_get": {
+                "id": 5,
+                "head_sha": SOURCE_SHA,
+                "status": "waiting",
+            },
+        }
+    )
+
+    def command_output(_command: list[str], _cwd: Path, _timeout: int) -> str:
+        return json.dumps(
+            [
+                {
+                    "current_user_can_approve": True,
+                    "environment": {"id": 9, "name": "production"},
+                    "reviewers": [{"type": "User"}],
+                    "wait_timer": 0,
+                }
+            ]
+        )
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=gateway,
+        command_output=command_output,
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(ValueError, match="pending deployment is not exact pypi"):
+        runtime._workflow_run(
+            "tag-release.yml",
+            SOURCE_SHA,
+            {"candidate_tag": "0.7.0-rc.2"},
+        )
+
+
+def _waiting_workflow_gateway(
+    *,
+    exact_run: dict[str, object] | None = None,
+) -> StubGateway:
+    return StubGateway(
+        {
+            "actions_list": (
+                {"workflow_runs": []},
+                {
+                    "workflow_runs": [
+                        {
+                            "id": 5,
+                            "head_sha": SOURCE_SHA,
+                            "event": "workflow_dispatch",
+                            "status": "waiting",
+                            "conclusion": None,
+                        }
+                    ]
+                },
+            ),
+            "actions_run_trigger": {},
+            "actions_get": exact_run
+            or {
+                "id": 5,
+                "head_sha": SOURCE_SHA,
+                "status": "waiting",
+            },
+        }
+    )
+
+
+def _pending_pypi_environment(
+    *,
+    environment_id: int = 9,
+    can_approve: bool = True,
+    wait_timer: int = 0,
+    reviewer_type: str = "User",
+) -> dict[str, object]:
+    return {
+        "current_user_can_approve": can_approve,
+        "environment": {"id": environment_id, "name": "pypi"},
+        "reviewers": [{"type": reviewer_type}],
+        "wait_timer": wait_timer,
+    }
+
+
+@pytest.mark.parametrize(
+    "exact_run",
+    [
+        {"id": 6, "head_sha": SOURCE_SHA, "status": "waiting"},
+        {"id": 5, "head_sha": "f" * 40, "status": "waiting"},
+        {"id": 5, "head_sha": SOURCE_SHA, "status": "in_progress"},
+    ],
+    ids=("run-id-changed", "source-changed", "status-changed"),
+)
+def test_workflow_rejects_waiting_run_identity_change_before_direct_fallback(
+    tmp_path: Path,
+    exact_run: dict[str, object],
+) -> None:
+    commands: list[list[str]] = []
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        commands.append(command)
+        return "[]"
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=_waiting_workflow_gateway(exact_run=exact_run),
+        command_output=command_output,
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(ValueError, match="workflow identity changed"):
+        runtime._workflow_run(
+            "tag-release.yml",
+            SOURCE_SHA,
+            {"candidate_tag": "0.7.0-rc.2"},
+        )
+
+    assert commands == []
+
+
+@pytest.mark.parametrize(
+    "pending",
+    [
+        [],
+        [
+            _pending_pypi_environment(environment_id=9),
+            _pending_pypi_environment(environment_id=10),
+        ],
+        [_pending_pypi_environment(can_approve=False)],
+        [_pending_pypi_environment(wait_timer=1)],
+        [_pending_pypi_environment(reviewer_type="Team")],
+    ],
+    ids=(
+        "missing",
+        "multiple",
+        "cannot-approve",
+        "wait-timer",
+        "no-user-reviewer",
+    ),
+)
+def test_workflow_rejects_non_exact_pending_pypi_shape_without_approval_post(
+    tmp_path: Path,
+    pending: list[dict[str, object]],
+) -> None:
+    commands: list[list[str]] = []
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        commands.append(command)
+        return json.dumps(pending)
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=_waiting_workflow_gateway(),
+        command_output=command_output,
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(ValueError, match="pending deployment is not exact pypi"):
+        runtime._workflow_run(
+            "tag-release.yml",
+            SOURCE_SHA,
+            {"candidate_tag": "0.7.0-rc.2"},
+        )
+
+    assert commands == [
+        [
+            "gh",
+            "api",
+            "repos/knaisoma/data-olympus/actions/runs/5/pending_deployments",
+        ]
+    ]
+
+
+def test_workflow_rejects_approval_response_bound_to_different_source(
+    tmp_path: Path,
+) -> None:
+    commands: list[list[str]] = []
+
+    def command_output(command: list[str], _cwd: Path, _timeout: int) -> str:
+        commands.append(command)
+        if "--method" not in command:
+            return json.dumps([_pending_pypi_environment()])
+        return json.dumps(
+            [
+                {
+                    "environment": "pypi",
+                    "id": 19,
+                    "sha": "f" * 40,
+                }
+            ]
+        )
+
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=_waiting_workflow_gateway(),
+        command_output=command_output,
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(ValueError, match="deployment approval identity changed"):
+        runtime._workflow_run(
+            "tag-release.yml",
+            SOURCE_SHA,
+            {"candidate_tag": "0.7.0-rc.2"},
+        )
+
+    assert len(commands) == 2
+    assert commands[0][-1].endswith("/5/pending_deployments")
+    assert "--method" in commands[1]
+
+
+def test_workflow_rejects_pending_environment_for_unapproved_workflow(
+    tmp_path: Path,
+) -> None:
+    commands: list[list[str]] = []
+    runtime = ReleaseRuntime(
+        tmp_path,
+        gateway=_waiting_workflow_gateway(),
+        command_output=lambda command, _cwd, _timeout: commands.append(command) or "[]",
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(ValueError, match="not an approved release workflow"):
+        runtime._workflow_run(
+            "set-channel.yml",
+            SOURCE_SHA,
+            {"source": "0.7.0-rc.2", "channel": "rc"},
+        )
+
+    assert commands == []
+
+
 def test_workflow_retries_one_unbound_read_without_replaying_dispatch(
     tmp_path: Path,
 ) -> None:

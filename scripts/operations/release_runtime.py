@@ -2096,6 +2096,7 @@ class ReleaseRuntime:
             },
         )
         self.heartbeat()
+        environment_approval: dict[str, Any] | None = None
         for _attempt in range(180):
             listed = self.gateway_read_object(
                 "actions_list",
@@ -2121,12 +2122,18 @@ class ReleaseRuntime:
             ]
             if matches:
                 run = max(matches, key=lambda item: int(item.get("id", 0)))
+                run_id = run.get("id")
+                if type(run_id) is not int:
+                    raise ValueError(f"{workflow_id} run identifier is invalid")
+                if run.get("status") == "waiting" and environment_approval is None:
+                    environment_approval = self._approve_pypi_environment(
+                        workflow_id,
+                        run_id,
+                        source_revision,
+                    )
                 if run.get("status") == "completed":
                     if run.get("conclusion") != "success":
                         raise ValueError(f"{workflow_id} did not succeed")
-                    run_id = run.get("id")
-                    if type(run_id) is not int:
-                        raise ValueError(f"{workflow_id} run identifier is invalid")
                     exact = self.gateway_read_object(
                         "actions_get",
                         {
@@ -2142,14 +2149,101 @@ class ReleaseRuntime:
                         or exact.get("conclusion") != "success"
                     ):
                         raise ValueError(f"{workflow_id} exact receipt changed")
-                    return {
+                    receipt = {
                         "conclusion": "success",
                         "run_id": run_id,
                         "source_revision": source_revision,
                     }
+                    if environment_approval is not None:
+                        receipt["environment_approval"] = environment_approval
+                    return receipt
             self.sleep(10)
             self.heartbeat()
         raise ValueError(f"{workflow_id} did not complete before timeout")
+
+    def _approve_pypi_environment(
+        self,
+        workflow_id: str,
+        run_id: int,
+        source_revision: str,
+    ) -> dict[str, Any]:
+        if workflow_id not in {"rc-publish.yml", "tag-release.yml"}:
+            raise ValueError("pending deployment is not an approved release workflow")
+        exact = self.gateway_read_object(
+            "actions_get",
+            {
+                "method": "get_workflow_run",
+                "owner": GITHUB_OWNER,
+                "repo": GITHUB_REPOSITORY,
+                "resource_id": str(run_id),
+            },
+        )
+        if (
+            exact.get("id") != run_id
+            or exact.get("head_sha") != source_revision
+            or exact.get("status") != "waiting"
+        ):
+            raise ValueError("pending deployment workflow identity changed")
+        path = (
+            f"repos/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/actions/runs/"
+            f"{run_id}/pending_deployments"
+        )
+        raw_pending = self.command(["gh", "api", path], timeout=60)
+        try:
+            pending = json.loads(raw_pending)
+        except json.JSONDecodeError as error:
+            raise ValueError("pending deployment response is invalid") from error
+        if type(pending) is not list or len(pending) != 1:
+            raise ValueError("pending deployment is not exact pypi")
+        deployment = _object(pending[0], "pending deployment")
+        environment = _object(
+            deployment.get("environment"),
+            "pending deployment environment",
+        )
+        environment_id = environment.get("id")
+        reviewers = deployment.get("reviewers")
+        if (
+            environment.get("name") != "pypi"
+            or type(environment_id) is not int
+            or deployment.get("current_user_can_approve") is not True
+            or deployment.get("wait_timer") != 0
+            or type(reviewers) is not list
+            or not any(
+                type(reviewer) is dict and reviewer.get("type") == "User"
+                for reviewer in reviewers
+            )
+        ):
+            raise ValueError("pending deployment is not exact pypi")
+        comment = f"Approved exact reviewed release source {source_revision}."
+        raw_approved = self.command(
+            [
+                "gh",
+                "api",
+                "--method",
+                "POST",
+                path,
+                "-F",
+                f"environment_ids[]={environment_id}",
+                "-f",
+                "state=approved",
+                "-f",
+                f"comment={comment}",
+            ],
+            timeout=60,
+        )
+        try:
+            approved = json.loads(raw_approved)
+        except json.JSONDecodeError as error:
+            raise ValueError("deployment approval response is invalid") from error
+        if (
+            type(approved) is not list
+            or len(approved) != 1
+            or type(approved[0]) is not dict
+            or approved[0].get("environment") != "pypi"
+            or approved[0].get("sha") != source_revision
+        ):
+            raise ValueError("deployment approval identity changed")
+        return {"environment": "pypi", "environment_id": environment_id}
 
     def _release(self, tag: str) -> dict[str, Any]:
         return self.gateway_read_object(

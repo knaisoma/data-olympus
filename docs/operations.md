@@ -600,6 +600,19 @@ PyPI publication happen before the stable Git tag is created. The workflow then
 retags the candidate image digest as the version, `stable`, and `latest`; it does
 not build another image.
 
+The operations runner advances a protected candidate or stable workflow only
+after its independent review and exact SHA bound standing approval pass. When
+GitHub reports a waiting deployment, the runner verifies the exact workflow run
+and source SHA, accepts exactly one pending environment named `pypi` with an
+operator reviewer and zero wait timer, approves only that environment, and
+verifies the returned deployment SHA. FastMCP currently has no environment
+deployment review operation, so this bounded step uses the GitHub CLI fallback.
+Any other pending deployment shape fails closed.
+
+Release image digest verification uses `docker buildx imagetools inspect` on
+the exact public GHCR tag. It does not require `read:packages` or enumerate the
+GitHub Packages API.
+
 Rerun a partial candidate with the same `ref` and `number`. An existing image is
 accepted only when its embedded revision matches the requested source. PyPI
 publishing uses `skip-existing`, followed by exact SHA256 verification. Never

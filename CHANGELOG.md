@@ -12,6 +12,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* Resolve release image digests from the exact public GHCR tag without
+  requiring GitHub Packages API scope.
+* Advance only the exact reviewed release workflow through its single pending
+  `pypi` environment approval, preserving the protected environment gate while
+  removing a manual scheduled-run follow-up.
+
 ## [0.7.0] - 2026-08-02
 
 ### New features
