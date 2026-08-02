@@ -42,6 +42,13 @@ Create an environment named `pypi` in the repository settings.
    another exact source SHA.
 4. Do not add a PyPI password or API token secret.
 
+For an operations-runner release, the operator's exact SHA bound standing
+approval is recorded before delivery. If the protected workflow then waits,
+the runner verifies that workflow and source, requires exactly this single
+`pypi` environment with an allowed operator reviewer and zero wait timer, and
+submits only that deployment approval. Interactive releases still require the
+operator reviewer directly. Do not remove the environment protection.
+
 The candidate and stable jobs scope `id-token: write` to this environment. Other
 jobs use read only repository permissions unless they must publish a Git tag,
 GitHub release, or GHCR tag.

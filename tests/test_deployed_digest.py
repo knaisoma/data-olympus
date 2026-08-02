@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from subprocess import CompletedProcess
 from typing import TYPE_CHECKING, Any
 
 from scripts.deployed_digest import evaluate, main
@@ -60,19 +61,19 @@ def test_evaluate_malformed_metadata_ignored() -> None:
     assert result["matched_versions"] == 0
 
 
-def _patch_fetch(monkeypatch: pytest.MonkeyPatch, *, versions: object) -> None:
+def _patch_inspect(monkeypatch: pytest.MonkeyPatch, *, result: object) -> None:
     import scripts.deployed_digest as mod
 
-    def _raise_or_return(_package: str, _org: str) -> list[dict]:
-        if isinstance(versions, Exception):
-            raise versions
-        return versions  # type: ignore[return-value]
+    def _raise_or_return(_target: str, _package: str, _org: str) -> object:
+        if isinstance(result, Exception):
+            raise result
+        return result
 
-    monkeypatch.setattr(mod, "_fetch_versions", _raise_or_return)
+    monkeypatch.setattr(mod, "_inspect_digest", _raise_or_return)
 
 
 def test_main_success_path_exits_zero(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    _patch_fetch(monkeypatch, versions=[_version(_DIGEST_C, ["stable"])])
+    _patch_inspect(monkeypatch, result=_DIGEST_C)
     code = main(["--target", "stable", "--json"])
     assert code == 0
     out = capsys.readouterr().out
@@ -80,8 +81,56 @@ def test_main_success_path_exits_zero(monkeypatch: pytest.MonkeyPatch, capsys) -
     assert '"digest": null' not in out
 
 
+def test_main_resolves_public_registry_digest_without_packages_api(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    import scripts.deployed_digest as mod
+
+    commands: list[list[str]] = []
+
+    def inspect(
+        command: list[str],
+        **_kwargs: object,
+    ) -> CompletedProcess[str]:
+        commands.append(command)
+        return CompletedProcess(
+            command,
+            0,
+            stdout=(
+                "Name: ghcr.io/knaisoma/data-olympus:0.7.0-rc.1\n"
+                f"Digest: {_DIGEST_C}\n"
+                "Manifests:\n"
+                f"  Name: image@{_DIGEST_B}\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(mod.subprocess, "run", inspect)
+
+    code = main(["--target", "0.7.0-rc.1", "--json"])
+
+    assert code == 0
+    assert commands == [
+        [
+            "docker",
+            "buildx",
+            "imagetools",
+            "inspect",
+            "ghcr.io/knaisoma/data-olympus:0.7.0-rc.1",
+        ]
+    ]
+    result = __import__("json").loads(capsys.readouterr().out)
+    assert result == {
+        "target": "0.7.0-rc.1",
+        "digest": _DIGEST_C,
+        "source": "ghcr:0.7.0-rc.1",
+        "matched_versions": 1,
+    }
+
+
 def test_main_fail_closed_on_lookup_error(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    _patch_fetch(monkeypatch, versions=RuntimeError("gh api unreachable"))
+    _patch_inspect(monkeypatch, result=RuntimeError("ghcr unreachable"))
     code = main(["--target", "stable", "--json"])
     assert code != 0
     out = capsys.readouterr().out
@@ -89,7 +138,7 @@ def test_main_fail_closed_on_lookup_error(monkeypatch: pytest.MonkeyPatch, capsy
 
 
 def test_main_fail_closed_on_no_match(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_fetch(monkeypatch, versions=[_version("sha256:aaaa", ["edge"])])
+    _patch_inspect(monkeypatch, result=RuntimeError("tag not found"))
     code = main(["--target", "stable", "--json"])
     assert code != 0
 
@@ -103,7 +152,7 @@ def test_evaluate_non_sha256_digest_fails_closed() -> None:
 
 
 def test_main_fail_closed_on_non_sha256_digest(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    _patch_fetch(monkeypatch, versions=[_version("not-a-digest", ["stable"])])
+    _patch_inspect(monkeypatch, result="not-a-digest")
     code = main(["--target", "stable", "--json"])
     assert code != 0
     out = capsys.readouterr().out
@@ -111,11 +160,7 @@ def test_main_fail_closed_on_non_sha256_digest(monkeypatch: pytest.MonkeyPatch, 
 
 
 def test_main_fail_closed_on_malformed_json(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    import json as json_mod
-
-    _patch_fetch(
-        monkeypatch, versions=json_mod.JSONDecodeError("bad json", "{not valid", 0)
-    )
+    _patch_inspect(monkeypatch, result=RuntimeError("malformed inspection output"))
     code = main(["--target", "stable", "--json"])
     assert code != 0
     out = capsys.readouterr().out
@@ -126,10 +171,8 @@ def test_main_fail_closed_on_malformed_json(monkeypatch: pytest.MonkeyPatch, cap
 def test_main_fail_closed_on_non_dict_payload_shape(
     monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    # _fetch_versions returning something that isn't a list of version dicts
-    # (e.g. a single dict instead of a list) must not crash main(); it must
-    # fail closed the same as any other lookup failure.
-    _patch_fetch(monkeypatch, versions={"unexpected": "shape"})
+    # An unexpected inspection result must fail closed without a traceback.
+    _patch_inspect(monkeypatch, result={"unexpected": "shape"})
     code = main(["--target", "stable", "--json"])
     assert code != 0
     out = capsys.readouterr().out

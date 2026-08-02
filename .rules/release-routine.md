@@ -48,11 +48,13 @@ The fixed milestones are:
 The project command owns Git, release artifact, workflow, registry, and kn dev
 evidence. Supported external mutations and reads go through FastMCP. Current
 gateway capability gaps are CodeQL analysis and alert enumeration, Code
-Quality setup, ruleset details, GraphQL review threads, container package
-digest lookup, and a pull request merge with an expected head SHA precondition.
-They reuse governed repository commands and record the direct GitHub fallback
-because the gateway exposes none of those exact operations. These gaps remain
-tracked platform work and do not weaken the release gates.
+Quality setup, ruleset details, GraphQL review threads, environment deployment
+review, and a pull request merge with an expected head SHA precondition. They
+reuse governed repository commands and record the direct GitHub fallback
+because the gateway exposes none of those exact operations.
+Public image digest verification uses the registry directly and requires no
+GitHub Packages API scope. These gaps remain tracked platform work and do not
+weaken the release gates.
 An unconditional gateway merge is not an acceptable substitute for the
 expected head precondition.
 After the conditional merge mutation begins, an unknown merge outcome or any
@@ -194,6 +196,13 @@ The release host requires:
     workflow dispatch request, even though the workflow declares a numeric
     input. GitHub rejects a JSON number for this endpoint. Do not reproduce
     version computation or publication logic in the runner.
+    If GitHub places `rc-publish.yml` or `tag-release.yml` in `waiting`, require
+    the exact run readback to match `M`, require exactly one pending environment
+    named `pypi`, require the authenticated operator to be an allowed reviewer,
+    require a zero wait timer, and approve only that environment. Verify the
+    approval response still names `M`. Any different workflow, environment,
+    source, reviewer shape, or response fails closed. The SHA bound standing
+    approval must already exist before delivery reaches this operation.
 14. Verify the complete candidate transaction:
 
     * GitHub prerelease.

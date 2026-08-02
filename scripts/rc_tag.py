@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Print the next release-candidate channel tag `X.Y.Z-rc.N`.
 
-CI usage: pipe the existing ghcr tags (one per line) on stdin and pass the
-target base version. N is one past the highest existing `<base>-rc.N`.
-
-    gh api "/orgs/knaisoma/packages/container/data-olympus/versions" \
-      --jq '.[].metadata.container.tags[]' | python3 scripts/rc_tag.py --base 0.5.0
+Usage: pipe known candidate tags, one per line, on stdin and pass the target
+base version. N is one past the highest existing `<base>-rc.N`. Tag discovery
+belongs to the caller so this helper does not require a registry credential or
+API scope.
 """
 from __future__ import annotations
 

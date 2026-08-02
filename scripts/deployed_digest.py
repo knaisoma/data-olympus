@@ -4,9 +4,9 @@ to a named release channel (e.g. "stable", "latest"), fail-closed.
 
 Used as an evidence adapter feeding release_readiness.py's rc_digest_deployed
 condition: the evaluator compares this digest against the expected_rc_digest
-recorded in the release manifest. A channel with no matching tag, more than
-one matching tag (ambiguous), or an unreachable registry does NOT resolve a
-digest (fail-closed), never silently skipped.
+recorded in the release manifest. The exact public tag must return one top
+level OCI index digest. A missing tag, ambiguous output, unavailable client,
+or unreachable registry does not resolve a digest and fails closed.
 
 CLI: `python3 scripts/deployed_digest.py --target <channel>
       [--package data-olympus] [--org knaisoma] [--json]`
@@ -61,30 +61,33 @@ def evaluate(versions: list[dict[str, Any]], target: str) -> dict[str, Any]:
     }
 
 
-def _fetch_versions(package: str, org: str) -> list[dict[str, Any]]:
-    """Fetch every package version (one JSON object per line) via gh api.
-
-    This is the digest source: the single seam release_readiness callers
-    (and tests) mock to avoid a real network/registry dependency. Every
-    failure mode (missing gh binary, subprocess failure, malformed JSON) is
-    normalized to RuntimeError so callers have one exception type to expect;
-    main() still fails closed on any other exception type as a backstop.
-    """
-    path = f"/orgs/{org}/packages/container/{package}/versions"
+def _inspect_digest(target: str, package: str, org: str) -> str:
+    """Resolve one public tag without requiring GitHub Packages API scope."""
+    reference = f"ghcr.io/{org}/{package}:{target}"
     try:
         out = subprocess.run(
-            ["gh", "api", "--paginate", path, "--jq", ".[]"],
-            capture_output=True, text=True,
+            ["docker", "buildx", "imagetools", "inspect", reference],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=30,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ghcr inspection timed out for {reference}") from exc
     except OSError as exc:
-        # e.g. the "gh" binary is not installed or not on PATH.
-        raise RuntimeError(f"gh api {path} could not be started: {exc}") from exc
+        raise RuntimeError(f"ghcr inspection could not start for {reference}") from exc
     if out.returncode != 0:
-        raise RuntimeError(f"gh api {path} failed:\n{out.stderr}")
-    try:
-        return [json.loads(line) for line in out.stdout.splitlines() if line.strip()]
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"gh api {path} returned malformed JSON: {exc}") from exc
+        raise RuntimeError(f"ghcr inspection failed for {reference}")
+    digests = re.findall(
+        r"^Digest:\s*(sha256:[0-9a-f]{64})\s*$",
+        out.stdout,
+        re.MULTILINE,
+    )
+    if len(digests) != 1:
+        raise RuntimeError(
+            f"ghcr inspection returned an ambiguous digest for {reference}"
+        )
+    return digests[0]
 
 
 def _unresolved(target: str, matched_versions: int = 0) -> dict[str, Any]:
@@ -105,10 +108,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        versions = _fetch_versions(args.package, args.org)
-        if not isinstance(versions, list):
-            raise TypeError(f"expected a list of package versions, got {type(versions).__name__}")
-        result = evaluate(versions, args.target)
+        digest = _inspect_digest(args.target, args.package, args.org)
+        if type(digest) is not str or _DIGEST_RE.fullmatch(digest) is None:
+            raise RuntimeError("ghcr inspection returned an invalid digest")
+        result = {
+            "target": args.target,
+            "digest": digest,
+            "source": f"ghcr:{args.target}",
+            "matched_versions": 1,
+        }
     except Exception as exc:
         # Fail-closed backstop: any failure resolving or evaluating the
         # digest lookup (subprocess/gh missing, malformed JSON, an
