@@ -49,6 +49,14 @@ def test_install_all_skips_unsupported(tmp_path):
     # repo-relative `.github/copilot-instructions.md`, which KB_ENFORCE_HOME
     # does NOT re-root. Without cwd the install --all would write into the real
     # worktree's .github/. Pin cwd so that write lands under tmp instead.
+    # What matters is that the real repository's file is left alone. Asserting
+    # it does not exist was a proxy for that, and only held while this
+    # repository happened to lack one; it now tracks its own
+    # copilot-instructions.md per STD-PS-002. Snapshot instead, so the test
+    # keeps checking the behaviour rather than the absence.
+    repo_copilot = REPO_ROOT / ".github" / "copilot-instructions.md"
+    before = repo_copilot.read_bytes() if repo_copilot.exists() else None
+
     r = _run("install", "--all", env=env, cwd=str(tmp_path))
     assert r.returncode == 0
     assert "antigravity" in r.stdout  # mentioned as skipped/unsupported
@@ -56,4 +64,6 @@ def test_install_all_skips_unsupported(tmp_path):
     assert (tmp_path / ".claude" / "settings.json").exists()
     # copilot-ide's repo-relative target landed under tmp, not the real repo.
     assert (tmp_path / ".github" / "copilot-instructions.md").exists()
-    assert not (REPO_ROOT / ".github" / "copilot-instructions.md").exists()
+
+    after = repo_copilot.read_bytes() if repo_copilot.exists() else None
+    assert after == before, "install --all must not write into the real repository"
