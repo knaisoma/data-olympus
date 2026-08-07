@@ -3364,3 +3364,26 @@ def test_rollback_failure_evidence_tracks_the_digest_apply_boundary(
     )
     assert raised.value.evidence["rollback_completed"] is False
     assert raised.value.evidence["rollback_digest"] == rollback_digest
+
+
+def test_command_failure_reports_the_exit_code_and_stderr(tmp_path) -> None:
+    # Both command paths captured stderr and threw it away, reporting only
+    # "command failed: uv". The release lane failed with exactly that while
+    # the same command succeeded by hand, with no way to see why.
+    import sys
+
+    from scripts.operations.release_runtime import _default_command_output
+
+    script = tmp_path / "boom.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stderr.write('the actual reason\\n')\n"
+        "sys.exit(7)\n"
+    )
+
+    with pytest.raises(ValueError) as caught:
+        _default_command_output([sys.executable, str(script)], tmp_path, 30)
+
+    message = str(caught.value)
+    assert "7" in message
+    assert "the actual reason" in message

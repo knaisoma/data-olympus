@@ -88,6 +88,23 @@ class UnboundGatewayResultError(ValueError):
     """A text fallback omitted the gateway's requested tool binding."""
 
 
+MAX_COMMAND_FAILURE_STDERR = 400
+
+
+def _command_failure(name: str, returncode: int, stderr: str | None) -> str:
+    """Name the exit code and why, not just which command.
+
+    Both call sites captured stderr and discarded it, so a failure reported
+    only "command failed: uv" while the same command succeeded when run by
+    hand. The detail is bounded because it reaches the run ledger.
+    """
+    detail = (stderr or "").strip().replace("\n", " ")
+    if len(detail) > MAX_COMMAND_FAILURE_STDERR:
+        detail = detail[:MAX_COMMAND_FAILURE_STDERR] + "..."
+    suffix = f": {detail}" if detail else ""
+    return f"command failed: {name} exited {returncode}{suffix}"
+
+
 def _default_command_output(command: list[str], cwd: Path, timeout: int) -> str:
     process = subprocess.run(
         command,
@@ -98,7 +115,9 @@ def _default_command_output(command: list[str], cwd: Path, timeout: int) -> str:
         check=False,
     )
     if process.returncode != 0:
-        raise ValueError(f"command failed: {command[0]}")
+        raise ValueError(
+            _command_failure(command[0], process.returncode, process.stderr)
+        )
     return process.stdout.strip()
 
 
@@ -1123,13 +1142,15 @@ class ReleaseRuntime:
                 process.communicate()
                 raise subprocess.TimeoutExpired(arguments, timeout)
             try:
-                stdout, _stderr = process.communicate(timeout=min(20.0, remaining))
+                stdout, stderr = process.communicate(timeout=min(20.0, remaining))
                 break
             except subprocess.TimeoutExpired:
                 self.heartbeat()
         self.heartbeat()
         if process.returncode != 0:
-            raise ValueError(f"command failed: {arguments[0]}")
+            raise ValueError(
+                _command_failure(arguments[0], process.returncode, stderr)
+            )
         return stdout.strip()
 
     def gateway_object(self, name: str, arguments: dict[str, object]) -> dict[str, Any]:
