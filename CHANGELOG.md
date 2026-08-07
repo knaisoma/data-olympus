@@ -12,6 +12,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-08-07
+
+### Fixed
+
+* fix(operations): make the release no_action deterministic (#226)
+
+
 ## [0.7.1] - 2026-08-02
 
 ### Fixed
