@@ -1649,18 +1649,32 @@ def test_runtime_heartbeats_keep_one_contiguous_protocol_sequence() -> None:
     ]
 
 
-def test_no_action_is_reviewed_and_has_no_candidate_revision() -> None:
+def test_no_action_is_deterministic_and_consumes_no_model_ticket() -> None:
+    # The runner fails a no_action result that carries a review_model_use_id
+    # or that produced any model use at all: a deterministic no_action is
+    # reviewed once when the lane revision is promoted, not per run. This
+    # lane requested and invoked a review on every no_action, so every run
+    # died with "no_action cannot issue or consume a model ticket".
+    requested: list[dict[str, object]] = []
     dependencies = _release_dependencies()
     dependencies["collect_admission"] = lambda _run: _admission_input(
         releasable=False
     )
+    dependencies["request_model_ticket"] = lambda request: requested.append(
+        request
+    ) or _fail("no_action must not request a model ticket")
 
     events = execute_release_run(json.dumps(RUN_INPUT), dependencies)
 
     assert [event["type"] for event in events] == ["milestone", "result"]
     assert events[-1]["status"] == "no_action"
     assert events[-1]["candidate_revision"] is None
-    assert events[-1]["review_model_use_id"] == 71
+    assert events[-1]["review_model_use_id"] is None
+    assert requested == []
+
+
+def _fail(message: str):
+    raise AssertionError(message)
 
 
 def test_release_blocks_when_ledger_approval_is_not_bound_to_candidate() -> None:

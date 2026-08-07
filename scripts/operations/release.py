@@ -1545,24 +1545,11 @@ def execute_release_run(
             _milestone(1, "admission", admission["reason"], admission["evidence"])
         )
         if admission["status"] == "no_action":
-            ticket = _request_review_ticket(
-                run_input,
-                dependencies,
-                run_input["source_revision"],
-            )
-            review = _invoke_review(
-                run_input,
-                dependencies,
-                ticket,
-                {
-                    "admission": admission,
-                    "instruction": (
-                        "Approve only when exact current remote main evidence proves "
-                        "that no Data Olympus release is due."
-                    ),
-                    "source_revision": run_input["source_revision"],
-                },
-            )
+            # Deterministic, and reviewed once when the lane revision is
+            # promoted rather than on every run. The runner fails a no_action
+            # result that carries a review_model_use_id or that produced any
+            # model use, so requesting a review here killed every no_action
+            # run with "no_action cannot issue or consume a model ticket".
             record(
                 _project_result(
                     2,
@@ -1570,7 +1557,6 @@ def execute_release_run(
                     admission["reason"],
                     run_input,
                     admission["evidence"],
-                    review_model_use_id=review["model_use_id"],
                 )
             )
             return events
