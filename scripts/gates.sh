@@ -13,6 +13,15 @@
 # See .rules/release-routine.md for the authoritative runbook this script
 # implements.
 #
+# SCOPE: these four are the RELEASE gates. AGENTS.md "Testing Requirements"
+# lists three further checks a change must pass before it is ready:
+# okf_conformance.py verify-pin, check_benchmark_docs.py, and
+# data-olympus lint example-bundle. This script does not run them, because
+# the release routine never did and widening the release gate would newly
+# block releases. Passing this script is necessary but not sufficient for a
+# change to be ready. If the release gate should widen, decide that
+# deliberately and update AGENTS.md and .rules/release-routine.md with it.
+#
 # Usage:
 #   bash scripts/gates.sh <target-directory>
 #

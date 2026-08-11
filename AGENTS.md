@@ -88,6 +88,8 @@ uv run data-olympus lint example-bundle         # dogfood conformance
 
 Run the linter before the tests. It runs first in CI, so a lint failure hides every test result behind it.
 
+The first four of those checks, plus the environment setup above, are also the release gates, and `scripts/gates.sh <target-dir>` runs exactly that subset in CI order for the unattended release routine. It deliberately does NOT run `okf_conformance.py verify-pin`, `check_benchmark_docs.py`, or `data-olympus lint example-bundle`. Those three remain a human-driven change requirement, so passing `gates.sh` is necessary but not sufficient for a change to be ready. Widening the release gate is a deliberate decision, not something to do by editing the script in passing.
+
 ## Deployment
 
 Releases are cut from `main` by the release routine documented in `.rules/release-routine.md`, which is the authority. In outline: `scripts/compute_release.py` decides releasability, CI tags on merge, and publication flows to PyPI and GHCR.
