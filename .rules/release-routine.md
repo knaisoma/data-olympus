@@ -144,7 +144,15 @@ The release host requires:
    * Version availability across PyPI, GHCR, GitHub tags, and GitHub releases.
 
    Ruff, mypy, and pytest run through `uv` with the declared `dev` extra so the
-   release can never select an unrelated global executable.
+   release can never select an unrelated global executable. Run the complete
+   test suite, Ruff, mypy, and Bats through `scripts/gates.sh <worktree-path>`,
+   the single project-owned entry point for this step: it performs the exact
+   CI environment setup (`uv venv --python 3.13`, `uv pip install -e
+   '.[dev]'`) before running the four gates in CI order and stops at the first
+   failure. Do not improvise an ad hoc shell chain for this step; besides
+   being unreviewable and non-reproducible run to run, a `cd`-prefixed chain
+   cannot be matched by a fixed permission allow-rule the way this script's
+   invocation can.
 
    GHCR availability uses an exact public registry tag inspection for
    `ghcr.io/knaisoma/data-olympus:vX.Y.Z`. Only an explicit missing manifest
@@ -300,6 +308,9 @@ The routine reuses:
 * `scripts/release_readiness.py` for evidence evaluation where its schema
   applies.
 * `scripts/release_artifacts.py` for artifact identity.
+* `scripts/gates.sh` for the CI-equivalent environment setup and the four
+  local quality gates (Ruff, mypy, pytest, Bats), in CI order, stopping at
+  the first failure.
 * `rc-publish.yml` for candidate publication.
 * `tag-release.yml` for stable promotion.
 * `set-channel.yml` for moving registry channels.
