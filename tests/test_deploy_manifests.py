@@ -165,3 +165,24 @@ def test_entrypoint_has_no_gosu_or_chown() -> None:
 def test_compose_binds_loopback() -> None:
     text = (DOCKER_DIR / "compose.yaml").read_text()
     assert "127.0.0.1:8080:8080" in text
+
+
+def test_entrypoint_bootstrap_falls_back_to_kb_remote_url() -> None:
+    """The compose path sets only KB_REMOTE_URL -- it is the documented one and
+    the only remote variable compose.yaml carries -- so the first-boot clone
+    must fall back to it. Without the fallback a compose deployment that
+    configured a remote started a read-write server on an unbootstrapped
+    /kb-main. KB_GIT_REMOTE_URL must still take precedence so the k8s path,
+    where the initContainer has already cloned, is unchanged.
+    """
+    text = (DOCKER_DIR / "entrypoint.sh").read_text()
+    assert '${KB_GIT_REMOTE_URL:-${KB_REMOTE_URL:-}}' in text, (
+        "first-boot clone must fall back from KB_GIT_REMOTE_URL to KB_REMOTE_URL"
+    )
+
+
+def test_compose_documents_that_kb_remote_url_also_bootstraps() -> None:
+    """A reader of compose.yaml should not have to discover the fallback by
+    watching the pull loop fail."""
+    text = (DOCKER_DIR / "compose.yaml").read_text()
+    assert "KB_GIT_REMOTE_URL" in text

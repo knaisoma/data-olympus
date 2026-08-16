@@ -12,6 +12,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* **Bootstrap `/kb-main` on the docker compose path.** The first-boot clone in
+  `deploy/docker/entrypoint.sh` keyed off `KB_GIT_REMOTE_URL`, but
+  `deploy/docker/compose.yaml` carries only `KB_REMOTE_URL` — which is also the
+  variable `docs/adoption.md` and `docs/quickstart.md` document. A compose
+  deployment that configured a remote therefore started a read-write server on
+  an empty `/kb-main`, and the first symptom was
+  `git_pull_loop iteration failed: … rev-parse HEAD … exit status 128`, which
+  does not point at the cause. The clone now falls back to `KB_REMOTE_URL`;
+  `KB_GIT_REMOTE_URL` still takes precedence, so the k8s path where the
+  initContainer has already cloned is unchanged.
+
 ## [0.7.2] - 2026-09-07
 
 ### Changed

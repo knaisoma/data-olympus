@@ -67,14 +67,28 @@ fi
 # --- Bootstrap /kb-main on first boot (docker compose path only) -------------
 # In k8s the initContainer already cloned /kb-main. For a bare docker run there is
 # no initContainer, so do it here. Idempotent: skipped when /kb-main is non-empty.
-# Safe: only clones when KB_GIT_REMOTE_URL is set. On clone failure the volume
-# stays empty and the MCP reports degraded so the operator notices.
-if [ -n "${KB_GIT_REMOTE_URL:-}" ] && [ -d /kb-main ]; then
+# On clone failure the volume stays empty and the MCP reports degraded so the
+# operator notices.
+#
+# Two variables name a remote: KB_GIT_REMOTE_URL is the clone source read here
+# and by the k8s initContainer, KB_REMOTE_URL is the push target read by the
+# server. The k8s manifests set both from one secret key, but compose.yaml
+# carries only KB_REMOTE_URL -- which is also the one docs/adoption.md and
+# docs/quickstart.md document. A compose deployment that set the documented
+# variable therefore got a read-write server on an unbootstrapped /kb-main, and
+# the first symptom was `git_pull_loop iteration failed: ... rev-parse HEAD ...
+# exit status 128`, which does not point at the cause.
+#
+# Falling back keeps k8s behaviour identical -- KB_GIT_REMOTE_URL still wins
+# when set -- while making the compose path bootstrap as this block's own
+# comment already claims it does.
+clone_url="${KB_GIT_REMOTE_URL:-${KB_REMOTE_URL:-}}"
+if [ -n "$clone_url" ] && [ -d /kb-main ]; then
     found_real_files=$(find /kb-main -mindepth 1 -maxdepth 1 \
         ! -name 'lost+found' -print -quit 2>/dev/null || true)
     if [ -z "$found_real_files" ]; then
-        echo "[entrypoint] /kb-main is empty; cloning ${KB_GIT_REMOTE_URL}"
-        if git clone "$KB_GIT_REMOTE_URL" /kb-main; then
+        echo "[entrypoint] /kb-main is empty; cloning ${clone_url}"
+        if git clone "$clone_url" /kb-main; then
             echo "[entrypoint] bootstrap complete"
         else
             echo "[entrypoint] WARNING: clone failed; pod will start degraded"
