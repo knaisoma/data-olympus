@@ -149,6 +149,20 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `/kb-main/.git/config` once the clone succeeds. Provisioning the credential
   outside the URL is the way out of both.
 
+* **Scan for LLM provider API keys.** The built-in secret-scan set covered
+  private keys, GitHub, AWS, Slack, `password=` assignments and connection
+  strings, but no LLM provider key format, so an `sk-ant-…` or `sk-proj-…` key
+  in a proposed memory was committed clean. Users of this project hold these
+  credentials by definition, which makes them the class most likely to be
+  pasted into a memory. Adds `llm_provider_api_key` (Anthropic, OpenAI
+  project/service-account/legacy, OpenRouter, Hugging Face, Groq, xAI, and
+  OpenAI-compatible gateways) and `google_api_key` (`AIza…`, which
+  authenticates Gemini and every other Google API).
+* **Detect two further forms of existing credential classes.** `github_token`
+  now covers `ghu_` user-to-server tokens alongside `ghp_`/`gho_`/`ghs_`/`ghr_`,
+  and `aws_access_key_id` now covers the `ASIA` temporary key id issued by STS
+  as well as `AKIA`.
+
 ## [0.7.1] - 2026-08-02
 
 ### Fixed

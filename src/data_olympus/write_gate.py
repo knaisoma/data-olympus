@@ -483,14 +483,42 @@ class SecretScanResult:
 _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN (?:(?:RSA|EC|OPENSSH|DSA|PGP) )?PRIVATE KEY-----"
 )
-# gh[oprs]_ covers ghp_/gho_/ghs_/ghr_ in one alternation; github_pat_ is a
-# distinct, longer-lived token format introduced later. Both are grouped under
+# gh[oprsu]_ covers ghp_/gho_/ghs_/ghr_/ghu_ in one alternation; github_pat_ is
+# a distinct, longer-lived token format introduced later. Both are grouped under
 # one pattern name since the issue treats them as a single "GitHub tokens"
 # class.
 _GITHUB_TOKEN_RE = re.compile(
-    r"\b(?:gh[oprs]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})\b"
+    r"\b(?:gh[oprsu]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})\b"
 )
-_AWS_ACCESS_KEY_RE = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+# AKIA is a long-lived access key id; ASIA is the temporary/session form issued
+# by STS. Both are access key ids and leak the same way, so they share a class.
+_AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
+# LLM provider API keys. Users of this project hold these by definition -- an
+# agent-facing knowledge base is configured with at least one of them -- so they
+# are the credential class most likely to end up pasted into a memory. Grouped
+# into one class because they leak identically and a caller only needs to know
+# "an LLM provider key is in this postimage".
+#
+# The bare ``sk-`` alternative last also covers OpenAI-compatible gateways that
+# mint keys in the same shape (LiteLLM, vLLM, LocalAI). It cannot swallow the
+# prefixed forms above it: ``[A-Za-z0-9]`` excludes the hyphen, so ``sk-ant-``
+# stops after three characters, far short of the 32 required.
+_LLM_PROVIDER_KEY_RE = re.compile(
+    r"\b(?:"
+    r"sk-ant-[A-Za-z0-9_-]{24,255}"        # Anthropic
+    r"|sk-proj-[A-Za-z0-9_-]{24,255}"      # OpenAI, project-scoped
+    r"|sk-svcacct-[A-Za-z0-9_-]{24,255}"   # OpenAI, service account
+    r"|sk-or-v1-[A-Za-z0-9]{32,255}"       # OpenRouter
+    r"|hf_[A-Za-z0-9]{32,255}"             # Hugging Face
+    r"|gsk_[A-Za-z0-9]{20,255}"            # Groq
+    r"|xai-[A-Za-z0-9]{32,255}"            # xAI
+    r"|sk-[A-Za-z0-9]{32,255}"             # OpenAI legacy / compatible gateways
+    r")\b"
+)
+# Google API key. Not LLM-specific -- the same shape authenticates Gemini, Maps
+# and every other Google API -- so it gets its own class rather than being
+# folded into the one above.
+_GOOGLE_API_KEY_RE = re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b")
 _SLACK_TOKEN_RE = re.compile(r"\bxox[bpars]-[A-Za-z0-9-]{10,200}\b")
 # Generic key=value / key: value credential assignment. Matches both a bare
 # key (``password=``) and a prefixed key (``DB_PASSWORD=``, ``API_SECRET:``) --
@@ -518,6 +546,8 @@ _BUILTIN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("github_token", _GITHUB_TOKEN_RE),
     ("aws_access_key_id", _AWS_ACCESS_KEY_RE),
     ("slack_token", _SLACK_TOKEN_RE),
+    ("llm_provider_api_key", _LLM_PROVIDER_KEY_RE),
+    ("google_api_key", _GOOGLE_API_KEY_RE),
     ("generic_credential_assignment", _GENERIC_CRED_RE),
     ("connection_string_password", _CONN_STRING_RE),
 )
