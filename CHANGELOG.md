@@ -16,6 +16,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+* **The release contract now says what to do when `main` advances past the
+  reviewed revision.** The delivery rule assumed the release merge was still
+  the tip of `main`. That stops being true when anything else merges between
+  review and publication without itself carrying a qualifying release review
+  and human merge: the reviewed revision is no longer `main`, `main`'s tree has
+  not been reviewed as a unit, and no revision satisfies the rule as written. The contract now names the preferred resolution (make the
+  reviewed revision the tip again) and defines a narrow fallback with explicit
+  conditions, including that every intervening commit was independently
+  reviewed and human-merged, that none of them changes an input to a published
+  artifact, that a change to a publication workflow always blocks the fallback,
+  and that provenance and the OCI `org.opencontainers.image.revision` label
+  name the exact source rather than `main`.
+
 * **Python 3.14 now has test coverage.** `requires-python` has always been
   `>= 3.13`, so 3.14 was inside the supported range and users could install
   there, but nothing verified it. CI now runs `mypy` and the pytest suite on

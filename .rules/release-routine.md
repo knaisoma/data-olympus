@@ -86,10 +86,61 @@ sole parent `B`, preserving linear history. Other merge methods are not supporte
 Changed base or content requires new review. Candidate fields remain `H`;
 provenance names `M`. Rerun checks and security clearance on `M`.
 
+### When main has advanced past the reviewed revision
+
+The rule above assumes the release merge is still the tip of `main`. It is not
+always: another pull request can merge between review and publication. Unless
+that pull request itself carried a qualifying release review and human merge,
+no revision then satisfies the rule as written, because the reviewed revision
+is no longer `main` and `main`'s tree has not been reviewed as a unit. That is
+a real gap, not a technicality to argue past, and it must be closed
+deliberately rather than by publishing anyway.
+
+The preferred resolution is to make the reviewed revision the tip again, by
+preparing the next reviewed change on top and publishing from that. Coordinate
+a short pause on other merges around final validation and dispatch, because
+each new merge restarts this. If merges keep landing, the release is delayed;
+that is the correct outcome. Never weaken an identity check to guarantee
+progress.
+
+Publication from a revision that is not `main` is a fallback. It relaxes only
+the requirement to publish from the tip: the squash-parent and reviewed-tree
+proofs, and every other requirement in this contract, still apply in full. It
+is permitted only when every one of the following holds and is recorded:
+
+* The chosen source `S` is the exact revision whose tree was reviewed and
+  approved as a unit, and its digest is stated in the release record.
+* `S` is an ancestor of `main`.
+* Every commit between `S` and `main` was independently reviewed and merged by
+  a human through the normal pull-request path. An unreviewed commit in that
+  range blocks publication outright.
+* Those commits change no input to a published artifact, directly or
+  transitively. Absence from the wheel and sdist manifests and from the image
+  build is necessary but never sufficient on its own. Inputs include, and are
+  not limited to: packaged files, and note that `CHANGELOG.md` is in the sdist
+  manifest; build helpers and anything they read; generated metadata and
+  provenance; release notes, which the publication workflows consume; and the
+  publication and release workflows themselves, which control how artifacts
+  are produced and therefore always block this fallback. A change that alters
+  release authorization or validation blocks it too, even when no artifact
+  byte would differ.
+* The release record names `S` explicitly and notes that `main` is ahead of it,
+  listing the intervening commits. Provenance and the OCI
+  `org.opencontainers.image.revision` label name `S`, so the published image
+  identity is `S` and not `main`. Never describe the release as built from
+  `main` when it was not.
+* Gates and security clearance are rerun on `S`, not inherited from `main` or
+  from the pre-merge candidate.
+
+If any condition fails, prepare a fresh reviewed pull request and obtain a
+human merge instead. Automation never resolves this by relabelling a failed
+identity check as passing.
+
 Delivery is a direct continuation after human merge. Workflows use explicit
 `workflow_dispatch`, not push-triggered tagging:
 
-1. Dispatch `rc-publish.yml` with exact source SHA `M` and a positive candidate
+1. Dispatch `rc-publish.yml` with the exact chosen source SHA, which is `M`
+   normally and `S` under the fallback above, and a positive candidate
    number. Publish wheel, sdist, OCI image, `release-provenance.json`, PyPI
    version, and GitHub prerelease.
 2. Verify hashes, provenance, and digest. Record a rollback digest, deploy the
