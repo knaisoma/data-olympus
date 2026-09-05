@@ -12,6 +12,22 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-07
+
+### Changed
+
+* **The release contract now separates candidate remediation from post-merge
+  alert closure.** Publication still requires zero open security alerts, and
+  that requirement is never waived. The contract now states the one narrow
+  case in which a final release pull request may reach its human merger while
+  an alert is still open: the alert's fix is in the exact reviewed candidate
+  and its closure is mechanically waiting only for that fix to reach the
+  default branch. It requires per-alert remediation proof against that exact
+  candidate, agreement from both the implementer and the independent reviewer,
+  and fresh zero-alert clearance after the merge before anything is published.
+  Previously the rule read as an unqualified zero-alert gate, which no branch
+  fixing a default-branch alert could ever satisfy before merging.
+
 ### Fixed
 
 * **Bind the benchmark receipt to its measurement commit instead of the working
@@ -29,14 +45,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   left pointing at the original measurement commit, so the receipt described a
   pairing that never existed. It is restored to the lock actually committed at
   that commit; the measurement revision and all benchmark outputs are unchanged.
-
-## [0.7.2] - 2026-08-10
-
-### Fixed
-
+* fix(release): require human merge and preserve published artifacts (#240)
 * fix(operations): report why a command failed, not just which one (#230)
 * fix(operations): make the release no_action deterministic (#226)
 
+### Security
+
+* **Update `cryptography` from 49.0.0 to 50.0.1
+  ([GHSA-g6cj-pr64-35w5](https://github.com/pyca/cryptography/security/advisories/GHSA-g6cj-pr64-35w5),
+  high).** PKCS#7 `EnvelopedData` decryption reported failures in
+  distinguishable ways, one of which disclosed the length recovered from the
+  RSA operation, and the same distinction was observable by timing. An
+  application decrypting attacker-supplied `EnvelopedData` and reflecting the
+  outcome therefore exposed a Bleichenbacher oracle against the
+  content-encryption key. Introduced in 44.0.0 and fixed in 50.0.0. Data
+  Olympus reaches `cryptography` only as a transitive dependency and never
+  calls the affected PKCS#7 decryption entry points, so no product code path
+  was exploitable; the dependency is updated so no vulnerable version is
+  resolved or shipped.
 
 ## [0.7.1] - 2026-08-02
 
