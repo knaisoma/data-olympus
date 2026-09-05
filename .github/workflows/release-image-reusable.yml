@@ -17,7 +17,7 @@ on:
         default: false
         type: boolean
       channel:
-        description: "also push this moving channel tag (e.g. rc, kndev); empty = none"
+        description: "also push this moving channel tag (e.g. rc, stable); empty = none"
         required: false
         default: ""
         type: string

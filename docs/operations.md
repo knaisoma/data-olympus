@@ -600,14 +600,10 @@ PyPI publication happen before the stable Git tag is created. The workflow then
 retags the candidate image digest as the version, `stable`, and `latest`; it does
 not build another image.
 
-The operations runner advances a protected candidate or stable workflow only
-after its independent review and exact SHA bound standing approval pass. When
-GitHub reports a waiting deployment, the runner verifies the exact workflow run
-and source SHA, accepts exactly one pending environment named `pypi` with an
-operator reviewer and zero wait timer, approves only that environment, and
-verifies the returned deployment SHA. FastMCP currently has no environment
-deployment review operation, so this bounded step uses the GitHub CLI fallback.
-Any other pending deployment shape fails closed.
+The final PR is independently reviewed and merged by a human. Delivery requires
+matching reviewed and merged trees with fresh checks on merged source. Merge
+does not trigger these workflows: an authorized continuation dispatches them.
+Environment approval remains bound to the exact workflow run and source.
 
 Release image digest verification uses `docker buildx imagetools inspect` on
 the exact public GHCR tag. It does not require `read:packages` or enumerate the
@@ -618,23 +614,14 @@ accepted only when its embedded revision matches the requested source. PyPI
 publishing uses `skip-existing`, followed by exact SHA256 verification. Never
 overwrite an immutable candidate or stable version.
 
-When the operations runner resumes a release that is already prepared and
-unpublished on `main`, it reviews and delivers the admitted source SHA directly.
-The final project result keeps `candidate_revision` null because no derived
-candidate commit exists. The exact source SHA remains mandatory in the review,
-approval, delivery, and verification evidence. Pull request preparation still
-reports its distinct derived candidate revision. This separation prevents the
-central runner from mistaking a prepared source recovery for a newly created
-candidate while preserving end to end source identity.
+GitHub retries use `scripts/release_upload.py`: existing bytes must match exactly;
+only missing assets are uploaded. Mismatches block without replacement. Prepared
+but unpublished versions require fresh reviewed PR and human merge. Inventory
+all public surfaces; uncertain or conflicting state needs reviewed recovery.
 
-Exact recovery applies only while the prepared documents still match the
-complete computed release change set. If another reviewed commit reaches
-`main` before publication, the next run uses the ordinary isolated branch and
-the deterministic roll forward renderer. That renderer must preserve every
-prior release item, incorporate at least one newly computed item, empty the
-Unreleased section, and pass the full pull request gates before delivery. An
-incomplete, corrupt, replayed, or ambiguous prepared state still fails before
-any commit, push, merge, publication, or deployment.
+The `set-channel.yml` workflow permits only `rc`, `stable`, or `latest`, defaulting
+to `stable`. It rejects version tags and arbitrary names before registry access,
+preventing channel dispatch from replacing a published version tag.
 
 Yank an unsuitable PyPI candidate and publish a higher candidate number. Roll a
 moving GHCR channel back by applying the channel tag to a previously verified

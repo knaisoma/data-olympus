@@ -16,7 +16,7 @@ def _read(relative: str) -> str:
 
 
 def test_local_agent_rules_describe_complete_candidates() -> None:
-    text = "\n".join(_read(path) for path in RULES)
+    text = " ".join("\n".join(_read(path) for path in RULES).split())
 
     for required in (
         "wheel",
@@ -33,7 +33,7 @@ def test_local_agent_rules_describe_complete_candidates() -> None:
 
 
 def test_local_agent_rules_require_explicit_stable_promotion() -> None:
-    text = "\n".join(_read(path) for path in RULES)
+    text = " ".join("\n".join(_read(path) for path in RULES).split())
 
     assert "workflow_dispatch" in text
     assert "candidate_tag" in text
@@ -63,8 +63,8 @@ def test_versioning_rule_uses_one_linear_release_change() -> None:
     versioning = _read(".rules/versioning.md")
     routine = _read(".rules/release-routine.md")
 
-    assert "`chore/release-vX.Y.Z-RUN`" in versioning
-    assert "`chore/release-vX.Y.Z-RUN`" in routine
+    assert "`codex/release-YYYY-MM-DD`" in versioning
+    assert "`codex/release-YYYY-MM-DD`" in routine
     assert "linear history" in versioning
     assert "squash merged" in versioning
     assert "feature/<release-epic-id>" not in versioning
@@ -85,7 +85,7 @@ def test_release_routine_reviews_before_merge_and_proves_content_transfer() -> N
         "tree exactly equals reviewed tree `T`",
         "entire GitHub ruleset",
         "direct continuation",
-        "candidate fields remain `H`",
+        "Candidate fields remain `H`",
     ):
         assert required in normalized
     assert "Code Quality must be configured" not in normalized
@@ -93,11 +93,9 @@ def test_release_routine_reviews_before_merge_and_proves_content_transfer() -> N
     assert "bypass only the native approval" not in normalized
 
 
-def test_release_planning_is_outcome_based() -> None:
-    planning = _read(".rules/release-planning.md")
-
-    assert "already\nmerged, reviewed, green, and unreleased" in planning
-    assert "does not select future issues" in planning
+def test_release_planning_selects_a_coherent_issue_batch() -> None:
+    planning = " ".join(_read(".rules/release-planning.md").split())
+    assert "three to five" in planning
+    assert "before implementation" in planning
     assert "No action" in planning
-    assert "three to five" not in planning
-    assert "strict 1-week" not in planning
+    assert "fixes, new capabilities, and improvements" in planning

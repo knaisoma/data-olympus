@@ -1,18 +1,18 @@
 name: Set image channel
 
-# Re-points a moving ghcr channel tag (default :kndev) at an existing image
-# ref's digest, WITHOUT rebuilding. Keel (force + match-tag on :kndev) then rolls
-# kn-dev onto it. Drives the RC canary (source = the rc tag), promotion
-# (source = the new stable vX.Y.Z), and rollback (source = the previous stable).
-# Dispatched by the release cutter via `gh workflow run`.
+# Re-points a moving channel at an existing digest without build or deployment.
 on:
   workflow_dispatch:
     inputs:
       channel:
-        description: "moving channel tag to move (e.g. kndev)"
+        description: "moving channel tag to move"
         required: false
-        default: "kndev"
-        type: string
+        default: "stable"
+        type: choice
+        options:
+          - rc
+          - stable
+          - latest
       source:
         description: "existing image tag to point the channel at (e.g. v0.5.0-rc.1, v0.5.0)"
         required: true
@@ -42,10 +42,10 @@ jobs:
           CHANNEL: ${{ inputs.channel }}
           SOURCE: ${{ inputs.source }}
         run: |
-          if [ -z "$CHANNEL" ]; then
-            echo "channel input is empty" >&2
-            exit 1
-          fi
+          case "$CHANNEL" in
+            rc|stable|latest) ;;
+            *) echo "channel must be rc, stable, or latest" >&2; exit 1 ;;
+          esac
           # Fail if the source tag does not exist (avoid creating a dangling channel).
           if ! docker buildx imagetools inspect "$REPO:$SOURCE" >/dev/null 2>&1; then
             echo "source image $REPO:$SOURCE not found" >&2
