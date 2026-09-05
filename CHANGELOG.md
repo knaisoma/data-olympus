@@ -61,14 +61,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from 44.0.0, fixed in 50.0.0. The GitHub Advisory Database rates it high; the
   upstream advisory rates it moderate.
 
-  Data Olympus reaches `cryptography` only as a transitive dependency and never
-  calls the affected PKCS#7 entry points, so no product code path was
-  exploitable. The locked environment and the container image install exactly
-  50.0.1, and a fresh install of the Python distribution resolves a patched
-  version. An existing environment is *not* upgraded automatically: this
-  distribution declares no minimum for `cryptography`, and the packages that
-  pull it in require only `>= 45.0.1`. See `docs/releases/v0.7.2.md` for the
-  in-place upgrade command.
+  Data Olympus does not depend on `cryptography` directly, and no Data Olympus
+  source file imports it or calls the affected PKCS#7 entry points. This
+  release does not establish whether the affected code is reachable through a
+  transitive dependency, so the remediation is scoped to the dependency version
+  rather than to a claim about exploitability. The locked environment and the
+  container image install exactly 50.0.1. A clean installation of the wheel
+  resolved 50.0.1 when tested, but the metadata does not guarantee it: this
+  distribution declares no minimum for `cryptography`, and the combined
+  transitive requirements (`authlib >= 45.0.1`, `joserfc >= 45.0.1`, and
+  `pyjwt >= 3.4.0` for its `crypto` extra) still permit 49.0.0. An existing
+  environment is not upgraded automatically. See `docs/releases/v0.7.2.md` for
+  the explicit upgrade command.
 
 ## [0.7.1] - 2026-08-02
 
