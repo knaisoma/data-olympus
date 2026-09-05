@@ -12,6 +12,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* **Bind the benchmark receipt to its measurement commit instead of the working
+  tree.** The receipt's `dependency_lock` was compared against the *current*
+  `uv.lock`, so every dependency change failed the `benchmark-docs` CI guard
+  with `dependency_lock does not match uv.lock`, including security updates.
+  The comparison now runs against `uv.lock` as committed at the receipt's own
+  `source_commit`, read from git history and still checked byte for byte, while
+  the current lock is free to move. A past measurement is not invalidated by a
+  later dependency bump, and the guard no longer asserts that today's
+  dependency set produced numbers measured before it existed. Every other
+  receipt failure is preserved unchanged.
+* **Correct the receipt's recorded lock binding.** `dependency_lock.sha256` had
+  been regenerated in place against a newer `uv.lock` while `source_commit` was
+  left pointing at the original measurement commit, so the receipt described a
+  pairing that never existed. It is restored to the lock actually committed at
+  that commit; the measurement revision and all benchmark outputs are unchanged.
+
 ## [0.7.2] - 2026-08-10
 
 ### Fixed

@@ -261,6 +261,8 @@ def test_artifact_generator_writes_receipt_for_current_head(
 
 
 def test_docs_guard_surfaces_receipt_drift(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """Every verify_receipt failure other than the current-lock comparison is
+    passed through untouched."""
     from benchmarks import receipt
     from scripts import check_benchmark_docs
 
@@ -272,16 +274,17 @@ def test_docs_guard_surfaces_receipt_drift(tmp_path: Path, monkeypatch) -> None:
         lambda _document, _root: ["outputs sha256 does not match the repository"],
     )
 
+    # The empty document also has no dependency_lock to bind, so the historical
+    # check contributes its own problem alongside the preserved one.
     assert check_benchmark_docs.receipt_problems(tmp_path) == [
-        "outputs sha256 does not match the repository"
+        "outputs sha256 does not match the repository",
+        "dependency_lock is missing from the receipt",
     ]
 
 
-def test_docs_guard_allows_only_release_root_version_lock_drift(
-    tmp_path: Path,
-) -> None:
-    from benchmarks.receipt import build_receipt, verify_receipt
-    from scripts import check_benchmark_docs
+def _committed_benchmark_repo(tmp_path: Path) -> tuple[Path, dict]:
+    """A fixture repo whose receipt binds to a real commit in its own history."""
+    from benchmarks.receipt import build_receipt
 
     root = _benchmark_repo(tmp_path)
     _write(
@@ -289,40 +292,144 @@ def test_docs_guard_allows_only_release_root_version_lock_drift(
         '[project]\nname = "data-olympus"\nversion = "0.6.0"\n',
     )
     receipt = build_receipt(root, _commit_repo(root))
-    receipt_path = root / "benchmarks" / "results" / "receipt.json"
-    _write(receipt_path, json.dumps(receipt) + "\n")
+    _write(
+        root / "benchmarks" / "results" / "receipt.json",
+        json.dumps(receipt) + "\n",
+    )
+    return root, receipt
 
+
+def _bump_current_lock(root: Path, old: str, new: str) -> None:
     lock_path = root / "uv.lock"
     lock_path.write_text(
-        lock_path.read_text(encoding="utf-8").replace(
-            'name = "data-olympus"\nversion = "0.6.0"',
-            'name = "data-olympus"\nversion = "0.7.0"',
-            1,
-        ),
-        encoding="utf-8",
-    )
-    (root / "pyproject.toml").write_text(
-        '[project]\nname = "data-olympus"\nversion = "0.7.0"\n',
+        lock_path.read_text(encoding="utf-8").replace(old, new, 1),
         encoding="utf-8",
     )
 
-    assert verify_receipt(receipt, root) == [
-        "dependency_lock does not match uv.lock"
-    ]
+
+def test_docs_guard_allows_current_lock_drift_for_any_package(
+    tmp_path: Path,
+) -> None:
+    """A dependency update does not invalidate a past measurement.
+
+    This is the whole point of binding the receipt to its measurement commit
+    instead of the working tree: previously *any* uv.lock change failed this
+    guard, which stalled security updates. It holds for a benchmark-relevant
+    package too, because the receipt still describes the environment the
+    numbers were measured in, not the one shipping today.
+    """
+    from benchmarks.receipt import verify_receipt
+    from scripts import check_benchmark_docs
+
+    root, receipt = _committed_benchmark_repo(tmp_path)
+    _bump_current_lock(
+        root,
+        'name = "fastmcp"\nversion = "3.4.4"',
+        'name = "fastmcp"\nversion = "3.4.6"',
+    )
+
+    assert verify_receipt(receipt, root) == ["dependency_lock does not match uv.lock"]
     assert check_benchmark_docs.receipt_problems(root) == []
 
-    lock_path.write_text(
-        lock_path.read_text(encoding="utf-8").replace(
-            'name = "fastmcp"\nversion = "3.4.4"',
-            'name = "fastmcp"\nversion = "3.4.5"',
-            1,
-        ),
-        encoding="utf-8",
+
+def test_docs_guard_allows_release_version_and_dependency_drift_together(
+    tmp_path: Path,
+) -> None:
+    """The old guard accepted a lone root-version bump through a special case.
+    Under the measurement binding that is simply one more current-lock change,
+    and it composes with a real dependency bump instead of being exclusive."""
+    from scripts import check_benchmark_docs
+
+    root, _ = _committed_benchmark_repo(tmp_path)
+    _bump_current_lock(
+        root,
+        'name = "data-olympus"\nversion = "0.6.0"',
+        'name = "data-olympus"\nversion = "0.7.0"',
+    )
+    _bump_current_lock(
+        root,
+        'name = "numpy"\nversion = "2.5.1"',
+        'name = "numpy"\nversion = "2.5.2"',
+    )
+    _write(
+        root / "pyproject.toml",
+        '[project]\nname = "data-olympus"\nversion = "0.7.0"\n',
     )
 
-    assert check_benchmark_docs.receipt_problems(root) == [
-        "dependency_lock does not match uv.lock"
+    assert check_benchmark_docs.receipt_problems(root) == []
+
+
+def test_docs_guard_rejects_tampered_measured_lock_digest(tmp_path: Path) -> None:
+    """The measured environment stays tamper-evident byte for byte."""
+    from scripts import check_benchmark_docs
+
+    root, receipt = _committed_benchmark_repo(tmp_path)
+    receipt["dependency_lock"]["sha256"] = "0" * 64
+    _write(
+        root / "benchmarks" / "results" / "receipt.json",
+        json.dumps(receipt) + "\n",
+    )
+
+    problems = check_benchmark_docs.receipt_problems(root)
+    assert problems == [
+        "dependency_lock does not match uv.lock at source_commit "
+        f"{receipt['source_commit']}"
     ]
+
+
+def test_docs_guard_rejects_tampered_measured_package_summary(
+    tmp_path: Path,
+) -> None:
+    """A correct digest with an edited package summary is still a lie about the
+    measured environment, and the digest alone would not catch it."""
+    from scripts import check_benchmark_docs
+
+    root, receipt = _committed_benchmark_repo(tmp_path)
+    receipt["dependency_lock"]["packages"] = [
+        {"name": "fastmcp", "version": "9.9.9"}
+    ]
+    _write(
+        root / "benchmarks" / "results" / "receipt.json",
+        json.dumps(receipt) + "\n",
+    )
+
+    problems = check_benchmark_docs.receipt_problems(root)
+    assert problems == [
+        "dependency_lock packages do not match uv.lock at source_commit "
+        f"{receipt['source_commit']}"
+    ]
+
+
+def test_docs_guard_rejects_unreachable_measurement_history(
+    tmp_path: Path,
+) -> None:
+    """A shallow checkout must fail loudly rather than skip the binding."""
+    from scripts import check_benchmark_docs
+
+    root, receipt = _committed_benchmark_repo(tmp_path)
+    absent = "1" * 40
+    receipt["source_commit"] = absent
+    _write(
+        root / "benchmarks" / "results" / "receipt.json",
+        json.dumps(receipt) + "\n",
+    )
+
+    problems = check_benchmark_docs.receipt_problems(root)
+    assert (
+        "measured uv.lock is unreachable at source_commit "
+        f"{absent}; a full-history checkout is required"
+    ) in problems
+
+
+def test_docs_guard_still_rejects_changed_benchmark_inputs(tmp_path: Path) -> None:
+    """Relaxing the current-lock comparison must not relax anything else."""
+    from scripts import check_benchmark_docs
+
+    root, _ = _committed_benchmark_repo(tmp_path)
+    _write(root / "benchmarks" / "corpus" / "a.md", "tampered corpus\n")
+
+    problems = check_benchmark_docs.receipt_problems(root)
+    assert "inputs.corpora sha256 does not match the repository" in problems
 
 
 def test_public_claims_carry_independent_reproduction_label() -> None:

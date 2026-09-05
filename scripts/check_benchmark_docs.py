@@ -7,14 +7,40 @@ generated from the committed result JSONs by ``benchmarks.docs_tables`` between
 and fails when a committed doc has drifted from the results (a hand-edited or
 stale number), so the docs can never silently disagree with the benchmark
 artifacts. Fix drift with ``python -m benchmarks.docs_tables --write``.
+
+It also owns the *provenance* half of that contract, and the distinction is the
+subtle part. A receipt describes one measurement that happened once, at one
+revision, under one dependency set. That is not the same fact as the dependency
+set the repository ships today, and this guard deliberately keeps them apart:
+
+* The receipt's ``dependency_lock`` is verified against ``uv.lock`` **as
+  committed at the receipt's own ``source_commit``**, read out of git history.
+  That binding is checked byte for byte, so the measured environment stays
+  tamper-evident.
+* The working tree's current ``uv.lock`` is allowed to move freely. A dependency
+  update does not invalidate a past measurement; it only means the numbers were
+  measured somewhere else, which is what the published provenance label already
+  says.
+
+Requiring the two to be equal is what previously made every dependency update
+fail this guard, including security updates, and it asserted something untrue:
+that today's dependency set produced numbers measured long before it existed.
+
+What this does NOT establish: that the benchmarks were actually executed under
+the recorded dependencies. ``build_receipt`` records committed files and
+environment metadata without running anything. Claiming that current
+dependencies produced the numbers requires a fresh measured run. Guarding the
+*current* dependency set against artifact substitution is likewise out of scope
+here and remains the job of dependency and security review.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import re
+import subprocess
 import sys
-import tomllib
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -23,64 +49,69 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 _DEPENDENCY_LOCK_MISMATCH = "dependency_lock does not match uv.lock"
-_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
-_ROOT_LOCK_VERSION = re.compile(
-    r'(?m)(^name = "data-olympus"\nversion = ")([^"]+)("$)'
-)
+_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
-def _release_root_version_only_lock_drift(
+def _measured_lock(repo_root: Path, source_commit: str) -> bytes | None:
+    """Return ``uv.lock`` exactly as committed at the measurement revision.
+
+    CI checks out with ``fetch-depth: 0`` precisely so this history is present;
+    a shallow clone makes the measured lock unreachable and this returns None
+    rather than silently skipping the check.
+    """
+    result = subprocess.run(
+        ["git", "show", f"{source_commit}:uv.lock"],
+        cwd=repo_root,
+        capture_output=True,
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def historical_lock_problems(
     document: Mapping[str, object],
     repo_root: Path,
-) -> bool:
-    """Accept a release metadata bump only when every other lock byte matches."""
-    expected_lock = document.get("dependency_lock")
-    if not isinstance(expected_lock, Mapping):
-        return False
-    expected_sha = expected_lock.get("sha256")
-    packages = expected_lock.get("packages")
-    if not isinstance(expected_sha, str) or not isinstance(packages, list):
-        return False
-    expected_roots = [
-        package
-        for package in packages
-        if isinstance(package, Mapping) and package.get("name") == "data-olympus"
-    ]
-    if len(expected_roots) != 1:
-        return False
-    expected_version = expected_roots[0].get("version")
-    if not isinstance(expected_version, str) or not _VERSION.fullmatch(
-        expected_version
-    ):
-        return False
+) -> list[str]:
+    """Verify the receipt's dependency lock against its own measurement commit.
 
-    try:
-        lock = (repo_root / "uv.lock").read_text(encoding="utf-8")
-        project = tomllib.loads(
-            (repo_root / "pyproject.toml").read_text(encoding="utf-8")
-        )
-    except (OSError, tomllib.TOMLDecodeError):
-        return False
-    matches = list(_ROOT_LOCK_VERSION.finditer(lock))
-    if len(matches) != 1:
-        return False
-    current_version = matches[0].group(2)
-    project_table = project.get("project")
-    if (
-        not isinstance(project_table, dict)
-        or project_table.get("name") != "data-olympus"
-        or project_table.get("version") != current_version
-        or current_version == expected_version
-        or not _VERSION.fullmatch(current_version)
-    ):
-        return False
+    Reuses ``benchmarks.receipt._dependency_lock`` against a scratch copy of the
+    historical file so the digest and package summary are computed by the exact
+    production code path rather than a second implementation that could drift.
+    """
+    from benchmarks.receipt import _dependency_lock
 
-    historical_lock = _ROOT_LOCK_VERSION.sub(
-        rf"\g<1>{expected_version}\g<3>",
-        lock,
-        count=1,
-    )
-    return hashlib.sha256(historical_lock.encode("utf-8")).hexdigest() == expected_sha
+    expected = document.get("dependency_lock")
+    if not isinstance(expected, Mapping):
+        return ["dependency_lock is missing from the receipt"]
+    expected_sha = expected.get("sha256")
+    expected_packages = expected.get("packages")
+    if not isinstance(expected_sha, str) or not isinstance(expected_packages, list):
+        return ["dependency_lock is malformed in the receipt"]
+
+    source_commit = document.get("source_commit")
+    if not isinstance(source_commit, str) or not _SHA_PATTERN.fullmatch(source_commit):
+        return ["source_commit must be a lowercase 40 character git SHA"]
+
+    lock = _measured_lock(repo_root, source_commit)
+    if lock is None:
+        return [
+            "measured uv.lock is unreachable at source_commit "
+            f"{source_commit}; a full-history checkout is required"
+        ]
+    if hashlib.sha256(lock).hexdigest() != expected_sha:
+        return [
+            "dependency_lock does not match uv.lock at source_commit "
+            f"{source_commit}"
+        ]
+
+    with tempfile.TemporaryDirectory() as scratch:
+        (Path(scratch) / "uv.lock").write_bytes(lock)
+        measured = _dependency_lock(Path(scratch))
+    if measured["packages"] != expected_packages:
+        return [
+            "dependency_lock packages do not match uv.lock at source_commit "
+            f"{source_commit}"
+        ]
+    return []
 
 
 def receipt_problems(repo_root: Path) -> list[str]:
@@ -94,12 +125,13 @@ def receipt_problems(repo_root: Path) -> list[str]:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         return [f"invalid benchmark receipt: {exc}"]
-    problems = verify_receipt(document, repo_root)
-    if problems == [_DEPENDENCY_LOCK_MISMATCH] and (
-        _release_root_version_only_lock_drift(document, repo_root)
-    ):
-        return []
-    return problems
+
+    # Every failure except the current-lock comparison is preserved exactly as
+    # verify_receipt reported it. Only that one comparison is replaced, and it
+    # is replaced by a strictly separate check rather than suppressed, so a
+    # historical mismatch can never be hidden by dropping it.
+    problems = [p for p in verify_receipt(document, repo_root) if p != _DEPENDENCY_LOCK_MISMATCH]
+    return problems + historical_lock_problems(document, repo_root)
 
 
 def main() -> int:
