@@ -41,6 +41,43 @@ Missing, stale, unreadable, or ambiguous evidence blocks. GitHub Code Quality is
 not a dependency. Resolve all review threads and failed required checks. Never
 dismiss alerts, waive tests, or bypass the entire GitHub ruleset to meet a date.
 
+### Candidate remediation versus post-merge closure
+
+Publication requires zero open security alerts. That requirement is never
+waived, satisfied by prediction, or replaced by any check below.
+
+A repository security alert is raised against the default branch, so an alert
+whose fix lives on an unmerged branch can stay open until that branch merges.
+That mechanical lag is the only reason a final release pull request may be
+handed to its human merger while an alert is still open, and only when all of
+the following hold:
+
+* The open alert's fix is present in the exact reviewed candidate.
+* Its closure is waiting only for that fix to reach the default branch. An
+  alert that is unresolved, unrelated, unreadable, or fixed somewhere other
+  than this candidate never qualifies.
+* Per-alert remediation proof is recorded against the exact candidate: the
+  advisory, its vulnerable and fixed version range, the resolved lockfile and
+  built-artifact dependency versions, the affected code paths, candidate CodeQL
+  results, and regression and compatibility checks.
+* The implementer and the independent reviewer both agree, on that evidence,
+  that every open finding is fixed in this candidate.
+* The pull request states plainly that closure is pending its human merge.
+
+No other exception exists. A pending merge is not remediation, an anticipated
+automatic closure is not evidence, and a dependency bump alone is not security
+clearance. A failed live security scan is retained as failed; it is never
+rewritten as passing.
+
+Building and inspecting an unpublished distribution or image locally is part
+of assembling that proof and is expected before handoff. It is validation, not
+release: nothing built this way is uploaded, tagged, promoted, or served.
+
+After merge, publication still requires fresh security clearance showing zero
+open alerts, plus exact-source CI and CodeQL success, before any candidate or
+stable artifact is *published*. If closure lags behind the merge, reconcile it
+later. Never dismiss an alert or bypass the gate to reach a date.
+
 ## Human merge and delivery
 
 Human merge authorizes delivery of reviewed content only. Fetch main SHA `M`;
