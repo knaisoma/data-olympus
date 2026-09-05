@@ -69,9 +69,13 @@ automatic closure is not evidence, and a dependency bump alone is not security
 clearance. A failed live security scan is retained as failed; it is never
 rewritten as passing.
 
+Building and inspecting an unpublished distribution or image locally is part
+of assembling that proof and is expected before handoff. It is validation, not
+release: nothing built this way is uploaded, tagged, promoted, or served.
+
 After merge, publication still requires fresh security clearance showing zero
 open alerts, plus exact-source CI and CodeQL success, before any candidate or
-stable artifact is produced. If closure lags behind the merge, reconcile it
+stable artifact is *published*. If closure lags behind the merge, reconcile it
 later. Never dismiss an alert or bypass the gate to reach a date.
 
 ## Human merge and delivery

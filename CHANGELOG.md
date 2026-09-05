@@ -52,17 +52,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Security
 
 * **Update `cryptography` from 49.0.0 to 50.0.1
-  ([GHSA-g6cj-pr64-35w5](https://github.com/pyca/cryptography/security/advisories/GHSA-g6cj-pr64-35w5),
-  high).** PKCS#7 `EnvelopedData` decryption reported failures in
-  distinguishable ways, one of which disclosed the length recovered from the
-  RSA operation, and the same distinction was observable by timing. An
-  application decrypting attacker-supplied `EnvelopedData` and reflecting the
-  outcome therefore exposed a Bleichenbacher oracle against the
-  content-encryption key. Introduced in 44.0.0 and fixed in 50.0.0. Data
-  Olympus reaches `cryptography` only as a transitive dependency and never
-  calls the affected PKCS#7 decryption entry points, so no product code path
-  was exploitable; the dependency is updated so no vulnerable version is
-  resolved or shipped.
+  ([GHSA-g6cj-pr64-35w5](https://github.com/pyca/cryptography/security/advisories/GHSA-g6cj-pr64-35w5)).**
+  PKCS#7 `EnvelopedData` decryption reported failures in distinguishable ways,
+  one of which disclosed the length recovered from the RSA operation, and the
+  same distinction was observable by timing. An application decrypting
+  attacker-supplied `EnvelopedData` and reflecting the outcome therefore
+  exposed a Bleichenbacher oracle against the content-encryption key. Affected
+  from 44.0.0, fixed in 50.0.0. The GitHub Advisory Database rates it high; the
+  upstream advisory rates it moderate.
+
+  Data Olympus reaches `cryptography` only as a transitive dependency and never
+  calls the affected PKCS#7 entry points, so no product code path was
+  exploitable. The locked environment and the container image install exactly
+  50.0.1, and a fresh install of the Python distribution resolves a patched
+  version. An existing environment is *not* upgraded automatically: this
+  distribution declares no minimum for `cryptography`, and the packages that
+  pull it in require only `>= 45.0.1`. See `docs/releases/v0.7.2.md` for the
+  in-place upgrade command.
 
 ## [0.7.1] - 2026-08-02
 
