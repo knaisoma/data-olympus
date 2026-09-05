@@ -24,8 +24,11 @@ To test an announced release candidate without replacing the persistent stable
 tool, select its exact PEP 440 version:
 
 ```bash
-uvx --from 'data-olympus==0.6.0rc3' data-olympus --help
+uvx --from 'data-olympus==0.7.1rc1' data-olympus --help
 ```
+
+See the [releases page](https://github.com/knaisoma/data-olympus/releases)
+for the current candidate, if any.
 
 ## 2. Create a bundle and run the server
 
