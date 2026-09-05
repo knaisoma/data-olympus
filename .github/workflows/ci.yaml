@@ -50,6 +50,28 @@ jobs:
         run: bats -r tests
       - name: Lint example bundle (dogfood conformance check)
         run: uv run data-olympus lint example-bundle
+  # pyproject declares requires-python >=3.13, so 3.14 is already inside the
+  # supported range and users can install there today. This job is what makes
+  # that claim tested rather than merely declared.
+  #
+  # Deliberately a separate job rather than a matrix on `test`: a matrix would
+  # rename the check to `test (3.13)` / `test (3.14)` and silently break the
+  # branch ruleset that requires `test`. It also stays narrower than `test` on
+  # purpose. The 3.13 job remains the authoritative gate and keeps the OKF
+  # conformance, benchmark-docs, bats and bundle-lint steps; this one answers
+  # one question: does the product work on the next interpreter.
+  test-python-3-14:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Receipt provenance tests read git history.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - run: uv venv --python 3.14
+      - run: uv pip install -e '.[dev]'
+      - run: uv run mypy src
+      - run: uv run pytest -v
   changelog-guard:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
