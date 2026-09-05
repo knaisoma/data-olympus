@@ -161,3 +161,33 @@ def test_config_loads_audit_log_path(monkeypatch, tmp_path) -> None:
     from data_olympus.config import load_config
     cfg = load_config()
     assert cfg.audit_log_path == "/custom/audit.log"
+
+
+# Blank path settings must fall back to the documented defaults (issue #244).
+# os.environ.get returns the default only when the variable is ABSENT. An unset
+# compose variable, an empty Helm value or an unresolved CI secret all produce a
+# present-but-empty value, and Path("") is Path("."), so without this the server
+# silently indexes whatever directory it happened to start in.
+def test_blank_kb_main_path_uses_the_documented_default(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("KB_MAIN_PATH", "")
+    assert load_config().kb_main_path == Path("/kb-main")
+
+
+def test_whitespace_kb_main_path_uses_the_documented_default(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("KB_MAIN_PATH", "   ")
+    assert load_config().kb_main_path == Path("/kb-main")
+
+
+def test_blank_kb_index_path_uses_the_documented_default(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("KB_INDEX_PATH", "")
+    assert load_config().kb_index_path == Path("/index/kb.db")
+
+
+def test_a_real_kb_main_path_is_still_honoured(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("KB_MAIN_PATH", "/srv/corpus")
+    assert load_config().kb_main_path == Path("/srv/corpus")
+
+
+def test_surrounding_whitespace_is_stripped(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("KB_MAIN_PATH", "  /srv/corpus  ")
+    assert load_config().kb_main_path == Path("/srv/corpus")

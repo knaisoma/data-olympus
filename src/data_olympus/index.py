@@ -992,7 +992,21 @@ class Index:
         real wall clock) but is injectable so tests are deterministic.
         """
         if not kb_root.is_dir():
-            raise NotADirectoryError(f"KB root not a directory: {kb_root}")
+            # Name the setting, not just the path. /kb-main is the built-in
+            # default, so an operator who never set KB_MAIN_PATH would
+            # otherwise see a path they have never heard of and have nothing
+            # to search for. Say whether the value was configured or defaulted.
+            configured = os.environ.get("KB_MAIN_PATH", "").strip()
+            source = (
+                "configured via KB_MAIN_PATH"
+                if configured
+                else "the built-in default; set KB_MAIN_PATH to override"
+            )
+            reason = "exists but is not a directory" if kb_root.exists() else "does not exist"
+            raise NotADirectoryError(
+                f"knowledge base root {kb_root} {reason} ({source}). "
+                f"Point KB_MAIN_PATH at a directory of .md files."
+            )
 
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self._db_path.with_name(

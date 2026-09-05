@@ -206,6 +206,21 @@ def _env_bool(raw: str) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _env_path(name: str, default: str) -> Path:
+    """Read a path setting, treating a blank value as unset.
+
+    `os.environ.get(name, default)` returns the default only when the variable
+    is ABSENT. A variable that is present but empty returns "", and `Path("")`
+    is `Path(".")` - so a blank `KB_MAIN_PATH` silently indexes the working
+    directory instead of the documented default. Blank values are the normal
+    result of an unset compose variable, an empty Helm value, or a CI secret
+    that did not resolve, so this is a configuration mistake worth absorbing
+    rather than a deliberate request for the current directory.
+    """
+    raw = os.environ.get(name, default)
+    return Path(raw.strip() or default)
+
+
 def load_config() -> Config:
     """Load configuration from environment, applying defaults."""
     threshold = float(os.environ.get("KB_CONFIDENCE_THRESHOLD", "0.85"))
@@ -300,8 +315,8 @@ def load_config() -> Config:
         os.getenv("KB_VERSION_CHECK_INTERVAL_SEC", "86400")
     )
     return Config(
-        kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
-        kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
+        kb_main_path=_env_path("KB_MAIN_PATH", "/kb-main"),
+        kb_index_path=_env_path("KB_INDEX_PATH", "/index/kb.db"),
         kb_remote_url=os.environ.get("KB_REMOTE_URL", ""),
         sync_interval_sec=int(os.environ.get("KB_SYNC_INTERVAL_SEC", "60")),
         staleness_degraded_sec=int(os.environ.get("KB_STALENESS_DEGRADED_SEC", "600")),

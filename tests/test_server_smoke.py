@@ -187,3 +187,55 @@ async def test_kb_cleanup_plan_tool_rejects_invalid_input(tmp_kb: Path, tmp_path
         )
         text = str(result)
         assert "rejected_invalid_input" in text
+
+
+def test_missing_corpus_error_names_the_setting_and_its_origin(tmp_path: Path) -> None:
+    """A missing corpus must say which setting to change (issue #244).
+
+    /kb-main is the built-in default, so an operator who never set
+    KB_MAIN_PATH would otherwise see a path they have never heard of in the
+    error and have nothing to search for.
+    """
+    from data_olympus.index import Index
+
+    index = Index(tmp_path / "idx.db")
+    missing = tmp_path / "not-there"
+
+    with pytest.raises(NotADirectoryError) as excinfo:
+        index.build(missing, source_commit="0" * 40)
+
+    message = str(excinfo.value)
+    assert "KB_MAIN_PATH" in message
+    assert str(missing) in message
+    assert "does not exist" in message
+    assert "built-in default" in message
+
+
+def test_missing_corpus_error_says_when_the_path_was_configured(
+    tmp_path: Path, monkeypatch
+) -> None:  # noqa: ANN001
+    from data_olympus.index import Index
+
+    missing = tmp_path / "not-there"
+    monkeypatch.setenv("KB_MAIN_PATH", str(missing))
+    index = Index(tmp_path / "idx.db")
+
+    with pytest.raises(NotADirectoryError) as excinfo:
+        index.build(missing, source_commit="0" * 40)
+
+    assert "configured via KB_MAIN_PATH" in str(excinfo.value)
+
+
+def test_a_file_instead_of_a_corpus_directory_is_reported_distinctly(
+    tmp_path: Path,
+) -> None:
+    from data_olympus.index import Index
+
+    not_a_dir = tmp_path / "corpus.md"
+    not_a_dir.write_text("# oops\n", encoding="utf-8")
+    index = Index(tmp_path / "idx.db")
+
+    with pytest.raises(NotADirectoryError) as excinfo:
+        index.build(not_a_dir, source_commit="0" * 40)
+
+    assert "exists but is not a directory" in str(excinfo.value)
