@@ -16,6 +16,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+* **Python 3.14 now has test coverage.** `requires-python` has always been
+  `>= 3.13`, so 3.14 was inside the supported range and users could install
+  there, but nothing verified it. CI now runs `mypy` and the pytest suite on
+  3.14 alongside 3.13. Installed-artifact smoke tests still run on 3.13 only,
+  so this is interpreter coverage of the test suite rather than a full
+  parallel validation, and the shipped container image is unchanged and still
+  runs 3.13.
+
 * **The release contract now separates candidate remediation from post-merge
   alert closure.** Publication still requires zero open security alerts, and
   that requirement is never waived. The contract now states the one narrow
@@ -50,6 +58,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * fix(operations): make the release no_action deterministic (#226)
 
 ### Security
+
+* **All locked dependencies updated to their latest resolved versions.** 71
+  packages move, including `mcp` 1.28.1 to 1.29.1, `fastmcp` 3.4.4 to 3.4.7,
+  `starlette` 1.3.1 to 1.6.0 and `regex` 2026.7.10 to 2026.9.3. `fastmcp`
+  3.4.7 carries an upstream CIMD assertion-audience security fix. This is the
+  first full dependency refresh possible since the benchmark guard defect
+  described below was blocking every lockfile change. The three
+  major-component moves (`sentence-transformers` 5.6.0 to 6.0.1, `setuptools`
+  83 to 84, `websockets` 16.0 to 17.1) do not affect a default install:
+  `sentence-transformers` belongs to the optional `bench` extra, which the
+  runtime never imports.
 
 * **Update `cryptography` from 49.0.0 to 50.0.1
   ([GHSA-g6cj-pr64-35w5](https://github.com/pyca/cryptography/security/advisories/GHSA-g6cj-pr64-35w5)).**

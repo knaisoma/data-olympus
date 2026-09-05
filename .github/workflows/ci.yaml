@@ -60,6 +60,12 @@ jobs:
   # purpose. The 3.13 job remains the authoritative gate and keeps the OKF
   # conformance, benchmark-docs, bats and bundle-lint steps; this one answers
   # one question: does the product work on the next interpreter.
+  #
+  # Scope boundary worth knowing: this is pytest and mypy on 3.14, NOT a full
+  # parallel validation. scripts/smoke_installed_wheel.py hard-codes
+  # `uv venv --python 3.13`, so installed-wheel and sdist smoke tests still
+  # exercise 3.13 no matter which job invokes them. Parameterising that is the
+  # follow-up needed before claiming 3.14 installation coverage.
   test-python-3-14:
     runs-on: ubuntu-latest
     steps:
