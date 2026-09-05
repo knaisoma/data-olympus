@@ -400,10 +400,14 @@ def test_docs_guard_rejects_tampered_measured_package_summary(
     ]
 
 
-def test_docs_guard_rejects_unreachable_measurement_history(
+def test_docs_guard_rejects_missing_measurement_history(
     tmp_path: Path,
 ) -> None:
-    """A shallow checkout must fail loudly rather than skip the binding."""
+    """Missing measurement history must fail loudly rather than skip the binding.
+
+    A shallow clone produces the same unreachable-object condition; this covers
+    the condition, not the clone depth that can cause it.
+    """
     from scripts import check_benchmark_docs
 
     root, receipt = _committed_benchmark_repo(tmp_path)
@@ -419,6 +423,31 @@ def test_docs_guard_rejects_unreachable_measurement_history(
         "measured uv.lock is unreachable at source_commit "
         f"{absent}; a full-history checkout is required"
     ) in problems
+
+
+def test_docs_guard_preserves_other_failures_alongside_current_lock_drift(
+    tmp_path: Path,
+) -> None:
+    """The filtering boundary itself: dropping the current-lock comparison must
+    not drop anything reported alongside it. Drift the current lock *and* tamper
+    an input, so the suppressed error and a preserved error occur together."""
+    from benchmarks.receipt import verify_receipt
+    from scripts import check_benchmark_docs
+
+    root, receipt = _committed_benchmark_repo(tmp_path)
+    _bump_current_lock(
+        root,
+        'name = "numpy"\nversion = "2.5.1"',
+        'name = "numpy"\nversion = "2.5.2"',
+    )
+    _write(root / "benchmarks" / "corpus" / "a.md", "tampered corpus\n")
+
+    raw = verify_receipt(receipt, root)
+    assert "dependency_lock does not match uv.lock" in raw
+    assert "inputs.corpora sha256 does not match the repository" in raw
+
+    problems = check_benchmark_docs.receipt_problems(root)
+    assert problems == ["inputs.corpora sha256 does not match the repository"]
 
 
 def test_docs_guard_still_rejects_changed_benchmark_inputs(tmp_path: Path) -> None:
