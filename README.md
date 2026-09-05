@@ -43,8 +43,11 @@ data-olympus-mcp --help
 An announced candidate remains opt in through its exact PyPI version:
 
 ```bash
-uvx --from 'data-olympus==0.6.0rc3' data-olympus --help
+uvx --from 'data-olympus==0.7.1rc1' data-olympus --help
 ```
+
+See the [releases page](https://github.com/knaisoma/data-olympus/releases)
+for the current candidate, if any.
 
 See `docs/quickstart.md` for bundle initialization, server startup, readiness,
 agent registration, and the contributor source installation.
