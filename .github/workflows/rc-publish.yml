@@ -249,7 +249,7 @@ jobs:
           if gh release view "$RC_TAG" >/dev/null 2>&1; then
             git fetch origin "refs/tags/$RC_TAG:refs/tags/$RC_TAG"
             test "$(git rev-list -n 1 "$RC_TAG")" = "$SOURCE_SHA"
-            gh release upload "$RC_TAG" dist/* release-provenance.json --clobber
+            python3 scripts/release_upload.py "$RC_TAG" dist/* release-provenance.json
           elif [ -f "$NOTES" ]; then
             gh release create "$RC_TAG" --prerelease --target "$SOURCE_SHA" \
               --title "$RC_TAG" --notes-file "$NOTES" \

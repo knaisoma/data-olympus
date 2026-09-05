@@ -34,48 +34,28 @@ type would otherwise produce no release.
 
 `pyproject.toml` is the single source for the package version.
 
-The AI Operations runner consumes their output and never reimplements the
-mapping.
+Release preparation consumes their output without reimplementing the mapping.
 
-## Outcome based release
+## Weekly release change
 
-The release routine examines work already merged to `origin/main`.
-
-It does not create a feature batch, choose a quota of issues, or assume that
-Friday planning must produce a Monday release.
-
-When a release is due:
-
-1. Create one short lived `chore/release-vX.Y.Z-RUN` branch from the approved
-   main SHA. The run suffix prevents a failed clean retry from colliding with a
-   prior local or remote branch.
-2. Update `pyproject.toml`, the changelog, and the release note in one logical
-   release change.
-3. Review and merge that change through the current repository rules.
-4. Bind the candidate to the resulting exact main SHA.
-5. Publish and promote only through the existing release workflows.
-
-The only exception is the fail closed prepared but unpublished recovery in
-`.rules/release-routine.md`. It applies when the complete deterministic release
-preparation is already on the admitted `origin/main` SHA and every candidate
-and stable public surface is still absent. That recovery reviews the exact main
-SHA, creates no replacement branch or merge, and reuses the same publication
-and promotion workflows after all evidence is revalidated.
+Select a coherent issue batch under `.rules/release-planning.md`. Prepare work
+and version metadata together on a short-lived release branch, for example
+`codex/release-YYYY-MM-DD`, including lockfile, changelog, and user-facing release
+notes. The branch name need not contain the version. Compute from exact selected history
+accounting for every feature, fix, performance improvement, and breaking change.
+Use `next_version` from `scripts/compute_release.py`, not ticket counts.
+The final PR title must represent the entire batch's Conventional Commit impact
+so computation after squash merge stays consistent. Never hide features in a
+`chore` title merely because the PR includes release preparation.
 
 ## Pull request discipline
 
-Feature and fix pull requests contain one logical change and are squash merged.
-The pull request title is the Conventional Commit recorded on `main`.
-
-The release pull request also contains one logical release change and is squash
-merged.
-
-The repository currently enforces linear history. Ordinary release work must
-not require a merge commit or an integration branch that bypasses that rule.
-
-The exceptional 2026-07-31 history reconciliation preserved the already
-published `v0.6.0` ancestry through an explicit recovery merge. That exception
-does not define the future release pattern.
+Require implementer acceptance, independent exact-content review, passing gates,
+and human merge. Automation must never merge. Changes invalidate review. Release
+PRs must be squash merged, preserving linear history without bypass. Other merge
+methods are not supported. Prove merged and reviewed trees match.
+Prepared but unpublished versions follow `.rules/release-routine.md` recovery
+and receive fresh human merge authorization.
 
 ## Candidate and stable publication
 
@@ -95,7 +75,7 @@ publishes stable Python artifacts from the same source, creates `vX.Y.Z` at that
 source, and promotes the exact OCI digest without rebuilding it.
 
 `set-channel.yml` moves registry channels to an existing image digest. It does
-not build an image and does not deploy kn dev while Keel policy is `never`.
+not build an image or deploy a workload.
 
 ## Immutability
 

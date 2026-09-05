@@ -69,7 +69,8 @@ jobs:
     # [project].version to something already published on PyPI, ghcr, or as a
     # GitHub release/tag, fail here rather than at tag-release time (where a
     # failed guard would still be after the merge). A registry outage fails
-    # closed; the release cutter can override with KB_BYPASS_VERSION_CHECK=1.
+    # closed. KB_BYPASS_VERSION_CHECK=1 is for explicit operator diagnostics only;
+    # release automation must never use it to bypass version clearance.
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     permissions:

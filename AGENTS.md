@@ -34,7 +34,7 @@ There is no web framework and no database server. Keep it that way unless a deci
 
 **Git backing**: the corpus is a git repository. `git_ops.py`, `push_queue.py`, and `pending.py` handle refresh and the proposed-write pipeline.
 
-**Deployment** is `deploy/docker` and `deploy/k8s`. On kn-dev the workload is Keel managed and auto-upgrades on a new minor or patch tag, so a published release reaches the cluster without a manual apply. See `operator/laptop.md` in company-knowledge before bumping tags or attempting a rollback.
+**Deployment** is `deploy/docker` and `deploy/k8s`. Publication uses explicit candidate and stable workflow dispatches. Deploy verified immutable digests and follow `.rules/release-rollback.md`.
 
 ## Development Workflow
 
@@ -90,7 +90,7 @@ Run the linter before the tests. It runs first in CI, so a lint failure hides ev
 
 ## Deployment
 
-Releases are cut from `main` by the release routine documented in `.rules/release-routine.md`, which is the authority. In outline: `scripts/compute_release.py` decides releasability, CI tags on merge, and publication flows to PyPI and GHCR.
+Releases are cut from `main` by the release routine documented in `.rules/release-routine.md`, which is the authority. In outline: `scripts/compute_release.py` decides releasability, a human merges the independently reviewed final PR, and automated delivery dispatches candidate publication and stable promotion after verifying merged content.
 
 Pre-1.0 version mapping is implemented in `compute_release.py` and documented in `.rules/versioning.md`. Trust the script's `next_version` rather than inferring a bump by hand.
 

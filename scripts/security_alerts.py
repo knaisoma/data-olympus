@@ -2,10 +2,10 @@
 """Release security-clearance gate: fail if any Dependabot or CodeQL (code
 scanning) alert is OPEN for the repo.
 
-Used in two places (see .rules/release-planning.md and .rules/release-routine.md):
-the Friday planner drives every open alert to resolution or a justified
-dismissal; the Monday cutter runs this as a readiness gate and refuses to build
-the RC while anything is open.
+Used during release planning and before publication (see
+.rules/release-planning.md and .rules/release-routine.md). Resolve every open
+alert before release; unreadable security state also blocks publication.
+Release automation must not dismiss alerts to clear its own gate.
 
 CLI: `python3 scripts/security_alerts.py [--repo knaisoma/data-olympus]`
 Exit 0 = clean, 5 = open alerts remain, 2 = the gh query failed.
