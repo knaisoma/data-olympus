@@ -58,6 +58,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* **Product source changes no longer fail the benchmark guard.** The receipt's
+  `source_tree` digest was compared against the working tree, so any edit under
+  `src/data_olympus/` or `benchmarks/` failed `benchmark-docs` with
+  `source_tree sha256 does not match the repository`. That blocked every product
+  fix, which is the same defect already corrected for `dependency_lock` and the
+  same wrong assertion: that today's source produced numbers measured before it
+  existed. The digest is now recomputed from the source as committed at the
+  receipt's own `source_commit`, read from git history. Tamper-evidence is
+  stronger rather than weaker: the recorded file list is compared as well as the
+  digest, so a file that existed at the measurement commit but was dropped from
+  the receipt is now caught, which the previous per-file walk could not see
+  because it iterated the very list being shortened.
 * **Bootstrap `/kb-main` on the docker compose path.** The first-boot clone in
   `deploy/docker/entrypoint.sh` keyed off `KB_GIT_REMOTE_URL`, but
   `deploy/docker/compose.yaml` carries only `KB_REMOTE_URL`, which is also the
