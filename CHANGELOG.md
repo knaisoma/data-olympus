@@ -12,32 +12,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-
-* **Bootstrap `/kb-main` on the docker compose path.** The first-boot clone in
-  `deploy/docker/entrypoint.sh` keyed off `KB_GIT_REMOTE_URL`, but
-  `deploy/docker/compose.yaml` carries only `KB_REMOTE_URL` — which is also the
-  variable `docs/adoption.md` and `docs/quickstart.md` document. A compose
-  deployment that configured a remote therefore started a read-write server on
-  an empty `/kb-main`, and the first symptom was
-  `git_pull_loop iteration failed: … rev-parse HEAD … exit status 128`, which
-  does not point at the cause. The clone now falls back to `KB_REMOTE_URL`;
-  `KB_GIT_REMOTE_URL` still takes precedence, so the k8s path where the
-  initContainer has already cloned is unchanged.
-
-### Security
-
-* **The first-boot clone no longer logs the remote URL.** `KB_REMOTE_URL` is
-  documented as an SSH or HTTPS push target and the compose path mounts no SSH
-  key by default, so a writable remote there is most likely an HTTPS URL with an
-  embedded token. The entrypoint printed that URL verbatim before cloning, into
-  a container log no application-level redaction can reach. It now reports only
-  that it is cloning the configured remote. That removes the unconditional
-  disclosure rather than every path to one: git inherits the same stdout and
-  stderr, and a token embedded in a clone URL is still written to
-  `/kb-main/.git/config` once the clone succeeds. Provisioning the credential
-  outside the URL is the way out of both.
-
 ## [0.7.2] - 2026-09-07
 
 ### Changed
@@ -78,6 +52,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* **Bootstrap `/kb-main` on the docker compose path.** The first-boot clone in
+  `deploy/docker/entrypoint.sh` keyed off `KB_GIT_REMOTE_URL`, but
+  `deploy/docker/compose.yaml` carries only `KB_REMOTE_URL`, which is also the
+  variable `docs/adoption.md` and `docs/quickstart.md` document. A compose
+  deployment that configured a remote therefore started a read-write server on
+  an empty `/kb-main`, and the first symptom was
+  `git_pull_loop iteration failed: … rev-parse HEAD … exit status 128`, which
+  does not point at the cause. The clone now falls back to `KB_REMOTE_URL`;
+  `KB_GIT_REMOTE_URL` still takes precedence, so the k8s path where the
+  initContainer has already cloned is unchanged.
 * **Bind the benchmark receipt to its measurement commit instead of the working
   tree.** The receipt's `dependency_lock` was compared against the *current*
   `uv.lock`, so every dependency change failed the `benchmark-docs` CI guard
@@ -132,6 +116,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `pyjwt >= 3.4.0` for its `crypto` extra) still permit 49.0.0. An existing
   environment is not upgraded automatically. See `docs/releases/v0.7.2.md` for
   the explicit upgrade command.
+
+* **The first-boot clone no longer logs the remote URL.** `KB_REMOTE_URL` is
+  documented as an SSH or HTTPS push target and the compose path mounts no SSH
+  key by default, so a writable remote there is most likely an HTTPS URL with an
+  embedded token. The entrypoint printed that URL verbatim before cloning, into
+  a container log no application-level redaction can reach. It now reports only
+  that it is cloning the configured remote. That removes the unconditional
+  disclosure rather than every path to one: git inherits the same stdout and
+  stderr, and a token embedded in a clone URL is still written to
+  `/kb-main/.git/config` once the clone succeeds. Provisioning the credential
+  outside the URL is the way out of both.
 
 ## [0.7.1] - 2026-08-02
 
