@@ -157,11 +157,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   pasted into a memory. Adds `llm_provider_api_key` (Anthropic, OpenAI
   project/service-account/legacy, OpenRouter, Hugging Face, Groq, xAI, and
   OpenAI-compatible gateways) and `google_api_key` (`AIza…`, which
-  authenticates Gemini and every other Google API).
+  authenticates Gemini and the other Google APIs that accept API keys).
 * **Detect two further forms of existing credential classes.** `github_token`
   now covers `ghu_` user-to-server tokens alongside `ghp_`/`gho_`/`ghs_`/`ghr_`,
   and `aws_access_key_id` now covers the `ASIA` temporary key id issued by STS
   as well as `AKIA`.
+* **Secret-scan boundaries no longer depend on word characters.** The new key
+  classes above anchored with `\b`, which cannot fire between `_` and a letter
+  because both are word characters. A key wrapped in Markdown emphasis
+  (`_KEY_`) was therefore invisible to the scanner, for every provider, and the
+  same shape occurs in YAML flow keys and dunder names. The boundaries now
+  exclude alphanumerics instead, which still refuses a longer token while
+  letting a delimiter sit against the key. The xAI alphabet also gained `_`,
+  without which a key containing one was missed completely. The gate remains
+  shape-based: it can still miss a credential whose format it does not model,
+  and it does not scan or revoke anything already in history.
 
 ## [0.7.1] - 2026-08-02
 
