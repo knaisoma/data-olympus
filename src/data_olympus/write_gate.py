@@ -511,17 +511,27 @@ _AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
 # mint keys in the same shape (LiteLLM, vLLM, LocalAI). It cannot swallow the
 # prefixed forms above it: ``[A-Za-z0-9]`` excludes the hyphen, so ``sk-ant-``
 # stops after three characters, far short of the 32 required.
+#
+# The boundaries exclude only ALPHANUMERICS, rather than using ``\b``. ``_`` is a
+# word character, so ``\b`` cannot fire between ``_`` and the first letter of a
+# prefix: an otherwise detectable key wrapped in Markdown emphasis (``_KEY_``)
+# was invisible to this pattern, for every alternative. The same shape occurs in
+# YAML flow keys, dunder names, and any prose that underscores a value. Excluding
+# alphanumerics still refuses a longer token (``xsk-ant-...`` does not match)
+# while letting a delimiter sit against the key. It is deliberately permissive on
+# the left: ``prefix-AIza...`` matches, because for a credential scanner a
+# needless flag is recoverable and a missed key is not.
 _LLM_PROVIDER_KEY_RE = re.compile(
-    r"\b(?:"
+    r"(?<![A-Za-z0-9])(?:"
     r"sk-ant-[A-Za-z0-9_-]{24,255}"        # Anthropic
     r"|sk-proj-[A-Za-z0-9_-]{24,255}"      # OpenAI, project-scoped
     r"|sk-svcacct-[A-Za-z0-9_-]{24,255}"   # OpenAI, service account
     r"|sk-or-v1-[A-Za-z0-9]{32,255}"       # OpenRouter
     r"|hf_[A-Za-z0-9]{32,255}"             # Hugging Face
     r"|gsk_[A-Za-z0-9]{20,255}"            # Groq
-    r"|xai-[A-Za-z0-9]{32,255}"            # xAI
+    r"|xai-[A-Za-z0-9_]{32,255}"           # xAI (alphabet includes "_")
     r"|sk-[A-Za-z0-9]{32,255}"             # OpenAI legacy / compatible gateways
-    r")\b"
+    r")(?![A-Za-z0-9])"
 )
 # Google API key. Not LLM-specific -- the same shape authenticates Gemini, Maps
 # and every other Google API -- so it gets its own class rather than being
@@ -533,7 +543,12 @@ _LLM_PROVIDER_KEY_RE = re.compile(
 # (roughly one in 64, since the alphabet includes it) would fail to match at
 # all. The lookahead asserts the key is not a prefix of a longer token without
 # constraining its final character.
-_GOOGLE_API_KEY_RE = re.compile(r"\bAIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])")
+# The trailing exclusion omits ``_`` deliberately. A key is exactly 39
+# characters, so a following ``_`` is either a delimiter or proof the token was
+# never a key; treating it as a delimiter costs a possible needless flag and
+# buys detection of ``_KEY_``, which the fixed-length body cannot recover from
+# by backtracking.
+_GOOGLE_API_KEY_RE = re.compile(r"(?<![A-Za-z0-9])AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9-])")
 _SLACK_TOKEN_RE = re.compile(r"\bxox[bpars]-[A-Za-z0-9-]{10,200}\b")
 # Generic key=value / key: value credential assignment. Matches both a bare
 # key (``password=``) and a prefixed key (``DB_PASSWORD=``, ``API_SECRET:``) --

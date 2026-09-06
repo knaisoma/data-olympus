@@ -1000,3 +1000,57 @@ def test_resolve_of_legacy_pending_entry_with_secret_path_rejected(
     assert len(events) >= 1
     for ev in events:
         assert AWS_ACCESS_KEY not in str(ev), "audit event must not carry the raw path"
+
+
+# --- Delimiters that are word characters --------------------------------------
+# A leading \b cannot fire between "_" and a letter, because both are word
+# characters. Markdown emphasis around a key therefore hid it from the scanner
+# entirely. The same shape appears in YAML flow keys, __dunder__ names, and any
+# prose that underscores a value for emphasis.
+
+
+def _scan(text: str):
+    from data_olympus.write_gate import scan_postimage_for_secrets
+
+    return scan_postimage_for_secrets(postimage=text).match is not None
+
+
+def test_llm_key_is_detected_inside_markdown_emphasis() -> None:
+    key = "sk-ant-api03-" + "A" * 40
+    assert _scan(f"_{key}_"), "underscore-delimited key must not hide from the scanner"
+
+
+def test_google_key_is_detected_inside_markdown_emphasis() -> None:
+    key = "AIza" + "B" * 35
+    assert _scan(f"_{key}_")
+
+
+def test_underscore_delimited_key_is_found_for_every_llm_provider() -> None:
+    """Every alternative, not just the one that happened to be tested."""
+    keys = [
+        "sk-ant-api03-" + "A" * 40,
+        "sk-proj-" + "A" * 40,
+        "sk-svcacct-" + "A" * 40,
+        "sk-or-v1-" + "a1" * 32,
+        "hf_" + "a1" * 17,
+        "gsk_" + "a1" * 26,
+        "xai-" + "a1" * 40,
+        "sk-" + "a1" * 24,
+    ]
+    missed = [k for k in keys if not _scan(f"_{k}_")]
+    assert missed == [], f"hidden by underscore delimiters: {missed}"
+
+
+def test_llm_key_is_not_matched_mid_token() -> None:
+    """Excluding only alphanumerics on the left must still refuse a longer token."""
+    key = "sk-ant-api03-" + "A" * 40
+    assert not _scan(f"x{key}")
+
+
+def test_xai_key_body_may_contain_underscores() -> None:
+    """xAI keys draw from an alphabet that includes "_".
+
+    Excluding it missed such a key completely: the trailing boundary cannot fire
+    before "_", so even a long alphanumeric run ahead of it did not match.
+    """
+    assert _scan("xai-" + "a" * 20 + "_" + "b" * 20)
