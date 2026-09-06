@@ -257,16 +257,25 @@ def test_bootstrap_is_a_no_op_with_no_remote_configured(tmp_path: Path) -> None:
 
 
 @requires_sh
-def test_bootstrap_log_does_not_leak_a_credential(tmp_path: Path) -> None:
+@pytest.mark.parametrize("variable", ["KB_REMOTE_URL", "KB_GIT_REMOTE_URL"])
+def test_bootstrap_log_does_not_leak_a_credential(tmp_path: Path, variable: str) -> None:
     """KB_REMOTE_URL is documented as an "SSH or HTTPS" push target and the
     compose path mounts no SSH key, so a writable remote there is most likely an
     HTTPS URL carrying a token. The pre-clone log line must not put it in the
-    container log, where no application-level redaction can reach it."""
-    url = "https://kb-bot:s3cr3t-token@example.test/kb.git"
-    out, argv = _run_bootstrap(tmp_path, {"KB_REMOTE_URL": url})
+    container log, where no application-level redaction can reach it.
+
+    Both variables carry the case. Either can hold the token, and a log line
+    naming whichever one this case leaves unset would still leak: with only the
+    compose variable covered, an `echo ... ${KB_GIT_REMOTE_URL}` regression
+    expands to nothing here and passes.
+    """
+    url = f"https://kb-bot:s3cr3t-token@{variable.lower()}.example.test/kb.git"
+    out, argv = _run_bootstrap(tmp_path, {variable: url})
     assert url in argv, "sanity: the clone still uses the configured remote"
     assert "s3cr3t-token" not in out
     assert "example.test" not in out
+    # Catches URL shapes these cases do not spell out, credential-bearing or not.
+    assert "://" not in out
 
 
 def test_compose_documents_that_kb_remote_url_also_bootstraps() -> None:
