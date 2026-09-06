@@ -8,10 +8,12 @@ default apply, and the readiness probe pointed at /readyz.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 K8S_DIR = Path(__file__).resolve().parents[1] / "deploy" / "k8s"
@@ -165,3 +167,119 @@ def test_entrypoint_has_no_gosu_or_chown() -> None:
 def test_compose_binds_loopback() -> None:
     text = (DOCKER_DIR / "compose.yaml").read_text()
     assert "127.0.0.1:8080:8080" in text
+
+
+# --- First-boot clone: run the real block, do not grep it --------------------
+# The bootstrap block decides which of two variables names the remote and logs a
+# line before cloning. Both are behaviours, so they are exercised rather than
+# matched as strings: the block is lifted out of entrypoint.sh unmodified and run
+# with a stub `git` that records its argv.
+
+BOOTSTRAP_MARKER = "# --- Bootstrap /kb-main on first boot"
+
+# The container mount point cannot exist on the test host, so it is redirected
+# into the tmp dir. Nothing else about the block is rewritten.
+KB_MAIN_MOUNT = "/kb-main"
+
+
+def _bootstrap_block() -> str:
+    """The first-boot clone block, taken verbatim from entrypoint.sh.
+
+    The surrounding script writes to fixed absolute paths (/tmp/known_hosts) and
+    ends in ``exec "$@"``, so running it whole on a test host is not an option.
+    """
+    text = (DOCKER_DIR / "entrypoint.sh").read_text()
+    start = text.index(BOOTSTRAP_MARKER)
+    end = text.index('exec "$@"', start)
+    return text[start:end]
+
+
+def _run_bootstrap(tmp_path: Path, env: dict[str, str]) -> tuple[str, list[str]]:
+    """Run the block with a stub git; return its output and git's argv.
+
+    The stub prints nothing, so everything captured is the block's own output.
+    """
+    kb_main = tmp_path / "kb-main"
+    kb_main.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    argv_file = tmp_path / "git-argv"
+    git_stub = bin_dir / "git"
+    git_stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" >> "{argv_file}"\n')
+    git_stub.chmod(0o755)
+
+    script = tmp_path / "bootstrap.sh"
+    script.write_text("set -e\n" + _bootstrap_block().replace(KB_MAIN_MOUNT, str(kb_main)))
+
+    proc = subprocess.run(
+        ["sh", str(script)],
+        capture_output=True, text=True, timeout=30,
+        env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}", **env},
+    )
+    assert proc.returncode == 0, proc.stderr
+    argv = argv_file.read_text().splitlines() if argv_file.exists() else []
+    return proc.stdout + proc.stderr, argv
+
+
+requires_sh = pytest.mark.skipif(os.name != "posix", reason="POSIX shell required")
+
+
+@requires_sh
+def test_bootstrap_clones_when_only_kb_remote_url_is_set(tmp_path: Path) -> None:
+    """The compose path carries only KB_REMOTE_URL -- it is the documented one,
+    and the only remote variable compose.yaml sets. Without the fallback the
+    clone never ran there and the server came up read-write on an unbootstrapped
+    /kb-main, whose first symptom was the pull loop failing `rev-parse HEAD`."""
+    _, argv = _run_bootstrap(tmp_path, {"KB_REMOTE_URL": "ssh://git@example.test/kb.git"})
+    assert "clone" in argv
+    assert "ssh://git@example.test/kb.git" in argv
+
+
+@requires_sh
+def test_bootstrap_prefers_kb_git_remote_url(tmp_path: Path) -> None:
+    """k8s sets both from one secret key and its initContainer has already
+    cloned, so the clone source must not change there."""
+    _, argv = _run_bootstrap(tmp_path, {
+        "KB_GIT_REMOTE_URL": "ssh://git@example.test/clone-source.git",
+        "KB_REMOTE_URL": "ssh://git@example.test/push-target.git",
+    })
+    assert "ssh://git@example.test/clone-source.git" in argv
+    assert "ssh://git@example.test/push-target.git" not in argv
+
+
+@requires_sh
+def test_bootstrap_is_a_no_op_with_no_remote_configured(tmp_path: Path) -> None:
+    """compose.yaml ships KB_REMOTE_URL empty; the server then runs read-only and
+    there is nothing to clone."""
+    out, argv = _run_bootstrap(tmp_path, {"KB_REMOTE_URL": ""})
+    assert argv == []
+    assert out.strip() == ""
+
+
+@requires_sh
+@pytest.mark.parametrize("variable", ["KB_REMOTE_URL", "KB_GIT_REMOTE_URL"])
+def test_bootstrap_log_does_not_leak_a_credential(tmp_path: Path, variable: str) -> None:
+    """KB_REMOTE_URL is documented as an "SSH or HTTPS" push target and the
+    compose path mounts no SSH key, so a writable remote there is most likely an
+    HTTPS URL carrying a token. The pre-clone log line must not put it in the
+    container log, where no application-level redaction can reach it.
+
+    Both variables carry the case. Either can hold the token, and a log line
+    naming whichever one this case leaves unset would still leak: with only the
+    compose variable covered, an `echo ... ${KB_GIT_REMOTE_URL}` regression
+    expands to nothing here and passes.
+    """
+    url = f"https://kb-bot:s3cr3t-token@{variable.lower()}.example.test/kb.git"
+    out, argv = _run_bootstrap(tmp_path, {variable: url})
+    assert url in argv, "sanity: the clone still uses the configured remote"
+    assert "s3cr3t-token" not in out
+    assert "example.test" not in out
+    # Catches URL shapes these cases do not spell out, credential-bearing or not.
+    assert "://" not in out
+
+
+def test_compose_documents_that_kb_remote_url_also_bootstraps() -> None:
+    """A reader of compose.yaml should not have to discover the fallback by
+    watching the pull loop fail."""
+    text = (DOCKER_DIR / "compose.yaml").read_text()
+    assert "KB_GIT_REMOTE_URL" in text

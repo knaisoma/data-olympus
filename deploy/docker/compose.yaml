@@ -16,6 +16,10 @@ services:
       KB_HTTP_PORT: "8080"
       KB_SYNC_INTERVAL_SEC: "60"
       KB_STALENESS_DEGRADED_SEC: "600"
+      # Set this to a git remote to enable the write pipeline; left empty the
+      # server runs read-only. The entrypoint also uses it to clone /kb-main on
+      # first boot when KB_GIT_REMOTE_URL is not set separately, so on this
+      # path one variable is enough.
       KB_REMOTE_URL: ""
     volumes:
       - kb-main:/kb-main
