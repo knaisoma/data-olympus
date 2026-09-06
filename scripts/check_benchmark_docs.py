@@ -133,6 +133,11 @@ def _measured_source(repo_root: Path, source_commit: str) -> dict[str, bytes] | 
     """
     from benchmarks.receipt import SOURCE_PATTERNS
 
+    # Assumes the measured source is tracked regular files, which is true of
+    # every measurement commit to date. Symlinks, gitlinks and submodule
+    # contents are selected differently by git than by a working-tree glob, so a
+    # measurement commit containing one would need this widened rather than
+    # trusted.
     listing = subprocess.run(
         ["git", "ls-tree", "-r", "--name-only", "-z", source_commit],
         cwd=repo_root,
@@ -177,6 +182,10 @@ def historical_source_tree_problems(
     expected_files = expected.get("files")
     if not isinstance(expected_sha, str) or not isinstance(expected_files, list):
         return ["source_tree is malformed in the receipt"]
+    # An empty recorded group would agree with a commit that has no matching
+    # files, so the comparison below would pass while describing nothing.
+    if not expected_files:
+        return ["source_tree records no measured source files"]
 
     source_commit = document.get("source_commit")
     if not isinstance(source_commit, str) or not _SHA_PATTERN.fullmatch(source_commit):

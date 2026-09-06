@@ -1,6 +1,7 @@
 """Executable contract for committed benchmark provenance receipts."""
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -576,7 +577,13 @@ def test_docs_guard_rejects_a_source_file_dropped_from_the_receipt(
 def test_docs_guard_rejects_missing_source_measurement_history(
     tmp_path: Path,
 ) -> None:
-    """A shallow checkout must fail loudly, never skip the check."""
+    """A shallow checkout must fail loudly, never skip the check.
+
+    Asserts the *new* diagnostic specifically. An earlier version of this test
+    asserted `does not exist in this checkout`, which the pre-existing per-file
+    walk already emits, so it passed even with this check disabled entirely and
+    proved nothing about it.
+    """
     from scripts import check_benchmark_docs
 
     root, receipt = _committed_benchmark_repo(tmp_path)
@@ -586,5 +593,29 @@ def test_docs_guard_rejects_missing_source_measurement_history(
         json.dumps(receipt) + "\n",
     )
 
-    problems = check_benchmark_docs.receipt_problems(root)
-    assert any("does not exist in this checkout" in p for p in problems)
+    problems = check_benchmark_docs.historical_source_tree_problems(receipt, root)
+    assert problems == [
+        "measured source is unreachable at source_commit "
+        + "b" * 40
+        + "; a full-history checkout is required"
+    ]
+
+
+def test_docs_guard_rejects_a_receipt_recording_no_source(tmp_path: Path) -> None:
+    """An empty recorded group must not verify against an empty selection.
+
+    Without this, a receipt whose source_tree was emptied would agree with a
+    commit containing no matching files, and the comparison would pass by
+    describing nothing.
+    """
+    from scripts import check_benchmark_docs
+
+    root, receipt = _committed_benchmark_repo(tmp_path)
+    receipt["source_tree"] = {"sha256": hashlib.sha256().hexdigest(), "files": []}
+    _write(
+        root / "benchmarks" / "results" / "receipt.json",
+        json.dumps(receipt) + "\n",
+    )
+
+    problems = check_benchmark_docs.historical_source_tree_problems(receipt, root)
+    assert problems == ["source_tree records no measured source files"]

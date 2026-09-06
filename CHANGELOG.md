@@ -16,11 +16,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-* **The README links the Lulu MCP marketplace listing.** Lulu aggregates the
-  official MCP Registry, Glama, PulseMCP and Smithery, so the listing is not an
-  independent signal on top of the Glama score already shown; it is one more
-  place an agent or a person can find the server. The badge is a static label,
-  so treat it as a pointer rather than as live listing status.
+* **The README links the Lulu MCP marketplace listing.** Lulu aggregates several
+  registries including Glama, which this README already badges, so the listing
+  may well be derived from that one rather than being an independent signal.
+  It is one more place an agent or a person can find the server. The badge is a
+  static label, so treat it as a pointer rather than as live listing status.
 
 * **The release contract now says what to do when `main` advances past the
   reviewed revision.** The delivery rule assumed the release merge was still
@@ -65,11 +65,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fix, which is the same defect already corrected for `dependency_lock` and the
   same wrong assertion: that today's source produced numbers measured before it
   existed. The digest is now recomputed from the source as committed at the
-  receipt's own `source_commit`, read from git history. Tamper-evidence is
-  stronger rather than weaker: the recorded file list is compared as well as the
-  digest, so a file that existed at the measurement commit but was dropped from
-  the receipt is now caught, which the previous per-file walk could not see
-  because it iterated the very list being shortened.
+  receipt's own `source_commit`, read from git history. Integrity of the
+  historical record is stronger, not weaker: the recorded file list is compared
+  as well as the digest, so a file that existed at the measurement commit but
+  was dropped from the receipt is now caught, which the previous per-file walk
+  could not see because it iterated the very list being shortened. What the
+  guard deliberately stops asserting is any correspondence between today's
+  source and the published numbers. It never established that the benchmarks
+  actually ran at the declared commit, and it does not now.
 * **Bootstrap `/kb-main` on the docker compose path.** The first-boot clone in
   `deploy/docker/entrypoint.sh` keyed off `KB_GIT_REMOTE_URL`, but
   `deploy/docker/compose.yaml` carries only `KB_REMOTE_URL`, which is also the
