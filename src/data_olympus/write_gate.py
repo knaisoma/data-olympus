@@ -492,6 +492,14 @@ _GITHUB_TOKEN_RE = re.compile(
 )
 # AKIA is a long-lived access key id; ASIA is the temporary/session form issued
 # by STS. Both are access key ids and leak the same way, so they share a class.
+#
+# Known limit, inherited from the key shape rather than introduced here: a
+# 20-character all-caps word beginning with one of the prefixes is
+# indistinguishable from a key id (``ASIAPACIFICREGIONXYZ`` matches). Requiring
+# a digit among the 16 would exclude it, but a key id is drawn from uppercase
+# letters and digits, and a digit-free one is on the order of a percent of all
+# ids -- far too common to reject. Missing a real credential is the worse
+# failure, so the shape stays as AWS documents it.
 _AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
 # LLM provider API keys. Users of this project hold these by definition -- an
 # agent-facing knowledge base is configured with at least one of them -- so they
@@ -518,7 +526,14 @@ _LLM_PROVIDER_KEY_RE = re.compile(
 # Google API key. Not LLM-specific -- the same shape authenticates Gemini, Maps
 # and every other Google API -- so it gets its own class rather than being
 # folded into the one above.
-_GOOGLE_API_KEY_RE = re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b")
+#
+# The tail is a negative lookahead rather than ``\b``. The body is a fixed
+# ``{35}`` with nothing to backtrack into, so a trailing ``\b`` would demand a
+# word character in the 35th position: a key whose last character is ``-``
+# (roughly one in 64, since the alphabet includes it) would fail to match at
+# all. The lookahead asserts the key is not a prefix of a longer token without
+# constraining its final character.
+_GOOGLE_API_KEY_RE = re.compile(r"\bAIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])")
 _SLACK_TOKEN_RE = re.compile(r"\bxox[bpars]-[A-Za-z0-9-]{10,200}\b")
 # Generic key=value / key: value credential assignment. Matches both a bare
 # key (``password=``) and a prefixed key (``DB_PASSWORD=``, ``API_SECRET:``) --

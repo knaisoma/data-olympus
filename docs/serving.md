@@ -235,8 +235,14 @@ section so concurrent writes cannot corrupt each other:
   `rejected_secret_detected` path, never via `rejected_invalid_document`
   (which echoes the offending value verbatim in its message). The gate
   checks a built-in pattern set (PEM private-key blocks; GitHub `ghp_`/`gho_`/
-  `ghs_`/`ghr_`/`github_pat_` tokens; AWS `AKIA...` access key ids; Slack
-  `xox[bpars]-` tokens; generic `password=`/`passwd=`/`secret=` assignments,
+  `ghs_`/`ghr_`/`ghu_`/`github_pat_` tokens; AWS `AKIA...`/`ASIA...` access key
+  ids, the second being the temporary form issued by STS; Slack `xox[bpars]-`
+  tokens; LLM provider API keys as one `llm_provider_api_key` class (Anthropic
+  `sk-ant-`, OpenAI `sk-proj-`/`sk-svcacct-`/legacy `sk-`, OpenRouter
+  `sk-or-v1-`, Hugging Face `hf_`, Groq `gsk_`, xAI `xai-`, and
+  OpenAI-compatible gateways minting the same shape); Google `AIza...` API
+  keys, which authenticate Gemini and every other Google API and so are their
+  own class; generic `password=`/`passwd=`/`secret=` assignments,
   including env-style prefixed keys like `DB_PASSWORD=`, with a
   non-placeholder value; and `scheme://user:pass@host` connection strings)
   plus any operator-supplied `KB_SECRET_SCAN_EXTRA_PATTERNS`. A match on an
