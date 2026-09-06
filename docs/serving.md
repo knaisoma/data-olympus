@@ -230,16 +230,29 @@ section so concurrent writes cannot corrupt each other:
 - A **secret-scanning gate** (issue #71) runs on the postimage BEFORE the
   content-validation gate, on every commit path (auto-commit propose, resolve
   approve, including a resolved `edited_text`, and onboarding bootstrap). It
-  runs first so a postimage that is both malformed AND carries a
-  credential-shaped value is always rejected via the redacted
-  `rejected_secret_detected` path, never via `rejected_invalid_document`
-  (which echoes the offending value verbatim in its message). The gate
+  runs first so that whenever the gate matches, a postimage that is both
+  malformed AND carries a credential-shaped value is rejected via the redacted
+  `rejected_secret_detected` path rather than `rejected_invalid_document`
+  (which echoes the offending value verbatim in its message). Detection is
+  shape-based, so this ordering guarantee is only as good as the pattern set:
+  a credential the patterns do not recognise is not redacted by it either. The gate
   checks a built-in pattern set (PEM private-key blocks; GitHub `ghp_`/`gho_`/
-  `ghs_`/`ghr_`/`github_pat_` tokens; AWS `AKIA...` access key ids; Slack
-  `xox[bpars]-` tokens; generic `password=`/`passwd=`/`secret=` assignments,
+  `ghs_`/`ghr_`/`ghu_`/`github_pat_` tokens; AWS `AKIA...`/`ASIA...` access key
+  ids, the second being the temporary form issued by STS; Slack `xox[bpars]-`
+  tokens; LLM provider API keys as one `llm_provider_api_key` class (Anthropic
+  `sk-ant-`, OpenAI `sk-proj-`/`sk-svcacct-`/legacy `sk-`, OpenRouter
+  `sk-or-v1-`, Hugging Face `hf_`, Groq `gsk_`, xAI `xai-`, and
+  OpenAI-compatible gateways minting the same shape); Google `AIza...` API
+  keys, which authenticate Gemini and the other Google APIs that accept API
+  keys, and so are their own class rather than an LLM-specific one; generic `password=`/`passwd=`/`secret=` assignments,
   including env-style prefixed keys like `DB_PASSWORD=`, with a
   non-placeholder value; and `scheme://user:pass@host` connection strings)
-  plus any operator-supplied `KB_SECRET_SCAN_EXTRA_PATTERNS`. A match on an
+  plus any operator-supplied `KB_SECRET_SCAN_EXTRA_PATTERNS`. Every class is a
+  shape, not a validation: the gate recognises credential-*shaped* text and
+  never contacts a provider, so it can both miss a real credential whose format
+  it does not model and flag an identifier that merely looks like one. Treat it
+  as a backstop against accidental paste, not as proof a postimage is clean.
+  A match on an
   auto-commit or bootstrap path rejects the write `rejected_secret_detected`
   before anything is written to disk. Only the pattern name and an
   approximate line number are ever surfaced in the response, the audit

@@ -19,6 +19,7 @@ Covers:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from unittest.mock import MagicMock
 
@@ -61,16 +62,43 @@ PRIVATE_KEY = (
 )
 GITHUB_TOKEN = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz"
 GITHUB_PAT = "github_pat_" + "11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz01234567890"
+GITHUB_USER_TO_SERVER = "ghu_" + "1234567890abcdefghijklmnopqrstuvwxyz"
 AWS_ACCESS_KEY = "AKIA" + "ABCDEFGHIJKLMNOP"
+AWS_SESSION_KEY = "ASIA" + "ABCDEFGHIJKLMNOP"
 SLACK_TOKEN = "xoxb-" + "1234567890-abcdefghijklmnopqrst"
+ANTHROPIC_KEY = "sk-ant-" + "api03-" + "abcdefghij0123456789ABCDEFGHIJ" + "-AAAAAA"
+# A prefixed key with no run of 32 alphanumerics anywhere in it, so the bare
+# ``sk-`` alternative provably cannot be what matches it. See
+# test_prefixed_key_is_detected_without_help_from_the_bare_sk_alternative.
+ANTHROPIC_KEY_NO_ALNUM_RUN = "sk-ant-" + "api03-" + "abc_def-ghi_jkl-mno_pqr-stu"
+# Exactly 35 characters after the AIza prefix: a Google API key is 39 total.
+GOOGLE_API_KEY = "AIza" + "SyABCDEFGHIJ0123456789abcdefghij012"
+# Same length, last character a hyphen. The key alphabet includes it, and a
+# fixed-length body followed by \b would refuse to match this one at all.
+GOOGLE_API_KEY_TRAILING_HYPHEN = "AIza" + "SyABCDEFGHIJ0123456789abcdefghij01-"
 GENERIC_CRED = "password" + "=" + "Sup3rSecretValue!"
 CONN_STRING = "postgres://dbuser:" + "Sup3rSecretValue!" + "@db.example.com:5432/kb"
+
+# Every LLM provider form the llm_provider_api_key class covers. Same fragment
+# convention as above: never a contiguous literal in tracked source.
+LLM_PROVIDER_KEYS = {
+    "anthropic": ANTHROPIC_KEY,
+    "openai_project": "sk-proj-" + "abcdefghij0123456789ABCDEFGHIJKLMN",
+    "openai_service_account": "sk-svcacct-" + "abcdefghij0123456789ABCDEFGHIJ",
+    "openai_legacy": "sk-" + "abcdefghij0123456789ABCDEFGHIJKLMN",
+    "openrouter": "sk-or-v1-" + "abcdefghij0123456789abcdefghij0123456789",
+    "huggingface": "hf_" + "abcdefghij0123456789ABCDEFGHIJKLMN",
+    "groq": "gsk_" + "abcdefghij0123456789ABCDEF",
+    "xai": "xai-" + "abcdefghij0123456789ABCDEFGHIJKLMN",
+}
 
 ALL_BUILTIN_SECRETS = {
     "private_key_block": PRIVATE_KEY,
     "github_token": GITHUB_TOKEN,
     "aws_access_key_id": AWS_ACCESS_KEY,
     "slack_token": SLACK_TOKEN,
+    "llm_provider_api_key": ANTHROPIC_KEY,
+    "google_api_key": GOOGLE_API_KEY,
     "generic_credential_assignment": GENERIC_CRED,
     "connection_string_password": CONN_STRING,
 }
@@ -131,6 +159,110 @@ def test_scan_detects_github_fine_grained_pat() -> None:
     result = scan_postimage_for_secrets(postimage=f"token: {GITHUB_PAT}\n")
     assert not result.ok
     assert result.match.pattern_name == "github_token"
+
+
+@pytest.mark.parametrize("provider,secret", sorted(LLM_PROVIDER_KEYS.items()))
+def test_scan_detects_every_llm_provider_key_form(provider, secret) -> None:
+    """Anthropic, OpenAI (project / service-account / legacy), OpenRouter,
+    Hugging Face, Groq and xAI all share the llm_provider_api_key class: they
+    leak identically and a caller only needs to know that an LLM provider key
+    is present."""
+    result = scan_postimage_for_secrets(postimage=f"the key is {secret}\n")
+    assert not result.ok, f"{provider} key was not detected"
+    assert result.match is not None
+    assert result.match.pattern_name == "llm_provider_api_key"
+
+
+def test_prefixed_key_is_detected_without_help_from_the_bare_sk_alternative() -> None:
+    """The prefixed alternatives must do their own work.
+
+    A SecretMatch carries only a pattern name and a line number, by design, so
+    no assertion can observe which alternative of the class fired. This uses a
+    fixture the bare ``sk-`` alternative cannot possibly match instead: that
+    alternative is ``[A-Za-z0-9]{32,255}``, which excludes both ``-`` and ``_``,
+    and ANTHROPIC_KEY_NO_ALNUM_RUN contains no run of 32 alphanumerics anywhere.
+    A detection therefore proves ``sk-ant-`` matched it.
+    """
+    assert not re.search(r"[A-Za-z0-9]{32}", ANTHROPIC_KEY_NO_ALNUM_RUN), (
+        "fixture must not contain a 32-character alphanumeric run, or the bare "
+        "sk- alternative could match it and this test proves nothing"
+    )
+    result = scan_postimage_for_secrets(postimage=f"the key is {ANTHROPIC_KEY_NO_ALNUM_RUN}\n")
+    assert not result.ok
+    assert result.match.pattern_name == "llm_provider_api_key"
+
+
+def test_scan_detects_google_api_key_ending_in_a_hyphen() -> None:
+    """A Google key's alphabet includes ``-``, so roughly one key in 64 ends
+    with one. The pattern body is a fixed ``{35}`` with nothing to backtrack
+    into, so closing it with ``\\b`` would demand a word character in the final
+    position and silently refuse to match those keys."""
+    result = scan_postimage_for_secrets(
+        postimage=f"key: {GOOGLE_API_KEY_TRAILING_HYPHEN}\n"
+    )
+    assert not result.ok
+    assert result.match.pattern_name == "google_api_key"
+
+
+def test_scan_detects_github_user_to_server_token() -> None:
+    """ghu_ is the user-to-server token form; it belongs to the same class as
+    the other gh*_ prefixes."""
+    result = scan_postimage_for_secrets(postimage=f"token: {GITHUB_USER_TO_SERVER}\n")
+    assert not result.ok
+    assert result.match.pattern_name == "github_token"
+
+
+def test_scan_detects_aws_session_access_key() -> None:
+    """ASIA is the temporary access key id issued by STS. It is still an access
+    key id and leaks the same way as AKIA."""
+    result = scan_postimage_for_secrets(postimage=f"aws key {AWS_SESSION_KEY}\n")
+    assert not result.ok
+    assert result.match.pattern_name == "aws_access_key_id"
+
+
+def test_scan_llm_key_patterns_do_not_flag_ordinary_prose() -> None:
+    """False-positive guard for the new classes. A knowledge base holds commit
+    SHAs, digests, ids and model names; none of them may be refused as a
+    secret, because the write is rejected and the caller has no way to tell the
+    rejection was wrong."""
+    for content in (
+        "Fixed in commit 2145d6251d30054e65cc5ea95b4913a3ab62edf8 on main.",
+        "sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a",
+        "The model is claude-opus-5 and the local one is granite4.1:8b.",
+        "Document id 370a4766-588f-4ec5-97de-ce05905f5a67 was superseded.",
+        "Ask the sk- prefixed provider for a new key.",
+        "The task list is in the ADR; see ADR-002 for the serving model.",
+    ):
+        result = scan_postimage_for_secrets(postimage=content)
+        assert result.ok, f"{content!r} should not be flagged"
+
+
+def test_scan_asia_prefix_does_not_flag_ordinary_capitalised_prose() -> None:
+    """False-positive guard for widening the AWS class to ASIA. A knowledge
+    base writes about regions, and the word starts the same way as a session
+    key id."""
+    for content in (
+        "Rollout order is ASIA, then EMEA, then AMER.",
+        "The ASIAPACIFIC bucket is replicated nightly.",
+        "Tagged ASIA-PACIFIC-SOUTHEAST for the regional index.",
+        "ASIA and the other three regions share one control plane.",
+    ):
+        result = scan_postimage_for_secrets(postimage=content)
+        assert result.ok, f"{content!r} should not be flagged"
+
+
+def test_scan_asia_prefix_cannot_separate_a_long_all_caps_word_from_a_key_id() -> None:
+    """The known limit of the shape above, asserted rather than left implicit.
+
+    An access key id is a prefix plus 16 characters of uppercase letters and
+    digits, so a 20-character all-caps word starting with ASIA is the same
+    string as far as any regex is concerned. Requiring a digit would resolve it
+    and would also miss the real ids that contain none, which is the worse
+    failure for a gate whose job is to refuse credentials.
+    """
+    result = scan_postimage_for_secrets(postimage="region ASIAPACIFICREGIONXYZ note")
+    assert not result.ok
+    assert result.match.pattern_name == "aws_access_key_id"
 
 
 def test_scan_generic_credential_placeholder_is_not_flagged() -> None:
@@ -868,3 +1000,57 @@ def test_resolve_of_legacy_pending_entry_with_secret_path_rejected(
     assert len(events) >= 1
     for ev in events:
         assert AWS_ACCESS_KEY not in str(ev), "audit event must not carry the raw path"
+
+
+# --- Delimiters that are word characters --------------------------------------
+# A leading \b cannot fire between "_" and a letter, because both are word
+# characters. Markdown emphasis around a key therefore hid it from the scanner
+# entirely. The same shape appears in YAML flow keys, __dunder__ names, and any
+# prose that underscores a value for emphasis.
+
+
+def _scan(text: str):
+    from data_olympus.write_gate import scan_postimage_for_secrets
+
+    return scan_postimage_for_secrets(postimage=text).match is not None
+
+
+def test_llm_key_is_detected_inside_markdown_emphasis() -> None:
+    key = "sk-ant-api03-" + "A" * 40
+    assert _scan(f"_{key}_"), "underscore-delimited key must not hide from the scanner"
+
+
+def test_google_key_is_detected_inside_markdown_emphasis() -> None:
+    key = "AIza" + "B" * 35
+    assert _scan(f"_{key}_")
+
+
+def test_underscore_delimited_key_is_found_for_every_llm_provider() -> None:
+    """Every alternative, not just the one that happened to be tested."""
+    keys = [
+        "sk-ant-api03-" + "A" * 40,
+        "sk-proj-" + "A" * 40,
+        "sk-svcacct-" + "A" * 40,
+        "sk-or-v1-" + "a1" * 32,
+        "hf_" + "a1" * 17,
+        "gsk_" + "a1" * 26,
+        "xai-" + "a1" * 40,
+        "sk-" + "a1" * 24,
+    ]
+    missed = [k for k in keys if not _scan(f"_{k}_")]
+    assert missed == [], f"hidden by underscore delimiters: {missed}"
+
+
+def test_llm_key_is_not_matched_mid_token() -> None:
+    """Excluding only alphanumerics on the left must still refuse a longer token."""
+    key = "sk-ant-api03-" + "A" * 40
+    assert not _scan(f"x{key}")
+
+
+def test_xai_key_body_may_contain_underscores() -> None:
+    """xAI keys draw from an alphabet that includes "_".
+
+    Excluding it missed such a key completely: the trailing boundary cannot fire
+    before "_", so even a long alphanumeric run ahead of it did not match.
+    """
+    assert _scan("xai-" + "a" * 20 + "_" + "b" * 20)

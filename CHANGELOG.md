@@ -12,35 +12,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-
-* **Bootstrap `/kb-main` on the docker compose path.** The first-boot clone in
-  `deploy/docker/entrypoint.sh` keyed off `KB_GIT_REMOTE_URL`, but
-  `deploy/docker/compose.yaml` carries only `KB_REMOTE_URL` — which is also the
-  variable `docs/adoption.md` and `docs/quickstart.md` document. A compose
-  deployment that configured a remote therefore started a read-write server on
-  an empty `/kb-main`, and the first symptom was
-  `git_pull_loop iteration failed: … rev-parse HEAD … exit status 128`, which
-  does not point at the cause. The clone now falls back to `KB_REMOTE_URL`;
-  `KB_GIT_REMOTE_URL` still takes precedence, so the k8s path where the
-  initContainer has already cloned is unchanged.
-
-### Security
-
-* **The first-boot clone no longer logs the remote URL.** `KB_REMOTE_URL` is
-  documented as an SSH or HTTPS push target and the compose path mounts no SSH
-  key by default, so a writable remote there is most likely an HTTPS URL with an
-  embedded token. The entrypoint printed that URL verbatim before cloning, into
-  a container log no application-level redaction can reach. It now reports only
-  that it is cloning the configured remote. That removes the unconditional
-  disclosure rather than every path to one: git inherits the same stdout and
-  stderr, and a token embedded in a clone URL is still written to
-  `/kb-main/.git/config` once the clone succeeds. Provisioning the credential
-  outside the URL is the way out of both.
-
 ## [0.7.2] - 2026-09-07
 
 ### Changed
+
+* **The README links the Lulu MCP marketplace listing.** Lulu aggregates several
+  registries including Glama, which this README already badges, so the listing
+  may well be derived from that one rather than being an independent signal.
+  It is one more place an agent or a person can find the server. The badge is a
+  static label, so treat it as a pointer rather than as live listing status.
 
 * **The release contract now says what to do when `main` advances past the
   reviewed revision.** The delivery rule assumed the release merge was still
@@ -78,6 +58,31 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* **Product source changes no longer fail the benchmark guard.** The receipt's
+  `source_tree` digest was compared against the working tree, so any edit under
+  `src/data_olympus/` or `benchmarks/` failed `benchmark-docs` with
+  `source_tree sha256 does not match the repository`. That blocked every product
+  fix, which is the same defect already corrected for `dependency_lock` and the
+  same wrong assertion: that today's source produced numbers measured before it
+  existed. The digest is now recomputed from the source as committed at the
+  receipt's own `source_commit`, read from git history. Integrity of the
+  historical record is stronger, not weaker: the recorded file list is compared
+  as well as the digest, so a file that existed at the measurement commit but
+  was dropped from the receipt is now caught, which the previous per-file walk
+  could not see because it iterated the very list being shortened. What the
+  guard deliberately stops asserting is any correspondence between today's
+  source and the published numbers. It never established that the benchmarks
+  actually ran at the declared commit, and it does not now.
+* **Bootstrap `/kb-main` on the docker compose path.** The first-boot clone in
+  `deploy/docker/entrypoint.sh` keyed off `KB_GIT_REMOTE_URL`, but
+  `deploy/docker/compose.yaml` carries only `KB_REMOTE_URL`, which is also the
+  variable `docs/adoption.md` and `docs/quickstart.md` document. A compose
+  deployment that configured a remote therefore started a read-write server on
+  an empty `/kb-main`, and the first symptom was
+  `git_pull_loop iteration failed: … rev-parse HEAD … exit status 128`, which
+  does not point at the cause. The clone now falls back to `KB_REMOTE_URL`;
+  `KB_GIT_REMOTE_URL` still takes precedence, so the k8s path where the
+  initContainer has already cloned is unchanged.
 * **Bind the benchmark receipt to its measurement commit instead of the working
   tree.** The receipt's `dependency_lock` was compared against the *current*
   `uv.lock`, so every dependency change failed the `benchmark-docs` CI guard
@@ -132,6 +137,43 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `pyjwt >= 3.4.0` for its `crypto` extra) still permit 49.0.0. An existing
   environment is not upgraded automatically. See `docs/releases/v0.7.2.md` for
   the explicit upgrade command.
+
+* **The first-boot clone no longer logs the remote URL.** `KB_REMOTE_URL` is
+  documented as an SSH or HTTPS push target and the compose path mounts no SSH
+  key by default, so a writable remote there is most likely an HTTPS URL with an
+  embedded token. The entrypoint printed that URL verbatim before cloning, into
+  a container log no application-level redaction can reach. It now reports only
+  that it is cloning the configured remote. That removes the unconditional
+  disclosure rather than every path to one: git inherits the same stdout and
+  stderr, and a token embedded in a clone URL is still written to
+  `/kb-main/.git/config` once the clone succeeds. Provisioning the credential
+  outside the URL is the way out of both.
+
+* **Scan for LLM provider API keys.** The built-in secret-scan set covered
+  private keys, GitHub, AWS, Slack, `password=` assignments and connection
+  strings, but no LLM provider key format, so an `sk-ant-…` or `sk-proj-…` key
+  in a proposed memory was committed clean. Users of this project hold these
+  credentials by definition, which makes them the class most likely to be
+  pasted into a memory. Adds `llm_provider_api_key` (Anthropic, OpenAI
+  project/service-account/legacy, OpenRouter, Hugging Face, Groq, xAI, and
+  OpenAI-compatible gateways) and `google_api_key` (`AIza…`, which
+  authenticates Gemini and the other Google APIs that accept API keys).
+* **Detect two further forms of existing credential classes.** `github_token`
+  now covers `ghu_` user-to-server tokens alongside `ghp_`/`gho_`/`ghs_`/`ghr_`,
+  and `aws_access_key_id` now covers the `ASIA` temporary key id issued by STS
+  as well as `AKIA`.
+* **Secret-scan boundaries no longer depend on word characters.** The new key
+  classes above anchored with `\b`, which cannot fire between `_` and a letter
+  because both are word characters. A key wrapped in Markdown emphasis
+  (`_KEY_`) was therefore invisible to the scanner, for every provider, and the
+  same shape occurs in YAML flow keys and dunder names. The boundaries now
+  exclude alphanumerics instead, which still rejects an immediately preceding
+  ASCII letter or digit while letting a delimiter sit against the key. That is
+  narrower than refusing every longer token: text joined to a key by `-` or `_`
+  can still match, which is the direction a credential scanner should err in. The xAI alphabet also gained `_`,
+  without which a key containing one was missed completely. The gate remains
+  shape-based: it can still miss a credential whose format it does not model,
+  and it does not scan or revoke anything already in history.
 
 ## [0.7.1] - 2026-08-02
 

@@ -1,6 +1,7 @@
 """Executable contract for committed benchmark provenance receipts."""
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -40,6 +41,10 @@ version = "0.13.0"
 """,
     )
     _write(root / "benchmarks" / "run.py", "K = 5\n")
+    # The guard hashes product source as well as benchmark source, so the
+    # fixture carries one shipped module. Without it, no test here would
+    # exercise the src/ half of the pattern set.
+    _write(root / "src" / "data_olympus" / "write_gate.py", "SCAN = True\n")
     _write(root / "benchmarks" / "tokenizer.py", "class SimpleTokenizer: pass\n")
     _write(root / "benchmarks" / "corpus" / "z.md", "z corpus\n")
     _write(root / "benchmarks" / "corpus" / "a.md", "a corpus\n")
@@ -274,11 +279,13 @@ def test_docs_guard_surfaces_receipt_drift(tmp_path: Path, monkeypatch) -> None:
         lambda _document, _root: ["outputs sha256 does not match the repository"],
     )
 
-    # The empty document also has no dependency_lock to bind, so the historical
-    # check contributes its own problem alongside the preserved one.
+    # The empty document has neither dependency_lock nor source_tree to bind, so
+    # both historical checks contribute their own problem alongside the
+    # preserved one.
     assert check_benchmark_docs.receipt_problems(tmp_path) == [
         "outputs sha256 does not match the repository",
         "dependency_lock is missing from the receipt",
+        "source_tree is missing from the receipt",
     ]
 
 
@@ -481,3 +488,134 @@ def test_ci_fetches_receipt_source_commit_history() -> None:
     )
 
     assert checkout["with"]["fetch-depth"] == 0
+
+
+# --- source_tree binds to the measurement commit, not the working tree -------
+# Same defect as the dependency_lock half fixed earlier: the recorded digest was
+# compared against whatever is in the tree today, so every edit under
+# src/data_olympus/ or benchmarks/ failed the guard. A past measurement is not
+# invalidated by later source changes.
+
+
+def _edit_product_source(root: Path, content: str) -> None:
+    _write(root / "src" / "data_olympus" / "write_gate.py", content)
+
+
+def test_docs_guard_allows_current_product_source_drift(tmp_path: Path) -> None:
+    """Editing shipped source must not fail the benchmark guard.
+
+    This blocked every product-source change, so an ordinary bug fix could not
+    go green at all. The receipt still describes the source the numbers were
+    measured against, which is unchanged in history.
+    """
+    from benchmarks.receipt import verify_receipt
+    from scripts import check_benchmark_docs
+
+    root, receipt = _committed_benchmark_repo(tmp_path)
+    _edit_product_source(root, "SCAN = True\nGOOGLE = 1\n")
+
+    assert verify_receipt(receipt, root) == [
+        "source_tree sha256 does not match the repository"
+    ]
+    assert check_benchmark_docs.receipt_problems(root) == []
+
+
+def test_docs_guard_allows_current_benchmark_source_drift(tmp_path: Path) -> None:
+    """The same holds for benchmark source, which shares the pattern set."""
+    from scripts import check_benchmark_docs
+
+    root, _ = _committed_benchmark_repo(tmp_path)
+    _write(root / "benchmarks" / "run.py", "K = 7\n")
+
+    assert check_benchmark_docs.receipt_problems(root) == []
+
+
+def test_docs_guard_rejects_tampered_measured_source_digest(tmp_path: Path) -> None:
+    """Relaxing the working-tree comparison must not relax tamper evidence."""
+    from scripts import check_benchmark_docs
+
+    root, receipt = _committed_benchmark_repo(tmp_path)
+    receipt["source_tree"]["sha256"] = "0" * 64
+    _write(
+        root / "benchmarks" / "results" / "receipt.json",
+        json.dumps(receipt) + "\n",
+    )
+
+    problems = check_benchmark_docs.receipt_problems(root)
+    assert any("source_tree does not match the source at source_commit" in p for p in problems)
+
+
+def test_docs_guard_rejects_a_source_file_dropped_from_the_receipt(
+    tmp_path: Path,
+) -> None:
+    """The per-file check walks the recorded list, so it cannot see an omission.
+
+    Only an aggregate recomputed from the measurement commit catches a file that
+    existed when the benchmark ran but was left out of the receipt. Without this,
+    dropping an inconvenient module from the record would verify clean.
+    """
+    from scripts import check_benchmark_docs
+
+    root, receipt = _committed_benchmark_repo(tmp_path)
+    receipt["source_tree"]["files"] = [
+        entry
+        for entry in receipt["source_tree"]["files"]
+        if not entry["path"].startswith("src/data_olympus/")
+    ]
+    _write(
+        root / "benchmarks" / "results" / "receipt.json",
+        json.dumps(receipt) + "\n",
+    )
+
+    problems = check_benchmark_docs.receipt_problems(root)
+    assert any(
+        "source_tree file list does not match the source at source_commit" in p
+        for p in problems
+    )
+
+
+def test_docs_guard_rejects_missing_source_measurement_history(
+    tmp_path: Path,
+) -> None:
+    """A shallow checkout must fail loudly, never skip the check.
+
+    Asserts the *new* diagnostic specifically. An earlier version of this test
+    asserted `does not exist in this checkout`, which the pre-existing per-file
+    walk already emits, so it passed even with this check disabled entirely and
+    proved nothing about it.
+    """
+    from scripts import check_benchmark_docs
+
+    root, receipt = _committed_benchmark_repo(tmp_path)
+    receipt["source_commit"] = "b" * 40
+    _write(
+        root / "benchmarks" / "results" / "receipt.json",
+        json.dumps(receipt) + "\n",
+    )
+
+    problems = check_benchmark_docs.historical_source_tree_problems(receipt, root)
+    assert problems == [
+        "measured source is unreachable at source_commit "
+        + "b" * 40
+        + "; a full-history checkout is required"
+    ]
+
+
+def test_docs_guard_rejects_a_receipt_recording_no_source(tmp_path: Path) -> None:
+    """An empty recorded group must not verify against an empty selection.
+
+    Without this, a receipt whose source_tree was emptied would agree with a
+    commit containing no matching files, and the comparison would pass by
+    describing nothing.
+    """
+    from scripts import check_benchmark_docs
+
+    root, receipt = _committed_benchmark_repo(tmp_path)
+    receipt["source_tree"] = {"sha256": hashlib.sha256().hexdigest(), "files": []}
+    _write(
+        root / "benchmarks" / "results" / "receipt.json",
+        json.dumps(receipt) + "\n",
+    )
+
+    problems = check_benchmark_docs.historical_source_tree_problems(receipt, root)
+    assert problems == ["source_tree records no measured source files"]

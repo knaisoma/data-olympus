@@ -85,11 +85,14 @@ def _query_group(repo_root: Path) -> dict[str, Any]:
     )
 
 
+# Both the benchmark harness and the shipped package are measured source: a
+# change to either could move a published number. Named once so the verifier
+# cannot drift from the writer.
+SOURCE_PATTERNS = ("benchmarks/**/*.py", "src/data_olympus/**/*.py")
+
+
 def _source_group(repo_root: Path) -> dict[str, Any]:
-    return _file_group(
-        repo_root,
-        _relative_files(repo_root, ("benchmarks/**/*.py", "src/data_olympus/**/*.py")),
-    )
+    return _file_group(repo_root, _relative_files(repo_root, SOURCE_PATTERNS))
 
 
 def _output_group(repo_root: Path) -> dict[str, Any]:

@@ -483,14 +483,74 @@ class SecretScanResult:
 _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN (?:(?:RSA|EC|OPENSSH|DSA|PGP) )?PRIVATE KEY-----"
 )
-# gh[oprs]_ covers ghp_/gho_/ghs_/ghr_ in one alternation; github_pat_ is a
-# distinct, longer-lived token format introduced later. Both are grouped under
+# gh[oprsu]_ covers ghp_/gho_/ghs_/ghr_/ghu_ in one alternation; github_pat_ is
+# a distinct, longer-lived token format introduced later. Both are grouped under
 # one pattern name since the issue treats them as a single "GitHub tokens"
 # class.
 _GITHUB_TOKEN_RE = re.compile(
-    r"\b(?:gh[oprs]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})\b"
+    r"\b(?:gh[oprsu]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})\b"
 )
-_AWS_ACCESS_KEY_RE = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+# AKIA is a long-lived access key id; ASIA is the temporary/session form issued
+# by STS. Both are access key ids and leak the same way, so they share a class.
+#
+# Known limit, inherited from the key shape rather than introduced here: a
+# 20-character all-caps word beginning with one of the prefixes is
+# indistinguishable from a key id (``ASIAPACIFICREGIONXYZ`` matches). Requiring
+# a digit among the 16 would exclude it, but a key id is drawn from uppercase
+# letters and digits, and a digit-free one is on the order of a percent of all
+# ids -- far too common to reject. Missing a real credential is the worse
+# failure, so the shape stays as AWS documents it.
+_AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
+# LLM provider API keys. Users of this project hold these by definition -- an
+# agent-facing knowledge base is configured with at least one of them -- so they
+# are the credential class most likely to end up pasted into a memory. Grouped
+# into one class because they leak identically and a caller only needs to know
+# "an LLM provider key is in this postimage".
+#
+# The bare ``sk-`` alternative last also covers OpenAI-compatible gateways that
+# mint keys in the same shape (LiteLLM, vLLM, LocalAI). It cannot swallow the
+# prefixed forms above it: ``[A-Za-z0-9]`` excludes the hyphen, so ``sk-ant-``
+# stops after three characters, far short of the 32 required.
+#
+# The boundaries exclude only ALPHANUMERICS, rather than using ``\b``. ``_`` is a
+# word character, so ``\b`` cannot fire between ``_`` and the first letter of a
+# prefix: an otherwise detectable key wrapped in Markdown emphasis (``_KEY_``)
+# was invisible to this pattern, for every alternative. The same shape occurs in
+# YAML flow keys, dunder names, and any prose that underscores a value. Excluding
+# alphanumerics rejects an immediately preceding ASCII letter or digit
+# (``xsk-ant-...`` does not match) while letting a delimiter sit against the key.
+# That is narrower than refusing every longer token: ``prefix-`` or ``prefix_``
+# joined to a key still matches. It is deliberately permissive on
+# the left: ``prefix-AIza...`` matches, because for a credential scanner a
+# needless flag is recoverable and a missed key is not.
+_LLM_PROVIDER_KEY_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"sk-ant-[A-Za-z0-9_-]{24,255}"        # Anthropic
+    r"|sk-proj-[A-Za-z0-9_-]{24,255}"      # OpenAI, project-scoped
+    r"|sk-svcacct-[A-Za-z0-9_-]{24,255}"   # OpenAI, service account
+    r"|sk-or-v1-[A-Za-z0-9]{32,255}"       # OpenRouter
+    r"|hf_[A-Za-z0-9]{32,255}"             # Hugging Face
+    r"|gsk_[A-Za-z0-9]{20,255}"            # Groq
+    r"|xai-[A-Za-z0-9_]{32,255}"           # xAI (alphabet includes "_")
+    r"|sk-[A-Za-z0-9]{32,255}"             # OpenAI legacy / compatible gateways
+    r")(?![A-Za-z0-9])"
+)
+# Google API key. Not LLM-specific -- the same shape authenticates Gemini, Maps
+# and every other Google API -- so it gets its own class rather than being
+# folded into the one above.
+#
+# The tail is a negative lookahead rather than ``\b``. The body is a fixed
+# ``{35}`` with nothing to backtrack into, so a trailing ``\b`` would demand a
+# word character in the 35th position: a key whose last character is ``-``
+# (roughly one in 64, since the alphabet includes it) would fail to match at
+# all. The lookahead asserts the key is not a prefix of a longer token without
+# constraining its final character.
+# The trailing exclusion omits ``_`` deliberately. A key is exactly 39
+# characters, so a following ``_`` is either a delimiter or proof the token was
+# never a key; treating it as a delimiter costs a possible needless flag and
+# buys detection of ``_KEY_``, which the fixed-length body cannot recover from
+# by backtracking.
+_GOOGLE_API_KEY_RE = re.compile(r"(?<![A-Za-z0-9])AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9-])")
 _SLACK_TOKEN_RE = re.compile(r"\bxox[bpars]-[A-Za-z0-9-]{10,200}\b")
 # Generic key=value / key: value credential assignment. Matches both a bare
 # key (``password=``) and a prefixed key (``DB_PASSWORD=``, ``API_SECRET:``) --
@@ -518,6 +578,8 @@ _BUILTIN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("github_token", _GITHUB_TOKEN_RE),
     ("aws_access_key_id", _AWS_ACCESS_KEY_RE),
     ("slack_token", _SLACK_TOKEN_RE),
+    ("llm_provider_api_key", _LLM_PROVIDER_KEY_RE),
+    ("google_api_key", _GOOGLE_API_KEY_RE),
     ("generic_credential_assignment", _GENERIC_CRED_RE),
     ("connection_string_password", _CONN_STRING_RE),
 )
