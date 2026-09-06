@@ -1,6 +1,7 @@
 # data-olympus
 
 [![knaisoma/data-olympus MCP server](https://glama.ai/mcp/servers/knaisoma/data-olympus/badges/score.svg)](https://glama.ai/mcp/servers/knaisoma/data-olympus)
+[![MCP Marketplace](https://img.shields.io/badge/MCP%20Marketplace-Indexed-blueviolet)](https://getlulu.dev/mcps)
 
 **New here? Start with [WHY.md](WHY.md).** It is the story behind the project: the
 problem we kept hitting with coding agents, what data-olympus does differently, how

@@ -16,6 +16,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+* **The README links the Lulu MCP marketplace listing.** Lulu aggregates the
+  official MCP Registry, Glama, PulseMCP and Smithery, so the listing is not an
+  independent signal on top of the Glama score already shown; it is one more
+  place an agent or a person can find the server. The badge is a static label,
+  so treat it as a pointer rather than as live listing status.
+
 * **The release contract now says what to do when `main` advances past the
   reviewed revision.** The delivery rule assumed the release merge was still
   the tip of `main`. That stops being true when anything else merges between
