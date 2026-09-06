@@ -167,8 +167,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   because both are word characters. A key wrapped in Markdown emphasis
   (`_KEY_`) was therefore invisible to the scanner, for every provider, and the
   same shape occurs in YAML flow keys and dunder names. The boundaries now
-  exclude alphanumerics instead, which still refuses a longer token while
-  letting a delimiter sit against the key. The xAI alphabet also gained `_`,
+  exclude alphanumerics instead, which still rejects an immediately preceding
+  ASCII letter or digit while letting a delimiter sit against the key. That is
+  narrower than refusing every longer token: text joined to a key by `-` or `_`
+  can still match, which is the direction a credential scanner should err in. The xAI alphabet also gained `_`,
   without which a key containing one was missed completely. The gate remains
   shape-based: it can still miss a credential whose format it does not model,
   and it does not scan or revoke anything already in history.

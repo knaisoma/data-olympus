@@ -517,8 +517,10 @@ _AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
 # prefix: an otherwise detectable key wrapped in Markdown emphasis (``_KEY_``)
 # was invisible to this pattern, for every alternative. The same shape occurs in
 # YAML flow keys, dunder names, and any prose that underscores a value. Excluding
-# alphanumerics still refuses a longer token (``xsk-ant-...`` does not match)
-# while letting a delimiter sit against the key. It is deliberately permissive on
+# alphanumerics rejects an immediately preceding ASCII letter or digit
+# (``xsk-ant-...`` does not match) while letting a delimiter sit against the key.
+# That is narrower than refusing every longer token: ``prefix-`` or ``prefix_``
+# joined to a key still matches. It is deliberately permissive on
 # the left: ``prefix-AIza...`` matches, because for a credential scanner a
 # needless flag is recoverable and a missed key is not.
 _LLM_PROVIDER_KEY_RE = re.compile(
