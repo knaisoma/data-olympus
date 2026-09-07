@@ -21,7 +21,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   compose, Helm or CI variable produces -- reached `Path("")`, which is
   `Path(".")`, so the server silently indexed whatever happened to be in its
   working directory. A blank or whitespace-only value now means unset and the
-  documented default applies; surrounding whitespace is stripped. And when the
+  documented default applies, while a non-blank value is used verbatim. And
+  when the
   corpus path does not resolve to a directory, startup now fails with a message
   naming the setting, the path it resolved to, and whether that path came from
   the environment or the built-in default, instead of

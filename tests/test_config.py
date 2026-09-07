@@ -229,14 +229,21 @@ def test_supplied_path_settings_are_honoured_and_marked_as_from_env(
     assert cfg.kb_index_path_source == PATH_SOURCE_ENV
 
 
-def test_surrounding_whitespace_is_stripped_from_a_path_setting(
+def test_a_nonblank_path_setting_is_used_verbatim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A padded value is the same input error as a blank one, minus the blank."""
+    """Only BLANK means unset. A non-blank value is never rewritten.
+
+    A path may legitimately carry leading or trailing whitespace, so silently
+    trimming it would be a different bug from the one #244 fixes. A padded path
+    that does not exist fails loudly through corpus_path_problem instead.
+    """
     monkeypatch.setenv("KB_MAIN_PATH", "  /srv/kb  ")
     cfg = load_config()
-    assert cfg.kb_main_path == Path("/srv/kb")
+    assert cfg.kb_main_path == Path("  /srv/kb  ")
     assert cfg.kb_main_path_source == PATH_SOURCE_ENV
+    msg = corpus_path_problem(cfg)
+    assert msg is not None and "  /srv/kb  " in msg
 
 
 def test_corpus_problem_is_none_for_a_real_directory(tmp_path: Path) -> None:

@@ -53,9 +53,10 @@ trigram, auth, audit rotation):
 - `KB_MAIN_PATH`: the knowledge-base corpus to index and serve (default
   `/kb-main`). `KB_INDEX_PATH`: where the SQLite index is written (default
   `/index/kb.db`). **Both treat a blank value as unset.** A variable that is set
-  but empty -- what an unsubstituted compose/Helm/CI variable produces -- gets
-  the documented default, not the server's working directory, and surrounding
-  whitespace is stripped before the value is used. If `KB_MAIN_PATH` does not
+  but empty, or whitespace-only, -- what an unsubstituted compose/Helm/CI
+  variable produces -- gets the documented default, not the server's working
+  directory. A non-blank value is used verbatim and never rewritten. If
+  `KB_MAIN_PATH` does not
   resolve to a directory, startup fails with a message naming the setting, the
   path it resolved to, and whether that path came from the environment or the
   built-in default. An existing but empty corpus is not an error: the server

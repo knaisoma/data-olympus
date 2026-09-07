@@ -214,6 +214,8 @@ def _load_status_weights(raw: str) -> dict[str, float] | None:
             f"got {type(data).__name__}"
         )
     return {str(k): float(v) for k, v in data.items()}
+
+
 def _env_path(name: str, default: str) -> tuple[Path, str]:
     """Resolve a filesystem path setting, treating blank as unset.
 
@@ -224,9 +226,12 @@ def _env_path(name: str, default: str) -> tuple[Path, str]:
     server silently index its own working directory instead of the corpus, with
     no error and no log line naming the setting.
 
-    Surrounding whitespace is stripped first, so a value that is only whitespace
-    is the same mistake with a space in it and is treated identically. What
-    remains, if empty, means unset and the documented default applies.
+    A whitespace-only value is the same mistake with a space in it, so it is
+    treated as unset too. A value that is NOT blank is used verbatim: a path may
+    legitimately carry leading or trailing whitespace, and silently rewriting an
+    operator's path is a different bug from the one being fixed. A padded path
+    that does not exist now fails through :func:`corpus_path_problem`, which
+    names the setting and the exact resolved value.
 
     Returns the resolved path and which of :data:`PATH_SOURCE_ENV` /
     :data:`PATH_SOURCE_DEFAULT` it came from.
@@ -234,7 +239,7 @@ def _env_path(name: str, default: str) -> tuple[Path, str]:
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
         return Path(default), PATH_SOURCE_DEFAULT
-    return Path(raw.strip()), PATH_SOURCE_ENV
+    return Path(raw), PATH_SOURCE_ENV
 
 
 def corpus_path_problem(config: Config) -> str | None:
