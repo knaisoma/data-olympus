@@ -71,7 +71,7 @@ spec:
                 if [ -z "$real" ]; then
                   # The URL is deliberately absent from this message, matching
                   # deploy/docker/entrypoint.sh. docs/adoption.md documents the
-                  # remote as "SSH or HTTPS", and an HTTPS remote carries its
+                  # remote as "SSH or HTTPS", and an HTTPS remote may carry a
                   # credential in the URL, so expanding it here would write that
                   # token to the pod log on every first boot -- before the clone
                   # runs, and where no application-level redaction reaches it.

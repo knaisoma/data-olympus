@@ -270,17 +270,24 @@ def test_corpus_problem_names_setting_path_and_env_origin(tmp_path: Path) -> Non
     assert "environment variable" in msg
 
 
-def test_corpus_problem_says_the_path_came_from_the_default() -> None:
-    """The reported symptom: /kb-main named, but never configured by anyone.
+def test_corpus_problem_says_the_path_came_from_the_default(tmp_path: Path) -> None:
+    """The reported symptom: the default named, but never configured by anyone.
 
     The old message was ``KB root not a directory: /kb-main`` -- a path the
     operator had not set and no setting name to search for.
+
+    The path is a missing directory under ``tmp_path`` rather than the literal
+    ``/kb-main``, because that default DOES exist inside the product's own
+    container image; asserting on it directly would make this test pass or fail
+    depending on where it runs. That the built-in default is ``/kb-main`` is
+    pinned separately by :func:`test_load_config_defaults`.
     """
-    cfg = _config_with_main_path(Path("/kb-main"), PATH_SOURCE_DEFAULT)
+    missing_default = tmp_path / "kb-main"
+    cfg = _config_with_main_path(missing_default, PATH_SOURCE_DEFAULT)
     msg = corpus_path_problem(cfg)
     assert msg is not None
     assert "KB_MAIN_PATH" in msg
-    assert "/kb-main" in msg
+    assert str(missing_default) in msg
     assert "unset or blank" in msg
     assert "built-in" in msg
 
