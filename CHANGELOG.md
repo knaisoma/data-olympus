@@ -12,6 +12,35 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-09-07
+
+### Fixed
+
+* **A blank `KB_MAIN_PATH` no longer makes the server index its own working
+  directory.** `KB_MAIN_PATH=` and `KB_INDEX_PATH=` -- what an unsubstituted
+  compose, Helm or CI variable produces -- reached `Path("")`, which is
+  `Path(".")`, so the server silently indexed whatever happened to be in its
+  working directory. A blank or whitespace-only value now means unset and the
+  documented default applies, while a non-blank value is used verbatim. And
+  when the
+  corpus path does not resolve to a directory, startup now fails with a message
+  naming the setting, the path it resolved to, and whether that path came from
+  the environment or the built-in default, instead of
+  `KB root not a directory: /kb-main` -- a path the operator never configured
+  and no setting name to search for. An existing but empty corpus keeps
+  starting normally, as before. A deployment that relied on blank-means-cwd
+  changes behaviour; that reliance was on the silent defect being fixed here.
+  ([#244](https://github.com/knaisoma/data-olympus/issues/244))
+
+* **The Kubernetes first-boot log no longer prints the configured git remote.**
+  The StatefulSet initContainer echoed the remote URL immediately before
+  cloning it. The remote is documented as "SSH or HTTPS", and an HTTPS remote
+  may carry a credential inside the URL, so an adopter using one wrote that
+  credential into the pod log on every first boot, where no application-level
+  redaction reaches it. The message now names no URL, matching the Docker
+  entrypoint. Nothing else about the clone changes.
+  ([#248](https://github.com/knaisoma/data-olympus/issues/248))
+
 ## [0.7.2] - 2026-09-07
 
 ### Changed
@@ -1983,7 +2012,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/knaisoma/data-olympus/compare/v0.7.2...v0.7.3
 [0.6.0]: https://github.com/knaisoma/data-olympus/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/knaisoma/data-olympus/compare/v0.4.2...v0.5.0
 [0.4.1]: https://github.com/knaisoma/data-olympus/compare/v0.4.0...v0.4.1

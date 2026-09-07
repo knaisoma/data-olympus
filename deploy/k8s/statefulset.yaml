@@ -69,7 +69,14 @@ spec:
               if [ -n "${KB_GIT_REMOTE_URL:-}" ] && [ -d /kb-main ]; then
                 real=$(find /kb-main -mindepth 1 -maxdepth 1 ! -name 'lost+found' -print -quit 2>/dev/null || true)
                 if [ -z "$real" ]; then
-                  echo "[init] /kb-main empty; cloning $KB_GIT_REMOTE_URL"
+                  # The URL is deliberately absent from this message, matching
+                  # deploy/docker/entrypoint.sh. docs/adoption.md documents the
+                  # remote as "SSH or HTTPS", and an HTTPS remote may carry a
+                  # credential in the URL, so expanding it here would write that
+                  # token to the pod log on every first boot -- before the clone
+                  # runs, and where no application-level redaction reaches it.
+                  # The operator already has the value in the Secret.
+                  echo "[init] /kb-main is empty; cloning configured remote"
                   GIT_SSH_COMMAND="ssh -i /state/git-key -o UserKnownHostsFile=/state/known_hosts -o StrictHostKeyChecking=yes" \
                     git clone "$KB_GIT_REMOTE_URL" /kb-main \
                     && echo "[init] bootstrap complete" \

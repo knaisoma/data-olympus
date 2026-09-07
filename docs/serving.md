@@ -50,6 +50,17 @@ A few server-wide settings, beyond the feature-specific env vars documented in
 their own sections below (search ranking, synonyms, embeddings, co-occurrence,
 trigram, auth, audit rotation):
 
+- `KB_MAIN_PATH`: the knowledge-base corpus to index and serve (default
+  `/kb-main`). `KB_INDEX_PATH`: where the SQLite index is written (default
+  `/index/kb.db`). **Both treat a blank value as unset.** A variable that is set
+  but empty, or whitespace-only, -- what an unsubstituted compose/Helm/CI
+  variable produces -- gets the documented default, not the server's working
+  directory. A non-blank value is used verbatim and never rewritten. If
+  `KB_MAIN_PATH` does not
+  resolve to a directory, startup fails with a message naming the setting, the
+  path it resolved to, and whether that path came from the environment or the
+  built-in default. An existing but empty corpus is not an error: the server
+  starts, builds the schema, and reports `degraded` until content arrives.
 - `KB_HTTP_PORT`: TCP port the MCP HTTP server binds (default `8080`).
 - `KB_CONFIDENCE_THRESHOLD`: the auto-commit confidence cutoff, in `[0, 1]`
   (default `0.85`). A proposal at or above it from a principal holding
