@@ -12,6 +12,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* **The Kubernetes first-boot log no longer prints the configured git remote.**
+  The StatefulSet initContainer echoed the remote URL immediately before
+  cloning it. The remote is documented as "SSH or HTTPS", and an HTTPS remote
+  carries its credential inside the URL, so an adopter using one wrote that
+  credential into the pod log on every first boot, where no application-level
+  redaction reaches it. The message now names no URL, matching the Docker
+  entrypoint. Nothing else about the clone changes.
+  ([#248](https://github.com/knaisoma/data-olympus/issues/248))
+
 ## [0.7.2] - 2026-09-07
 
 ### Changed
