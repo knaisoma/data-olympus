@@ -536,15 +536,21 @@ _LLM_PROVIDER_KEY_RE = re.compile(
     r")(?![A-Za-z0-9])"
 )
 # Google API key. Not LLM-specific -- the same shape authenticates Gemini, Maps
-# and every other Google API -- so it gets its own class rather than being
-# folded into the one above.
+# and the other Google APIs that accept an API key -- so it gets its own class
+# rather than being folded into the one above. It is not every Google API:
+# many require OAuth or a service account and reject an API key outright, so
+# this class says the credential is Google-shaped, not that it opens any given
+# Google service.
 #
 # The tail is a negative lookahead rather than ``\b``. The body is a fixed
 # ``{35}`` with nothing to backtrack into, so a trailing ``\b`` would demand a
 # word character in the 35th position: a key whose last character is ``-``
 # (roughly one in 64, since the alphabet includes it) would fail to match at
-# all. The lookahead asserts the key is not a prefix of a longer token without
-# constraining its final character.
+# all. The lookahead refuses a continuation in ``[A-Za-z0-9-]`` without
+# constraining the key's own final character. It is deliberately weaker than
+# "not a prefix of a longer token": ``_`` is in the key alphabet and is NOT
+# excluded, for the reason the next paragraph gives. Tightening the lookahead
+# to cover ``_`` would satisfy the stronger reading and destroy that detection.
 # The trailing exclusion omits ``_`` deliberately. A key is exactly 39
 # characters, so a following ``_`` is either a delimiter or proof the token was
 # never a key; treating it as a delimiter costs a possible needless flag and
