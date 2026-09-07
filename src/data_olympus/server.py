@@ -23,7 +23,12 @@ if TYPE_CHECKING:
 
 from data_olympus.audit_log import AuditLog
 from data_olympus.auth import PathBlocklist
-from data_olympus.config import Config, load_config
+from data_olympus.config import (
+    PATH_SOURCE_DEFAULT,
+    Config,
+    corpus_path_problem,
+    load_config,
+)
 from data_olympus.cooccurrence import (
     DEFAULT_MAX_TERMS,
     compose_expanders,
@@ -447,6 +452,8 @@ def build_app(
     maintenance_recently_expired_days: int = 30,
     maintenance_expiring_soon_days: int = 30,
     status_autofill: bool = True,
+    kb_main_path_source: str = PATH_SOURCE_DEFAULT,
+    kb_index_path_source: str = PATH_SOURCE_DEFAULT,
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
 
@@ -500,6 +507,8 @@ def build_app(
         maintenance_recently_expired_days=maintenance_recently_expired_days,
         maintenance_expiring_soon_days=maintenance_expiring_soon_days,
         status_autofill=status_autofill,
+        kb_main_path_source=kb_main_path_source,
+        kb_index_path_source=kb_index_path_source,
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
@@ -1185,7 +1194,16 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
     integration tests that need env-driven config to reach the app state.
     Every Config field is threaded through to build_app, so no value is silently
     dropped or overridden by a hardcoded default.
+
+    When bootstrapping, the corpus path is checked first so the failure names
+    KB_MAIN_PATH, the path it resolved to, and whether the operator supplied it.
+    Index.build would otherwise raise ``KB root not a directory: /kb-main``,
+    naming a path the operator never configured and no setting to search for.
     """
+    if bootstrap_now:
+        problem = corpus_path_problem(config)
+        if problem is not None:
+            raise NotADirectoryError(problem)
     return build_app(
         kb_main_path=config.kb_main_path,
         kb_index_path=config.kb_index_path,
@@ -1229,6 +1247,8 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         maintenance_recently_expired_days=config.maintenance_recently_expired_days,
         maintenance_expiring_soon_days=config.maintenance_expiring_soon_days,
         status_autofill=config.status_autofill,
+        kb_main_path_source=config.kb_main_path_source,
+        kb_index_path_source=config.kb_index_path_source,
     )
 
 

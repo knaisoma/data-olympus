@@ -11,6 +11,12 @@ from data_olympus.tool_discovery import ToolDiscoveryMode, load_tool_discovery_m
 
 _log = logging.getLogger("data_olympus.config")
 
+# How a path setting got its value, for error messages that tell the operator
+# where to look. A path that came from the environment is the operator's to fix;
+# a path that came from the default means the setting was never supplied.
+PATH_SOURCE_ENV = "environment"
+PATH_SOURCE_DEFAULT = "default"
+
 
 @dataclass(frozen=True, slots=True)
 class Config:
@@ -90,6 +96,14 @@ class Config:
     # intentionally reverses the #114 "never guess status" stance: for the narrow
     # legacy-upgrade case, a seamless default beats conservative flagging.
     status_autofill: bool = True
+    # Where kb_main_path / kb_index_path came from: PATH_SOURCE_ENV when the
+    # operator supplied a non-blank value, PATH_SOURCE_DEFAULT when the setting
+    # was absent or blank. Used only to make a startup failure name the setting
+    # and say whether the operator ever configured it. Defaults to
+    # PATH_SOURCE_DEFAULT so a programmatic caller that passes paths directly
+    # (build_app in tests) does not have to supply provenance it does not have.
+    kb_main_path_source: str = PATH_SOURCE_DEFAULT
+    kb_index_path_source: str = PATH_SOURCE_DEFAULT
     # Streamable-http session reaping: terminate transports idle beyond this many
     # seconds to bound _server_instances (see session_metrics). 0 disables the
     # reaper (observability-only). The scan runs every session_reap_interval_sec.
@@ -200,6 +214,60 @@ def _load_status_weights(raw: str) -> dict[str, float] | None:
             f"got {type(data).__name__}"
         )
     return {str(k): float(v) for k, v in data.items()}
+def _env_path(name: str, default: str) -> tuple[Path, str]:
+    """Resolve a filesystem path setting, treating blank as unset.
+
+    ``os.environ.get(name, default)`` only falls back when the variable is
+    ABSENT. A variable that is set but empty -- which is exactly what an
+    unsubstituted compose/Helm/CI variable produces -- returns ``""``, and
+    ``Path("")`` is ``Path(".")``. So a blank ``KB_MAIN_PATH`` used to make the
+    server silently index its own working directory instead of the corpus, with
+    no error and no log line naming the setting.
+
+    Surrounding whitespace is stripped first, so a value that is only whitespace
+    is the same mistake with a space in it and is treated identically. What
+    remains, if empty, means unset and the documented default applies.
+
+    Returns the resolved path and which of :data:`PATH_SOURCE_ENV` /
+    :data:`PATH_SOURCE_DEFAULT` it came from.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return Path(default), PATH_SOURCE_DEFAULT
+    return Path(raw.strip()), PATH_SOURCE_ENV
+
+
+def corpus_path_problem(config: Config) -> str | None:
+    """Return an actionable message when the configured corpus is unusable.
+
+    ``None`` when ``kb_main_path`` is a directory. The message names the
+    setting, the path it resolved to, and whether that path came from the
+    environment or the built-in default -- the three things the previous
+    ``NotADirectoryError: KB root not a directory: /kb-main`` left the operator
+    to guess, since it printed a path they had never configured and no setting
+    name to search for.
+    """
+    path = config.kb_main_path
+    if path.is_dir():
+        return None
+    if config.kb_main_path_source == PATH_SOURCE_ENV:
+        origin = "That path came from the KB_MAIN_PATH environment variable."
+        fix = "Point KB_MAIN_PATH at the knowledge-base checkout."
+    else:
+        origin = (
+            "KB_MAIN_PATH is unset or blank, so that path is the built-in "
+            "default."
+        )
+        fix = (
+            f"Set KB_MAIN_PATH to the knowledge-base checkout, or mount the "
+            f"corpus at {path}."
+        )
+    what = "does not exist" if not path.exists() else "is not a directory"
+    return (
+        f"KB_MAIN_PATH resolves to {path}, which {what}. {origin} {fix}"
+    )
+
+
 def _env_bool(raw: str) -> bool:
     """Parse a truthy env string. True for 1/true/yes/on (case-insensitive);
     everything else (including empty) is False."""
@@ -299,9 +367,15 @@ def load_config() -> Config:
     version_check_interval_sec = int(
         os.getenv("KB_VERSION_CHECK_INTERVAL_SEC", "86400")
     )
+    kb_main_path, kb_main_path_source = _env_path("KB_MAIN_PATH", "/kb-main")
+    kb_index_path, kb_index_path_source = _env_path(
+        "KB_INDEX_PATH", "/index/kb.db"
+    )
     return Config(
-        kb_main_path=Path(os.environ.get("KB_MAIN_PATH", "/kb-main")),
-        kb_index_path=Path(os.environ.get("KB_INDEX_PATH", "/index/kb.db")),
+        kb_main_path=kb_main_path,
+        kb_index_path=kb_index_path,
+        kb_main_path_source=kb_main_path_source,
+        kb_index_path_source=kb_index_path_source,
         kb_remote_url=os.environ.get("KB_REMOTE_URL", ""),
         sync_interval_sec=int(os.environ.get("KB_SYNC_INTERVAL_SEC", "60")),
         staleness_degraded_sec=int(os.environ.get("KB_STALENESS_DEGRADED_SEC", "600")),

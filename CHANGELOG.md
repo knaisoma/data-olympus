@@ -14,6 +14,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* **A blank `KB_MAIN_PATH` no longer makes the server index its own working
+  directory.** `KB_MAIN_PATH=` and `KB_INDEX_PATH=` -- what an unsubstituted
+  compose, Helm or CI variable produces -- reached `Path("")`, which is
+  `Path(".")`, so the server silently indexed whatever happened to be in its
+  working directory. A blank or whitespace-only value now means unset and the
+  documented default applies; surrounding whitespace is stripped. And when the
+  corpus path does not resolve to a directory, startup now fails with a message
+  naming the setting, the path it resolved to, and whether that path came from
+  the environment or the built-in default, instead of
+  `KB root not a directory: /kb-main` -- a path the operator never configured
+  and no setting name to search for. An existing but empty corpus keeps
+  starting normally, as before. A deployment that relied on blank-means-cwd
+  changes behaviour; that reliance was on the silent defect being fixed here.
+  ([#244](https://github.com/knaisoma/data-olympus/issues/244))
+
 * **The Kubernetes first-boot log no longer prints the configured git remote.**
   The StatefulSet initContainer echoed the remote URL immediately before
   cloning it. The remote is documented as "SSH or HTTPS", and an HTTPS remote
