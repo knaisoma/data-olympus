@@ -451,11 +451,11 @@ def test_a_duplicated_key_is_ambiguous_evidence_and_yields_nothing() -> None:
     from data_olympus.git_ops import _parse_trailers
 
     assert _parse_trailers(
-        "s\n\nKB-Target-Path: a.md\nKB-Target-Path: b.md\n"
+        b"s\n\nKB-Target-Path: a.md\nKB-Target-Path: b.md\n"
     ) == {}
     # A single occurrence alongside a duplicate is unaffected.
     assert _parse_trailers(
-        "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\nKB-Target-Path: b.md\n"
+        b"s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\nKB-Target-Path: b.md\n"
     ) == {"KB-Pending-Id": "abc"}
 
 
@@ -472,13 +472,13 @@ def test_a_value_is_returned_exactly_as_git_emits_it() -> None:
 
     pid = "f" * 32
     for codepoint in (0x00A0, 0x2007, 0x202F, 0x3000):
-        parsed = _parse_trailers(f"s\n\nKB-Pending-Id: {pid}{chr(codepoint)}\n")
+        parsed = _parse_trailers(f"s\n\nKB-Pending-Id: {pid}{chr(codepoint)}\n".encode())
         assert parsed.get("KB-Pending-Id") == pid + chr(codepoint), (
             f"U+{codepoint:04X} was trimmed"
         )
 
     # A CR inside a value is one trailer to git, not two.
-    parsed = _parse_trailers(f"s\n\nKB-Pending-Id: {pid}\rKB-Target-Path: a.md\n")
+    parsed = _parse_trailers(f"s\n\nKB-Pending-Id: {pid}\rKB-Target-Path: a.md\n".encode())
     assert "KB-Target-Path" not in parsed
     assert parsed.get("KB-Pending-Id") != pid
 
@@ -516,7 +516,7 @@ def test_git_configuration_cannot_rename_a_key_into_the_claim_link() -> None:
         ).stdout
         assert "KB-Pending-Id" in raw, "the hostile config did not apply"
 
-        assert "KB-Pending-Id" not in _parse_trailers(message)
+        assert "KB-Pending-Id" not in _parse_trailers(message.encode())
     finally:
         if previous is None:
             os.environ.pop("GIT_CONFIG_GLOBAL", None)
@@ -560,7 +560,7 @@ def test_a_hostile_target_path_cannot_forge_a_claim_link() -> None:
         proposal_type="memory", target_tier="T1",
         target_path=f"decisions/KB-Pending-Id: {victim}.md",
     )
-    assert "KB-Pending-Id" not in _parse_trailers(benign)
+    assert "KB-Pending-Id" not in _parse_trailers(benign.encode())
 
 
 # --- trailer grammar, differentially against real git ------------------------
@@ -626,18 +626,27 @@ _GRAMMAR_CASES = {
 
 
 def _git_trailers(message: str) -> dict[str, str]:
-    """What real git parses, as key/value, not merely which keys are present."""
+    """What real git parses, in BYTES.
+
+    The oracle must not normalise what it is checking for. An earlier version
+    used `text=True` and `.strip()`, which are the two transformations the code
+    under test was corrected for, so it repeated them and masked the mismatch.
+    """
     import subprocess
 
     out = subprocess.run(
-        ["git", "interpret-trailers", "--parse"], input=message,
-        capture_output=True, text=True, check=True,
+        ["git", "interpret-trailers", "--parse"], input=message.encode(),
+        capture_output=True, check=True,
     ).stdout
     parsed: dict[str, str] = {}
-    for line in out.split("\n"):
-        key, sep, value = line.partition(":")
-        if sep:
-            parsed[key.strip()] = value.strip()
+    for raw in out.split(b"\n"):
+        key, sep, value = raw.partition(b":")
+        if not sep:
+            continue
+        text = value.decode("utf-8", errors="replace")
+        parsed[key.decode("utf-8", errors="replace")] = (
+            text[1:] if text.startswith(" ") else text
+        )
     return parsed
 
 
@@ -661,7 +670,7 @@ def test_parser_never_sees_a_trailer_git_does_not() -> None:
 
     looser = []
     for name, message in _GRAMMAR_CASES.items():
-        ours = _parse_trailers(message)
+        ours = _parse_trailers(message.encode())
         theirs = _git_trailers(message)
         # Both fields recovery actually uses, compared by VALUE: a key we agree
         # exists but read differently is the same defect as one git never saw.
@@ -677,12 +686,12 @@ def test_the_supported_trailer_grammar_is_what_the_builder_writes() -> None:
 
     # A trailing paragraph whose every line is `Key: value`, keys unique and
     # free of spaces, before any `---` divider.
-    assert _parse_trailers("s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n") == {
+    assert _parse_trailers(b"s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n") == {
         "KB-Pending-Id": "abc", "KB-Target-Path": "a.md",
     }
     # Not a trailer block, per git: prose mixed in, or a patch divider before it.
-    assert _parse_trailers("s\n\nprose\nKB-Pending-Id: abc\n") == {}
-    assert _parse_trailers("s\n\n---\n\nKB-Pending-Id: abc\n") == {}
+    assert _parse_trailers(b"s\n\nprose\nKB-Pending-Id: abc\n") == {}
+    assert _parse_trailers(b"s\n\n---\n\nKB-Pending-Id: abc\n") == {}
 
 
 def test_a_real_commit_from_the_builder_round_trips() -> None:
@@ -696,7 +705,7 @@ def test_a_real_commit_from_the_builder_round_trips() -> None:
         operator_confirmed=True, proposal_type="edit", target_tier="T1",
         target_path="operator/notes.md", pending_id="a" * 32,
     )
-    parsed = _parse_trailers(msg)
+    parsed = _parse_trailers(msg.encode())
 
     assert parsed["KB-Pending-Id"] == "a" * 32
     assert parsed["KB-Target-Path"] == "operator/notes.md"
@@ -718,20 +727,20 @@ def test_an_unterminated_divider_at_eof_is_not_a_divider() -> None:
     from data_olympus.git_ops import _parse_trailers
 
     unterminated = "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n\n---"
-    assert _parse_trailers(unterminated) == {}
+    assert _parse_trailers(unterminated.encode()) == {}
 
     # The same message WITH the terminator DOES have a divider, so parsing stops
     # there and the block before it is the last paragraph, which is the trailer
     # block. Verified against real git: `git interpret-trailers --parse` returns
     # both fields for this spelling. The two spellings differ, which is the
     # whole point.
-    assert _parse_trailers(unterminated + "\n") == {
+    assert _parse_trailers((unterminated + "\n").encode()) == {
         "KB-Pending-Id": "abc", "KB-Target-Path": "a.md",
     }
 
     # And a message with no divider at all still parses normally, so the fix
     # does not simply refuse everything.
-    assert _parse_trailers("s\n\nKB-Pending-Id: abc\n")["KB-Pending-Id"] == "abc"
+    assert _parse_trailers(b"s\n\nKB-Pending-Id: abc\n")["KB-Pending-Id"] == "abc"
 
 
 def test_find_claim_commit_rejects_forgeries_in_real_commits(tmp_path) -> None:  # noqa: ANN001
@@ -815,7 +824,7 @@ def test_the_search_deadline_bounds_the_whole_walk(tmp_path) -> None:  # noqa: A
 
     pid = "e" * 32
     body = f"s\n\nKB-Pending-Id: {pid}\nKB-Target-Path: a.md\n"
-    log = mock.Mock(returncode=0, stdout="\0".join([body] * 5))
+    log = mock.Mock(returncode=0, stdout=b"\0".join([body.encode()] * 5))
     git = GitOps(str(tmp_path))
 
     # monotonic() is read once to set the deadline and once per candidate; the
@@ -829,3 +838,96 @@ def test_the_search_deadline_bounds_the_whole_walk(tmp_path) -> None:  # noqa: A
         )
 
     assert found is None, "an exhausted deadline must be uncertainty"
+
+
+def test_a_cr_inside_a_value_is_not_split_by_the_log_read(tmp_path) -> None:  # noqa: ANN001
+    """End to end, through a real commit and a real `git log`.
+
+    Fixing the parser was not enough while its INPUT was normalised: `git log`
+    with text=True applies universal-newline decoding, so a CR inside a trailer
+    value became a line break and one trailer read as two, which restored the
+    forgery the parser had just closed. The builder rejects CR, so an ordinary
+    write cannot reach this, but the invariant is about interpreting HISTORY,
+    which contains whatever it contains.
+    """
+    import subprocess
+
+    from data_olympus.git_ops import GitOps
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}
+
+    def run(*args: str) -> str:
+        return subprocess.run(list(args), cwd=repo, check=True, env=env,
+                              capture_output=True, text=True).stdout.strip()
+
+    pid = "e" * 32
+    run("git", "init", "-q", "--initial-branch=main")
+    (repo / "a.md").write_text("a\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "seed")
+    before = run("git", "rev-parse", "HEAD")
+
+    # One trailer whose VALUE contains a CR, which a normalising read would
+    # split into a pending id and a target path.
+    (repo / "b.md").write_text("b\n")
+    run("git", "add", "-A")
+    subprocess.run(
+        ["git", "commit", "-q", "-F", "-"],
+        cwd=repo, check=True, env=env, capture_output=True,
+        input=f"s\n\nKB-Pending-Id: {pid}\rKB-Target-Path: a.md\n".encode(),
+    )
+
+    assert GitOps(str(repo)).find_claim_commit(
+        ref="main", since_sha=before, pending_id=pid, target_path="a.md",
+    ) is False
+
+
+def test_a_repository_containing_the_temp_dir_cannot_rename_keys(tmp_path) -> None:  # noqa: ANN001
+    """Repository config must not reach the delegated parse either.
+
+    git EXCLUDES its current directory when calculating ancestor ceilings, so a
+    ceiling equal to the scratch directory did nothing and discovery walked up
+    into whatever repository contained the temp directory. This installs the
+    hostile alias in a repository that CONTAINS the scratch space, with a
+    positive control proving the alias really applies there.
+    """
+    import subprocess
+    import tempfile
+    from unittest import mock
+
+    from data_olympus.git_ops import _parse_trailers
+
+    hostile_repo = tmp_path / "outer"
+    hostile_repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=hostile_repo, check=True)
+    subprocess.run(
+        ["git", "config", "trailer.KB-Agent-Identity.key", "KB-Pending-Id"],
+        cwd=hostile_repo, check=True,
+    )
+    victim = "e" * 32
+    message = f"s\n\nKB-Agent-Identity: {victim}\nKB-Target-Path: a.md\n"
+
+    # Positive control: inside that repository the alias DOES rewrite the key.
+    control = subprocess.run(
+        ["git", "interpret-trailers", "--parse"], input=message.encode(),
+        cwd=hostile_repo, capture_output=True, check=True,
+    ).stdout
+    assert b"KB-Pending-Id" in control, "the hostile repo config did not apply"
+
+    # Now make the parser's scratch space live INSIDE that repository.
+    real_tempdir = tempfile.TemporaryDirectory
+
+    def inside_the_repo(*_a, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        return real_tempdir(dir=str(hostile_repo), **{
+            k: v for k, v in kwargs.items() if k == "prefix"
+        })
+
+    with mock.patch("data_olympus.git_ops.tempfile.TemporaryDirectory",
+                    side_effect=inside_the_repo):
+        parsed = _parse_trailers(message.encode())
+
+    assert parsed is not None
+    assert "KB-Pending-Id" not in parsed

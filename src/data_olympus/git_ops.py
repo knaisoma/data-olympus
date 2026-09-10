@@ -102,7 +102,9 @@ def _trailer_env() -> dict[str, str]:
     }
 
 
-def _parse_trailers(message: str, *, timeout_sec: float = 10.0) -> dict[str, str]:
+def _parse_trailers(
+    message: bytes, *, timeout_sec: float = 10.0,
+) -> dict[str, str] | None:
     """Trailers of a commit message, as GIT parses them.
 
     This asks git rather than reimplementing it, and that is a deliberate
@@ -129,30 +131,37 @@ def _parse_trailers(message: str, *, timeout_sec: float = 10.0) -> dict[str, str
     so it would answer about a different input than the one recovery holds.
     Every message this product writes ends in a newline.
 
-    Returns an empty mapping when git cannot be run, for the same reason.
+    Returns ``None`` when git could not be run or did not finish, which is
+    DISTINCT from an empty mapping. An empty mapping means git parsed the
+    message and found no trailers; ``None`` means the question was not answered,
+    and the caller must treat that as uncertainty rather than as a completed
+    negative search.
     """
-    if not message.endswith("\n"):
+    if not message.endswith(b"\n"):
         return {}
-    try:
-        encoded = message.encode("utf-8", errors="strict")
-    except UnicodeEncodeError:
-        return {}
-    with tempfile.TemporaryDirectory(prefix="kb-trailers-") as scratch:
+    if timeout_sec <= 0:
+        return None
+    with tempfile.TemporaryDirectory(prefix="kb-trailers-") as ceiling:
+        # Run in a CHILD of the scratch directory with the scratch directory as
+        # the ceiling. Setting the ceiling to git's own current directory does
+        # nothing: git EXCLUDES the current directory when calculating ancestor
+        # ceilings, so discovery walked straight past it and picked up the
+        # config of whatever repository happened to contain the temp directory.
+        scratch = os.path.join(ceiling, "run")
+        os.mkdir(scratch)
         env = _trailer_env()
-        # Stop repository discovery from walking above the scratch directory,
-        # so no repository config is picked up either.
-        env["GIT_CEILING_DIRECTORIES"] = scratch
+        env["GIT_CEILING_DIRECTORIES"] = os.path.realpath(ceiling)
         try:
             result = subprocess.run(
                 ["git", "-c", "trailer.separators=:",
                  "interpret-trailers", "--parse"],
-                input=encoded, check=False, capture_output=True,
-                cwd=scratch, env=env, timeout=max(0.1, timeout_sec),
+                input=message, check=False, capture_output=True,
+                cwd=scratch, env=env, timeout=timeout_sec,
             )
         except (OSError, subprocess.SubprocessError):
-            return {}
+            return None
     if result.returncode != 0:
-        return {}
+        return None
     trailers: dict[str, str] = {}
     duplicated: set[str] = set()
     # Split on LF only. The CLI's framing is one trailer per LF-terminated line;
@@ -411,15 +420,21 @@ class GitOps:
             result = subprocess.run(
                 # NUL-delimited so a message body can never be mistaken for a
                 # record boundary.
-                ["git", "-C", str(self._repo), "log", "-z", "--format=%B",
-                 f"{since_sha}..{ref}"],
-                check=False, capture_output=True, text=True, timeout=timeout_sec,
+                # BYTES, and --encoding=none so git does not re-encode the
+                # message. text=True applies universal-newline decoding, which
+                # turns a CR inside a trailer value into a line break before the
+                # parser ever sees it, splitting one trailer into two. Fixing
+                # the parser was not enough while its INPUT was still
+                # normalised.
+                ["git", "-C", str(self._repo), "log", "-z", "--encoding=none",
+                 "--format=%B", f"{since_sha}..{ref}"],
+                check=False, capture_output=True, timeout=timeout_sec,
             )
         except (OSError, subprocess.SubprocessError):
             return None
         if result.returncode != 0:
             return None
-        for message in result.stdout.split("\0"):
+        for message in result.stdout.split(b"\0"):
             if not message.strip():
                 continue
             # Cheap pre-filter before shelling out to git for the real parse.
@@ -428,7 +443,7 @@ class GitOps:
             # widen it. Reconciliation is rare and this keeps it to roughly one
             # subprocess per candidate commit rather than one per commit in the
             # range.
-            if "KB-Pending-Id" not in message:
+            if b"KB-Pending-Id" not in message:
                 continue
             # ONE deadline across the whole search, not one per candidate.
             # Reconciliation runs holding the write serializer, so a range with
@@ -439,6 +454,9 @@ class GitOps:
             if remaining <= 0:
                 return None
             trailers = _parse_trailers(message, timeout_sec=remaining)
+            if trailers is None:
+                # The question was not answered, so the search did not complete.
+                return None
             if trailers.get("KB-Pending-Id") != pending_id:
                 continue
             if target_path and trailers.get("KB-Target-Path") != target_path:
