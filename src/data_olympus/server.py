@@ -668,6 +668,7 @@ def build_app(
             last_index_error_at=state.last_index_error_at,
             last_index_conflicts=state.last_index_conflicts,
             path_locks_held=state.pending.locks_held() if state.pending else 0,
+            path_locks=state.pending.held_locks() if state.pending else [],
             last_git_fetch_status=state.last_git_fetch_status,
             last_git_fetch_error=state.last_git_fetch_error,
             last_git_fetch_at=state.last_git_fetch_at,

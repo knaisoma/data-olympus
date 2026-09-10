@@ -32,6 +32,12 @@ class HealthResponse(BaseModel):
     # operator unfreeze path in docs/serving.md).
     push_queue_frozen: int = 0
     path_locks_held: int = 0
+    # WHICH paths are locked, not just how many (issue #253). A leaked lock
+    # blocks every write to one path, and a bare count gave no way to tell
+    # which: it had to be found by exec-ing into the pod and reading the state
+    # volume. Each record carries target_path, owner_kind, pending_id,
+    # acquired_at and age_seconds.
+    path_locks: list[dict[str, object]] = []
     last_index_build_status: str = "ok"
     last_index_error: str | None = None
     last_index_error_at: float | None = None
@@ -468,6 +474,14 @@ class ResolvePendingResponse(BaseModel):
 
 class PendingEntry(BaseModel):
     pending_id: str
+    # Which state the entry is in (issue #254). "pending" is awaiting an
+    # operator decision. "claimed" means a resolve took the entry and did not
+    # finish: the decision is neither applied nor still offered, and the entry
+    # holds its path lock. Claimed entries used to be omitted from this list
+    # entirely, so the queue read as empty and an operator reasonably concluded
+    # every approval had landed. Defaults to "pending" so a caller reading an
+    # entry produced before this field existed is not misled.
+    state: str = "pending"
     proposal_type: str
     target_path: str
     confidence: float | None = None

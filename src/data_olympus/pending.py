@@ -64,6 +64,12 @@ class ResolvedPending:
     meta: dict[str, Any]
 
 
+# ``PendingQueue.list`` shadows the builtin inside the class body, so a bare
+# ``list[...]`` annotation on any method defined after it resolves to the method
+# rather than to the type. This alias keeps those annotations unambiguous.
+_Records = list[dict[str, Any]]
+
+
 def _path_lock_filename(target_path: str) -> str:
     import hashlib
     return hashlib.sha256(target_path.encode("utf-8")).hexdigest() + ".lock"
@@ -237,13 +243,35 @@ class PendingQueue:
         return pending_id
 
     def list(self) -> list[dict[str, Any]]:
+        """Every entry on disk, each labelled with the state it is in.
+
+        Claimed entries are INCLUDED (issue #254). They used to be invisible:
+        ``_claim`` renames ``<pid>.json`` to ``<pid>.claimed`` and this method
+        read only ``*.json``, so a resolve interrupted after the claim left the
+        entry in a state that was neither pending, nor committed, nor listed.
+        An operator who approved a batch and then read an empty queue
+        reasonably concluded every decision had been applied. The entry is
+        still not awaiting a decision, so it does not count towards
+        :meth:`size`; it is reported so that a stuck one is visible.
+        """
         out: list[dict[str, Any]] = []
         for name in sorted(os.listdir(self._root)):
-            if not name.endswith(".json"):
+            if name.endswith(".json"):
+                state = "pending"
+            elif name.endswith(".claimed"):
+                state = "claimed"
+            else:
                 continue
-            with open(os.path.join(self._root, name)) as f:
-                entry = json.load(f)
+            path = os.path.join(self._root, name)
+            try:
+                with open(path) as f:
+                    entry = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                # A concurrent claim renames the file out from under this walk.
+                # Skipping is correct: the next pass sees it under its new name.
+                continue
             out.append({
+                "state": state,
                 "pending_id": entry["pending_id"],
                 "proposal_type": entry["proposal_type"],
                 "target_path": entry["target_path"],
@@ -552,3 +580,37 @@ class PendingQueue:
         if not os.path.isdir(self._locks_dir):
             return 0
         return sum(1 for f in os.listdir(self._locks_dir) if f.endswith(".lock"))
+
+    def held_locks(self) -> _Records:
+        """Which paths are locked, by whom, and for how long (issue #253).
+
+        ``locks_held`` is a bare count, and a count of 1 gave an operator no way
+        to tell WHICH path was wedged: that had to be found by exec-ing into the
+        pod and reading the state volume. Each record carries the target path,
+        the owner kind, the acquiring pending id and the lock's age.
+        """
+        if not os.path.isdir(self._locks_dir):
+            return []
+        now = time.time()
+        out: _Records = []
+        for name in sorted(os.listdir(self._locks_dir)):
+            if not name.endswith(".lock"):
+                continue
+            try:
+                with open(os.path.join(self._locks_dir, name)) as f:
+                    info = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            acquired_at = info.get("acquired_at")
+            out.append({
+                "target_path": info.get("target_path"),
+                "owner_kind": info.get("owner_kind", "pending"),
+                "pending_id": info.get("pending_id"),
+                "acquired_at": acquired_at,
+                "age_seconds": (
+                    max(0.0, now - acquired_at)
+                    if isinstance(acquired_at, (int, float))
+                    else None
+                ),
+            })
+        return out

@@ -1095,3 +1095,28 @@ def test_propose_edit_evidence_rejects_too_many_items(tmp_path) -> None:
         evidence=[f"item {i}" for i in range(11)],
     )
     assert resp.status == "rejected_invalid_evidence"
+
+
+def test_list_pending_labels_claimed_entries(tmp_path) -> None:  # noqa: ANN001
+    """kb_list_pending must show a claimed entry rather than reading empty.
+
+    Issue #254: after a transport drop mid-resolve the queue read as empty,
+    which is indistinguishable from 'the decision was applied'. The operator
+    concluded the write had landed; it had not.
+    """
+    from data_olympus.pending import PendingQueue
+    from data_olympus.tools_write import kb_list_pending_fn
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id = q.enqueue(
+        proposal_type="edit", target_path="operator/notes.md", postimage="body",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        meta={"confidence": 0.4},
+    )
+    assert [e.state for e in kb_list_pending_fn(pending=q).pending] == ["pending"]
+
+    q.claim_for_resolve(pending_id)
+    entries = kb_list_pending_fn(pending=q).pending
+
+    assert [e.pending_id for e in entries] == [pending_id]
+    assert entries[0].state == "claimed"

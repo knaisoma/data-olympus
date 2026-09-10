@@ -567,3 +567,86 @@ def test_reclaim_recognises_legacy_pre_fix_auto_commit_lock(tmp_path) -> None:
     assert q.reclaim_stale_auto_commit_locks(max_age_sec=600) == 0
     assert q.reclaim_stale_auto_commit_locks(max_age_sec=0) == 0
     assert q.locks_held() == 1
+
+
+# --- claimed-entry visibility (issues #253, #254) ----------------------------
+
+
+def _enqueued(q: PendingQueue, path: str = "operator/notes.md") -> str:
+    return q.enqueue(
+        proposal_type="edit", target_path=path, postimage="body",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        meta={"confidence": 0.4, "agent_identity": "test"},
+    )
+
+
+def test_list_labels_a_pending_entry_with_its_state(tmp_path) -> None:
+    """Every listed entry says which state it is in. Without the field a caller
+    cannot tell a live proposal from one stranded mid-resolve."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    _enqueued(q)
+    entries = q.list()
+
+    assert [e["state"] for e in entries] == ["pending"]
+
+
+def test_list_reports_a_claimed_entry_instead_of_hiding_it(tmp_path) -> None:
+    """The defect in issue #254: a resolve that is interrupted after the claim
+    leaves the entry in a state that is neither pending, nor committed, nor
+    visible. `kb_list_pending` read as empty, which is indistinguishable from
+    'the decision was applied', so the operator believed the write landed."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id = _enqueued(q)
+    q.claim_for_resolve(pending_id)
+
+    entries = q.list()
+
+    assert [e["pending_id"] for e in entries] == [pending_id]
+    assert entries[0]["state"] == "claimed"
+    assert entries[0]["target_path"] == "operator/notes.md"
+
+
+def test_size_still_counts_only_resolvable_entries(tmp_path) -> None:
+    """A claimed entry is visible but is NOT awaiting an operator decision, so
+    it must not inflate pending_count or consume queue capacity."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id = _enqueued(q)
+    assert q.size() == 1
+    q.claim_for_resolve(pending_id)
+    assert q.size() == 0
+
+
+def test_held_locks_report_their_path_and_age(tmp_path) -> None:
+    """Issue #253 asked for this by name: `path_locks_held` was a bare count, so
+    finding WHICH path was wedged meant exec-ing into the pod and reading files
+    off the state volume."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    before = time.time()
+    _enqueued(q, "operator/agent-overrides/claude.md")
+
+    held = q.held_locks()
+
+    assert len(held) == 1
+    assert held[0]["target_path"] == "operator/agent-overrides/claude.md"
+    assert held[0]["owner_kind"] == "pending"
+    assert held[0]["acquired_at"] >= before
+    assert held[0]["age_seconds"] >= 0
+
+
+def test_held_locks_survive_the_claim_that_keeps_them(tmp_path) -> None:
+    """The lock is held across claim -> commit by design, so a claimed entry's
+    lock must still be reported with the claim as its owner."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id = _enqueued(q)
+    q.claim_for_resolve(pending_id)
+
+    held = q.held_locks()
+
+    assert len(held) == 1
+    assert held[0]["pending_id"] == pending_id
+    assert held[0]["target_path"] == "operator/notes.md"
+
+
+def test_held_locks_is_empty_with_no_locks(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    assert q.held_locks() == []

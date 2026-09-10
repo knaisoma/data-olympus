@@ -1519,6 +1519,7 @@ def kb_list_pending_fn(*, pending: PendingQueue) -> PendingListResponse:
         pending=[
             PendingEntry(
                 pending_id=e["pending_id"],
+                state=e.get("state", "pending"),
                 proposal_type=e["proposal_type"],
                 target_path=e["target_path"],
                 confidence=e.get("confidence"),

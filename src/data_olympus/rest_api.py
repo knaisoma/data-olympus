@@ -63,6 +63,7 @@ def _build_health(state: ServerState) -> HealthResponse:
         push_queue_size=state.push_queue_size,
         push_queue_frozen=state.push_queue_frozen,
         path_locks_held=state.pending.locks_held() if state.pending else 0,
+        path_locks=state.pending.held_locks() if state.pending else [],
         last_index_build_status=state.last_index_build_status,
         last_index_error=state.last_index_error,
         last_index_error_at=state.last_index_error_at,
