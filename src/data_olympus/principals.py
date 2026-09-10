@@ -73,6 +73,10 @@ WRITE_TOOL_CAPABILITY: dict[str, str] = {
 # activity metadata, gated the same way as ``kb_audit`` (codex security review
 # concern: it previously diverged from the REST /session-recap posture).
 AUTH_REQUIRED_TOOLS: frozenset[str] = frozenset({
+    # ``kb_get_pending`` (issue #256) returns the proposed CONTENT rather than
+    # only its metadata, so it is gated here alongside ``kb_list_pending``; the
+    # tool itself then narrows to the proposing session or a resolver.
+    "kb_get_pending",
     "kb_list_pending", "kb_audit", "kb_consult", "kb_gate_check", "kb_compliance",
     "kb_cleanup_plan", "kb_session_recap",
 })

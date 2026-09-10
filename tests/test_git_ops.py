@@ -462,3 +462,89 @@ def test_trailers_preserve_unicode_whitespace_in_a_value() -> None:
         )
         assert parsed.get("KB-Pending-Id") != pid, f"U+{codepoint:04X} was trimmed"
         assert parsed.get("KB-Pending-Id") == pid + chr(codepoint)
+
+
+# --- trailer grammar, differentially against real git ------------------------
+
+_GRAMMAR_CASES = {
+    "canonical": "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n",
+    "no space after colon": "s\n\nKB-Pending-Id:abc\n",
+    "after a --- divider": "s\n\n---\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n",
+    "--- immediately before": "s\n\nbody\n---\nKB-Pending-Id: abc\n",
+    "body line in the block": "s\n\nprose here\nKB-Pending-Id: abc\n",
+    "trailing blank line": "s\n\nKB-Pending-Id: abc\n\n",
+    "leading whitespace line": "s\n\n KB-Pending-Id: abc\n",
+    "continuation line": "s\n\nKB-Pending-Id: abc\n  more\n",
+    "duplicate key": "s\n\nKB-Target-Path: a.md\nKB-Target-Path: b.md\n",
+    "subject only": "KB-Pending-Id: abc\n",
+    "empty value": "s\n\nKB-Pending-Id: \n",
+    "comment line": "s\n\n# note\nKB-Pending-Id: abc\n",
+    "two paragraphs of trailers": (
+        "s\n\nKB-Target-Path: a.md\n\nKB-Pending-Id: abc\n"
+    ),
+}
+
+
+def _git_sees_pending_id(message: str) -> bool:
+    import subprocess
+
+    out = subprocess.run(
+        ["git", "interpret-trailers", "--parse"], input=message,
+        capture_output=True, text=True, check=True,
+    ).stdout
+    return any(line.startswith("KB-Pending-Id:") for line in out.splitlines())
+
+
+def test_parser_never_sees_a_trailer_git_does_not() -> None:
+    """The security invariant for the whole recovery path.
+
+    This parser decides whether an approved write counts as committed, and
+    commit text is agent-controlled. Being STRICTER than git costs nothing,
+    because our own builder writes one fixed shape. Being LOOSER is a forgery
+    surface: any construction git does not call a trailer, but we do, is content
+    an ordinary write could carry to close somebody else's decision.
+
+    So the assertion is one-directional. Ours must imply git's, never the
+    reverse.
+    """
+    from data_olympus.git_ops import _parse_trailers
+
+    looser = []
+    for name, message in _GRAMMAR_CASES.items():
+        ours = "KB-Pending-Id" in _parse_trailers(message)
+        if ours and not _git_sees_pending_id(message):
+            looser.append(name)
+    assert not looser, f"parser is looser than git for: {looser}"
+
+
+def test_the_supported_trailer_grammar_is_what_the_builder_writes() -> None:
+    """What this parser accepts, stated positively rather than by exclusion."""
+    from data_olympus.git_ops import _parse_trailers
+
+    # A trailing paragraph whose every line is `Key: value`, keys unique and
+    # free of spaces, before any `---` divider.
+    assert _parse_trailers("s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n") == {
+        "KB-Pending-Id": "abc", "KB-Target-Path": "a.md",
+    }
+    # Not a trailer block: prose mixed in, a divider before it, a repeated key.
+    assert _parse_trailers("s\n\nprose\nKB-Pending-Id: abc\n") == {}
+    assert _parse_trailers("s\n\n---\n\nKB-Pending-Id: abc\n") == {}
+    assert _parse_trailers("s\n\nKB-A: 1\nKB-A: 2\n") == {}
+
+
+def test_a_real_commit_from_the_builder_round_trips() -> None:
+    """The grammar is only useful if our own commits satisfy it."""
+    from data_olympus.audit_trailers import build_commit_message
+    from data_olympus.git_ops import _parse_trailers
+
+    msg = build_commit_message(
+        subject="resolve: operator/notes.md", source_session="s1",
+        agent_identity="claude", confidence_original=0.4,
+        operator_confirmed=True, proposal_type="edit", target_tier="T1",
+        target_path="operator/notes.md", pending_id="a" * 32,
+    )
+    parsed = _parse_trailers(msg)
+
+    assert parsed["KB-Pending-Id"] == "a" * 32
+    assert parsed["KB-Target-Path"] == "operator/notes.md"
+    assert _git_sees_pending_id(msg)

@@ -1135,3 +1135,116 @@ def test_a_signal_killed_commit_is_unknown_not_a_failure() -> None:
 
     assert _classify_commit_error(killed) == "unknown"
     assert _classify_commit_error(declined) == "failed"
+
+
+# --- reading back your own parked proposal (issue #256) ----------------------
+
+
+def _parked(tmp_path, *, flagged: bool = False):  # noqa: ANN001, ANN202
+    from data_olympus.pending import PendingQueue
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    meta = {"confidence": 0.4, "source_session": "session-A"}
+    if flagged:
+        meta["secret_scan_flagged"] = True
+        meta["matching_pattern"] = "google_api_key"
+    pid = q.enqueue(
+        proposal_type="edit", target_path="operator/notes.md",
+        postimage="the draft body", base_commit="HEAD", base_blob_sha=None,
+        target_file_hash=None, meta=meta,
+    )
+    return q, pid
+
+
+def test_the_proposing_session_can_read_its_own_draft(tmp_path) -> None:
+    """The gap in issue #256: a session could learn THAT it proposed something
+    about a path, never WHAT it proposed, so it could not quote its own draft
+    back or check it against a second proposal."""
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q, pid = _parked(tmp_path)
+    resp = kb_get_pending_fn(
+        pending=q, pending_id=pid, source_session="session-A",
+        can_resolve=False,
+    )
+
+    assert resp.status == "ok"
+    assert resp.postimage == "the draft body"
+    assert resp.target_path == "operator/notes.md"
+    # It must say plainly that this content does not govern.
+    assert resp.in_force is False
+    assert "not in force" in resp.note.lower()
+
+
+def test_another_session_cannot_read_the_draft(tmp_path) -> None:
+    """Otherwise this is a side channel for reading queued content."""
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q, pid = _parked(tmp_path)
+    resp = kb_get_pending_fn(
+        pending=q, pending_id=pid, source_session="session-B",
+        can_resolve=False,
+    )
+
+    assert resp.status == "forbidden"
+    assert resp.postimage is None
+
+
+def test_a_resolver_can_read_any_draft(tmp_path) -> None:
+    """A principal that could approve the entry can already see the content by
+    approving it, so withholding it from them protects nothing."""
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q, pid = _parked(tmp_path)
+    resp = kb_get_pending_fn(
+        pending=q, pending_id=pid, source_session="session-B", can_resolve=True,
+    )
+
+    assert resp.status == "ok"
+    assert resp.postimage == "the draft body"
+
+
+def test_a_secret_flagged_draft_is_withheld_from_its_own_proposer(tmp_path) -> None:
+    """A postimage the scanner flagged contains credential-shaped content. The
+    proposing session already had it, but reading it BACK through the service
+    turns the queue into a place to retrieve one, so only a principal that could
+    approve it gets it back."""
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q, pid = _parked(tmp_path, flagged=True)
+
+    own = kb_get_pending_fn(
+        pending=q, pending_id=pid, source_session="session-A", can_resolve=False,
+    )
+    assert own.status == "forbidden_secret_flagged"
+    assert own.postimage is None
+    assert own.matching_pattern == "google_api_key"
+
+    resolver = kb_get_pending_fn(
+        pending=q, pending_id=pid, source_session="session-A", can_resolve=True,
+    )
+    assert resolver.status == "ok"
+    assert resolver.postimage == "the draft body"
+
+
+def test_an_unknown_pending_id_is_not_found(tmp_path) -> None:
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q, _pid = _parked(tmp_path)
+    resp = kb_get_pending_fn(
+        pending=q, pending_id="0" * 32, source_session="session-A",
+        can_resolve=True,
+    )
+    assert resp.status == "not_found"
+    assert resp.postimage is None
+
+
+def test_a_traversal_shaped_id_is_rejected_without_touching_disk(tmp_path) -> None:
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q, _pid = _parked(tmp_path)
+    resp = kb_get_pending_fn(
+        pending=q, pending_id="../../etc/passwd", source_session="session-A",
+        can_resolve=True,
+    )
+    assert resp.status == "not_found"

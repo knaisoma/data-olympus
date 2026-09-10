@@ -540,3 +540,42 @@ def test_a_deferred_push_does_not_consume_its_retry_budget(tmp_path) -> None:
     with open(os.path.join(str(tmp_path / "q"), "a" * 40 + ".json")) as f:
         entry = json.load(f)
     assert entry["attempts"] == 0, entry
+
+
+def test_a_failed_finalization_still_publishes_the_commit(tmp_path, monkeypatch) -> None:
+    """A finalization I/O failure must not strand a durable commit outside the
+    push queue.
+
+    The commit is on the branch and its outcome is recorded, so the write
+    succeeded; only consuming the claim failed. Skipping the enqueue would leave
+    publication waiting for branch recovery instead of the queue that exists for
+    it. The claim stays claimed and reconciliation finalizes it later from the
+    committed record it already holds.
+    """
+    from data_olympus.tools_write import kb_resolve_pending_fn
+
+    main, git, reg, pq, pen, rl, bl, serializer = _resolve_env(tmp_path, monkeypatch)
+    pending_id = _propose_pending(reg, pq, pen, rl, bl, serializer)
+
+    real_finalize = pen.finalize_resolve
+
+    def broken_finalize(*_a, **_k):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("state volume went read-only")
+
+    monkeypatch.setattr(pen, "finalize_resolve", broken_finalize)
+    resp = kb_resolve_pending_fn(
+        pending_id=pending_id, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=pq, pending=pen, source_session="s1",
+        agent_identity="claude", serializer=serializer,
+    )
+    monkeypatch.setattr(pen, "finalize_resolve", real_finalize)
+
+    # The write succeeded and is queued for publication.
+    assert resp.status == "committed", resp
+    assert pq.size() == 1, "a durable commit was left out of the push queue"
+    # The claim is still claimed, carrying the committed sha, and reconciliation
+    # closes it without needing to search git.
+    assert [e["state"] for e in pen.list()] == ["claimed"]
+    assert pen.claim_record(pending_id)["write_outcome"]["outcome"] == "committed"
+    assert [r["outcome"] for r in pen.reconcile_claims(min_age_sec=0)] == ["committed"]
+    assert pen.locks_held() == 0

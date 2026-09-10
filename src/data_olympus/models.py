@@ -472,6 +472,31 @@ class ResolvePendingResponse(BaseModel):
     push_state: str | None = None
 
 
+class PendingDetailResponse(BaseModel):
+    """One parked proposal, read back by its proposer (issue #256).
+
+    A session that parks a proposal could previously learn THAT it proposed
+    something about a path and never WHAT it proposed, so it could not re-read
+    its own draft, quote it back, or check it against a second proposal.
+
+    This is a readback for the producer, not a retrieval surface: a pending
+    postimage is not in force, it stays out of `kb_consult` and every
+    `in_force` retrieval exactly as before, and `in_force` is reported as False
+    on every successful response so no caller has to infer it.
+    """
+
+    status: str
+    pending_id: str
+    in_force: bool = False
+    note: str = ""
+    target_path: str | None = None
+    proposal_type: str | None = None
+    postimage: str | None = None
+    created_at: float | None = None
+    reason: str | None = None
+    matching_pattern: str | None = None
+
+
 class PendingEntry(BaseModel):
     pending_id: str
     # Which state the entry is in (issue #254). "pending" is awaiting an

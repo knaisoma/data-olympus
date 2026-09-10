@@ -81,3 +81,50 @@ async def test_reader_cannot_propose_gets_403(app) -> None:
 async def test_proposer_cannot_resolve_gets_403(app) -> None:
     resp = await _post(app, "/api/v1/resolve/some-id", "ptok", {"decision": "approve"})
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_pending_readback_is_scoped_to_the_proposing_session(app) -> None:
+    """Issue #256 where the boundary is real. A propose-only principal reads
+    back its OWN draft and not another session's; the operator, who can resolve
+    the entry and could therefore see the content by approving it, reads either.
+    """
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        parked = await client.post(
+            "/api/v1/propose/memory",
+            headers={"Authorization": "Bearer ptok"},
+            json={"text": "a draft nobody approved", "tags": [],
+                  "source_session": "session-A", "agent_identity": "claude",
+                  "confidence": 0.4},
+        )
+        assert parked.json()["status"] == "pending_confirmation", parked.json()
+        pid = parked.json()["pending_id"]
+
+        own = await client.get(
+            f"/api/v1/pending/{pid}", params={"source_session": "session-A"},
+            headers={"Authorization": "Bearer ptok"},
+        )
+        other = await client.get(
+            f"/api/v1/pending/{pid}", params={"source_session": "session-B"},
+            headers={"Authorization": "Bearer ptok"},
+        )
+        operator = await client.get(
+            f"/api/v1/pending/{pid}", params={"source_session": "session-B"},
+            headers={"Authorization": f"Bearer {OPERATOR}"},
+        )
+        anonymous = await client.get(
+            f"/api/v1/pending/{pid}", params={"source_session": "session-A"},
+        )
+
+    assert own.status_code == 200
+    assert "a draft nobody approved" in own.json()["postimage"]
+    assert own.json()["in_force"] is False
+
+    assert other.status_code == 403
+    assert other.json()["postimage"] is None
+
+    assert operator.status_code == 200
+    assert "a draft nobody approved" in operator.json()["postimage"]
+
+    assert anonymous.status_code == 401

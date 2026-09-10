@@ -16,6 +16,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+* **A session can read back its own parked proposal.** A write that parks
+  returned a pending id, and the listing showed its target path, confidence and
+  park reason, but nothing returned the text. So an agent could learn THAT it
+  proposed something about a path and never WHAT it proposed: it could not
+  re-read its own draft, quote it back to the operator, or check it against a
+  second proposal. `GET /api/v1/pending/<id>?source_session=<id>` and the
+  `kb_get_pending` MCP tool now return the postimage, with `in_force: false` and
+  a note saying the content governs nothing until approved. It stays out of
+  `kb_consult` and every `in_force` retrieval exactly as before. Access is the
+  proposing session or a principal holding `resolve`, and a postimage the secret
+  scanner flagged is withheld from everyone but a resolver, since handing one
+  back would turn the queue into a place to retrieve a credential from.
+  Requested in #256 after a public discussion of read-your-own-writes.
+
+* **The governed action vocabulary is configurable.** The enforcement gate
+  classified actions from three lists compiled into `enforce_policy.py`, and the
+  shipped entry point never threaded a classifier, so extending coverage meant
+  embedding the server in your own Python. `KB_GOVERNED_EXTRA_KEYWORDS`,
+  `KB_GOVERNED_EXTRA_PATH_GLOBS` and `KB_GOVERNED_EXTRA_COMMAND_PATTERNS` now
+  add to those lists. They extend and never replace, so a configuration error
+  cannot silently remove enforcement the product already provided, and this
+  changes only what counts as governed: a fresh explicit consultation is still
+  the only thing that clears the gate. Part of #257; the SubagentStart half of
+  that issue remains open and needs its payload verified first.
+
+
 * **A reproduction of the benchmarks can now be compared against the published
   one.** `python -m benchmarks.receipt compare --reference <path> --candidate
   <path>` reports two levels that fail independently: whether the recorded

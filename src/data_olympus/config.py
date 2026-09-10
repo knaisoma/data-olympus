@@ -61,6 +61,12 @@ class Config:
     # RECONCILES it (issues #253, #254). Age only selects what to
     # look at; the outcome comes from durable evidence.
     pending_claim_ttl_sec: int = 900
+    # Operator additions to the governed-action vocabulary (issue #257).
+    # These EXTEND the shipped lists in enforce_policy; they never replace
+    # them, so enabling one cannot silently drop coverage the product had.
+    governed_extra_keywords: tuple[str, ...] = ()
+    governed_extra_path_globs: tuple[str, ...] = ()
+    governed_extra_command_patterns: tuple[str, ...] = ()
     worktree_idle_sec: int = 3600
     git_key_path: str = "/tmp/git-key"
     audit_log_path: str = "/state/audit/events.log"
@@ -283,6 +289,16 @@ def _env_bool(raw: str) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _csv_tuple(name: str) -> tuple[str, ...]:
+    """A comma-separated env list, empty entries dropped and each one trimmed.
+
+    Empty or unset yields the empty tuple, which every consumer treats as "add
+    nothing", so an unset knob is exactly the shipped behaviour.
+    """
+    raw = os.getenv(name, "")
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
 def load_config() -> Config:
     """Load configuration from environment, applying defaults."""
     threshold = float(os.environ.get("KB_CONFIDENCE_THRESHOLD", "0.85"))
@@ -328,6 +344,9 @@ def load_config() -> Config:
             pending_claim_ttl_sec,
         )
         pending_claim_ttl_sec = 900
+    governed_extra_keywords = _csv_tuple("KB_GOVERNED_EXTRA_KEYWORDS")
+    governed_extra_path_globs = _csv_tuple("KB_GOVERNED_EXTRA_PATH_GLOBS")
+    governed_extra_command_patterns = _csv_tuple("KB_GOVERNED_EXTRA_COMMAND_PATTERNS")
     worktree_idle_sec = int(os.getenv("KB_WORKTREE_IDLE_SEC", "3600"))
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
     audit_log_path = os.getenv("KB_AUDIT_LOG_PATH", "/state/audit/events.log")
@@ -419,6 +438,9 @@ def load_config() -> Config:
         pending_queue_cap=pending_queue_cap,
         auto_commit_lock_ttl_sec=auto_commit_lock_ttl_sec,
         pending_claim_ttl_sec=pending_claim_ttl_sec,
+        governed_extra_keywords=governed_extra_keywords,
+        governed_extra_path_globs=governed_extra_path_globs,
+        governed_extra_command_patterns=governed_extra_command_patterns,
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
         audit_log_path=audit_log_path,

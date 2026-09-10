@@ -448,6 +448,37 @@ If an entry stays `uncertain`, check whether the change is present on
 `/state/pending/locks/<sha256-of-target-path>.lock` to release the path. Confirm
 the content first; that pair is the only remaining record of the decision.
 
+### Reading back a parked proposal
+
+A session that parks a proposal can read its own draft back:
+
+```text
+GET /api/v1/pending/<pending_id>?source_session=<the session that proposed it>
+```
+
+and the `kb_get_pending` MCP tool takes the same two arguments. It returns the
+postimage with `in_force: false` and a note saying so, because the content is a
+pending proposal: it governs nothing, and it stays out of `kb_consult` and every
+`in_force` retrieval exactly as before.
+
+Access is narrow, because the queue holds content nobody has approved:
+
+- a principal holding `resolve` may read any entry, since it can already see the
+  content by approving it;
+- otherwise the caller must supply the exact `source_session` recorded on the
+  entry.
+
+`source_session` is caller-asserted, exactly as it is at propose time, so that
+second rule scopes rather than authenticates. The route requires an
+authenticated principal whenever auth is configured, like `/api/v1/pending`; with
+no principals configured every caller can already resolve any entry, so the
+readback is open there too and matches the posture of every other write surface.
+
+A postimage the secret scanner flagged is withheld from everyone except a
+`resolve` principal. The proposer already held that content, but handing it back
+would turn the queue into a place to retrieve a credential from. The response
+still names the matched pattern, so the caller learns why.
+
 ### Non-fast-forward push recovery
 
 When a second overlapping session moves `origin/main` between a session's commit
@@ -921,6 +952,32 @@ The spill writes to a temporary file, so it can fail on a full or read-only
 disk. That failure does not fail the index build: the build logs a warning and
 continues with no related-terms table, so the index still serves and only
 co-occurrence expansion is lost until the next successful build.
+
+## Extending the governed action vocabulary
+
+The enforcement gate classifies an action as governed from three shipped lists
+in `enforce_policy.py`: keywords, path globs, and command fragments. A
+deployment can govern an action class this product has never heard of without
+embedding the server in its own Python:
+
+| Setting | Adds to |
+| --- | --- |
+| `KB_GOVERNED_EXTRA_KEYWORDS` | the free-text keyword signals |
+| `KB_GOVERNED_EXTRA_PATH_GLOBS` | the governed path globs |
+| `KB_GOVERNED_EXTRA_COMMAND_PATTERNS` | the governed command fragments |
+
+Each is a comma-separated list, and each **extends** the shipped list. There is
+deliberately no setting that replaces one, because a configuration error would
+then silently remove enforcement the product already provided. Unset means add
+nothing, which is exactly the shipped behaviour.
+
+For example, a deployment that must not run window or input tests against a live
+desktop can add `KB_GOVERNED_EXTRA_KEYWORDS="window test,input test"` and have
+the gate require a fresh explicit consultation before such an action, without
+waiting for that class to appear in a release.
+
+This changes only WHAT is classified as governed. It does not change the rule
+that only a fresh explicit consultation clears the gate.
 
 ## Trigram fuzzy-match fallback
 

@@ -66,6 +66,19 @@ def _parse_trailers(message: str) -> dict[str, str]:
     ``Key: value`` text from being read as a trailer. A paragraph containing any
     non-trailer line is not a trailer block at all.
     """
+    # Everything from a `---` line onwards is the patch, not the message, and
+    # git's own trailer parser stops there. Reading past it was the one place
+    # this parser was LOOSER than git: a body could carry `---` followed by a
+    # forged trailer block, which git does not call trailers and we did. Being
+    # stricter than git is free, because our builder writes one fixed shape;
+    # being looser is a forgery surface.
+    lines: list[str] = []
+    for line in message.split("\n"):
+        if line.rstrip() == "---":
+            break
+        lines.append(line)
+    message = "\n".join(lines)
+
     # split("\n"), NOT splitlines(). Python's splitlines() also breaks on
     # U+2028, U+2029 and U+0085; git does not, and neither does its own trailer
     # parser. A single trailer VALUE containing one of those would otherwise be

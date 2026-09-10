@@ -26,12 +26,18 @@ from data_olympus.governed_lane import (
     governed_lane_protection_enabled,
 )
 from data_olympus.models import (
+    PendingDetailResponse,
     PendingEntry,
     PendingListResponse,
     ProposeResponse,
     ResolvePendingResponse,
 )
-from data_olympus.pending import PathLockBusyError, PendingQueue, PendingQueueFullError
+from data_olympus.pending import (
+    PathLockBusyError,
+    PendingNotFoundError,
+    PendingQueue,
+    PendingQueueFullError,
+)
 from data_olympus.write_gate import (
     SecretMatch,
     WriteSerializer,
@@ -632,7 +638,22 @@ def _commit_in_worktree(
                 # behalf: the owner would then fail fenced and its caller would
                 # lose a truthful success and its committed audit event.
                 claim_recorder.committed(sha)
-                claim_recorder.finalize(target_path)
+                # Consuming the claim must not gate PUBLICATION. The commit is
+                # durable and its outcome is recorded, so the write succeeded;
+                # if only the finalize fails, skipping the enqueue below would
+                # leave a good commit waiting for branch recovery instead of the
+                # push queue that exists for it. The claim then stays claimed
+                # carrying its committed sha, and reconciliation closes it from
+                # that record without needing to search git.
+                try:
+                    claim_recorder.finalize(target_path)
+                except Exception:
+                    _log.warning(
+                        "resolve %s committed %s but could not consume its "
+                        "claim; publication continues and reconciliation will "
+                        "close it", claim_recorder.pending_id, sha,
+                        exc_info=True,
+                    )
             # Enqueue AFTER the commit is durable. It must not turn a made commit
             # into an exception path (that would drop the bootstrap in-flight guard
             # and lose the resolve claim -- Codex round-2 Blocker C), so a failure
@@ -712,6 +733,7 @@ class _ClaimRecorder:
     claim_token: str
     last_outcome: str = ""
     finalized: bool = False
+    finalize_attempted: bool = False
 
     def context(self, *, session_ref: str, pre_write_ref_sha: str) -> None:
         """Record where the commit will land. A PRECONDITION of writing.
@@ -763,6 +785,7 @@ class _ClaimRecorder:
         committed audit event. Age thresholds only make that gap smaller; doing
         it inside the same acquisition removes it.
         """
+        self.finalize_attempted = True
         self.pending.finalize_resolve(
             self.pending_id, target_path, claim_token=self.claim_token,
         )
@@ -1718,13 +1741,18 @@ def kb_resolve_pending_fn(
     # an enqueue_failed_recovery_pending commit exists on the branch and is
     # republished by in-process/startup recovery, so re-resolving would duplicate
     # it -- the entry must be consumed, not restored (Codex round-4).
-    if not recorder.finalized:
+    if not recorder.finalize_attempted:
         # Normally already done inside the commit's own serializer acquisition,
         # which is what stops a reconciliation consuming the claim in between.
-        # This remains for a commit helper that returned without a recorder.
-        pending.finalize_resolve(
-            pending_id, resolved.target_path, claim_token=resolved.claim_token,
-        )
+        # This remains for a commit helper that returned without recording.
+        # Gated on ATTEMPTED, not on success: a finalize that already failed in
+        # there is deliberately left to reconciliation, and retrying it here
+        # would turn a successful write into an exception for its caller.
+        with contextlib.suppress(Exception):
+            pending.finalize_resolve(
+                pending_id, resolved.target_path,
+                claim_token=resolved.claim_token,
+            )
     # secret_override is only non-None when the operator explicitly passed
     # override_secret_scan=True AND the scanner actually flagged something, so
     # the audit trail truthfully distinguishes "override requested but nothing
@@ -1737,6 +1765,77 @@ def kb_resolve_pending_fn(
                                "commit_sha": sha, **audit_extra})
     return ResolvePendingResponse(status="committed", commit_sha=sha,
                                   push_state=push_state)
+
+
+_PENDING_NOTE = (
+    "This content is a PENDING proposal. It is not in force, it does not appear "
+    "in kb_consult or any in_force retrieval, and it governs nothing until an "
+    "operator approves it."
+)
+
+
+def kb_get_pending_fn(
+    *,
+    pending: PendingQueue,
+    pending_id: str,
+    source_session: str,
+    can_resolve: bool,
+) -> PendingDetailResponse:
+    """Read back the postimage of a parked proposal (issue #256).
+
+    Access is deliberately narrow, because the pending queue holds content
+    nobody has approved:
+
+    - a principal that could RESOLVE the entry may read it, since it can
+      already see the content by approving it, so withholding it protects
+      nothing;
+    - otherwise the caller must supply the exact ``source_session`` recorded on
+      the entry.
+
+    ``source_session`` is caller-asserted, exactly as it is at propose time, so
+    that second rule is a convenience boundary and not an authentication one.
+    The transport layer is what requires an authenticated principal; this
+    function assumes that has already happened and decides only WHICH entry a
+    caller may see.
+
+    A postimage the secret scanner flagged is withheld from everyone except a
+    resolver. The proposer already held that content, but handing it back turns
+    the queue into a place to retrieve a credential from, and the entry's own
+    metadata (the pattern name) is returned instead so the caller still learns
+    why.
+    """
+    try:
+        entry = pending.get(pending_id)
+    except PendingNotFoundError:
+        return PendingDetailResponse(
+            status="not_found", pending_id=pending_id, note=_PENDING_NOTE,
+        )
+    meta = entry.get("meta") or {}
+    if not can_resolve and meta.get("source_session") != source_session:
+        return PendingDetailResponse(
+            status="forbidden", pending_id=pending_id,
+            note="a parked proposal is readable by the session that made it, "
+                 "or by a principal that could resolve it",
+        )
+    if not can_resolve and meta.get("secret_scan_flagged"):
+        return PendingDetailResponse(
+            status="forbidden_secret_flagged", pending_id=pending_id,
+            matching_pattern=meta.get("matching_pattern"),
+            note="the secret scanner flagged this postimage, so it is readable "
+                 "only by a principal that could resolve it",
+        )
+    return PendingDetailResponse(
+        status="ok",
+        pending_id=pending_id,
+        in_force=False,
+        note=_PENDING_NOTE,
+        target_path=entry.get("target_path"),
+        proposal_type=entry.get("proposal_type"),
+        postimage=entry.get("postimage"),
+        created_at=entry.get("enqueued_at"),
+        reason=meta.get("reason"),
+        matching_pattern=meta.get("matching_pattern"),
+    )
 
 
 def kb_list_pending_fn(*, pending: PendingQueue) -> PendingListResponse:

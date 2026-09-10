@@ -654,6 +654,29 @@ def register_routes(
             resp = await _offload(kb_list_pending_fn, pending=state.pending)
             return JSONResponse(resp.model_dump())
 
+        @app.custom_route("/api/v1/pending/{pending_id}", methods=["GET"])
+        async def get_pending(request: Request) -> JSONResponse:
+            # Requires an authenticated principal when auth is configured, like
+            # the listing route above, because this returns the actual proposed
+            # CONTENT rather than only its metadata. Which entry a caller may
+            # see is then decided by kb_get_pending_fn: the proposing session or
+            # a principal holding `resolve`.
+            principal, denied = _authorize(request, registry)
+            if denied is not None:
+                return denied
+            if state.pending is None:
+                return JSONResponse({"error": "not_found"}, status_code=404)
+            from data_olympus.tools_write import kb_get_pending_fn
+            resp = await _offload(
+                kb_get_pending_fn,
+                pending=state.pending,
+                pending_id=request.path_params["pending_id"],
+                source_session=request.query_params.get("source_session", ""),
+                can_resolve=principal.has(CAP_RESOLVE),
+            )
+            code = {"ok": 200, "not_found": 404}.get(resp.status, 403)
+            return JSONResponse(resp.model_dump(), status_code=code)
+
         @app.custom_route("/api/v1/audit", methods=["GET"])
         async def audit(request: Request) -> JSONResponse:
             _principal, denied = _authorize(request, registry)

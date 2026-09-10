@@ -37,7 +37,11 @@ from data_olympus.cooccurrence import (
     cooccurrence_enabled,
 )
 from data_olympus.embeddings import EmbeddingsConfig, build_embedder
-from data_olympus.enforce_policy import ConsultationLedger, IntentClassifier
+from data_olympus.enforce_policy import (
+    ConsultationLedger,
+    IntentClassifier,
+    classifier_from_config,
+)
 from data_olympus.git_ops import GitOps
 from data_olympus.index import Index, SearchHit, make_status_reranker
 from data_olympus.pending import PendingQueue
@@ -445,6 +449,7 @@ class ServerState:
 
 def build_app(
     *,
+    classifier: IntentClassifier | None = None,
     kb_main_path: Path,
     kb_index_path: Path,
     sync_interval_sec: int,
@@ -633,14 +638,15 @@ def build_app(
         # established stops blocking the rewrite instead of deferring it
         # forever.
         #
-        # It uses the SAME age threshold as the periodic sweep, deliberately,
-        # rather than reconciling from zero age. A resolver releases the
-        # serializer between its commit and its own finalize_resolve, and a
-        # zero-age reconciliation here would consume the durable committed
-        # record in that gap: the write stays committed, but the resolver then
-        # fails fenced and its caller loses a truthful success response and its
-        # committed audit event. A fresh claim simply defers the rewrite, which
-        # is the conservative answer.
+        # It uses the SAME age threshold as the periodic sweep rather than
+        # reconciling from zero age. A successful resolve consumes its own claim
+        # inside the serializer acquisition that made the commit, so there is no
+        # longer a window in which a committed claim is visible and unconsumed;
+        # the threshold is not what protects a live owner. It is here because a
+        # claim young enough to belong to a resolver that is still working
+        # should defer the rewrite rather than be reasoned about, and because
+        # reconciling from zero age on every guard call would search git far
+        # more often than the evidence changes.
         with contextlib.suppress(Exception):
             pending.reconcile_claims(
                 min_age_sec=config.pending_claim_ttl_sec,
@@ -657,7 +663,8 @@ def build_app(
         path=ledger_path, retention_sec=float(config.consult_ttl_sec)
     )
     state = ServerState(idx=idx, git=git, config=config, ledger=ledger,
-                        write_serializer=write_serializer)
+                        write_serializer=write_serializer,
+                        classifier=classifier)
 
     if config.read_only:
         # Unambiguous startup marker: if a replica is misconfigured (e.g. built
@@ -1080,6 +1087,24 @@ def build_app(
             resp = kb_list_pending_fn(pending=state.pending)
             return resp.model_dump()
 
+        @app.tool(title="KB Get Pending", annotations=READ_ONLY_TOOL)
+        def kb_get_pending(
+            pending_id: str, source_session: str = "",
+        ) -> dict[str, object]:
+            """Read back a parked proposal's own text, for the session that
+            made it. Returns the postimage when `source_session` matches the
+            entry, or for a principal that could resolve it. The content is
+            PENDING: it is not in force and governs nothing until approved."""
+            assert state.pending is not None
+            from data_olympus.principals import CAP_RESOLVE
+            from data_olympus.tools_write import kb_get_pending_fn
+            resp = kb_get_pending_fn(
+                pending=state.pending, pending_id=pending_id,
+                source_session=source_session,
+                can_resolve=_current_principal.get().has(CAP_RESOLVE),
+            )
+            return resp.model_dump()
+
         @app.tool(title="KB Audit", annotations=READ_ONLY_TOOL)
         def kb_audit(
             since: SinceParam = None, agent: AgentParam = None,
@@ -1288,6 +1313,11 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         if problem is not None:
             raise NotADirectoryError(problem)
     return build_app(
+        # Issue #257: the shipped entry point could not reach the classifier's
+        # own constructor arguments, so an operator had no way to govern an
+        # action class this product has never heard of without embedding the
+        # server in their own Python.
+        classifier=classifier_from_config(config),
         kb_main_path=config.kb_main_path,
         kb_index_path=config.kb_index_path,
         sync_interval_sec=config.sync_interval_sec,
