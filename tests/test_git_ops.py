@@ -439,29 +439,79 @@ def test_find_claim_commit_rejects_unicode_separator_forgery(tmp_path) -> None: 
         ) is False, f"forged with U+{codepoint:04X}"
 
 
-def test_trailers_reject_a_duplicated_evidence_key() -> None:
-    """Two values for the same key is not a trailer block a builder produces,
-    and letting the last one win is what makes an injected duplicate useful."""
+def test_trailers_follow_git_on_a_duplicated_key() -> None:
+    """git keeps the LAST value for a repeated key, and this parser now agrees
+    because it asks git.
+
+    An earlier version refused the whole block, which was stricter than git and
+    therefore safe, but strictness is not the property being defended: agreeing
+    with git is. A duplicate buys an attacker nothing anyway, because the real
+    protection is that the builder chooses the KEYS. See
+    test_a_hostile_target_path_cannot_forge_a_claim_link.
+    """
     from data_olympus.git_ops import _parse_trailers
 
     assert _parse_trailers(
         "s\n\nKB-Target-Path: a.md\nKB-Target-Path: b.md\n"
-    ) == {}
+    ) == {"KB-Target-Path": "b.md"}
 
 
-def test_trailers_preserve_unicode_whitespace_in_a_value() -> None:
-    """Git preserves a trailing U+00A0 in a trailer value, so this parser must
-    too. Trimming it would turn a value that does NOT name a claim into one
-    that does."""
+def test_trailers_follow_git_on_unicode_whitespace_in_a_value() -> None:
+    """`git interpret-trailers --parse` trims a value, so a trailing U+00A0 is
+    removed and this parser reports what git reports.
+
+    This is the reverse of what an earlier hand-written version asserted, and
+    the reversal is the point: the property is agreement with git, not a
+    prediction about git. The forgery this used to guard against is closed at
+    the builder instead, which decides the key set.
+    """
     from data_olympus.git_ops import _parse_trailers
 
+    pid = "f" * 32
     for codepoint in (0x00A0, 0x2007, 0x202F, 0x3000):
-        pid = "f" * 32
-        parsed = _parse_trailers(
+        parsed = _parse_trailers(f"s\n\nKB-Pending-Id: {pid}{chr(codepoint)}\n")
+        assert parsed.get("KB-Pending-Id") == _git_trailers(
             f"s\n\nKB-Pending-Id: {pid}{chr(codepoint)}\n"
-        )
-        assert parsed.get("KB-Pending-Id") != pid, f"U+{codepoint:04X} was trimmed"
-        assert parsed.get("KB-Pending-Id") == pid + chr(codepoint)
+        ).get("KB-Pending-Id")
+
+
+def test_a_hostile_target_path_cannot_forge_a_claim_link() -> None:
+    """Where the forgery is actually stopped: the BUILDER owns the key set.
+
+    An ordinary auto-committed write controls values (its target path, its agent
+    identity), never keys. It cannot introduce a KB-Pending-Id line at all,
+    whatever it puts in a path, because the builder refuses every character that
+    could start a new trailer line. That is the invariant the parser rounds kept
+    circling, stated once at the place it holds.
+    """
+    import pytest
+
+    from data_olympus.audit_trailers import build_commit_message
+    from data_olympus.git_ops import _parse_trailers
+
+    victim = "e" * 32
+    for hostile in (
+        f"decisions/x\nKB-Pending-Id: {victim}",
+        f"decisions/x\u2028KB-Pending-Id: {victim}",
+        f"decisions/x\u0085KB-Pending-Id: {victim}",
+        f"decisions/x\rKB-Pending-Id: {victim}",
+    ):
+        with pytest.raises(ValueError):
+            build_commit_message(
+                subject="memory: note", source_session="s1",
+                agent_identity="claude", confidence_original=0.9,
+                operator_confirmed=False, proposal_type="memory",
+                target_tier="T1", target_path=hostile,
+            )
+
+    # A path that IS accepted cannot carry a claim link either.
+    benign = build_commit_message(
+        subject="memory: note", source_session="s1", agent_identity="claude",
+        confidence_original=0.9, operator_confirmed=False,
+        proposal_type="memory", target_tier="T1",
+        target_path=f"decisions/KB-Pending-Id: {victim}.md",
+    )
+    assert "KB-Pending-Id" not in _parse_trailers(benign)
 
 
 # --- trailer grammar, differentially against real git ------------------------
@@ -499,6 +549,17 @@ _GRAMMAR_CASES = {
     # target binding compares.
     "tab-indented continuation": (
         "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n\tfoo: x\n"
+    ),
+    # git's scissors cutoff: everything below it is excluded when locating
+    # trailers. The fifth distinct message-boundary rule this parser had to
+    # know, which is why it no longer tries to know any of them.
+    "below a scissors line": (
+        "s\n\n# ------------------------ >8 ------------------------\n\n"
+        "KB-Pending-Id: abc\nKB-Target-Path: a.md\n"
+    ),
+    "legitimate trailers above a scissors line": (
+        "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n\n"
+        "# ------------------------ >8 ------------------------\n\ndiff stuff\n"
     ),
     "--- immediately before": "s\n\nbody\n---\nKB-Pending-Id: abc\n",
     "body line in the block": "s\n\nprose here\nKB-Pending-Id: abc\n",
@@ -570,10 +631,9 @@ def test_the_supported_trailer_grammar_is_what_the_builder_writes() -> None:
     assert _parse_trailers("s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n") == {
         "KB-Pending-Id": "abc", "KB-Target-Path": "a.md",
     }
-    # Not a trailer block: prose mixed in, a divider before it, a repeated key.
+    # Not a trailer block, per git: prose mixed in, or a patch divider before it.
     assert _parse_trailers("s\n\nprose\nKB-Pending-Id: abc\n") == {}
     assert _parse_trailers("s\n\n---\n\nKB-Pending-Id: abc\n") == {}
-    assert _parse_trailers("s\n\nKB-A: 1\nKB-A: 2\n") == {}
 
 
 def test_a_real_commit_from_the_builder_round_trips() -> None:
@@ -625,43 +685,68 @@ def test_an_unterminated_divider_at_eof_is_not_a_divider() -> None:
     assert _parse_trailers("s\n\nKB-Pending-Id: abc\n")["KB-Pending-Id"] == "abc"
 
 
-def test_find_claim_commit_rejects_an_unterminated_divider(tmp_path) -> None:  # noqa: ANN001
-    """The same case through the real search, with the raw body production
-    consumes rather than a CLI-normalised one."""
-    from unittest import mock
+def test_find_claim_commit_rejects_forgeries_in_real_commits(tmp_path) -> None:  # noqa: ANN001
+    """The search, against REAL commits rather than a mocked log.
+
+    Mocking `subprocess.run` at module level no longer works here, and that is
+    informative: `_parse_trailers` asks git now, so a test that stubs the
+    subprocess layer stops exercising the thing under test. Using real commits
+    is what the earlier mocked versions should have done.
+    """
+    import subprocess
 
     from data_olympus.git_ops import GitOps
 
-    forged = "s\n\nKB-Pending-Id: " + "e" * 32 + "\nKB-Target-Path: a.md\n\n---"
-    completed = mock.Mock(returncode=0, stdout=forged + "\0")
-    git = GitOps(str(tmp_path))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}
 
-    with mock.patch("data_olympus.git_ops.subprocess.run", return_value=completed):
-        found = git.find_claim_commit(
-            ref="main", since_sha="a" * 40, pending_id="e" * 32,
-            target_path="a.md",
-        )
-
-    assert found is False
-
-
-def test_find_claim_commit_rejects_an_invalid_trailer_key(tmp_path) -> None:  # noqa: ANN001
-    """git voids a whole trailer block on one invalid key, and a whitespace-led
-    line is a continuation that changes the previous value rather than a trailer
-    of its own. Both were routes to evidence git never parsed."""
-    from unittest import mock
-
-    from data_olympus.git_ops import GitOps
+    def run(*args: str) -> str:
+        return subprocess.run(list(args), cwd=repo, check=True, env=env,
+                              capture_output=True, text=True).stdout.strip()
 
     pid = "e" * 32
-    git = GitOps(str(tmp_path))
-    for forged in (
-        f"s\n\nKB-Pending-Id: {pid}\nKB-Target-Path: a.md\n@: x\n",
-        f"s\n\nKB-Pending-Id: {pid}\nKB-Target-Path: a.md\n\tfoo: x\n",
-    ):
-        completed = mock.Mock(returncode=0, stdout=forged + "\0")
-        with mock.patch("data_olympus.git_ops.subprocess.run", return_value=completed):
-            found = git.find_claim_commit(
-                ref="main", since_sha="a" * 40, pending_id=pid, target_path="a.md",
-            )
-        assert found is False, forged
+    run("git", "init", "-q", "--initial-branch=main")
+    (repo / "seed.md").write_text("seed\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "seed")
+    before = run("git", "rev-parse", "HEAD")
+    git = GitOps(str(repo))
+
+    forgeries = {
+        "invalid key voids the block":
+            f"s\n\nKB-Pending-Id: {pid}\nKB-Target-Path: a.md\n@: x\n",
+        "continuation changes the target":
+            f"s\n\nKB-Pending-Id: {pid}\nKB-Target-Path: a.md\n\tfoo: x\n",
+        "below a scissors line":
+            "s\n\n# ------------------------ >8 ------------------------\n\n"
+            f"KB-Pending-Id: {pid}\nKB-Target-Path: a.md\n",
+        "after a patch divider":
+            f"s\n\n---\n\nKB-Pending-Id: {pid}\nKB-Target-Path: a.md\n",
+    }
+    for i, (name, message) in enumerate(forgeries.items()):
+        (repo / f"f{i}.md").write_text("x\n")
+        run("git", "add", "-A")
+        run("git", "commit", "-qm", message)
+        assert git.find_claim_commit(
+            ref="main", since_sha=before, pending_id=pid, target_path="a.md",
+        ) is False, name
+
+    # The genuine article, written by the builder, IS found.
+    from data_olympus.audit_trailers import build_commit_message
+
+    (repo / "real.md").write_text("y\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", build_commit_message(
+        subject="resolve: a.md", source_session="s1", agent_identity="claude",
+        confidence_original=0.4, operator_confirmed=True, proposal_type="edit",
+        target_tier="T1", target_path="a.md", pending_id=pid,
+    ))
+    assert git.find_claim_commit(
+        ref="main", since_sha=before, pending_id=pid, target_path="a.md",
+    ) is True
+    # ...but not for a different target.
+    assert git.find_claim_commit(
+        ref="main", since_sha=before, pending_id=pid, target_path="other.md",
+    ) is False

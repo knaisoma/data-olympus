@@ -461,6 +461,15 @@ the postimage with `in_force: false` and a note saying so, because the content i
 a pending proposal: it governs nothing, and it stays out of `kb_consult` and
 every `in_force` retrieval exactly as before.
 
+Recovery identifies a claim's commit by a `KB-Pending-Id` trailer, and it asks
+`git interpret-trailers` to read that trailer rather than parsing the message
+itself. Commit text is agent-controlled, so a parser that disagreed with git in
+the accepting direction would let an ordinary write close somebody's decision;
+delegating removes that whole class rather than chasing git's message-boundary
+rules one at a time. A commit body that does not end in a newline is treated as
+having no trailers, conservatively, because the CLI would otherwise answer for a
+normalised body rather than the one recovery holds.
+
 Ownership is the **authenticated principal** recorded when the proposal was
 made:
 

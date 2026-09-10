@@ -75,85 +75,50 @@ _ASCII_SPACE = " \t\r\n"
 
 
 def _parse_trailers(message: str) -> dict[str, str]:
-    """Trailers from the LAST paragraph of a commit message, exact matches only.
+    """Trailers of a commit message, as GIT parses them.
 
-    Git's own trailer convention: the trailing block of ``Key: value`` lines,
-    separated from the body by a blank line. Parsing only that block, and only
-    whole lines, is what stops a value or a subject that happens to contain
-    ``Key: value`` text from being read as a trailer. A paragraph containing any
-    non-trailer line is not a trailer block at all.
+    This asks git rather than reimplementing it, and that is a deliberate
+    reversal. The hand-written version was corrected five times, each time for a
+    different message-boundary rule it did not know: a patch divider, the
+    whitespace byte that must follow one, git's own whitespace table rather than
+    Python's, end-of-input where no byte follows at all, and the scissors
+    cutoff. Every one of those was a way for agent-controlled commit text to
+    manufacture evidence that an operator decision had been applied. The rule
+    that kept being broken is that this parser must never see a trailer git does
+    not, and the reliable way to satisfy it is to let git decide.
+
+    ``--parse`` implies ``--only-trailers --only-input --unfold``, so folded
+    continuation lines are joined the way git joins them and nothing is
+    reformatted. ``trailer.separators`` is pinned so repository or user config
+    cannot change what counts as a trailer under us.
+
+    A message that does not end in a newline yields nothing, conservatively.
+    ``git interpret-trailers`` APPENDS a missing final newline before parsing,
+    so for such a body the CLI would answer a question about a different input
+    than the one recovery holds. Refusing is safe: the worst outcome is an
+    uncertain reconciliation, never a false acceptance. Every message this
+    product writes ends in a newline.
+
+    Returns an empty mapping when git cannot be run, for the same reason.
     """
-    # Everything from the patch divider onwards is the patch, not the message,
-    # and git's own trailer parser stops there. Reading past it, or stopping in
-    # a place git does not, are both ways to be LOOSER than git, and looser is a
-    # forgery surface: agent-controlled body text could then produce trailers
-    # git never parsed.
-    #
-    # git's predicate (trailer.c, find_patch_start) is: a line beginning with
-    # exactly `---` whose NEXT byte is ASCII whitespace, end of line included.
-    # So `---`, `--- patch` and `---\tpatch` all start the patch, while
-    # `---patch` does not, and neither does `---` followed by a non-breaking
-    # space, because U+00A0 is not ASCII whitespace. An earlier version compared
-    # `line.rstrip() == "---"`, which missed the first two and, because
-    # str.rstrip() strips Unicode whitespace, wrongly matched the last: it
-    # truncated there and accepted an earlier block git does not see at all.
-    # git's predicate needs an actual whitespace BYTE after `---`. A bare `---`
-    # in mid-message qualifies because the newline that ends the line IS that
-    # byte; the same three characters at END OF INPUT do not, because there is
-    # no following byte at all. Splitting on "\n" erases that difference, so the
-    # terminator is reconstructed here: every line except the last was followed
-    # by a newline.
-    #
-    # This distinction cannot be caught by comparing against
-    # `git interpret-trailers`, because the CLI appends a missing final newline
-    # before parsing. Production reads raw `%B` bodies from `git log -z`, which
-    # does not. An oracle that normalises the input hides exactly the case the
-    # code has to get right.
-    raw_lines = message.split("\n")
-    last = len(raw_lines) - 1
-    lines: list[str] = []
-    for index, line in enumerate(raw_lines):
-        if line.startswith(_PATCH_DIVIDER):
-            rest = line[len(_PATCH_DIVIDER):]
-            if rest:
-                if rest[0] in _ASCII_SPACE:
-                    break          # `--- patch`, `---<TAB>patch`
-            elif index < last:
-                break              # a bare `---` whose newline is the byte
-            # else: `---` at end of input, with no following byte at all
-        lines.append(line)
-    message = "\n".join(lines)
-
-    # split("\n"), NOT splitlines(). Python's splitlines() also breaks on
-    # U+2028, U+2029 and U+0085; git does not, and neither does its own trailer
-    # parser. A single trailer VALUE containing one of those would otherwise be
-    # read here as several trailer lines, letting agent-controlled content such
-    # as a target path manufacture a trailer block that git never wrote.
-    # strip("\r\n"), NOT strip(): bare strip() removes Unicode whitespace, so a
-    # stored value of "<id>\u00a0" would be trimmed here to "<id>" and match a
-    # claim it does not actually name. Git preserves that suffix, and the point
-    # of this parser is to agree with git.
-    paragraphs = [p for p in message.strip("\r\n").split("\n\n") if p.strip("\r\n")]
-    if len(paragraphs) < 2:
+    if not message.endswith("\n"):
+        return {}
+    try:
+        result = subprocess.run(
+            ["git", "-c", "trailer.separators=:", "interpret-trailers", "--parse"],
+            input=message, check=False, capture_output=True, text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
         return {}
     trailers: dict[str, str] = {}
-    for line in paragraphs[-1].split("\n"):
-        key, sep, value = line.partition(": ")
-        # git requires a trailer token to be ASCII alphanumeric or hyphen
-        # (trailer.c), and one invalid line voids the WHOLE block. Rejecting
-        # only literal spaces in the key was not that rule: it admitted `@: x`,
-        # which git refuses outright, and `\tfoo: x`, which git treats as a
-        # CONTINUATION folded into the previous trailer's value, so git's
-        # KB-Target-Path became "a.md foo: x" while this parser read "a.md" and
-        # matched a target binding git would not have.
-        if not sep or not _TRAILER_KEY_RE.fullmatch(key):
-            return {}
-        if key in trailers:
-            # A duplicate key is not something the builder produces, and
-            # letting the last one win is exactly what makes an injected
-            # duplicate useful. Refuse the whole block.
-            return {}
-        trailers[key] = value
+    for line in result.stdout.split("\n"):
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        trailers[key.strip()] = value.strip()
     return trailers
 
 
@@ -398,6 +363,14 @@ class GitOps:
             return None
         for message in result.stdout.split("\0"):
             if not message.strip():
+                continue
+            # Cheap pre-filter before shelling out to git for the real parse.
+            # A message that does not contain the key at all cannot yield that
+            # trailer, so skipping it can only REDUCE what we accept, never
+            # widen it. Reconciliation is rare and this keeps it to roughly one
+            # subprocess per candidate commit rather than one per commit in the
+            # range.
+            if "KB-Pending-Id" not in message:
                 continue
             trailers = _parse_trailers(message)
             if trailers.get("KB-Pending-Id") != pending_id:
