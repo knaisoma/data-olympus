@@ -1120,3 +1120,18 @@ def test_list_pending_labels_claimed_entries(tmp_path) -> None:  # noqa: ANN001
 
     assert [e.pending_id for e in entries] == [pending_id]
     assert entries[0].state == "claimed"
+
+
+def test_a_signal_killed_commit_is_unknown_not_a_failure() -> None:
+    """git can update the ref and then be killed before it exits. subprocess
+    reports that as CalledProcessError, and treating it as a failed commit would
+    record a proven non-commit for a write that may have landed."""
+    import subprocess
+
+    from data_olympus.tools_write import _classify_commit_error
+
+    killed = subprocess.CalledProcessError(-9, ["git", "commit"])
+    declined = subprocess.CalledProcessError(1, ["git", "commit"])
+
+    assert _classify_commit_error(killed) == "unknown"
+    assert _classify_commit_error(declined) == "failed"

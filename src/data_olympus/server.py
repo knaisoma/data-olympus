@@ -308,6 +308,9 @@ def _claim_commit_finder(
             ref=str(record.get("session_ref") or ""),
             since_sha=str(record.get("pre_write_ref_sha") or ""),
             pending_id=str(record.get("pending_id") or ""),
+            # Bind the evidence to the claim: a commit for a different path is
+            # not proof that THIS decision was applied.
+            target_path=str(record.get("target_path") or ""),
         )
         return found
 
@@ -612,7 +615,18 @@ def build_app(
 
     def _claims_at_risk(ref: str) -> list[Any]:
         pending = _pending_holder.get("pending")
-        return list(pending.claims_at_risk(ref)) if pending is not None else []
+        if pending is None:
+            return []
+        # RECONCILE before reporting, so a claim whose outcome can now be
+        # established stops blocking the rewrite instead of deferring it
+        # forever. min_age_sec=0 is safe here: reconciliation never decides an
+        # outcome from age, and this runs inside the same serializer as the
+        # teardown that follows.
+        with contextlib.suppress(Exception):
+            pending.reconcile_claims(
+                min_age_sec=0, find_commit=_claim_commit_finder(state),
+            )
+        return list(pending.claims_at_risk(ref))
 
     git = GitOps(kb_main_path, claim_guard=_claims_at_risk)
     # retention_sec = the consult TTL: an entry older than that can never be
@@ -634,10 +648,18 @@ def build_app(
     # A read-only replica sets kb_remote_url (so the git_pull_loop has a remote
     # to refresh from) but must NOT bring up the write pipeline.
     if config.kb_remote_url and not config.read_only:
-        worktrees = WorktreeRegistry(git=git, worktree_root=config.worktree_root)
+        worktrees = WorktreeRegistry(
+            git=git, worktree_root=config.worktree_root,
+            serializer=state.write_serializer,
+        )
         push_queue = PushQueue(queue_root=config.push_queue_root)
         pending = PendingQueue(
-            pending_root=config.pending_root, cap=config.pending_queue_cap
+            pending_root=config.pending_root, cap=config.pending_queue_cap,
+            # Every claim-lifecycle transition runs inside the SAME serializer
+            # the write path uses, so an ownership check and the mutation it
+            # authorises cannot be split by a concurrent claim (issues #253,
+            # #254).
+            serializer=state.write_serializer,
         )
         # Close the lazy binding made above, so git's history-rewriting paths
         # can now see which claims would lose their evidence.

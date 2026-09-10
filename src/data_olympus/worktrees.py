@@ -5,6 +5,7 @@ A small JSON metadata file alongside tracks creation + last activity for GC.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
@@ -15,6 +16,8 @@ from data_olympus.durable import atomic_write_json
 from data_olympus.safe_id import make_safe_id
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     from data_olympus.git_ops import GitOps
 
 
@@ -35,9 +38,19 @@ class Worktree:
 
 
 class WorktreeRegistry:
-    def __init__(self, *, git: GitOps, worktree_root: str) -> None:
+    def __init__(
+        self,
+        *,
+        git: GitOps,
+        worktree_root: str,
+        serializer: AbstractContextManager[Any] | None = None,
+    ) -> None:
         self._git = git
         self._root = worktree_root
+        # GC tears a session down in several steps. It holds the shared write
+        # serializer across the whole sequence so a claim cannot begin between
+        # the eligibility check and the removal (issues #253, #254).
+        self._serializer = serializer or contextlib.nullcontext()
         os.makedirs(self._root, exist_ok=True)
 
     @property
@@ -101,19 +114,27 @@ class WorktreeRegistry:
             # interrupted resolve committed, so defer while such a claim is
             # outstanding on this session (issues #253, #254). The next GC pass
             # retries; reconciliation runs on its own schedule meanwhile.
+            # The whole teardown runs inside ONE serializer acquisition, with
+            # its eligibility re-checked there. Guarding first and tearing down
+            # afterwards left a window in which a claim could start between the
+            # two, and the branch guard would then defer only AFTER the worktree
+            # was already gone, leaving a half-removed session (issues #253,
+            # #254).
             try:
-                self._git.delete_branch_guard(f"kb-session/{entry}")
+                with self._serializer:
+                    if self._has_unpushed_commits(wt_path):
+                        continue
+                    self._git.delete_branch_guard(f"kb-session/{entry}")
+                    self._git.worktree_remove_guarded(
+                        wt_path, branch=f"kb-session/{entry}", force=True,
+                    )
+                    self._git.delete_branch(f"kb-session/{entry}")
             except Exception:  # noqa: BLE001 - defer, never fail the GC loop
                 continue
-            self._git.worktree_remove(wt_path, force=True)
-            # CRITICAL: also delete the kb-session branch. get_or_create() uses
-            # `worktree add -b kb-session/<safe_id>`, which FAILS if the branch
-            # already exists. Removing the worktree alone leaves the branch
-            # behind, so a returning session would hit a fatal "branch already
-            # exists" error on its next write. Deleting the branch here keeps a
-            # GC'd session able to write again. `entry` is the safe_id (the
-            # worktree dir name), which is exactly the branch suffix.
-            self._git.delete_branch(f"kb-session/{entry}")
+            # The branch is deleted inside the guarded block above, not here.
+            # get_or_create() uses `worktree add -b kb-session/<safe_id>`, which
+            # FAILS if the branch already exists, so removing the worktree alone
+            # would leave a returning session unable to write.
             os.unlink(meta_path)
             removed.append(wt_path)
         return removed

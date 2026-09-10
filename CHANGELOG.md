@@ -35,8 +35,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-* **A dropped connection mid-approval no longer wedges a path forever, or
-  silently.** Approving a pending write claims the entry, holds its path lock,
+* **A dropped connection mid-approval is now visible, and recovers on its own
+  whenever the evidence allows.** Approving a pending write claims the entry, holds its path lock,
   commits, then releases both. If the process died in between, the entry was
   left in a claimed state that nothing could reach: it was excluded from
   `kb_list_pending`, the orphan-lock GC treated its sidecar as a legitimate lock
@@ -54,9 +54,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   failure restores an entry to pending. Anything unproven stays `uncertain` with
   its lock held and is re-checked on every later pass, because a rebase or a
   squash can remove a commit that really was made, and restoring on its absence
-  would offer an already-applied decision for approval a second time. Operations
-  that rewrite session history defer while a claim on that branch has begun its
-  write. See `docs/serving.md`.
+  would offer an already-applied decision for approval a second time. An entry
+  that stays uncertain keeps its lock deliberately, and `docs/serving.md`
+  documents the manual recovery for it. The named history-rewriting paths (the
+  base rebase, the push recovery that calls it, and the worktree GC) reconcile
+  first and defer while a claim on that branch has begun its write.
 
 * **Indexing a modest corpus no longer needs more than a gigabyte of memory.**
   The co-occurrence pass that powers query expansion counted every token pair in
@@ -68,8 +70,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cannot appear in any surviving pair, keys pairs by integer rather than by
   string tuple, bounds the per-term candidate lists, and spills to a temporary
   SQLite database once it reaches `KB_COOCCURRENCE_MAX_PAIRS` distinct pairs
-  (default 500000). The same corpus now peaks at 105 MiB. The related-terms
-  table produced is byte-for-byte identical, so no search result moves. The
+  (default 500000). The same corpus now peaks at 105 MiB, measured for the
+  co-occurrence build itself. For identical inputs and configuration, a
+  successful build produces a byte-for-byte identical related-terms table, so no
+  search result moves; a build that degrades on a spill failure has no table at
+  all until the next successful one. The
   trade is build time: that corpus goes from 6.6 s to 16.3 s, measured on one
   machine. Set `KB_COOCCURRENCE_MAX_PAIRS=0` to disable the spill and keep the
   previous speed where memory allows. See `docs/serving.md`.

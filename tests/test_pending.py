@@ -1,12 +1,14 @@
 """Tests for PendingQueue: enqueue with CAS metadata, same-path lock, resolve."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
 
 import pytest
 
+from data_olympus import pending as pending_module
 from data_olympus.pending import (
     PathLockBusyError,
     PendingQueue,
@@ -865,3 +867,101 @@ def test_a_finalized_claim_is_no_longer_at_risk(tmp_path) -> None:
     q.reconcile_claims(min_age_sec=0)
 
     assert q.claims_at_risk("kb-session/abc") == []
+
+
+# --- the interleavings the round-1 review reproduced --------------------------
+
+
+def test_a_successor_cannot_claim_midway_through_a_restore(tmp_path) -> None:
+    """The interleaving the review reproduced: A publishes the restored entry,
+    B claims it and stamps B's token, then A's delete removes B's sidecar and
+    NEITHER entry file is left.
+
+    Publishing through a rename removes a torn-write window but does not close
+    this one on its own, because the restored entry is visible while the claimed
+    sidecar still exists. What closes it is holding the shared write serializer
+    across the WHOLE transition. So this asserts the property that matters: a
+    concurrent claim cannot complete while a restore is mid-transition.
+    """
+    import threading
+
+    from data_olympus.write_gate import WriteSerializer
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"), serializer=WriteSerializer())
+    pending_id, resolved = _claimed(q)
+
+    midway = threading.Event()
+    claimed_during = threading.Event()
+    real_remove = pending_module.atomic_remove
+
+    def slow_remove(path: str) -> None:
+        # The entry is published and the sidecar is not yet gone: exactly the
+        # point at which the successor used to get in.
+        midway.set()
+        claimed_during.wait(timeout=0.5)
+        real_remove(path)
+
+    def successor() -> None:
+        midway.wait(timeout=5)
+        with contextlib.suppress(Exception):
+            q.claim_for_resolve(pending_id)
+        claimed_during.set()
+
+    thread = threading.Thread(target=successor)
+    pending_module.atomic_remove = slow_remove
+    try:
+        thread.start()
+        q.restore_resolve(pending_id, claim_token=resolved.claim_token)
+        completed_during_restore = claimed_during.is_set()
+        thread.join(timeout=10)
+    finally:
+        pending_module.atomic_remove = real_remove
+
+    assert not completed_during_restore, (
+        "a claim completed while a restore was mid-transition; the serializer "
+        "does not cover the whole claim lifecycle"
+    )
+    # And whatever ran, the entry still exists: one of the two files, never none.
+    root = str(tmp_path / "p")
+    final = {n for n in os.listdir(root) if n.startswith(pending_id)}
+    assert final in ({f"{pending_id}.json"}, {f"{pending_id}.claimed"}), final
+
+
+def test_a_reclaimed_resolver_cannot_release_a_successors_lock(tmp_path) -> None:
+    """A passes its token check, reconciliation finalizes A, a successor claims
+    the path, and A resumes. A must mutate nothing."""
+    from data_olympus.pending import ClaimFencedError
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, first = _claimed(q)
+    q.record_outcome(
+        pending_id, claim_token=first.claim_token, failure="rejected",
+    )
+    q.reconcile_claims(min_age_sec=0)          # restores it
+    second = q.claim_for_resolve(pending_id)   # the successor
+
+    with pytest.raises(ClaimFencedError):
+        q.finalize_resolve(
+            pending_id, "operator/notes.md", claim_token=first.claim_token,
+        )
+
+    assert q.locks_held() == 1
+    assert q.claim_record(pending_id)["claim_token"] == second.claim_token
+
+
+def test_an_unreadable_claim_record_is_reported_not_skipped(tmp_path) -> None:
+    """A damaged approval record is the invisible-entry defect this batch
+    fixes, so it must never be swallowed as a rename race."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+    claimed_path = os.path.join(str(tmp_path / "p"), f"{pending_id}.claimed")
+    with open(claimed_path, "w") as f:
+        f.write("{ this is not json")
+
+    entries = q.list()
+    assert [e["state"] for e in entries] == ["unreadable"]
+    # It also blocks a rewrite, because it MIGHT be a claim with a commit.
+    assert q.claims_at_risk("kb-session/anything")
+    # And reconciliation reports it rather than deciding an outcome.
+    assert [r["outcome"] for r in q.reconcile_claims(min_age_sec=0)] == ["uncertain"]
+    assert q.locks_held() == 1

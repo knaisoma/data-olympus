@@ -365,6 +365,14 @@ async def pending_gc_loop(
         try:
             now = time.time()
             for entry in pending.list():
+                # Only entries actually awaiting a decision expire. list() also
+                # reports claimed, uncertain and unreadable entries now (issue
+                # #254); expiring those would write a durable
+                # pending_expired/auto_rejected audit event for a decision that
+                # was never rejected, and the reject would then fail because the
+                # live file does not exist.
+                if entry.get("state", "pending") != "pending":
+                    continue
                 if now - entry["created_at"] > timeout_sec:
                     pid = entry["pending_id"]
                     # Emit the expiry audit BEFORE rejecting so the record exists

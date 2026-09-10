@@ -96,7 +96,11 @@ class PushQueue:
         it raises, the entry is treated as a retryable failure (kept in the queue)
         so a demotion bug cannot silently drop the write.
         """
-        from data_olympus.git_ops import NonFastForwardError, RebaseConflictError
+        from data_olympus.git_ops import (
+            ClaimEvidenceAtRiskError,
+            NonFastForwardError,
+            RebaseConflictError,
+        )
 
         # A repeated non-FF race (origin/main moves faster than we can rebase) is
         # contention, not a content conflict, but it can neither publish nor demote
@@ -159,6 +163,18 @@ class PushQueue:
                 self._record_retry(entry, entry_path,
                                    f"non_fast_forward: {nff.detail}",
                                    max_attempts=max_attempts, reset_non_ff=False)
+                continue
+            except ClaimEvidenceAtRiskError as deferred:
+                # NOT a publication failure. The push wanted a rebase, and the
+                # rebase deferred to preserve the commit evidence of an
+                # unresolved claim (issues #253, #254). Reconciliation runs on
+                # its own schedule and will release it. Charging this to the
+                # retry budget would freeze a perfectly good commit while it
+                # waited, and a frozen entry stays frozen even after the
+                # evidence resolves.
+                log.info(
+                    "push deferred for %s: %s", entry.get("sha", "?"), deferred,
+                )
                 continue
             except Exception as exc:  # noqa: BLE001 -- intentional: capture any push failure
                 self._record_retry(entry, entry_path, str(exc),

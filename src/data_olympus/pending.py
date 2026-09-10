@@ -52,6 +52,16 @@ class PendingAlreadyResolvedError(Exception):
     error is raised so exactly one resolve proceeds."""
 
 
+class ClaimRecordUnreadableError(Exception):
+    """A claim record exists but cannot be read or parsed.
+
+    Deliberately distinct from a missing one. Absent means resolved or never
+    there; unreadable means the state of an operator decision is UNKNOWN, so
+    the history guards stay closed and the entry is reported rather than
+    skipped.
+    """
+
+
 class ClaimFencedError(Exception):
     """The caller's claim on this entry is no longer the one on disk.
 
@@ -91,9 +101,22 @@ def _path_lock_filename(target_path: str) -> str:
 
 
 class PendingQueue:
-    def __init__(self, *, pending_root: str, cap: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        pending_root: str,
+        cap: int = 0,
+        serializer: AbstractContextManager[Any] | None = None,
+    ) -> None:
         self._root = pending_root
         self._cap = cap  # 0 = unlimited
+        # The shared write serializer. Every claim-lifecycle transition (claim,
+        # finalize, restore, reconcile) runs inside it, so an ownership check
+        # and the mutation it authorises cannot be split by another transition.
+        # Fencing on a token is not sufficient on its own: without this, a
+        # restore that publishes <pid>.json and then deletes <pid>.claimed can
+        # have a successor claim in between and lose BOTH files.
+        self._serializer = serializer or contextlib.nullcontext()
         self._locks_dir = os.path.join(self._root, "locks")
         os.makedirs(self._root, exist_ok=True)
         os.makedirs(self._locks_dir, exist_ok=True)
@@ -281,9 +304,22 @@ class PendingQueue:
             try:
                 with open(path) as f:
                     entry = json.load(f)
-            except (OSError, json.JSONDecodeError):
-                # A concurrent claim renames the file out from under this walk.
+            except FileNotFoundError:
+                # A concurrent claim renamed the file out from under this walk.
                 # Skipping is correct: the next pass sees it under its new name.
+                continue
+            except (OSError, json.JSONDecodeError) as exc:
+                # NOT a race. A damaged or unreadable approval record is
+                # exactly the invisible-entry defect this batch exists to fix,
+                # so it is reported rather than skipped.
+                out.append({
+                    "state": "unreadable",
+                    "pending_id": name.rsplit(".", 1)[0],
+                    "proposal_type": "",
+                    "target_path": "",
+                    "created_at": 0.0,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                })
                 continue
             if state == "claimed":
                 reconcile = entry.get("reconcile") or {}
@@ -417,6 +453,12 @@ class PendingQueue:
         acquired at ``enqueue`` time and stays held throughout, so no other write
         can grab the path in the window between claim and commit, and the operator's
         proposal is never lost to a post-claim gate rejection."""
+        with self._serializer:
+            return self._claim_for_resolve_locked(pending_id, edited_text)
+
+    def _claim_for_resolve_locked(
+        self, pending_id: str, edited_text: str | None,
+    ) -> ResolvedPending:
         entry = self._claim(pending_id)
         resolved = self._to_resolved(pending_id, entry, edited_text)
         if edited_text is not None:
@@ -449,8 +491,13 @@ class PendingQueue:
         try:
             with open(path) as f:
                 entry: dict[str, Any] = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
+        except FileNotFoundError:
             raise ClaimFencedError(pending_id) from None
+        except (OSError, json.JSONDecodeError) as exc:
+            # A damaged claim record is not an absent one. Surfacing it keeps
+            # the history guards CLOSED for that claim rather than silently
+            # treating it as resolved.
+            raise ClaimRecordUnreadableError(f"{pending_id}: {exc}") from exc
         return path, entry
 
     def _check_token(self, entry: dict[str, Any], claim_token: str | None) -> None:
@@ -524,6 +571,12 @@ class PendingQueue:
         on the write serializer would otherwise release a successor's lock and
         delete a successor's sidecar.
         """
+        with self._serializer:
+            self._finalize_resolve_locked(pending_id, target_path, claim_token)
+
+    def _finalize_resolve_locked(
+        self, pending_id: str, target_path: str, claim_token: str | None,
+    ) -> None:
         if claim_token is not None:
             _path, entry = self._read_claim(pending_id)
             self._check_token(entry, claim_token)
@@ -537,20 +590,34 @@ class PendingQueue:
         held (it was never released). Idempotent: a missing sidecar is a no-op
         for an unfenced call. Fenced on ``claim_token`` for the same reason as
         :meth:`finalize_resolve`."""
+        with self._serializer:
+            self._restore_resolve_locked(pending_id, claim_token)
+
+    def _restore_resolve_locked(
+        self, pending_id: str, claim_token: str | None,
+    ) -> None:
         claimed = os.path.join(self._root, f"{pending_id}.claimed")
         live = os.path.join(self._root, f"{pending_id}.json")
-        if claim_token is not None:
-            _path, entry = self._read_claim(pending_id)
-            self._check_token(entry, claim_token)
-            entry.pop("claim", None)
-            entry.pop("write_outcome", None)
-            entry.pop("write_context", None)
-            entry.pop("reconcile", None)
-            atomic_write_json(live, entry)
-            atomic_remove(claimed)
+        if claim_token is None:
+            with contextlib.suppress(FileNotFoundError):
+                os.rename(claimed, live)
             return
-        with contextlib.suppress(FileNotFoundError):
-            os.rename(claimed, live)
+        _path, entry = self._read_claim(pending_id)
+        self._check_token(entry, claim_token)
+        entry.pop("claim", None)
+        entry.pop("write_outcome", None)
+        entry.pop("write_context", None)
+        entry.pop("reconcile", None)
+        # Strip the claim fields into a scratch sidecar, then publish with ONE
+        # rename. Writing <pid>.json and deleting <pid>.claimed afterwards left
+        # a window where a successor could claim the freshly published entry and
+        # have its own sidecar deleted by the delete that followed, losing both
+        # files. A rename is atomic, so the entry is either claimed or live and
+        # never neither.
+        scratch = os.path.join(self._root, f"{pending_id}.restoring")
+        atomic_write_json(scratch, entry)
+        os.rename(scratch, live)
+        atomic_remove(claimed)
 
     def claims_at_risk(self, session_ref: str) -> _Records:
         """Claims on ``session_ref`` whose evidence a history rewrite would
@@ -576,7 +643,17 @@ class PendingQueue:
             try:
                 with open(os.path.join(self._root, name)) as f:
                     entry = json.load(f)
-            except (OSError, json.JSONDecodeError):
+            except FileNotFoundError:
+                continue
+            except (OSError, json.JSONDecodeError) as exc:
+                # Fail closed: a record we cannot read may be a claim whose
+                # commit a rewrite would destroy.
+                out.append({
+                    "pending_id": name.rsplit(".", 1)[0],
+                    "target_path": "",
+                    "session_ref": session_ref,
+                    "reason": f"claim record unreadable: {exc}",
+                })
                 continue
             context = entry.get("write_context") or {}
             if context.get("session_ref") != session_ref:
@@ -624,10 +701,8 @@ class PendingQueue:
         branch, so absence of evidence would otherwise re-present a decision that
         had already been applied.
         """
-        if serializer is not None:
-            with serializer:
-                return self._reconcile_claims_locked(min_age_sec, find_commit, now)
-        return self._reconcile_claims_locked(min_age_sec, find_commit, now)
+        with serializer or self._serializer:
+            return self._reconcile_claims_locked(min_age_sec, find_commit, now)
 
     def _reconcile_claims_locked(
         self,
@@ -646,6 +721,13 @@ class PendingQueue:
             try:
                 _path, entry = self._read_claim(pending_id)
             except ClaimFencedError:
+                continue
+            except ClaimRecordUnreadableError as exc:
+                results.append({
+                    "pending_id": pending_id, "target_path": "",
+                    "outcome": "uncertain",
+                    "reason": f"the claim record cannot be read: {exc}",
+                })
                 continue
             claim = entry.get("claim", {})
             claimed_at = claim.get("claimed_at")
@@ -675,12 +757,12 @@ class PendingQueue:
         base = {"pending_id": pending_id, "target_path": target_path}
 
         if kind == "committed":
-            self.finalize_resolve(pending_id, target_path, claim_token=token)
+            self._finalize_resolve_locked(pending_id, target_path, token)
             return {**base, "outcome": "committed",
                     "commit_sha": outcome.get("commit_sha"),
                     "reason": "the write recorded a durable commit"}
         if kind == "failed":
-            self.restore_resolve(pending_id, claim_token=token)
+            self._restore_resolve_locked(pending_id, token)
             return {**base, "outcome": "restored",
                     "reason": outcome.get("reason")
                               or "the write recorded a failure before committing"}
@@ -699,7 +781,7 @@ class PendingQueue:
             except Exception as exc:  # noqa: BLE001 - a failed search is uncertainty
                 search_error = f"{type(exc).__name__}: {exc}"
         if found is True:
-            self.finalize_resolve(pending_id, target_path, claim_token=token)
+            self._finalize_resolve_locked(pending_id, target_path, token)
             return {**base, "outcome": "committed",
                     "reason": "the claim-linked commit was found in the "
                               "recorded ref"}

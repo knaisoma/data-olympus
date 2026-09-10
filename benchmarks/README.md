@@ -202,13 +202,17 @@ receipt**, and compares the two. The comparison, not the receipt, is what
 carries a reproduction claim: a receipt that only describes itself has nothing
 to disagree with.
 
-```bash
-git clone https://github.com/knaisoma/data-olympus && cd data-olympus
-git checkout <the source_commit recorded in results/receipt.json>
-uv venv --python 3.13 && uv pip install -e '.[dev]'
+The reproduction runs at the revision the reference receipt names, and the
+comparison runs from a checkout that has the comparison tooling. Those are not
+always the same revision: `compare` was added in 0.8.0, and a reference receipt
+measured before that names a commit where the subcommand does not exist.
 
-# Keep the reference out of the way of your own run.
-cp benchmarks/results/receipt.json /tmp/reference-receipt.json
+```bash
+# 1. Reproduce at the measured revision.
+git clone https://github.com/knaisoma/data-olympus measure && cd measure
+git checkout <the source_commit recorded in benchmarks/results/receipt.json>
+cp benchmarks/results/receipt.json /tmp/reference-receipt.json   # keep the reference
+uv venv --python 3.13 && uv pip install -e '.[dev]'
 
 uv run python -m benchmarks.generate_artifacts
 uv run python -m benchmarks.generate_governance_artifacts
@@ -216,10 +220,14 @@ uv run python -m benchmarks.real_corpus_eval --corpus example-bundle \
     --queries benchmarks/real_corpus/example_bundle_queries.json \
     --lexical-only --out benchmarks/real_corpus/example_bundle_result.json
 uv run python -m benchmarks.receipt write --source-commit $(git rev-parse HEAD)
+cp benchmarks/results/receipt.json /tmp/candidate-receipt.json
 
+# 2. Compare from a checkout that has the tooling (0.8.0 or later).
+cd .. && git clone https://github.com/knaisoma/data-olympus compare && cd compare
+uv venv --python 3.13 && uv pip install -e '.[dev]'
 uv run python -m benchmarks.receipt compare \
     --reference /tmp/reference-receipt.json \
-    --candidate benchmarks/results/receipt.json
+    --candidate /tmp/candidate-receipt.json
 ```
 
 Do **not** run `benchmarks.docs_tables --write` as part of a reproduction. It

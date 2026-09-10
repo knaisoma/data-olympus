@@ -563,10 +563,16 @@ def _commit_in_worktree(
             # Record the write context first, so a crash from here on still
             # leaves recovery something to search from.
             if claim_recorder is not None:
-                claim_recorder.context(
-                    session_ref=_session_ref(wt.path),
-                    pre_write_ref_sha=_head_sha(wt.path),
-                )
+                try:
+                    claim_recorder.context(
+                        session_ref=_session_ref(wt.path),
+                        pre_write_ref_sha=_head_sha(wt.path),
+                    )
+                except Exception as exc:
+                    # Nothing has been written, so this IS a provable
+                    # non-commit and the entry is safely restorable.
+                    claim_recorder.failed(f"write context unavailable: {exc}")
+                    raise _WriteContextUnavailable(str(exc)) from exc
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(postimage)
@@ -583,9 +589,20 @@ def _commit_in_worktree(
                 subprocess.run(
                     ["git", "-C", wt.path, "commit", "-m", msg], check=True)
             except subprocess.CalledProcessError as exc:
-                # A non-zero exit is git telling us it did not make a commit.
                 with contextlib.suppress(Exception):
                     reset_worktree(wt.path)
+                if _classify_commit_error(exc) == "unknown":
+                    # The child was killed by a signal, and git can update the
+                    # ref and then be killed before it exits. Treating that as a
+                    # failed commit would record a proven non-commit for a write
+                    # that may well have landed, and the sweep would then
+                    # restore an already-applied decision.
+                    if claim_recorder is not None:
+                        claim_recorder.unknown(
+                            f"git commit killed by signal {-exc.returncode}"
+                        )
+                    raise _WriteOutcomeUnknown(str(exc)) from exc
+                # A POSITIVE exit is git telling us it declined to commit.
                 if claim_recorder is not None:
                     claim_recorder.failed(f"git commit exited {exc.returncode}")
                 raise
@@ -623,6 +640,18 @@ def _commit_in_worktree(
             return sha, push_state, secret_override
 
 
+def _classify_commit_error(exc: subprocess.CalledProcessError) -> str:
+    """Did a failed ``git commit`` prove that nothing was committed?
+
+    Only a POSITIVE return code does. A negative one means the child was killed
+    by a signal, and git can update the ref and then be killed before it exits,
+    so the outcome is unobserved rather than known (issue #254).
+    """
+    if exc.returncode is not None and exc.returncode < 0:
+        return "unknown"
+    return "failed"
+
+
 def _session_ref(worktree_path: str) -> str:
     """The branch the session worktree commits onto, or "" if unreadable."""
     try:
@@ -642,6 +671,15 @@ def _head_sha(worktree_path: str) -> str:
         ).strip()
     except Exception:  # noqa: BLE001 - same
         return ""
+
+
+class _WriteContextUnavailable(Exception):
+    """Recovery context could not be recorded, so the write must not start.
+
+    Raised BEFORE anything is written, which makes it a provable non-commit: the
+    entry can be restored safely. Writing without it would leave recovery unable
+    to search for the commit and unable to protect it from a rewrite.
+    """
 
 
 class _WriteOutcomeUnknown(Exception):
@@ -670,11 +708,24 @@ class _ClaimRecorder:
     last_outcome: str = ""
 
     def context(self, *, session_ref: str, pre_write_ref_sha: str) -> None:
-        with contextlib.suppress(Exception):
-            self.pending.record_write_context(
-                self.pending_id, claim_token=self.claim_token,
-                session_ref=session_ref, pre_write_ref_sha=pre_write_ref_sha,
+        """Record where the commit will land. A PRECONDITION of writing.
+
+        This used to swallow every failure, which made the invariant "no
+        recorded context means no write began" untrue: the write proceeded, and
+        if the outcome record then also failed, recovery had neither a search
+        reference nor a guard protecting the evidence. It now raises, and the
+        caller aborts before touching the worktree. Failing here is safe
+        precisely because nothing has been written yet, so it is a PROVABLE
+        non-commit.
+        """
+        if not session_ref or not pre_write_ref_sha:
+            raise _WriteContextUnavailable(
+                "cannot identify the session ref or its pre-write tip"
             )
+        self.pending.record_write_context(
+            self.pending_id, claim_token=self.claim_token,
+            session_ref=session_ref, pre_write_ref_sha=pre_write_ref_sha,
+        )
 
     def committed(self, sha: str) -> None:
         self.last_outcome = "committed"

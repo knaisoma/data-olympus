@@ -424,10 +424,15 @@ rewrite its trailer away, so absence of the commit is not absence of the write.
 Restoring on absence would offer an already-applied decision for approval a
 second time.
 
-For the same reason, operations that rewrite session history defer while a claim
-on that branch has begun its write: the base rebase, the non-fast-forward push
-recovery that calls it, and the worktree GC that deletes a session branch. They
-are retried later rather than destroying the evidence.
+For the same reason, operations that rewrite session history reconcile
+outstanding claims first and then defer while a claim on that branch has begun
+its write: the base rebase, the non-fast-forward push recovery that calls it,
+and the worktree GC that removes a session worktree and deletes its branch. The
+GC teardown holds the write serializer across its whole sequence, so it either
+completes or leaves the worktree and the branch both intact. A deferred push is
+not a publication failure and does not consume its retry budget. These guards
+fail closed: an unreadable claim record, or a branch that cannot be identified,
+defers the rewrite rather than permitting it.
 
 If an entry stays `uncertain`, check whether the change is present on
 `origin/main` and then resolve it by hand on the state volume: delete

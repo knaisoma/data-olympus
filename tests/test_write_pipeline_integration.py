@@ -59,10 +59,24 @@ def _bare_remote_with_clone(tmp_path):
 
 
 def _server_pieces(tmp_path, main):
-    git = GitOps(main)
-    reg = WorktreeRegistry(git=git, worktree_root=str(tmp_path / "wts"))
+    # Wire the pieces the way the server does (issues #253, #254): one shared
+    # serializer across the claim lifecycle and the GC teardown, and a real
+    # claim guard on git's history-rewriting paths. A fixture without these
+    # cannot exercise the protections at all.
+    serializer = WriteSerializer()
+    holder = {}
+
+    def claims_at_risk(ref):
+        pen_ = holder.get("pending")
+        return list(pen_.claims_at_risk(ref)) if pen_ is not None else []
+
+    git = GitOps(main, claim_guard=claims_at_risk)
+    reg = WorktreeRegistry(git=git, worktree_root=str(tmp_path / "wts"),
+                           serializer=serializer)
     pq = PushQueue(queue_root=str(tmp_path / "push-q"))
-    pen = PendingQueue(pending_root=str(tmp_path / "pending"))
+    pen = PendingQueue(pending_root=str(tmp_path / "pending"),
+                       serializer=serializer)
+    holder["pending"] = pen
     rl = SlidingWindowLimiter(max_per_hour=1000)
     bl = PathBlocklist(tier_blocks=[], path_blocks=[])
     return git, reg, pq, pen, rl, bl
@@ -322,7 +336,10 @@ def test_resolved_commit_carries_its_claim_link_and_records_the_outcome(
         ["git", "-C", wt_path, "log", "-1", "--format=%B"],
         check=True, capture_output=True, text=True, env=_env(),
     ).stdout
-    assert f"KB-Pending-Id: {pending_id}" in body
+    # A real trailer LINE, not a substring anywhere in the message: forged text
+    # in a subject or another trailer's value must never count as evidence.
+    assert f"KB-Pending-Id: {pending_id}" in body.splitlines()
+    assert "KB-Target-Path: decisions/DEC-resolve.md" in body.splitlines()
 
 
 def test_an_unobserved_commit_is_not_restored(tmp_path, monkeypatch) -> None:
@@ -366,18 +383,86 @@ def test_an_unobserved_commit_is_not_restored(tmp_path, monkeypatch) -> None:
     assert pen.claim_record(pending_id)["write_outcome"]["outcome"] == "unknown"
     # And reconciliation finds the commit that really was made, so the decision
     # is closed rather than offered again.
-    wt_path = str(reg.get_or_create(
-        source_session="s1", agent_identity="claude").path)
-
     def find_commit(record):  # noqa: ANN001, ANN202
-        log = subprocess.run(
-            ["git", "-C", wt_path, "log", "--format=%B",
-             record["pre_write_ref_sha"] + "..HEAD"],
-            check=True, capture_output=True, text=True, env=_env(),
-        ).stdout
-        return f"KB-Pending-Id: {record['pending_id']}" in log
+        # The production search, not a hand-written substring match, so this
+        # test exercises the strict trailer parsing and the target binding.
+        return git.find_claim_commit(
+            ref=record["session_ref"],
+            since_sha=record["pre_write_ref_sha"],
+            pending_id=record["pending_id"],
+            target_path=record["target_path"],
+        )
 
     results = pen.reconcile_claims(min_age_sec=0, find_commit=find_commit)
     assert [r["outcome"] for r in results] == ["committed"], results
     assert pen.list() == []
     assert pen.locks_held() == 0
+
+
+def test_a_failed_write_context_prevents_the_commit(tmp_path, monkeypatch) -> None:
+    """Recovery needs the session ref and the pre-write tip, captured before the
+    write. If they cannot be recorded the write must not start: continuing would
+    leave recovery with no search reference and no guard protecting the
+    evidence. Failing here is safe because nothing has been written, so it is a
+    provable non-commit and the entry is restorable."""
+    from data_olympus.tools_write import (
+        _WriteContextUnavailable,
+        kb_resolve_pending_fn,
+    )
+
+    main, git, reg, pq, pen, rl, bl, serializer = _resolve_env(tmp_path, monkeypatch)
+    pending_id = _propose_pending(reg, pq, pen, rl, bl, serializer)
+
+    def refuse(*_a, **_k):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("state volume is read-only")
+
+    monkeypatch.setattr(pen, "record_write_context", refuse)
+    try:
+        kb_resolve_pending_fn(
+            pending_id=pending_id, decision="approve", edited_text=None,
+            worktrees=reg, push_queue=pq, pending=pen, source_session="s1",
+            agent_identity="claude", serializer=serializer,
+        )
+    except _WriteContextUnavailable:
+        pass
+    else:
+        raise AssertionError("the write must not start without recovery context")
+
+    monkeypatch.undo()
+    # Provably nothing committed, so the entry is back and re-resolvable.
+    assert [e["state"] for e in pen.list()] == ["pending"]
+    wt_path = str(reg.get_or_create(
+        source_session="s1", agent_identity="claude").path)
+    assert not os.path.exists(os.path.join(wt_path, "decisions/DEC-resolve.md"))
+
+
+def test_a_signal_killed_commit_leaves_the_entry_claimed(tmp_path, monkeypatch) -> None:
+    """git can update the ref and then be killed. Recording that as a failure
+    would restore an entry whose write may already have landed."""
+    import data_olympus.tools_write as tw
+    from data_olympus.tools_write import _WriteOutcomeUnknown, kb_resolve_pending_fn
+
+    main, git, reg, pq, pen, rl, bl, serializer = _resolve_env(tmp_path, monkeypatch)
+    pending_id = _propose_pending(reg, pq, pen, rl, bl, serializer)
+    real_run = tw.subprocess.run
+
+    def killed(cmd, *a, **kw):  # noqa: ANN001, ANN202
+        if "commit" in cmd:
+            raise subprocess.CalledProcessError(-9, cmd)
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(tw.subprocess, "run", killed)
+    try:
+        kb_resolve_pending_fn(
+            pending_id=pending_id, decision="approve", edited_text=None,
+            worktrees=reg, push_queue=pq, pending=pen, source_session="s1",
+            agent_identity="claude", serializer=serializer,
+        )
+    except _WriteOutcomeUnknown:
+        pass
+    else:
+        raise AssertionError("a signalled commit must surface as unknown")
+    monkeypatch.undo()
+
+    assert [e["state"] for e in pen.list()] == ["claimed"]
+    assert pen.claim_record(pending_id)["write_outcome"]["outcome"] == "unknown"

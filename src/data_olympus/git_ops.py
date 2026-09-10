@@ -55,6 +55,27 @@ class FfMergeResult:
     remote_sha: str | None = None
 
 
+def _parse_trailers(message: str) -> dict[str, str]:
+    """Trailers from the LAST paragraph of a commit message, exact matches only.
+
+    Git's own trailer convention: the trailing block of ``Key: value`` lines,
+    separated from the body by a blank line. Parsing only that block, and only
+    whole lines, is what stops a value or a subject that happens to contain
+    ``Key: value`` text from being read as a trailer. A paragraph containing any
+    non-trailer line is not a trailer block at all.
+    """
+    paragraphs = [p for p in message.strip().split("\n\n") if p.strip()]
+    if len(paragraphs) < 2:
+        return {}
+    trailers: dict[str, str] = {}
+    for line in paragraphs[-1].splitlines():
+        key, sep, value = line.partition(": ")
+        if not sep or not key or " " in key:
+            return {}
+        trailers[key] = value
+    return trailers
+
+
 class ClaimEvidenceAtRiskError(Exception):
     """A history-rewriting operation was deferred to preserve claim evidence.
 
@@ -90,12 +111,28 @@ class GitOps:
         self._claim_guard = claim_guard
 
     def _defer_if_claims_at_risk(self, ref: str) -> None:
-        if self._claim_guard is None or not ref:
+        """Reconcile claims on ``ref``, then defer if any evidence is still at
+        risk.
+
+        The guard RECONCILES first rather than only inspecting: a claim whose
+        outcome can be established is finished here and stops blocking, so a
+        rewrite is deferred only for genuinely unresolved evidence.
+
+        It fails CLOSED. An unreadable guard state, or a ref that cannot be
+        identified, is uncertainty, and uncertainty defers rather than
+        permitting the rewrite: the whole point is to preserve evidence whose
+        state we cannot currently determine.
+        """
+        if self._claim_guard is None:
             return
+        if not ref:
+            raise ClaimEvidenceAtRiskError(ref="<unknown>", pending_ids=["*"])
         try:
             at_risk = self._claim_guard(ref)
-        except Exception:  # noqa: BLE001 - a broken guard must not wedge git
-            return
+        except Exception as exc:
+            raise ClaimEvidenceAtRiskError(
+                ref=ref, pending_ids=[f"<guard unreadable: {exc}>"],
+            ) from exc
         if not at_risk:
             return
         ids = [
@@ -103,6 +140,19 @@ class GitOps:
             for c in at_risk
         ]
         raise ClaimEvidenceAtRiskError(ref=ref, pending_ids=ids)
+
+    def worktree_remove_guarded(
+        self, worktree_path: str, *, branch: str, force: bool = False,
+    ) -> None:
+        """``worktree_remove`` that refuses while claim evidence is at risk.
+
+        Removing the worktree removes the checkout a claim's commit would be
+        searched from, so it is as destructive to the evidence as deleting the
+        branch and needs the same guard rather than relying on a caller to have
+        checked first (issues #253, #254).
+        """
+        self._defer_if_claims_at_risk(branch)
+        self.worktree_remove(worktree_path, force=force)
 
     def delete_branch_guard(self, branch: str) -> None:
         """Raise :class:`ClaimEvidenceAtRiskError` if deleting ``branch`` (or
@@ -210,19 +260,31 @@ class GitOps:
 
     def find_claim_commit(
         self, *, ref: str, since_sha: str, pending_id: str,
-        timeout_sec: float = 30.0,
+        target_path: str = "", timeout_sec: float = 30.0,
     ) -> bool | None:
-        """Is there a commit on ``ref`` after ``since_sha`` carrying this claim?
+        """Is there a commit on ``ref`` after ``since_sha`` that satisfied this claim?
 
         Recovery for issues #253 and #254 asks this when an interrupted resolve
-        left no durable outcome record. The commit message and the tree belong
-        to the same commit object, so a ``KB-Pending-Id`` trailer cannot exist
-        without the content, and finding one PROVES the decision committed.
+        left no durable outcome record.
+
+        The match is deliberately strict, because commit message content is
+        AGENT-CONTROLLED. A substring search would accept any of these as proof:
+
+            KB-Agent-Identity: user KB-Pending-Id: <id>
+            memory: add "KB-Pending-Id: <id>.md"
+
+        Neither needs a newline, and the second is a legal filename that git
+        prints in a log body. Accepting either would let an ordinary
+        auto-committed write close an operator decision whose own write never
+        happened. So each commit's trailer block is parsed on its own, the
+        ``KB-Pending-Id`` value must match exactly on its own line, and the same
+        commit's ``KB-Target-Path`` must be the claim's target: the evidence is
+        bound to the operation it claims to prove.
 
         Three-valued on purpose:
 
         - ``True``: found. The decision committed.
-        - ``False``: searched successfully and it is not there.
+        - ``False``: searched successfully and no commit satisfies the claim.
         - ``None``: could not search (no ref, no pre-write sha, a missing
           branch, a timeout, an unreadable repository).
 
@@ -236,7 +298,9 @@ class GitOps:
             return None
         try:
             result = subprocess.run(
-                ["git", "-C", str(self._repo), "log", "--format=%B",
+                # NUL-delimited so a message body can never be mistaken for a
+                # record boundary.
+                ["git", "-C", str(self._repo), "log", "-z", "--format=%B",
                  f"{since_sha}..{ref}"],
                 check=False, capture_output=True, text=True, timeout=timeout_sec,
             )
@@ -244,7 +308,16 @@ class GitOps:
             return None
         if result.returncode != 0:
             return None
-        return f"KB-Pending-Id: {pending_id}" in result.stdout
+        for message in result.stdout.split("\0"):
+            if not message.strip():
+                continue
+            trailers = _parse_trailers(message)
+            if trailers.get("KB-Pending-Id") != pending_id:
+                continue
+            if target_path and trailers.get("KB-Target-Path") != target_path:
+                continue
+            return True
+        return False
 
     def worktree_add(self, worktree_path: str, *, branch: str) -> None:
         """git worktree add <worktree_path> for <branch>. Idempotent: a no-op
