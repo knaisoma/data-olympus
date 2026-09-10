@@ -437,7 +437,10 @@ serializer across its own check AND the history mutation it authorises, so the
 guard protects the history actually being rewritten rather than an earlier
 snapshot of it. The guard reconciles at the same claim TTL as the periodic
 sweep rather than from zero age, so a claim whose own resolver is still
-finishing is left alone and the rewrite simply defers.
+finishing is left alone and the rewrite simply defers. A successful resolve also
+consumes its own claim inside the same serializer acquisition that made the
+commit, immediately after recording the outcome, so no reconciliation can ever
+observe a committed-but-unconsumed claim and finish it on the owner's behalf.
 
 If an entry stays `uncertain`, check whether the change is present on
 `origin/main` and then resolve it by hand on the state volume: delete

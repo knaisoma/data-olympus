@@ -625,9 +625,14 @@ def _commit_in_worktree(
                     claim_recorder.unknown(f"commit sha lookup failed: {exc}")
                 raise _WriteOutcomeUnknown(str(exc)) from exc
             if claim_recorder is not None:
-                # Persist the outcome BEFORE enqueue or any other post-commit
-                # work that could obscure it.
+                # Persist the outcome and consume the claim ADJACENTLY, before
+                # enqueue or any other post-commit work. Both are inside this
+                # `with serializer`, so no reconciliation can observe a
+                # committed-but-unconsumed claim and finish it on the owner's
+                # behalf: the owner would then fail fenced and its caller would
+                # lose a truthful success and its committed audit event.
                 claim_recorder.committed(sha)
+                claim_recorder.finalize(target_path)
             # Enqueue AFTER the commit is durable. It must not turn a made commit
             # into an exception path (that would drop the bootstrap in-flight guard
             # and lose the resolve claim -- Codex round-2 Blocker C), so a failure
@@ -706,6 +711,7 @@ class _ClaimRecorder:
     pending_id: str
     claim_token: str
     last_outcome: str = ""
+    finalized: bool = False
 
     def context(self, *, session_ref: str, pre_write_ref_sha: str) -> None:
         """Record where the commit will land. A PRECONDITION of writing.
@@ -746,6 +752,21 @@ class _ClaimRecorder:
             self.pending.record_outcome(
                 self.pending_id, claim_token=self.claim_token, unknown=reason,
             )
+
+    def finalize(self, target_path: str) -> None:
+        """Consume the claim while the commit still holds the serializer.
+
+        Finalizing after the commit released the lock left a gap in which a
+        guard or sweep reconciliation could consume the durable committed
+        record first. The write still landed, but this resolver then failed
+        fenced and its caller lost a truthful success response and its
+        committed audit event. Age thresholds only make that gap smaller; doing
+        it inside the same acquisition removes it.
+        """
+        self.pending.finalize_resolve(
+            self.pending_id, target_path, claim_token=self.claim_token,
+        )
+        self.finalized = True
 
 
 def _enqueue_after_commit(
@@ -1697,9 +1718,13 @@ def kb_resolve_pending_fn(
     # an enqueue_failed_recovery_pending commit exists on the branch and is
     # republished by in-process/startup recovery, so re-resolving would duplicate
     # it -- the entry must be consumed, not restored (Codex round-4).
-    pending.finalize_resolve(
-        pending_id, resolved.target_path, claim_token=resolved.claim_token,
-    )
+    if not recorder.finalized:
+        # Normally already done inside the commit's own serializer acquisition,
+        # which is what stops a reconciliation consuming the claim in between.
+        # This remains for a commit helper that returned without a recorder.
+        pending.finalize_resolve(
+            pending_id, resolved.target_path, claim_token=resolved.claim_token,
+        )
     # secret_override is only non-None when the operator explicitly passed
     # override_secret_scan=True AND the scanner actually flagged something, so
     # the audit trail truthfully distinguishes "override requested but nothing

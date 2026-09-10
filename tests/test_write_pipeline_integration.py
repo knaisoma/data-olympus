@@ -478,33 +478,45 @@ def test_a_signal_killed_commit_leaves_the_entry_claimed(tmp_path, monkeypatch) 
 
 
 def test_a_live_resolver_still_reports_its_own_success(tmp_path, monkeypatch) -> None:
-    """A resolver releases the serializer between its commit and its own
-    finalize. A guard reconciliation running in that gap used to consume the
-    durable committed record, so the write landed but the caller got a fenced
-    error instead of a truthful success and no committed audit event.
+    """Reconciliation forced INTO the gap between commit and finalization, with
+    the claim already older than the TTL, must not consume the claim out from
+    under its live owner.
 
-    The guard reconciles at the configured TTL, not from zero age, so a claim
-    this fresh is left to its owner and the rewrite simply defers.
+    Age thresholds only shrink that gap: with KB_PENDING_CLAIM_TTL_SEC=1 a
+    resolver taking two seconds is eligible while still alive. What removes it
+    is finalizing inside the commit's own serializer acquisition. This test
+    drives reconciliation at the exact moment the old code lost the race, so it
+    fails if finalization moves back outside that acquisition.
     """
+    import data_olympus.tools_write as tw
     from data_olympus.tools_write import kb_resolve_pending_fn
 
     main, git, reg, pq, pen, rl, bl, serializer = _resolve_env(tmp_path, monkeypatch)
     pending_id = _propose_pending(reg, pq, pen, rl, bl, serializer)
-    wt = reg.get_or_create(source_session="s1", agent_identity="claude")
-    branch = f"kb-session/{os.path.basename(wt.path)}"
 
+    reconciled: list[object] = []
+    real_enqueue = tw._enqueue_after_commit
+
+    def enqueue_then_reconcile(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        # The commit is durable and its outcome is recorded; this is exactly
+        # where a guard or sweep pass used to consume the claim.
+        state = real_enqueue(*args, **kwargs)
+        reconciled.append(pen.reconcile_claims(min_age_sec=0))
+        return state
+
+    monkeypatch.setattr(tw, "_enqueue_after_commit", enqueue_then_reconcile)
     resp = kb_resolve_pending_fn(
         pending_id=pending_id, decision="approve", edited_text=None,
         worktrees=reg, push_queue=pq, pending=pen, source_session="s1",
         agent_identity="claude", serializer=serializer,
     )
-    assert resp.status == "committed"
+    monkeypatch.undo()
 
-    # A guard pass now finds nothing at risk, because the owner finalized.
-    assert git.find_claim_commit(
-        ref=branch, since_sha="HEAD~1", pending_id=pending_id,
-    ) in (True, False, None)
+    assert reconciled, "the interleaving did not run"
+    assert resp.status == "committed", resp
+    assert resp.commit_sha
     assert pen.list() == []
+    assert pen.locks_held() == 0
 
 
 def test_a_deferred_push_does_not_consume_its_retry_budget(tmp_path) -> None:

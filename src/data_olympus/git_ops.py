@@ -71,7 +71,11 @@ def _parse_trailers(message: str) -> dict[str, str]:
     # parser. A single trailer VALUE containing one of those would otherwise be
     # read here as several trailer lines, letting agent-controlled content such
     # as a target path manufacture a trailer block that git never wrote.
-    paragraphs = [p for p in message.strip().split("\n\n") if p.strip()]
+    # strip("\r\n"), NOT strip(): bare strip() removes Unicode whitespace, so a
+    # stored value of "<id>\u00a0" would be trimmed here to "<id>" and match a
+    # claim it does not actually name. Git preserves that suffix, and the point
+    # of this parser is to agree with git.
+    paragraphs = [p for p in message.strip("\r\n").split("\n\n") if p.strip("\r\n")]
     if len(paragraphs) < 2:
         return {}
     trailers: dict[str, str] = {}

@@ -447,3 +447,18 @@ def test_trailers_reject_a_duplicated_evidence_key() -> None:
     assert _parse_trailers(
         "s\n\nKB-Target-Path: a.md\nKB-Target-Path: b.md\n"
     ) == {}
+
+
+def test_trailers_preserve_unicode_whitespace_in_a_value() -> None:
+    """Git preserves a trailing U+00A0 in a trailer value, so this parser must
+    too. Trimming it would turn a value that does NOT name a claim into one
+    that does."""
+    from data_olympus.git_ops import _parse_trailers
+
+    for codepoint in (0x00A0, 0x2007, 0x202F, 0x3000):
+        pid = "f" * 32
+        parsed = _parse_trailers(
+            f"s\n\nKB-Pending-Id: {pid}{chr(codepoint)}\n"
+        )
+        assert parsed.get("KB-Pending-Id") != pid, f"U+{codepoint:04X} was trimmed"
+        assert parsed.get("KB-Pending-Id") == pid + chr(codepoint)
