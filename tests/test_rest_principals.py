@@ -14,6 +14,10 @@ OPERATOR = "operator-token"
 PRINCIPALS = [
     {"name": "proposer", "token": "ptok", "capabilities": ["read", "propose"]},
     {"name": "reader", "token": "rtok", "capabilities": ["read"]},
+    # Deliberately WITHOUT resolve: a resolver reads any entry, so a test that
+    # uses one cannot tell working ownership from lost ownership.
+    {"name": "onboarder", "token": "otok",
+     "capabilities": ["read", "propose", "bootstrap"]},
 ]
 
 
@@ -168,3 +172,51 @@ async def test_pending_readback_is_not_defeated_by_copying_the_listing(app) -> N
     # The actual proposer is unaffected.
     assert owner.status_code == 200
     assert "a draft nobody approved" in owner.json()["postimage"]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_records_ownership_a_nonresolver_can_use(app) -> None:
+    """Bootstrap-parked entries must carry the authenticated proposer, or they
+    silently become resolver-only.
+
+    The read is done by a principal WITHOUT `resolve`, which is the only way to
+    tell recorded ownership from lost ownership: a resolver reads any entry, so
+    a resolver-based test passes either way.
+    """
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/onboarding/bootstrap",
+            headers={"Authorization": "Bearer otok"},
+            json={
+                "workspace": "demo", "component": None,
+                "workspace_remote_url": None, "component_remote_url": None,
+                "source_session": "s1", "agent_identity": "claude",
+                "confidence": 0.4,
+                "files": [{
+                    "target_path": "projects/demo/README.md",
+                    "postimage": "---\nid: DEMO-1\ntype: standard\n"
+                                 "status: active\ntier: T3\n---\n\nbootstrap body\n",
+                }],
+            },
+        )
+        body = resp.json()
+        assert resp.status_code < 500, body
+        assert body.get("status") == "pending_confirmation", body
+        pending_id = body["pending_id"]
+
+        owner = await client.get(
+            f"/api/v1/pending/{pending_id}",
+            headers={"Authorization": "Bearer otok"},
+        )
+        stranger = await client.get(
+            f"/api/v1/pending/{pending_id}",
+            headers={"Authorization": "Bearer rtok"},
+        )
+
+    # The owner reads it back WITHOUT holding resolve, which only works if
+    # ownership was actually recorded.
+    assert owner.status_code == 200, owner.json()
+    assert "bootstrap body" in owner.json()["postimage"]
+    # And it is genuinely scoped, not simply open.
+    assert stranger.status_code == 403, stranger.json()

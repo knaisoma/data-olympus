@@ -170,14 +170,15 @@ async def test_rest_playbook_invalid_kind_returns_400(http_app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_still_works_and_records_its_proposer(http_app) -> None:  # noqa: ANN001
+async def test_bootstrap_does_not_500_on_the_proposer_argument(http_app) -> None:  # noqa: ANN001
     """A correction for issue #256 added `proposer_principal` to the REST
     bootstrap call before the helper accepted it, so every bootstrap returned
     HTTP 500.
 
-    Asserting only "not 500" would be satisfied by a 403, so this asserts what
-    actually has to be true: the request PARKS entries, and the ownership it
-    recorded is usable, meaning the proposer can read its own draft back.
+    This covers the crash and that an entry is actually parked. It does NOT
+    prove ownership: this fixture is locally trusted and so holds `resolve`,
+    which reads any entry. Ownership is asserted in
+    tests/test_rest_principals.py with a principal that lacks `resolve`.
     """
     transport = httpx.ASGITransport(app=http_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -198,15 +199,8 @@ async def test_bootstrap_still_works_and_records_its_proposer(http_app) -> None:
                 }],
             },
         )
-        body = resp.json()
-        assert resp.status_code < 500, body
-        assert body.get("status") == "pending_confirmation", body
-        pending_id = body.get("pending_id")
-        assert pending_id, body
 
-        detail = await client.get(f"/api/v1/pending/{pending_id}")
-
-    # Ownership was recorded and is usable: the entry reads back with content,
-    # rather than having silently become resolver-only.
-    assert detail.status_code == 200, detail.json()
-    assert "bootstrap body" in detail.json()["postimage"]
+    body = resp.json()
+    assert resp.status_code < 500, body
+    assert body.get("status") == "pending_confirmation", body
+    assert body.get("pending_id"), body

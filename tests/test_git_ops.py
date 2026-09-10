@@ -488,6 +488,18 @@ _GRAMMAR_CASES = {
     ),
     "--- on the very first line": "---\n\nKB-Pending-Id: abc\n",
     "CRLF line endings": "s\r\n\r\nKB-Pending-Id: abc\r\nKB-Target-Path: a.md\r\n",
+    # git requires a trailer token to be ASCII alphanumeric or hyphen, so one
+    # invalid key voids the whole block.
+    "invalid key in the block": (
+        "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n@: x\n"
+    ),
+    # A line starting with whitespace is a CONTINUATION in git's grammar: git
+    # folds it into the previous value, so its KB-Target-Path is "a.md foo: x",
+    # not "a.md". Reading it as its own trailer silently changes the value the
+    # target binding compares.
+    "tab-indented continuation": (
+        "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n\tfoo: x\n"
+    ),
     "--- immediately before": "s\n\nbody\n---\nKB-Pending-Id: abc\n",
     "body line in the block": "s\n\nprose here\nKB-Pending-Id: abc\n",
     "trailing blank line": "s\n\nKB-Pending-Id: abc\n\n",
@@ -631,3 +643,25 @@ def test_find_claim_commit_rejects_an_unterminated_divider(tmp_path) -> None:  #
         )
 
     assert found is False
+
+
+def test_find_claim_commit_rejects_an_invalid_trailer_key(tmp_path) -> None:  # noqa: ANN001
+    """git voids a whole trailer block on one invalid key, and a whitespace-led
+    line is a continuation that changes the previous value rather than a trailer
+    of its own. Both were routes to evidence git never parsed."""
+    from unittest import mock
+
+    from data_olympus.git_ops import GitOps
+
+    pid = "e" * 32
+    git = GitOps(str(tmp_path))
+    for forged in (
+        f"s\n\nKB-Pending-Id: {pid}\nKB-Target-Path: a.md\n@: x\n",
+        f"s\n\nKB-Pending-Id: {pid}\nKB-Target-Path: a.md\n\tfoo: x\n",
+    ):
+        completed = mock.Mock(returncode=0, stdout=forged + "\0")
+        with mock.patch("data_olympus.git_ops.subprocess.run", return_value=completed):
+            found = git.find_claim_commit(
+                ref="main", since_sha="a" * 40, pending_id=pid, target_path="a.md",
+            )
+        assert found is False, forged

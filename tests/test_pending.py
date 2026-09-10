@@ -1091,20 +1091,23 @@ def test_orphan_gc_never_deletes_a_successors_lock(tmp_path) -> None:
     inspected = threading.Event()
     successor_ready = threading.Event()
     b_id: list[str] = []
+    errors: list[BaseException] = []
 
     def successor() -> None:
-        inspected.wait(timeout=5)
-        # A's lock is freed and B takes the path, all while the collector is
-        # mid-sweep.
-        with contextlib.suppress(Exception):
+        try:
+            assert inspected.wait(timeout=5), "the collector never inspected"
+            # A's lock is freed and B takes the path, all while the collector is
+            # mid-sweep. This is the window the old collector unlinked into.
             q._release_lock(path)
-        with contextlib.suppress(Exception):
             b_id.append(q.enqueue(
                 proposal_type="edit", target_path=path, postimage="B's proposal",
                 base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
                 meta={"confidence": 0.4},
             ))
-        successor_ready.set()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
+            errors.append(exc)
+        finally:
+            successor_ready.set()
 
     real_exists = pending_module.os.path.exists
 
@@ -1124,9 +1127,54 @@ def test_orphan_gc_never_deletes_a_successors_lock(tmp_path) -> None:
     finally:
         pending_module.os.path.exists = real_exists
 
-    if b_id:
-        assert q.locks_held() == 1, "the collector freed the successor's lock"
-        held = q.held_locks()[0]
-        assert held["pending_id"] == b_id[0]
-        assert held["target_path"] == path
-        assert [e["pending_id"] for e in q.list()] == [b_id[0]]
+    # Every one of these is unconditional: a setup that did not actually reach
+    # the interleaving must FAIL rather than quietly report success.
+    assert not thread.is_alive(), "the successor thread did not finish"
+    assert not errors, errors
+    assert inspected.is_set(), "the collector never reached A's lock"
+    assert len(b_id) == 1, b_id
+    assert q.locks_held() == 1, "the collector freed the successor's lock"
+    held = q.held_locks()[0]
+    assert held["pending_id"] == b_id[0]
+    assert held["target_path"] == path
+    assert [e["pending_id"] for e in q.list()] == [b_id[0]]
+
+
+def test_orphan_gc_rechecks_the_holder_before_unlinking(tmp_path) -> None:
+    """The collector's ownership re-check, isolated.
+
+    The threaded test above proves the SERIALIZER closes the succession race,
+    and it passes with this re-check removed, so it does not prove the re-check.
+    This does: the lock file is replaced with one naming a different holder
+    between the collector's inspection and its unlink, exactly as a successor
+    would, and the collector must leave it alone.
+    """
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    root = str(tmp_path / "p")
+    path = "operator/contested.md"
+    a_id = _enqueued(q, path)
+    os.remove(os.path.join(root, f"{a_id}.json"))   # A's lock is now orphaned
+
+    lock_file = os.path.join(
+        root, "locks", pending_module._path_lock_filename(path),
+    )
+    real_exists = pending_module.os.path.exists
+
+    def swap_holder(target: str) -> bool:
+        out = real_exists(target)
+        if target.endswith(f"{a_id}.claimed"):
+            # A successor takes the path in the instant after inspection.
+            with open(lock_file, "w") as f:
+                json.dump({"pending_id": "b" * 32, "target_path": path,
+                           "owner_kind": "pending", "acquired_at": time.time()}, f)
+        return out
+
+    pending_module.os.path.exists = swap_holder
+    try:
+        removed = q.gc_orphan_locks()
+    finally:
+        pending_module.os.path.exists = real_exists
+
+    assert removed == 0, "the collector unlinked a lock it no longer owned"
+    assert q.locks_held() == 1
+    assert q.held_locks()[0]["pending_id"] == "b" * 32

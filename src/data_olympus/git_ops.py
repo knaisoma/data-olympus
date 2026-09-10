@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -65,6 +66,10 @@ class FfMergeResult:
 # of those extras is a construction where this parser would call something a
 # patch divider that git does not, truncate there, and accept a trailer block
 # git never parsed. Copy the table; do not approximate it.
+# git's trailer token grammar (trailer.c): ASCII alphanumeric and hyphen only.
+# A key outside it is not a trailer line, and one such line voids the block.
+_TRAILER_KEY_RE = re.compile(r"[A-Za-z0-9-]+")
+
 _PATCH_DIVIDER = "---"
 _ASCII_SPACE = " \t\r\n"
 
@@ -134,7 +139,14 @@ def _parse_trailers(message: str) -> dict[str, str]:
     trailers: dict[str, str] = {}
     for line in paragraphs[-1].split("\n"):
         key, sep, value = line.partition(": ")
-        if not sep or not key or " " in key:
+        # git requires a trailer token to be ASCII alphanumeric or hyphen
+        # (trailer.c), and one invalid line voids the WHOLE block. Rejecting
+        # only literal spaces in the key was not that rule: it admitted `@: x`,
+        # which git refuses outright, and `\tfoo: x`, which git treats as a
+        # CONTINUATION folded into the previous trailer's value, so git's
+        # KB-Target-Path became "a.md foo: x" while this parser read "a.md" and
+        # matched a target binding git would not have.
+        if not sep or not _TRAILER_KEY_RE.fullmatch(key):
             return {}
         if key in trailers:
             # A duplicate key is not something the builder produces, and
