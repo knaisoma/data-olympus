@@ -57,6 +57,10 @@ class Config:
     # are NEVER reclaimed by this TTL (they live until resolve/expiry). Startup
     # reclaims every auto-commit lock unconditionally (a fresh process holds none).
     auto_commit_lock_ttl_sec: int = 600
+    # How long a claimed pending entry may sit before the sweep
+    # RECONCILES it (issues #253, #254). Age only selects what to
+    # look at; the outcome comes from durable evidence.
+    pending_claim_ttl_sec: int = 900
     worktree_idle_sec: int = 3600
     git_key_path: str = "/tmp/git-key"
     audit_log_path: str = "/state/audit/events.log"
@@ -311,6 +315,19 @@ def load_config() -> Config:
             auto_commit_lock_ttl_sec,
         )
         auto_commit_lock_ttl_sec = 600
+    pending_claim_ttl_sec = int(os.getenv("KB_PENDING_CLAIM_TTL_SEC", "900"))
+    if pending_claim_ttl_sec <= 0:
+        # A non-positive TTL would select EVERY claim on every pass, including
+        # one a live resolver is still holding while it waits on the write
+        # serializer. Reconciliation is fenced and never restores without
+        # evidence, so this cannot corrupt state, but it would churn and would
+        # report a live resolve as uncertain. Clamp to the default.
+        _log.warning(
+            "KB_PENDING_CLAIM_TTL_SEC=%s is non-positive; clamping to 900s "
+            "(it would reconcile claims a live resolver still holds)",
+            pending_claim_ttl_sec,
+        )
+        pending_claim_ttl_sec = 900
     worktree_idle_sec = int(os.getenv("KB_WORKTREE_IDLE_SEC", "3600"))
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
     audit_log_path = os.getenv("KB_AUDIT_LOG_PATH", "/state/audit/events.log")
@@ -401,6 +418,7 @@ def load_config() -> Config:
         pending_timeout_sec=pending_timeout_sec,
         pending_queue_cap=pending_queue_cap,
         auto_commit_lock_ttl_sec=auto_commit_lock_ttl_sec,
+        pending_claim_ttl_sec=pending_claim_ttl_sec,
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
         audit_log_path=audit_log_path,

@@ -33,6 +33,29 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* **A dropped connection mid-approval no longer wedges a path forever, or
+  silently.** Approving a pending write claims the entry, holds its path lock,
+  commits, then releases both. If the process died in between, the entry was
+  left in a claimed state that nothing could reach: it was excluded from
+  `kb_list_pending`, the orphan-lock GC treated its sidecar as a legitimate lock
+  holder, and pending-owned locks were never TTL-reclaimed. The path stayed
+  refused with `rejected_path_lock_busy` across restarts, while the queue read
+  as empty, which is indistinguishable from "the decision was applied".
+
+  Entries now carry an explicit `state` (`pending`, `claimed` or `uncertain`)
+  and claimed ones are listed rather than hidden, health reports `path_locks`
+  with each lock's target path and age instead of only a count, and a background
+  pass reconciles claims older than `KB_PENDING_CLAIM_TTL_SEC` (default 900).
+  Reconciliation runs on evidence, not on age: the write records its own outcome
+  durably before anything else, and failing that the commit is looked up by its
+  new `KB-Pending-Id` trailer on the recorded session ref. Only a recorded
+  failure restores an entry to pending. Anything unproven stays `uncertain` with
+  its lock held and is re-checked on every later pass, because a rebase or a
+  squash can remove a commit that really was made, and restoring on its absence
+  would offer an already-applied decision for approval a second time. Operations
+  that rewrite session history defer while a claim on that branch has begun its
+  write. See `docs/serving.md`.
+
 * **Indexing a modest corpus no longer needs more than a gigabyte of memory.**
   The co-occurrence pass that powers query expansion counted every token pair in
   the corpus in one in-memory table. The per-document token cap bounded each

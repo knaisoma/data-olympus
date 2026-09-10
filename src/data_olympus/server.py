@@ -289,6 +289,31 @@ class MCPAuthMiddleware(Middleware):
             _current_principal.reset(token)
 
 
+
+def _claim_commit_finder(
+    state: Any,
+) -> Callable[[dict[str, Any]], bool | None] | None:
+    """Bind the claim-linked commit search to this server's git repository.
+
+    Returns None when there is no git handle, which makes every unrecorded
+    outcome ``uncertain`` rather than guessing. That is the correct default: an
+    absent search is not evidence of a non-commit.
+    """
+    git = getattr(state, "git", None)
+    if git is None:
+        return None
+
+    def find(record: dict[str, Any]) -> bool | None:
+        found: bool | None = git.find_claim_commit(
+            ref=str(record.get("session_ref") or ""),
+            since_sha=str(record.get("pre_write_ref_sha") or ""),
+            pending_id=str(record.get("pending_id") or ""),
+        )
+        return found
+
+    return find
+
+
 class ServerState:
     """Mutable runtime state shared across tool calls."""
 
@@ -579,7 +604,17 @@ def build_app(
 
         inner_reranker = _status_then_hybrid
     idx.reranker = make_id_tag_reranker(idx, inner=inner_reranker)
-    git = GitOps(kb_main_path)
+    # The pending queue is created below, so the guard is bound lazily: it
+    # answers "which claims on this ref would lose their commit evidence?" and
+    # is what makes a rebase or a branch deletion defer instead of destroying
+    # the only proof that an interrupted resolve committed (issues #253, #254).
+    _pending_holder: dict[str, Any] = {}
+
+    def _claims_at_risk(ref: str) -> list[Any]:
+        pending = _pending_holder.get("pending")
+        return list(pending.claims_at_risk(ref)) if pending is not None else []
+
+    git = GitOps(kb_main_path, claim_guard=_claims_at_risk)
     # retention_sec = the consult TTL: an entry older than that can never be
     # fresh, so it is safe to evict and keeps the ledger bounded (see
     # ConsultationLedger). is_fresh is always called with this same ttl.
@@ -604,6 +639,9 @@ def build_app(
         pending = PendingQueue(
             pending_root=config.pending_root, cap=config.pending_queue_cap
         )
+        # Close the lazy binding made above, so git's history-rewriting paths
+        # can now see which claims would lose their evidence.
+        _pending_holder["pending"] = pending
         rate_limiter = SlidingWindowLimiter(
             max_per_hour=config.rate_limit_per_hour,
             max_per_ip_per_hour=config.rate_limit_per_ip_per_hour,
@@ -1542,6 +1580,12 @@ def main() -> None:
                     # reclaimed each pass so a hard kill mid-commit does not wedge
                     # the path with rejected_path_lock_busy forever.
                     auto_commit_lock_ttl_sec=config.auto_commit_lock_ttl_sec,
+                    # Claims left by an interrupted resolve (issues #253, #254).
+                    # The TTL selects what to look at; the outcome comes from
+                    # the claim's own recorded evidence, and failing that from
+                    # searching the session ref for the claim-linked commit.
+                    claim_ttl_sec=config.pending_claim_ttl_sec,
+                    find_claim_commit=_claim_commit_finder(state),
                     # The reclaim runs under the SAME write serializer that
                     # path_lock acquire/release runs under, so a stale holder that
                     # resumes cannot free+let-a-successor-acquire the path mid-scan.

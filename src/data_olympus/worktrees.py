@@ -95,6 +95,16 @@ class WorktreeRegistry:
             # will retry; once pushed, next GC pass will clean up).
             if self._has_unpushed_commits(wt_path):
                 continue
+            # Removing the worktree removes the lookup location a claim's
+            # commit would be searched from, and deleting the branch below
+            # removes the commit itself. Both destroy the only evidence that an
+            # interrupted resolve committed, so defer while such a claim is
+            # outstanding on this session (issues #253, #254). The next GC pass
+            # retries; reconciliation runs on its own schedule meanwhile.
+            try:
+                self._git.delete_branch_guard(f"kb-session/{entry}")
+            except Exception:  # noqa: BLE001 - defer, never fail the GC loop
+                continue
             self._git.worktree_remove(wt_path, force=True)
             # CRITICAL: also delete the kb-session branch. get_or_create() uses
             # `worktree add -b kb-session/<safe_id>`, which FAILS if the branch

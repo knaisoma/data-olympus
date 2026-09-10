@@ -4,9 +4,10 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 
@@ -54,11 +55,69 @@ class FfMergeResult:
     remote_sha: str | None = None
 
 
+class ClaimEvidenceAtRiskError(Exception):
+    """A history-rewriting operation was deferred to preserve claim evidence.
+
+    An interrupted resolve may have left a trailer-bearing commit on a session
+    branch and no durable record of it. A rebase can drop that commit (git drops
+    a clean cherry-pick equivalent, and one that becomes empty), a squash can
+    rewrite the trailer away, and deleting the branch removes it outright. Any
+    of those turns "did this decision commit?" into a question nothing can
+    answer, so the operation defers and is retried later (issues #253, #254).
+    """
+
+    def __init__(self, *, ref: str, pending_ids: list[str]) -> None:
+        self.ref = ref
+        self.pending_ids = pending_ids
+        super().__init__(
+            f"deferred on {ref}: would destroy commit evidence for unresolved "
+            f"claim(s) {', '.join(pending_ids)}"
+        )
+
+
 class GitOps:
     """Wraps git subprocess calls for a single repo path."""
 
-    def __init__(self, repo_path: Path) -> None:
+    def __init__(
+        self,
+        repo_path: Path,
+        *,
+        claim_guard: Callable[[str], list[Any]] | None = None,
+    ) -> None:
         self._repo = repo_path
+        # Returns the claims on a ref whose evidence a rewrite would destroy.
+        # Optional: without it these operations behave exactly as before.
+        self._claim_guard = claim_guard
+
+    def _defer_if_claims_at_risk(self, ref: str) -> None:
+        if self._claim_guard is None or not ref:
+            return
+        try:
+            at_risk = self._claim_guard(ref)
+        except Exception:  # noqa: BLE001 - a broken guard must not wedge git
+            return
+        if not at_risk:
+            return
+        ids = [
+            str(c.get("pending_id") if isinstance(c, dict) else c)
+            for c in at_risk
+        ]
+        raise ClaimEvidenceAtRiskError(ref=ref, pending_ids=ids)
+
+    def delete_branch_guard(self, branch: str) -> None:
+        """Raise :class:`ClaimEvidenceAtRiskError` if deleting ``branch`` (or
+        removing its worktree) would destroy claim evidence. Lets a caller check
+        BEFORE it starts a multi-step teardown, so it defers the whole sequence
+        rather than removing the worktree and then failing on the branch."""
+        self._defer_if_claims_at_risk(branch)
+
+    def current_branch(self, worktree_path: str) -> str:
+        """The branch checked out in ``worktree_path``, or "" if unreadable."""
+        result = subprocess.run(
+            ["git", "-C", worktree_path, "rev-parse", "--abbrev-ref", "HEAD"],
+            check=False, capture_output=True, text=True,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
 
     def _run(
         self,
@@ -149,6 +208,44 @@ class GitOps:
         )
         return result.returncode == 0
 
+    def find_claim_commit(
+        self, *, ref: str, since_sha: str, pending_id: str,
+        timeout_sec: float = 30.0,
+    ) -> bool | None:
+        """Is there a commit on ``ref`` after ``since_sha`` carrying this claim?
+
+        Recovery for issues #253 and #254 asks this when an interrupted resolve
+        left no durable outcome record. The commit message and the tree belong
+        to the same commit object, so a ``KB-Pending-Id`` trailer cannot exist
+        without the content, and finding one PROVES the decision committed.
+
+        Three-valued on purpose:
+
+        - ``True``: found. The decision committed.
+        - ``False``: searched successfully and it is not there.
+        - ``None``: could not search (no ref, no pre-write sha, a missing
+          branch, a timeout, an unreadable repository).
+
+        ``False`` is deliberately NOT proof that nothing committed. A rebase can
+        drop a commit that upstream already acquired as an equivalent patch, and
+        a squash can rewrite the trailer away, both while leaving a perfectly
+        readable branch. Only the caller's own recorded outcome proves a
+        non-commit; a negative search here means uncertain.
+        """
+        if not ref or not since_sha or not pending_id:
+            return None
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self._repo), "log", "--format=%B",
+                 f"{since_sha}..{ref}"],
+                check=False, capture_output=True, text=True, timeout=timeout_sec,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        return f"KB-Pending-Id: {pending_id}" in result.stdout
+
     def worktree_add(self, worktree_path: str, *, branch: str) -> None:
         """git worktree add <worktree_path> for <branch>. Idempotent: a no-op
         if the worktree already exists at that path.
@@ -185,7 +282,12 @@ class GitOps:
         """git branch -D <branch> in the main repo. Idempotent: a no-op if the
         branch does not exist. Used after worktree removal so a GC'd session's
         ``kb-session/<safe_id>`` branch does not linger and collide with the
-        ``worktree add -b`` a returning session performs."""
+        ``worktree add -b`` a returning session performs.
+
+        Defers with :class:`ClaimEvidenceAtRiskError` while an unresolved claim
+        on this branch has begun its write: deleting the ref would destroy the
+        only remaining evidence of whether that decision committed."""
+        self._defer_if_claims_at_risk(branch)
         subprocess.run(
             ["git", "-C", str(self._repo), "branch", "-D", branch],
             check=False, capture_output=True,
@@ -285,7 +387,12 @@ class GitOps:
         session branch onto it. Returns the resulting ``origin/main`` sha (or ""
         when there is no origin). Raises :class:`RebaseConflictError` on a conflict
         (the caller demotes to pending). ``subprocess.TimeoutExpired`` propagates
-        for a hung remote (retryable). No-op when there is no ``origin`` remote."""
+        for a hung remote (retryable). No-op when there is no ``origin`` remote.
+
+        Defers with :class:`ClaimEvidenceAtRiskError` when an unresolved claim on
+        this branch has already begun its write, because the rebase could drop
+        the very commit that would prove that decision committed."""
+        self._defer_if_claims_at_risk(self.current_branch(worktree_path))
         remotes = subprocess.run(
             ["git", "-C", worktree_path, "remote"],
             check=False, capture_output=True, text=True, timeout=timeout_sec,

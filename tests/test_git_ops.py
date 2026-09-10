@@ -213,3 +213,125 @@ def test_get_remote_url_returns_none_if_no_remote(tmp_path):
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
     assert get_remote_url(str(repo)) is None
+
+
+def test_find_claim_commit_finds_the_trailer(tmp_path) -> None:  # noqa: ANN001
+    """Recovery asks git whether the claim-linked commit exists. Found is the
+    only answer that proves the decision committed (issues #253, #254)."""
+    import subprocess
+
+    from data_olympus.git_ops import GitOps
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}
+
+    def run(*args: str) -> str:
+        return subprocess.run(list(args), cwd=repo, check=True, env=env,
+                              capture_output=True, text=True).stdout.strip()
+
+    run("git", "init", "-q", "--initial-branch=main")
+    (repo / "a.md").write_text("a\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "seed")
+    before = run("git", "rev-parse", "HEAD")
+    (repo / "b.md").write_text("b\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "resolve: b\n\nKB-Pending-Id: " + "c" * 32)
+
+    git = GitOps(str(repo))
+    assert git.find_claim_commit(
+        ref="main", since_sha=before, pending_id="c" * 32) is True
+    assert git.find_claim_commit(
+        ref="main", since_sha=before, pending_id="d" * 32) is False
+
+
+def test_find_claim_commit_cannot_search_returns_none(tmp_path) -> None:  # noqa: ANN001
+    """A missing ref, a missing pre-write sha, or an unreadable repository is
+    NOT absence. It is 'cannot tell', and the caller must treat it as uncertain
+    rather than concluding nothing committed."""
+    import subprocess
+
+    from data_olympus.git_ops import GitOps
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    git = GitOps(str(repo))
+
+    assert git.find_claim_commit(ref="", since_sha="x" * 40, pending_id="c" * 32) is None
+    assert git.find_claim_commit(ref="main", since_sha="", pending_id="c" * 32) is None
+    assert git.find_claim_commit(
+        ref="no-such-branch", since_sha="x" * 40, pending_id="c" * 32) is None
+
+
+def test_refresh_base_defers_while_a_claim_could_lose_its_commit(tmp_path) -> None:  # noqa: ANN001
+    """A rebase can drop the trailer-bearing commit an interrupted resolve left
+    behind, and then nothing can establish whether that decision committed. The
+    rebase defers while such a claim is outstanding (issues #253, #254)."""
+    import subprocess
+
+    from data_olympus.git_ops import ClaimEvidenceAtRiskError, GitOps
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo,
+                   check=True, env=env)
+    (repo / "a.md").write_text("a\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=env)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, check=True, env=env)
+    git = GitOps(str(repo), claim_guard=lambda _ref: ["a" * 32])
+
+    try:
+        git.refresh_base(str(repo))
+    except ClaimEvidenceAtRiskError as exc:
+        assert "a" * 32 in str(exc)
+    else:
+        raise AssertionError("the rebase must defer, not run")
+
+
+def test_delete_branch_defers_while_a_claim_could_lose_its_commit(tmp_path) -> None:  # noqa: ANN001
+    import subprocess
+
+    from data_olympus.git_ops import ClaimEvidenceAtRiskError, GitOps
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo,
+                   check=True, env=env)
+    (repo / "a.md").write_text("a\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=env)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, check=True, env=env)
+    subprocess.run(["git", "branch", "kb-session/x"], cwd=repo, check=True, env=env)
+
+    git = GitOps(str(repo), claim_guard=lambda _ref: ["b" * 32])
+    try:
+        git.delete_branch("kb-session/x")
+    except ClaimEvidenceAtRiskError:
+        pass
+    else:
+        raise AssertionError("branch deletion must defer, not run")
+    # The branch, and with it the evidence, is still there.
+    assert subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
+         "refs/heads/kb-session/x"], check=False, capture_output=True,
+    ).returncode == 0
+
+
+def test_no_claim_guard_means_no_deferral(tmp_path) -> None:  # noqa: ANN001
+    """The guard is opt-in: a GitOps built without one behaves exactly as before."""
+    import subprocess
+
+    from data_olympus.git_ops import GitOps
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo,
+                   check=True)
+    # No origin remote, so refresh_base is a documented no-op returning "".
+    assert GitOps(str(repo)).refresh_base(str(repo)) == ""

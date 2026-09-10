@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from contextlib import AbstractContextManager
 
 from data_olympus.durable import atomic_remove, atomic_write_json
@@ -52,6 +52,17 @@ class PendingAlreadyResolvedError(Exception):
     error is raised so exactly one resolve proceeds."""
 
 
+class ClaimFencedError(Exception):
+    """The caller's claim on this entry is no longer the one on disk.
+
+    A resolver can be reclaimed while it waits on the write serializer. If it
+    then ran its unconditional finalize or restore it would release a lock and
+    delete a sidecar that now belong to a successor. Every completion is
+    therefore fenced on the ``claim_token`` stamped at claim time, and a caller
+    whose token no longer matches mutates NOTHING and sees this instead.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedPending:
     pending_id: str
@@ -62,6 +73,10 @@ class ResolvedPending:
     base_blob_sha: str | None
     target_file_hash: str | None
     meta: dict[str, Any]
+    # Ownership token for this claim, minted by ``_claim``. Hand it back to
+    # ``finalize_resolve`` / ``restore_resolve`` / ``record_outcome`` so those
+    # calls are fenced against a reclaim that happened in between.
+    claim_token: str = ""
 
 
 # ``PendingQueue.list`` shadows the builtin inside the class body, so a bare
@@ -270,6 +285,10 @@ class PendingQueue:
                 # A concurrent claim renames the file out from under this walk.
                 # Skipping is correct: the next pass sees it under its new name.
                 continue
+            if state == "claimed":
+                reconcile = entry.get("reconcile") or {}
+                if reconcile.get("state") == "uncertain":
+                    state = "uncertain"
             out.append({
                 "state": state,
                 "pending_id": entry["pending_id"],
@@ -340,7 +359,17 @@ class PendingQueue:
             raise PendingAlreadyResolvedError(pending_id) from None
         with open(claimed) as f:
             data: dict[str, Any] = json.load(f)
-            return data
+        # Stamp the claim EXPLICITLY. The rename alone records neither when the
+        # claim happened nor who holds it, and recovery needs both: an age to
+        # decide when to look, and a token to fence completion against a
+        # reclaim. Written back through the durable helper so a crash here
+        # leaves either the pre-stamp or the post-stamp record, never a torn one.
+        data["claim"] = {
+            "claim_token": uuid.uuid4().hex,
+            "claimed_at": time.time(),
+        }
+        atomic_write_json(claimed, data)
+        return data
 
     def _finish_claim(self, pending_id: str, target_path: str) -> None:
         """Release the path lock and remove the ``.claimed`` sidecar. Called after
@@ -353,6 +382,7 @@ class PendingQueue:
     ) -> ResolvedPending:
         postimage = edited_text if edited_text is not None else entry["postimage"]
         return ResolvedPending(
+            claim_token=entry.get("claim", {}).get("claim_token", ""),
             pending_id=pending_id,
             proposal_type=entry["proposal_type"],
             target_path=entry["target_path"],
@@ -388,20 +418,312 @@ class PendingQueue:
         can grab the path in the window between claim and commit, and the operator's
         proposal is never lost to a post-claim gate rejection."""
         entry = self._claim(pending_id)
-        return self._to_resolved(pending_id, entry, edited_text)
+        resolved = self._to_resolved(pending_id, entry, edited_text)
+        if edited_text is not None:
+            # Persist the EFFECTIVE approved bytes. ``_to_resolved`` substitutes
+            # ``edited_text`` in memory only, so without this the stored
+            # postimage is not what the operator approved and not what would be
+            # committed. Recovery must reason about the approved operation, not
+            # about the superseded proposal.
+            entry["effective_postimage"] = edited_text
+            atomic_write_json(
+                os.path.join(self._root, f"{pending_id}.claimed"), entry,
+            )
+        return resolved
 
-    def finalize_resolve(self, pending_id: str, target_path: str) -> None:
-        """Commit succeeded: release the path lock and remove the claimed entry."""
+    # --- claim records, fencing and outcome reconciliation -------------------
+
+    def claim_record(self, pending_id: str) -> dict[str, Any]:
+        """The on-disk ``<pid>.claimed`` document. Raises if there is none."""
+        path = os.path.join(self._root, f"{pending_id}.claimed")
+        try:
+            with open(path) as f:
+                entry: dict[str, Any] = json.load(f)
+        except FileNotFoundError:
+            raise PendingNotFoundError(pending_id) from None
+        claim = entry.get("claim", {})
+        return {**entry, **claim}
+
+    def _read_claim(self, pending_id: str) -> tuple[str, dict[str, Any]]:
+        path = os.path.join(self._root, f"{pending_id}.claimed")
+        try:
+            with open(path) as f:
+                entry: dict[str, Any] = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            raise ClaimFencedError(pending_id) from None
+        return path, entry
+
+    def _check_token(self, entry: dict[str, Any], claim_token: str | None) -> None:
+        """Fence a completion on the token stamped at claim time.
+
+        ``claim_token=None`` means an unfenced legacy call and is accepted, so a
+        caller that predates the token still works; every in-tree caller passes
+        one. A token that is present and does NOT match is refused, because the
+        entry on disk belongs to somebody else now.
+        """
+        if claim_token is None:
+            return
+        if entry.get("claim", {}).get("claim_token") != claim_token:
+            raise ClaimFencedError(entry.get("pending_id", ""))
+
+    def record_write_context(
+        self, pending_id: str, *, claim_token: str | None,
+        session_ref: str, pre_write_ref_sha: str,
+    ) -> None:
+        """Record where the commit will land, BEFORE the write happens.
+
+        Recovery needs the ref the commit would be on and an immutable pre-write
+        sha to search from. Both must be captured before the write, because
+        after a crash there is nobody left to capture them.
+        """
+        path, entry = self._read_claim(pending_id)
+        self._check_token(entry, claim_token)
+        entry["write_context"] = {
+            "session_ref": session_ref,
+            "pre_write_ref_sha": pre_write_ref_sha,
+        }
+        atomic_write_json(path, entry)
+
+    def record_outcome(
+        self, pending_id: str, *, claim_token: str | None,
+        commit_sha: str | None = None, failure: str | None = None,
+        unknown: str | None = None,
+    ) -> None:
+        """Record what the write actually did, as durable positive evidence.
+
+        Exactly one of ``commit_sha`` (it committed), ``failure`` (it provably
+        did not) or ``unknown`` (it may have) must be given. ``unknown`` is a
+        real outcome, not an omission: a commit whose result could not be
+        observed must never be classified as a proven non-commit, because a
+        restore would then re-present a decision that had already been applied.
+
+        Call this BEFORE any post-commit work that could obscure the result.
+        """
+        given = [x is not None for x in (commit_sha, failure, unknown)]
+        if sum(given) != 1:
+            raise ValueError(
+                "record_outcome takes exactly one of commit_sha, failure, unknown"
+            )
+        path, entry = self._read_claim(pending_id)
+        self._check_token(entry, claim_token)
+        if commit_sha is not None:
+            outcome = {"outcome": "committed", "commit_sha": commit_sha}
+        elif failure is not None:
+            outcome = {"outcome": "failed", "reason": failure}
+        else:
+            outcome = {"outcome": "unknown", "reason": unknown or ""}
+        entry["write_outcome"] = {**outcome, "recorded_at": time.time()}
+        atomic_write_json(path, entry)
+
+    def finalize_resolve(
+        self, pending_id: str, target_path: str, *, claim_token: str | None = None,
+    ) -> None:
+        """Commit succeeded: release the path lock and remove the claimed entry.
+
+        Fenced on ``claim_token``: a resolver that was reclaimed while it waited
+        on the write serializer would otherwise release a successor's lock and
+        delete a successor's sidecar.
+        """
+        if claim_token is not None:
+            _path, entry = self._read_claim(pending_id)
+            self._check_token(entry, claim_token)
         self._finish_claim(pending_id, target_path)
 
-    def restore_resolve(self, pending_id: str) -> None:
+    def restore_resolve(
+        self, pending_id: str, *, claim_token: str | None = None,
+    ) -> None:
         """A gate rejected the claimed entry: rename ``<pid>.claimed`` back to
         ``<pid>.json`` so the operator can re-resolve it, keeping the path lock
-        held (it was never released). Idempotent: a missing sidecar is a no-op."""
+        held (it was never released). Idempotent: a missing sidecar is a no-op
+        for an unfenced call. Fenced on ``claim_token`` for the same reason as
+        :meth:`finalize_resolve`."""
         claimed = os.path.join(self._root, f"{pending_id}.claimed")
         live = os.path.join(self._root, f"{pending_id}.json")
+        if claim_token is not None:
+            _path, entry = self._read_claim(pending_id)
+            self._check_token(entry, claim_token)
+            entry.pop("claim", None)
+            entry.pop("write_outcome", None)
+            entry.pop("write_context", None)
+            entry.pop("reconcile", None)
+            atomic_write_json(live, entry)
+            atomic_remove(claimed)
+            return
         with contextlib.suppress(FileNotFoundError):
             os.rename(claimed, live)
+
+    def claims_at_risk(self, session_ref: str) -> _Records:
+        """Claims on ``session_ref`` whose evidence a history rewrite would
+        destroy.
+
+        A rebase can drop a commit upstream already acquired as an equivalent
+        patch, a squash can rewrite its trailer away, and deleting the branch
+        removes it outright. Any of those turns "this decision committed" into
+        an unanswerable question, so the operations that do them reconcile
+        first and defer while this is non-empty.
+
+        Only claims that have STARTED their write count. A claim with no
+        recorded write context has no commit to lose, and counting it would
+        deadlock a resolve's own base refresh against its own claim, since that
+        refresh runs before the write.
+        """
+        if not session_ref or not os.path.isdir(self._root):
+            return []
+        out: _Records = []
+        for name in sorted(os.listdir(self._root)):
+            if not name.endswith(".claimed"):
+                continue
+            try:
+                with open(os.path.join(self._root, name)) as f:
+                    entry = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            context = entry.get("write_context") or {}
+            if context.get("session_ref") != session_ref:
+                continue
+            out.append({
+                "pending_id": entry.get("pending_id"),
+                "target_path": entry.get("target_path"),
+                "session_ref": session_ref,
+            })
+        return out
+
+    def reconcile_claims(
+        self,
+        *,
+        min_age_sec: float,
+        find_commit: Callable[[dict[str, Any]], bool | None] | None = None,
+        now: float | None = None,
+        serializer: AbstractContextManager[Any] | None = None,
+    ) -> _Records:
+        """Resolve claims that outlived a live resolver, on EVIDENCE not on age.
+
+        A ``<pid>.claimed`` sidecar is unreachable by every other reaper: it is
+        excluded from :meth:`size`, ``gc_orphan_locks`` treats it as a
+        legitimate lock holder, and pending-owned locks are never TTL-reclaimed.
+        So an interrupted resolve holds its path lock forever and every write to
+        that path is refused (issues #253, #254).
+
+        ``min_age_sec`` only decides WHICH claims to look at. It never decides
+        the outcome. The outcome comes from durable evidence, and the default is
+        to do nothing:
+
+        - a recorded commit sha means the decision committed. Finalize it, and
+          never present it again: re-resolving a committed entry duplicates it.
+        - a recorded failure means it provably did not commit. Restore it to
+          pending, keeping the path lock, so the operator can re-resolve.
+        - otherwise the outcome was never durably recorded, which covers a crash
+          before git's exit was observed, a failed sha lookup, and a failure to
+          persist the record. ``find_commit`` may search for the claim-linked
+          commit; True means it committed. ANYTHING ELSE is ``uncertain``: the
+          entry keeps its lock, is reported with a reason, and is retried on the
+          next sweep so a transient fault heals itself.
+
+        A negative search is deliberately NOT a restore. A rebase or a squash can
+        drop the trailer-bearing commit while leaving a perfectly readable
+        branch, so absence of evidence would otherwise re-present a decision that
+        had already been applied.
+        """
+        if serializer is not None:
+            with serializer:
+                return self._reconcile_claims_locked(min_age_sec, find_commit, now)
+        return self._reconcile_claims_locked(min_age_sec, find_commit, now)
+
+    def _reconcile_claims_locked(
+        self,
+        min_age_sec: float,
+        find_commit: Callable[[dict[str, Any]], bool | None] | None,
+        now: float | None,
+    ) -> _Records:
+        if not os.path.isdir(self._root):
+            return []
+        moment = time.time() if now is None else now
+        results: _Records = []
+        for name in sorted(os.listdir(self._root)):
+            if not name.endswith(".claimed"):
+                continue
+            pending_id = name[: -len(".claimed")]
+            try:
+                _path, entry = self._read_claim(pending_id)
+            except ClaimFencedError:
+                continue
+            claim = entry.get("claim", {})
+            claimed_at = claim.get("claimed_at")
+            if not isinstance(claimed_at, (int, float)):
+                # A sidecar with no claim stamp predates this record. Treat it
+                # as arbitrarily old: it cannot belong to a live resolver in
+                # this process, and leaving it is the wedge being fixed.
+                claimed_at = 0.0
+            if moment - claimed_at < min_age_sec:
+                continue
+            results.append(
+                self._reconcile_one(pending_id, entry, find_commit, moment)
+            )
+        return results
+
+    def _reconcile_one(
+        self,
+        pending_id: str,
+        entry: dict[str, Any],
+        find_commit: Callable[[dict[str, Any]], bool | None] | None,
+        moment: float,
+    ) -> dict[str, Any]:
+        target_path = entry["target_path"]
+        token = entry.get("claim", {}).get("claim_token")
+        outcome = entry.get("write_outcome") or {}
+        kind = outcome.get("outcome")
+        base = {"pending_id": pending_id, "target_path": target_path}
+
+        if kind == "committed":
+            self.finalize_resolve(pending_id, target_path, claim_token=token)
+            return {**base, "outcome": "committed",
+                    "commit_sha": outcome.get("commit_sha"),
+                    "reason": "the write recorded a durable commit"}
+        if kind == "failed":
+            self.restore_resolve(pending_id, claim_token=token)
+            return {**base, "outcome": "restored",
+                    "reason": outcome.get("reason")
+                              or "the write recorded a failure before committing"}
+
+        record = {
+            **{k: v for k, v in entry.items() if k != "claim"},
+            **entry.get("claim", {}),
+            **entry.get("write_context", {}),
+            "pending_id": pending_id,
+        }
+        found = None
+        search_error = ""
+        if find_commit is not None:
+            try:
+                found = find_commit(record)
+            except Exception as exc:  # noqa: BLE001 - a failed search is uncertainty
+                search_error = f"{type(exc).__name__}: {exc}"
+        if found is True:
+            self.finalize_resolve(pending_id, target_path, claim_token=token)
+            return {**base, "outcome": "committed",
+                    "reason": "the claim-linked commit was found in the "
+                              "recorded ref"}
+
+        reason = (
+            "no durable outcome was recorded and the claim-linked commit could "
+            "not be found, so it is not known whether this decision committed. "
+            "The path lock is retained deliberately; reconciliation is retried "
+            "on every sweep."
+        )
+        if search_error:
+            reason += f" Search error: {search_error}"
+        elif find_commit is None:
+            reason = (
+                "no durable outcome was recorded and no commit search was "
+                "available, so it is not known whether this decision committed. "
+                "The path lock is retained deliberately."
+            )
+        entry["reconcile"] = {"state": "uncertain", "reason": reason,
+                              "last_checked_at": moment}
+        atomic_write_json(
+            os.path.join(self._root, f"{pending_id}.claimed"), entry,
+        )
+        return {**base, "outcome": "uncertain", "reason": reason}
 
     def reject(self, pending_id: str) -> None:
         entry = self._claim(pending_id)

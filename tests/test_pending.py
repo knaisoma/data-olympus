@@ -650,3 +650,218 @@ def test_held_locks_survive_the_claim_that_keeps_them(tmp_path) -> None:
 def test_held_locks_is_empty_with_no_locks(tmp_path) -> None:
     q = PendingQueue(pending_root=str(tmp_path / "p"))
     assert q.held_locks() == []
+
+
+# --- fenced completion and outcome reconciliation (issues #253, #254) --------
+
+
+def _claimed(q: PendingQueue, path: str = "operator/notes.md"):
+    pending_id = _enqueued(q, path)
+    resolved = q.claim_for_resolve(pending_id)
+    return pending_id, resolved
+
+
+def test_claim_stamps_a_token_and_a_time(tmp_path) -> None:
+    """The claim is an explicit record, not an inference from a rename. A rename
+    carries no reliable timestamp and no ownership token, and both are needed to
+    tell an abandoned claim from a live resolver."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+
+    assert resolved.claim_token
+    record = q.claim_record(pending_id)
+    assert record["claim_token"] == resolved.claim_token
+    assert record["claimed_at"] > 0
+
+
+def test_finalize_is_fenced_on_the_claim_token(tmp_path) -> None:
+    """A resolver reclaimed while it was queued must not release a lock or
+    delete a sidecar that now belong to a successor."""
+    from data_olympus.pending import ClaimFencedError
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+
+    with pytest.raises(ClaimFencedError):
+        q.finalize_resolve(
+            pending_id, "operator/notes.md", claim_token="stale-token",
+        )
+
+    # Nothing moved: the successor's state is intact.
+    assert q.claim_record(pending_id)["claim_token"] == resolved.claim_token
+    assert q.locks_held() == 1
+
+
+def test_restore_is_fenced_on_the_claim_token(tmp_path) -> None:
+    from data_olympus.pending import ClaimFencedError
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+
+    with pytest.raises(ClaimFencedError):
+        q.restore_resolve(pending_id, claim_token="stale-token")
+
+    assert [e["state"] for e in q.list()] == ["claimed"]
+
+
+def test_a_recorded_commit_is_finalized_never_re_presented(tmp_path) -> None:
+    """Positive evidence that the write committed. Re-resolving a committed
+    entry would duplicate it, so it is consumed, not restored."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+    q.record_outcome(
+        pending_id, claim_token=resolved.claim_token, commit_sha="a" * 40,
+    )
+
+    results = q.reconcile_claims(min_age_sec=0)
+
+    assert [r["outcome"] for r in results] == ["committed"]
+    assert q.list() == []
+    assert q.locks_held() == 0
+
+
+def test_a_recorded_failure_is_restored_to_pending(tmp_path) -> None:
+    """Positive evidence that the write did NOT commit is the only thing that
+    authorises a restore."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+    q.record_outcome(
+        pending_id, claim_token=resolved.claim_token, failure="commit rejected",
+    )
+
+    results = q.reconcile_claims(min_age_sec=0)
+
+    assert [r["outcome"] for r in results] == ["restored"]
+    entries = q.list()
+    assert [e["state"] for e in entries] == ["pending"]
+    assert entries[0]["pending_id"] == pending_id
+    # The path lock is preserved across the restore: the entry is live again.
+    assert q.locks_held() == 1
+
+
+def test_an_unrecorded_outcome_searches_for_the_commit(tmp_path) -> None:
+    """The one window the search covers: git may have committed but no durable
+    outcome was recorded. Finding the claim-linked commit proves it did."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+    seen = []
+
+    def find_commit(record):  # noqa: ANN001, ANN202
+        seen.append(record["pending_id"])
+        return True
+
+    results = q.reconcile_claims(min_age_sec=0, find_commit=find_commit)
+
+    assert seen == [pending_id]
+    assert [r["outcome"] for r in results] == ["committed"]
+    assert q.locks_held() == 0
+
+
+def test_a_negative_search_is_uncertain_and_never_a_restore(tmp_path) -> None:
+    """The refuted rule. A negative search cannot prove non-commitment: a rebase
+    or a squash can drop the trailer-bearing commit while leaving a readable
+    branch, so restoring on absence would re-present an already-committed
+    decision. Absence yields uncertain, and the lock is kept."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+
+    results = q.reconcile_claims(min_age_sec=0, find_commit=lambda _r: False)
+
+    assert [r["outcome"] for r in results] == ["uncertain"]
+    entries = q.list()
+    assert [e["state"] for e in entries] == ["uncertain"]
+    assert entries[0]["pending_id"] == pending_id
+    assert q.locks_held() == 1
+    assert results[0]["reason"]
+
+
+def test_age_alone_never_resolves_a_claim(tmp_path) -> None:
+    """The TTL selects an entry for reconciliation. It never decides the
+    outcome: with no recorded outcome and no way to search, the answer is
+    uncertain, not a restore and not a finalize."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+
+    results = q.reconcile_claims(min_age_sec=0)
+
+    assert [r["outcome"] for r in results] == ["uncertain"]
+    assert q.locks_held() == 1
+    assert [e["pending_id"] for e in q.list()] == [pending_id]
+
+
+def test_a_fresh_claim_is_left_alone(tmp_path) -> None:
+    """A live resolver's claim must not be reclaimed out from under it."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    _claimed(q)
+
+    assert q.reconcile_claims(min_age_sec=3600) == []
+    assert [e["state"] for e in q.list()] == ["claimed"]
+
+
+def test_an_uncertain_claim_is_retried_and_can_still_resolve(tmp_path) -> None:
+    """A transient unreadable repository must heal itself. Reconciliation runs
+    on every sweep rather than deciding once and giving up."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    _claimed(q)
+
+    assert [r["outcome"] for r in q.reconcile_claims(
+        min_age_sec=0, find_commit=lambda _r: None)] == ["uncertain"]
+    assert [r["outcome"] for r in q.reconcile_claims(
+        min_age_sec=0, find_commit=lambda _r: True)] == ["committed"]
+    assert q.locks_held() == 0
+
+
+def test_reconcile_records_the_write_context_for_the_search(tmp_path) -> None:
+    """The searcher needs the ref the commit would be on and an immutable
+    pre-write sha, both captured BEFORE the write."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+    q.record_write_context(
+        pending_id, claim_token=resolved.claim_token,
+        session_ref="kb-session/abc", pre_write_ref_sha="b" * 40,
+    )
+    captured = {}
+
+    q.reconcile_claims(min_age_sec=0,
+                       find_commit=lambda r: captured.update(r) or True)
+
+    assert captured["session_ref"] == "kb-session/abc"
+    assert captured["pre_write_ref_sha"] == "b" * 40
+    assert captured["target_path"] == "operator/notes.md"
+
+
+def test_claims_at_risk_only_counts_writes_that_may_have_committed(tmp_path) -> None:
+    """A rebase or a branch deletion can destroy the evidence recovery needs, so
+    those operations defer while a claim on that ref might have a commit.
+
+    "Might have a commit" starts at the write, not at the claim: a claim that has
+    not written anything has no commit to lose, and treating it as at risk would
+    deadlock the resolve's own refresh_base against its own claim.
+    """
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+
+    assert q.claims_at_risk("kb-session/abc") == []
+
+    q.record_write_context(
+        pending_id, claim_token=resolved.claim_token,
+        session_ref="kb-session/abc", pre_write_ref_sha="b" * 40,
+    )
+    at_risk = q.claims_at_risk("kb-session/abc")
+    assert [c["pending_id"] for c in at_risk] == [pending_id]
+    assert q.claims_at_risk("kb-session/other") == []
+
+
+def test_a_finalized_claim_is_no_longer_at_risk(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+    q.record_write_context(
+        pending_id, claim_token=resolved.claim_token,
+        session_ref="kb-session/abc", pre_write_ref_sha="b" * 40,
+    )
+    q.record_outcome(
+        pending_id, claim_token=resolved.claim_token, commit_sha="a" * 40,
+    )
+    q.reconcile_claims(min_age_sec=0)
+
+    assert q.claims_at_risk("kb-session/abc") == []

@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from data_olympus.audit_trailers import build_commit_message
@@ -334,6 +335,7 @@ def _commit_in_worktree(
     hold_path_lock: bool = False,
     secret_scan_override: bool = False,
     governed_target_check: bool = False,
+    claim_recorder: _ClaimRecorder | None = None,
 ) -> tuple[str, str, SecretMatch | None]:
     """Serialized write -> git add -> commit -> enqueue critical section.
 
@@ -437,6 +439,9 @@ def _commit_in_worktree(
                 proposal_type=proposal_type,
                 target_tier=target_tier,
                 target_path=target_path,
+                pending_id=(
+                    claim_recorder.pending_id if claim_recorder else None
+                ),
             )
 
             # 3. Symlink-escape containment.
@@ -543,23 +548,69 @@ def _commit_in_worktree(
                     raise _WriteDemoted("governed_target")
 
             # 6. Write + add + commit + enqueue; reset on any post-add failure.
+            #
+            # The three git calls below are deliberately NOT one try block any
+            # more (issues #253, #254). They fail with different meanings, and
+            # collapsing them made every failure look like "nothing committed",
+            # which is exactly the misclassification that would restore an
+            # already-applied decision:
+            #
+            #   add fails                     -> nothing committed, provably
+            #   commit exits non-zero         -> nothing committed, provably
+            #   commit fails any other way    -> UNKNOWN, a commit may exist
+            #   rev-parse fails               -> UNKNOWN, the commit is made
+            #
+            # Record the write context first, so a crash from here on still
+            # leaves recovery something to search from.
+            if claim_recorder is not None:
+                claim_recorder.context(
+                    session_ref=_session_ref(wt.path),
+                    pre_write_ref_sha=_head_sha(wt.path),
+                )
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(postimage)
             try:
                 subprocess.run(
                     ["git", "-C", wt.path, "add", target_path], check=True)
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    reset_worktree(wt.path)
+                if claim_recorder is not None:
+                    claim_recorder.failed(f"git add failed: {exc}")
+                raise
+            try:
                 subprocess.run(
                     ["git", "-C", wt.path, "commit", "-m", msg], check=True)
+            except subprocess.CalledProcessError as exc:
+                # A non-zero exit is git telling us it did not make a commit.
+                with contextlib.suppress(Exception):
+                    reset_worktree(wt.path)
+                if claim_recorder is not None:
+                    claim_recorder.failed(f"git commit exited {exc.returncode}")
+                raise
+            except Exception as exc:
+                # Anything else (a timeout, a failure to spawn observed after
+                # the child may have run) leaves the outcome unobserved.
+                with contextlib.suppress(Exception):
+                    reset_worktree(wt.path)
+                if claim_recorder is not None:
+                    claim_recorder.unknown(f"git commit outcome unobserved: {exc}")
+                raise _WriteOutcomeUnknown(str(exc)) from exc
+            try:
                 sha = subprocess.check_output(
                     ["git", "-C", wt.path, "rev-parse", "HEAD"], text=True,
                 ).strip()
-            except Exception:
-                # Something failed after the file was written/staged; discard so
-                # the leftover is not swept into the session's next commit (item 8).
-                with contextlib.suppress(Exception):
-                    reset_worktree(wt.path)
-                raise
+            except Exception as exc:
+                # The commit is made; only reading its sha failed. Never a
+                # failure outcome.
+                if claim_recorder is not None:
+                    claim_recorder.unknown(f"commit sha lookup failed: {exc}")
+                raise _WriteOutcomeUnknown(str(exc)) from exc
+            if claim_recorder is not None:
+                # Persist the outcome BEFORE enqueue or any other post-commit
+                # work that could obscure it.
+                claim_recorder.committed(sha)
             # Enqueue AFTER the commit is durable. It must not turn a made commit
             # into an exception path (that would drop the bootstrap in-flight guard
             # and lose the resolve claim -- Codex round-2 Blocker C), so a failure
@@ -570,6 +621,80 @@ def _commit_in_worktree(
             # picks it up without waiting for a restart.
             push_state = _enqueue_after_commit(push_queue, sha, wt.path, push_meta)
             return sha, push_state, secret_override
+
+
+def _session_ref(worktree_path: str) -> str:
+    """The branch the session worktree commits onto, or "" if unreadable."""
+    try:
+        return subprocess.check_output(
+            ["git", "-C", worktree_path, "rev-parse", "--abbrev-ref", "HEAD"],
+            text=True,
+        ).strip()
+    except Exception:  # noqa: BLE001 - an unreadable ref only costs a search hint
+        return ""
+
+
+def _head_sha(worktree_path: str) -> str:
+    """The session ref's tip BEFORE the write, or "" if unreadable."""
+    try:
+        return subprocess.check_output(
+            ["git", "-C", worktree_path, "rev-parse", "HEAD"], text=True,
+        ).strip()
+    except Exception:  # noqa: BLE001 - same
+        return ""
+
+
+class _WriteOutcomeUnknown(Exception):
+    """The write may or may not have committed, and nothing observed which.
+
+    Raised when git's own exit status could not be established, or when the
+    subsequent ``rev-parse HEAD`` failed. Distinct from an ordinary failure on
+    purpose: a caller must never treat this as proof that nothing committed,
+    because restoring the entry would re-present a decision that had already
+    been applied (issue #254).
+    """
+
+
+@dataclass
+class _ClaimRecorder:
+    """Persists what a resolve's write actually did, into the claim record.
+
+    This is the durable positive evidence recovery runs on. Without it the only
+    thing left after a crash is a branch, and a branch cannot distinguish "never
+    committed" from "committed and then rewritten".
+    """
+
+    pending: PendingQueue
+    pending_id: str
+    claim_token: str
+    last_outcome: str = ""
+
+    def context(self, *, session_ref: str, pre_write_ref_sha: str) -> None:
+        with contextlib.suppress(Exception):
+            self.pending.record_write_context(
+                self.pending_id, claim_token=self.claim_token,
+                session_ref=session_ref, pre_write_ref_sha=pre_write_ref_sha,
+            )
+
+    def committed(self, sha: str) -> None:
+        self.last_outcome = "committed"
+        self.pending.record_outcome(
+            self.pending_id, claim_token=self.claim_token, commit_sha=sha,
+        )
+
+    def failed(self, reason: str) -> None:
+        self.last_outcome = "failed"
+        with contextlib.suppress(Exception):
+            self.pending.record_outcome(
+                self.pending_id, claim_token=self.claim_token, failure=reason,
+            )
+
+    def unknown(self, reason: str) -> None:
+        self.last_outcome = "unknown"
+        with contextlib.suppress(Exception):
+            self.pending.record_outcome(
+                self.pending_id, claim_token=self.claim_token, unknown=reason,
+            )
 
 
 def _enqueue_after_commit(
@@ -1391,7 +1516,10 @@ def kb_resolve_pending_fn(
     parameter exists ONLY on the operator resolve path -- neither
     ``kb_propose_memory_fn`` nor ``kb_propose_edit_fn`` accept it, so an agent
     can never self-authorize past a flagged auto-commit."""
-    from data_olympus.pending import PendingAlreadyResolvedError
+    from data_olympus.pending import (
+        ClaimFencedError,
+        PendingAlreadyResolvedError,
+    )
 
     audit_base: dict[str, Any] = {
         "event_type": "resolve",
@@ -1459,8 +1587,12 @@ def kb_resolve_pending_fn(
     # + reset-on-late-failure, shared with the auto-commit path (items 1, 3, 4, 8).
     # hold_path_lock=True: the lock is already held from enqueue via the claim, so
     # _commit_in_worktree must not re-acquire it (would deadlock / raise busy).
+    recorder = _ClaimRecorder(
+        pending=pending, pending_id=pending_id, claim_token=resolved.claim_token,
+    )
     try:
         sha, push_state, secret_override = _commit_in_worktree(
+            claim_recorder=recorder,
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
             source_session=resolved.meta.get("source_session", source_session),
@@ -1480,26 +1612,43 @@ def kb_resolve_pending_fn(
             secret_scan_override=override_secret_scan,
         )
     except _WriteRejected as rej:
-        # Gate rejected AFTER the claim: put the entry back so the operator can
-        # re-resolve it (the postimage is not lost). The path lock stays held.
-        pending.restore_resolve(pending_id)
+        # Gate rejected BEFORE anything was written, so nothing committed. Put
+        # the entry back so the operator can re-resolve it (the postimage is not
+        # lost). The path lock stays held.
+        with contextlib.suppress(ClaimFencedError):
+            pending.restore_resolve(pending_id, claim_token=resolved.claim_token)
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
                                    "reason": resp.reason,
                                    "matching_pattern": resp.matching_pattern})
         return ResolvePendingResponse(status=resp.status, reason=resp.reason)
+    except _WriteOutcomeUnknown:
+        # A commit MAY exist. Do not restore: that would offer an
+        # already-applied decision for approval a second time. The claim record
+        # carries the unknown outcome and the write context, and the periodic
+        # reconciliation searches for the claim-linked commit.
+        _emit_audit(audit_log, **{**audit_base,
+                                   "status": "outcome_unknown_pending_recovery"})
+        raise
     except Exception:
-        # A git/enqueue failure after the claim: restore the entry rather than
-        # silently consuming it, so the write is recoverable.
-        with contextlib.suppress(Exception):
-            pending.restore_resolve(pending_id)
+        # The reviewer's named regression: this handler must NOT assume the
+        # write failed. It restores ONLY when the write itself recorded a
+        # provable non-commit; otherwise the claim is left for reconciliation,
+        # which decides on evidence rather than on the shape of an exception.
+        if recorder.last_outcome == "failed":
+            with contextlib.suppress(Exception):
+                pending.restore_resolve(
+                    pending_id, claim_token=resolved.claim_token,
+                )
         raise
     # Commit succeeded: consume the entry and release the lock. The commit is
     # durable regardless of push_state (which is surfaced truthfully below): even
     # an enqueue_failed_recovery_pending commit exists on the branch and is
     # republished by in-process/startup recovery, so re-resolving would duplicate
     # it -- the entry must be consumed, not restored (Codex round-4).
-    pending.finalize_resolve(pending_id, resolved.target_path)
+    pending.finalize_resolve(
+        pending_id, resolved.target_path, claim_token=resolved.claim_token,
+    )
     # secret_override is only non-None when the operator explicitly passed
     # override_secret_scan=True AND the scanner actually flagged something, so
     # the audit trail truthfully distinguishes "override requested but nothing

@@ -387,8 +387,53 @@ path is diagnosable:
 - `push_queue_frozen` is the count of entries that hit the retry cap and were
   **frozen**.
 
+- `path_locks_held` is how many paths are locked, and `path_locks` says WHICH,
+  each with `target_path`, `owner_kind`, `pending_id`, `acquired_at` and
+  `age_seconds`. A leaked lock blocks every write to one path, so the count on
+  its own was not diagnosable without reading the state volume by hand.
+
 Both counts are computed at health-report time from the queues themselves, so
 they cannot drift.
+
+### An interrupted resolve, and how it recovers
+
+Approving a pending entry claims it, holds its path lock, commits, and then
+releases both. If the process dies in between, the entry is left in a **claimed**
+state on the state volume, still holding its path lock. Two things follow, and
+both are handled explicitly:
+
+- **The entry is visible.** `kb_list_pending` reports every entry with a `state`
+  of `pending`, `claimed` or `uncertain`. A claimed entry is not awaiting a
+  decision, so it does not count towards `pending_count`, but it is never hidden:
+  an empty queue must mean an empty queue, not a decision stuck halfway.
+- **The outcome is reconciled from evidence, never from age.** A background pass
+  looks at claims older than `KB_PENDING_CLAIM_TTL_SEC` (default 900) and decides
+  from what the write actually recorded:
+
+  | Evidence | Outcome |
+  | --- | --- |
+  | A recorded commit sha | Committed. The entry is consumed and never offered again. |
+  | A recorded failure | Not committed. The entry returns to `pending` for the operator to re-resolve, keeping its path lock. |
+  | Nothing recorded | The commit is searched for by its `KB-Pending-Id` trailer on the recorded session ref. Found means committed. Otherwise `uncertain`. |
+
+An `uncertain` entry keeps its path lock deliberately and is re-checked on every
+later pass, so a transient unreadable repository resolves itself. A negative
+search is **not** treated as proof that nothing committed: a rebase can drop a
+commit that upstream already acquired as an equivalent patch, and a squash can
+rewrite its trailer away, so absence of the commit is not absence of the write.
+Restoring on absence would offer an already-applied decision for approval a
+second time.
+
+For the same reason, operations that rewrite session history defer while a claim
+on that branch has begun its write: the base rebase, the non-fast-forward push
+recovery that calls it, and the worktree GC that deletes a session branch. They
+are retried later rather than destroying the evidence.
+
+If an entry stays `uncertain`, check whether the change is present on
+`origin/main` and then resolve it by hand on the state volume: delete
+`/state/pending/<pending_id>.claimed` and
+`/state/pending/locks/<sha256-of-target-path>.lock` to release the path. Confirm
+the content first; that pair is the only remaining record of the decision.
 
 ### Non-fast-forward push recovery
 

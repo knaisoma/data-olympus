@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from data_olympus.index import DuplicateIdError, Index
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from contextlib import AbstractContextManager
     from pathlib import Path
 
@@ -333,6 +334,8 @@ async def pending_gc_loop(
     timeout_sec: int,
     interval_sec: int,
     auto_commit_lock_ttl_sec: float = 600,
+    claim_ttl_sec: float = 900,
+    find_claim_commit: Callable[[dict[str, Any]], bool | None] | None = None,
     write_serializer: AbstractContextManager[Any] | None = None,
     audit_log: AuditLog | None = None,
 ) -> None:
@@ -381,6 +384,42 @@ async def pending_gc_loop(
                         PendingAlreadyResolvedError, PendingNotFoundError,
                     ):
                         pending.reject(pid)
+            # Reconcile claims left behind by an interrupted resolve (issues
+            # #253, #254). This runs BEFORE gc_orphan_locks because a stranded
+            # <pid>.claimed sidecar is exactly what makes that GC treat the
+            # lock as legitimately held, so nothing else can ever free it.
+            # The TTL only selects which claims to look at; the outcome comes
+            # from durable evidence, and the default is to do nothing.
+            for record in pending.reconcile_claims(
+                min_age_sec=claim_ttl_sec,
+                find_commit=find_claim_commit,
+                serializer=write_serializer,
+            ):
+                outcome = record.get("outcome")
+                if outcome == "uncertain":
+                    log.warning(
+                        "pending_gc could not establish whether resolve %s of "
+                        "%s committed; its path lock is retained and the check "
+                        "will repeat: %s",
+                        record.get("pending_id"), record.get("target_path"),
+                        record.get("reason"),
+                    )
+                else:
+                    log.info(
+                        "pending_gc reconciled claim %s on %s as %s",
+                        record.get("pending_id"), record.get("target_path"),
+                        outcome,
+                    )
+                if audit_log is not None:
+                    with contextlib.suppress(Exception):
+                        audit_log.append({
+                            "ts": time.time(),
+                            "event_type": "pending_claim_reconciled",
+                            "status": str(outcome),
+                            "pending_id": record.get("pending_id"),
+                            "target_path": record.get("target_path"),
+                            "reason": record.get("reason"),
+                        })
             reclaimed = pending.gc_orphan_locks()
             if reclaimed:
                 log.warning("pending_gc reclaimed %d orphaned path lock(s)",
