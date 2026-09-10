@@ -12,6 +12,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-21
+
 ### Added
 
 * **A reproduction of the benchmarks can now be compared against the published
@@ -2079,7 +2081,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/knaisoma/data-olympus/compare/v0.7.3...v0.8.0
 [0.7.3]: https://github.com/knaisoma/data-olympus/compare/v0.7.2...v0.7.3
 [0.6.0]: https://github.com/knaisoma/data-olympus/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/knaisoma/data-olympus/compare/v0.4.2...v0.5.0
