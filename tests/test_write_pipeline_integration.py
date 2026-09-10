@@ -12,6 +12,8 @@ remote, per the epic's acceptance criteria:
 """
 from __future__ import annotations
 
+import contextlib
+import json
 import os
 import subprocess
 import threading
@@ -67,10 +69,17 @@ def _server_pieces(tmp_path, main):
     holder = {}
 
     def claims_at_risk(ref):
+        # Production's guard RECONCILES before reporting, at the configured
+        # claim TTL rather than at zero age. A fixture that only inspects
+        # cannot exercise the races that ordering exists to prevent.
         pen_ = holder.get("pending")
-        return list(pen_.claims_at_risk(ref)) if pen_ is not None else []
+        if pen_ is None:
+            return []
+        with contextlib.suppress(Exception):
+            pen_.reconcile_claims(min_age_sec=900)
+        return list(pen_.claims_at_risk(ref))
 
-    git = GitOps(main, claim_guard=claims_at_risk)
+    git = GitOps(main, claim_guard=claims_at_risk, serializer=serializer)
     reg = WorktreeRegistry(git=git, worktree_root=str(tmp_path / "wts"),
                            serializer=serializer)
     pq = PushQueue(queue_root=str(tmp_path / "push-q"))
@@ -79,7 +88,7 @@ def _server_pieces(tmp_path, main):
     holder["pending"] = pen
     rl = SlidingWindowLimiter(max_per_hour=1000)
     bl = PathBlocklist(tier_blocks=[], path_blocks=[])
-    return git, reg, pq, pen, rl, bl
+    return git, reg, pq, pen, rl, bl, serializer
 
 
 def test_two_session_interleaved_writes_both_publish(tmp_path, monkeypatch) -> None:
@@ -95,8 +104,7 @@ def test_two_session_interleaved_writes_both_publish(tmp_path, monkeypatch) -> N
     # governed-lane status clamp and demote instead of commit.
     monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     remote, main = _bare_remote_with_clone(tmp_path)
-    git, reg, pq, pen, rl, bl = _server_pieces(tmp_path, main)
-    serializer = WriteSerializer()
+    git, reg, pq, pen, rl, bl, serializer = _server_pieces(tmp_path, main)
 
     # Session A commits an edit to file-a.md.
     ra = kb_propose_edit_fn(
@@ -172,9 +180,8 @@ def test_rebase_conflict_demotes_to_pending(tmp_path, monkeypatch) -> None:
     # one under test.
     monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     remote, main = _bare_remote_with_clone(tmp_path)
-    git, reg, pq, pen, rl, bl = _server_pieces(tmp_path, main)
+    git, reg, pq, pen, rl, bl, serializer = _server_pieces(tmp_path, main)
     audit = AuditLog(log_path=str(tmp_path / "audit.log"), hmac_key="")
-    serializer = WriteSerializer()
 
     # Session A edits the shared STD-U-001 file.
     ra = kb_propose_edit_fn(
@@ -238,8 +245,7 @@ def test_threaded_concurrent_writes_one_path_no_interleave(
     # governed-lane status clamp and demote instead of commit.
     monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     _remote, main = _bare_remote_with_clone(tmp_path)
-    git, reg, pq, pen, rl, bl = _server_pieces(tmp_path, main)
-    serializer = WriteSerializer()
+    git, reg, pq, pen, rl, bl, serializer = _server_pieces(tmp_path, main)
 
     results: list[str] = []
     lock = threading.Lock()
@@ -307,8 +313,11 @@ def _resolve_env(tmp_path, monkeypatch):  # noqa: ANN001, ANN202
             monkeypatch.setenv(k, v)
     monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     _remote, main = _bare_remote_with_clone(tmp_path)
-    git, reg, pq, pen, rl, bl = _server_pieces(tmp_path, main)
-    return main, git, reg, pq, pen, rl, bl, WriteSerializer()
+    git, reg, pq, pen, rl, bl, serializer = _server_pieces(tmp_path, main)
+    # The SAME serializer the queue and the registry hold, not a fresh one:
+    # otherwise nothing in these tests shares a lock and the concurrency
+    # guarantees they claim to cover are not exercised at all.
+    return main, git, reg, pq, pen, rl, bl, serializer
 
 
 def test_resolved_commit_carries_its_claim_link_and_records_the_outcome(
@@ -466,3 +475,56 @@ def test_a_signal_killed_commit_leaves_the_entry_claimed(tmp_path, monkeypatch) 
 
     assert [e["state"] for e in pen.list()] == ["claimed"]
     assert pen.claim_record(pending_id)["write_outcome"]["outcome"] == "unknown"
+
+
+def test_a_live_resolver_still_reports_its_own_success(tmp_path, monkeypatch) -> None:
+    """A resolver releases the serializer between its commit and its own
+    finalize. A guard reconciliation running in that gap used to consume the
+    durable committed record, so the write landed but the caller got a fenced
+    error instead of a truthful success and no committed audit event.
+
+    The guard reconciles at the configured TTL, not from zero age, so a claim
+    this fresh is left to its owner and the rewrite simply defers.
+    """
+    from data_olympus.tools_write import kb_resolve_pending_fn
+
+    main, git, reg, pq, pen, rl, bl, serializer = _resolve_env(tmp_path, monkeypatch)
+    pending_id = _propose_pending(reg, pq, pen, rl, bl, serializer)
+    wt = reg.get_or_create(source_session="s1", agent_identity="claude")
+    branch = f"kb-session/{os.path.basename(wt.path)}"
+
+    resp = kb_resolve_pending_fn(
+        pending_id=pending_id, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=pq, pending=pen, source_session="s1",
+        agent_identity="claude", serializer=serializer,
+    )
+    assert resp.status == "committed"
+
+    # A guard pass now finds nothing at risk, because the owner finalized.
+    assert git.find_claim_commit(
+        ref=branch, since_sha="HEAD~1", pending_id=pending_id,
+    ) in (True, False, None)
+    assert pen.list() == []
+
+
+def test_a_deferred_push_does_not_consume_its_retry_budget(tmp_path) -> None:
+    """A rebase deferred to preserve claim evidence is not a publication
+    failure. Charging it to the retry budget freezes a perfectly good commit
+    while it waits for reconciliation, and a frozen entry stays frozen."""
+    from data_olympus.git_ops import ClaimEvidenceAtRiskError
+    from data_olympus.push_queue import PushQueue
+
+    pq = PushQueue(queue_root=str(tmp_path / "q"))
+    pq.enqueue(sha="a" * 40, worktree_path=str(tmp_path / "wt"), meta={})
+
+    def always_deferred(*_a, **_k):
+        raise ClaimEvidenceAtRiskError(ref="kb-session/x", pending_ids=["z" * 32])
+
+    for _ in range(3):
+        pq.drain(push_fn=always_deferred, max_attempts=2)
+
+    assert pq.size() == 1
+    assert pq.frozen_count() == 0, "a deferral must not freeze a good commit"
+    with open(os.path.join(str(tmp_path / "q"), "a" * 40 + ".json")) as f:
+        entry = json.load(f)
+    assert entry["attempts"] == 0, entry

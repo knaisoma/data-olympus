@@ -1,6 +1,7 @@
 """Subprocess wrappers around the git CLI."""
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextlib import AbstractContextManager
     from pathlib import Path
 
 
@@ -64,13 +66,23 @@ def _parse_trailers(message: str) -> dict[str, str]:
     ``Key: value`` text from being read as a trailer. A paragraph containing any
     non-trailer line is not a trailer block at all.
     """
+    # split("\n"), NOT splitlines(). Python's splitlines() also breaks on
+    # U+2028, U+2029 and U+0085; git does not, and neither does its own trailer
+    # parser. A single trailer VALUE containing one of those would otherwise be
+    # read here as several trailer lines, letting agent-controlled content such
+    # as a target path manufacture a trailer block that git never wrote.
     paragraphs = [p for p in message.strip().split("\n\n") if p.strip()]
     if len(paragraphs) < 2:
         return {}
     trailers: dict[str, str] = {}
-    for line in paragraphs[-1].splitlines():
+    for line in paragraphs[-1].split("\n"):
         key, sep, value = line.partition(": ")
         if not sep or not key or " " in key:
+            return {}
+        if key in trailers:
+            # A duplicate key is not something the builder produces, and
+            # letting the last one win is exactly what makes an injected
+            # duplicate useful. Refuse the whole block.
             return {}
         trailers[key] = value
     return trailers
@@ -104,11 +116,17 @@ class GitOps:
         repo_path: Path,
         *,
         claim_guard: Callable[[str], list[Any]] | None = None,
+        serializer: AbstractContextManager[Any] | None = None,
     ) -> None:
         self._repo = repo_path
         # Returns the claims on a ref whose evidence a rewrite would destroy.
         # Optional: without it these operations behave exactly as before.
         self._claim_guard = claim_guard
+        # Held across the guard check AND the history mutation it authorises.
+        # Checking and then rewriting without it lets a resolver record its
+        # write context in between, so the guard protects an earlier snapshot
+        # of history rather than the history actually being rewritten.
+        self._serializer = serializer or contextlib.nullcontext()
 
     def _defer_if_claims_at_risk(self, ref: str) -> None:
         """Reconcile claims on ``ref``, then defer if any evidence is still at
@@ -151,8 +169,9 @@ class GitOps:
         branch and needs the same guard rather than relying on a caller to have
         checked first (issues #253, #254).
         """
-        self._defer_if_claims_at_risk(branch)
-        self.worktree_remove(worktree_path, force=force)
+        with self._serializer:
+            self._defer_if_claims_at_risk(branch)
+            self.worktree_remove(worktree_path, force=force)
 
     def delete_branch_guard(self, branch: str) -> None:
         """Raise :class:`ClaimEvidenceAtRiskError` if deleting ``branch`` (or
@@ -360,11 +379,12 @@ class GitOps:
         Defers with :class:`ClaimEvidenceAtRiskError` while an unresolved claim
         on this branch has begun its write: deleting the ref would destroy the
         only remaining evidence of whether that decision committed."""
-        self._defer_if_claims_at_risk(branch)
-        subprocess.run(
-            ["git", "-C", str(self._repo), "branch", "-D", branch],
-            check=False, capture_output=True,
-        )
+        with self._serializer:
+            self._defer_if_claims_at_risk(branch)
+            subprocess.run(
+                ["git", "-C", str(self._repo), "branch", "-D", branch],
+                check=False, capture_output=True,
+            )
 
     def files_changed_in_commit(
         self, sha: str, *, worktree_path: str, timeout_sec: int = 10,
@@ -465,7 +485,11 @@ class GitOps:
         Defers with :class:`ClaimEvidenceAtRiskError` when an unresolved claim on
         this branch has already begun its write, because the rebase could drop
         the very commit that would prove that decision committed."""
-        self._defer_if_claims_at_risk(self.current_branch(worktree_path))
+        with self._serializer:
+            self._defer_if_claims_at_risk(self.current_branch(worktree_path))
+            return self._refresh_base_locked(worktree_path, timeout_sec)
+
+    def _refresh_base_locked(self, worktree_path: str, timeout_sec: int) -> str:
         remotes = subprocess.run(
             ["git", "-C", worktree_path, "remote"],
             check=False, capture_output=True, text=True, timeout=timeout_sec,

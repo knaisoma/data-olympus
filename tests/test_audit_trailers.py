@@ -113,3 +113,26 @@ def test_commit_message_omits_the_pending_trailer_when_there_is_no_claim() -> No
     )
 
     assert "KB-Pending-Id" not in msg
+
+
+def test_commit_message_rejects_unicode_line_separators() -> None:
+    """git's trailer parsing breaks on LF only, but other consumers (including
+    Python's own splitlines) break on U+2028, U+2029 and U+0085. A value
+    carrying one can read as several trailer lines somewhere downstream, so the
+    builder refuses them the same way it refuses CR and LF."""
+    import pytest
+
+    from data_olympus.audit_trailers import build_commit_message
+
+    for codepoint in (0x2028, 0x2029, 0x0085, 0x000B, 0x000C, 0x001C):
+        with pytest.raises(ValueError, match="line separator|newline"):
+            build_commit_message(
+                subject="memory: note",
+                source_session="s1",
+                agent_identity="claude",
+                confidence_original=0.9,
+                operator_confirmed=False,
+                proposal_type="memory",
+                target_tier="T1",
+                target_path=f"decisions/innocent{chr(codepoint)}evil.md",
+            )

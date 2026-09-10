@@ -129,13 +129,19 @@ class WorktreeRegistry:
                         wt_path, branch=f"kb-session/{entry}", force=True,
                     )
                     self._git.delete_branch(f"kb-session/{entry}")
+                    # Metadata removal belongs in the SAME acquisition. Outside
+                    # it, a returning writer can recreate the worktree, branch
+                    # and metadata at the release boundary, and this delete
+                    # then removes the NEW metadata, leaving the next
+                    # get_or_create to fail against the existing branch.
+                    os.unlink(meta_path)
             except Exception:  # noqa: BLE001 - defer, never fail the GC loop
                 continue
-            # The branch is deleted inside the guarded block above, not here.
-            # get_or_create() uses `worktree add -b kb-session/<safe_id>`, which
-            # FAILS if the branch already exists, so removing the worktree alone
-            # would leave a returning session unable to write.
-            os.unlink(meta_path)
+            # The branch and the metadata are both handled inside the guarded
+            # block above. get_or_create() uses
+            # `worktree add -b kb-session/<safe_id>`, which FAILS if the branch
+            # already exists, so removing the worktree alone would leave a
+            # returning session unable to write.
             removed.append(wt_path)
         return removed
 

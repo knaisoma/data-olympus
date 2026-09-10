@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from fastmcp.server.middleware.middleware import CallNext
     from fastmcp.tools.base import ToolResult
 
+    from data_olympus.write_gate import WriteSerializer
+
 from data_olympus.audit_log import AuditLog
 from data_olympus.auth import PathBlocklist
 from data_olympus.config import (
@@ -326,6 +328,7 @@ class ServerState:
         idx: Index,
         git: GitOps,
         config: Config,
+        write_serializer: WriteSerializer | None = None,
         worktrees: WorktreeRegistry | None = None,
         push_queue: PushQueue | None = None,
         pending: PendingQueue | None = None,
@@ -366,7 +369,11 @@ class ServerState:
         # section never interleaves across the REST threadpool and the MCP
         # off-loop tool executor.
         from data_olympus.write_gate import WriteSerializer
-        self.write_serializer = WriteSerializer()
+        # One shared serializer for the whole process: the write path, the
+        # claim lifecycle, git's history-rewriting paths and the worktree GC
+        # all take THIS one, so a guard check and the mutation it authorises
+        # cannot be split by a competing operation (issues #253, #254).
+        self.write_serializer = write_serializer or WriteSerializer()
         self.classifier: IntentClassifier = classifier or IntentClassifier()
         self.ledger: ConsultationLedger = ledger or ConsultationLedger()
         # Set at serve time (main) to observe the live streamable-http session
@@ -611,6 +618,11 @@ def build_app(
     # answers "which claims on this ref would lose their commit evidence?" and
     # is what makes a rebase or a branch deletion defer instead of destroying
     # the only proof that an interrupted resolve committed (issues #253, #254).
+    # Built before git so every guarded history operation and the whole claim
+    # lifecycle share one lock.
+    from data_olympus.write_gate import WriteSerializer
+
+    write_serializer = WriteSerializer()
     _pending_holder: dict[str, Any] = {}
 
     def _claims_at_risk(ref: str) -> list[Any]:
@@ -619,23 +631,33 @@ def build_app(
             return []
         # RECONCILE before reporting, so a claim whose outcome can now be
         # established stops blocking the rewrite instead of deferring it
-        # forever. min_age_sec=0 is safe here: reconciliation never decides an
-        # outcome from age, and this runs inside the same serializer as the
-        # teardown that follows.
+        # forever.
+        #
+        # It uses the SAME age threshold as the periodic sweep, deliberately,
+        # rather than reconciling from zero age. A resolver releases the
+        # serializer between its commit and its own finalize_resolve, and a
+        # zero-age reconciliation here would consume the durable committed
+        # record in that gap: the write stays committed, but the resolver then
+        # fails fenced and its caller loses a truthful success response and its
+        # committed audit event. A fresh claim simply defers the rewrite, which
+        # is the conservative answer.
         with contextlib.suppress(Exception):
             pending.reconcile_claims(
-                min_age_sec=0, find_commit=_claim_commit_finder(state),
+                min_age_sec=config.pending_claim_ttl_sec,
+                find_commit=_claim_commit_finder(state),
             )
         return list(pending.claims_at_risk(ref))
 
-    git = GitOps(kb_main_path, claim_guard=_claims_at_risk)
+    git = GitOps(kb_main_path, claim_guard=_claims_at_risk,
+                 serializer=write_serializer)
     # retention_sec = the consult TTL: an entry older than that can never be
     # fresh, so it is safe to evict and keeps the ledger bounded (see
     # ConsultationLedger). is_fresh is always called with this same ttl.
     ledger = ConsultationLedger(
         path=ledger_path, retention_sec=float(config.consult_ttl_sec)
     )
-    state = ServerState(idx=idx, git=git, config=config, ledger=ledger)
+    state = ServerState(idx=idx, git=git, config=config, ledger=ledger,
+                        write_serializer=write_serializer)
 
     if config.read_only:
         # Unambiguous startup marker: if a replica is misconfigured (e.g. built

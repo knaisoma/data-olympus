@@ -965,3 +965,55 @@ def test_an_unreadable_claim_record_is_reported_not_skipped(tmp_path) -> None:
     # And reconciliation reports it rather than deciding an outcome.
     assert [r["outcome"] for r in q.reconcile_claims(min_age_sec=0)] == ["uncertain"]
     assert q.locks_held() == 1
+
+
+def test_a_rejection_is_not_resurrected_by_reconciliation(tmp_path) -> None:
+    """The reviewer reproduced this: a rejection claims an entry, reconciliation
+    reads that fresh claim, the rejection finishes and releases its lock, and
+    reconciliation writes its stale snapshot back. The result was a completed
+    rejection resurrected as an uncertain claimed entry with no lock.
+    """
+    import threading
+
+    from data_olympus.write_gate import WriteSerializer
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"), serializer=WriteSerializer())
+    pending_id = _enqueued(q)
+
+    started = threading.Event()
+    outcomes: list[object] = []
+
+    def reconcile() -> None:
+        started.wait(timeout=5)
+        outcomes.append(q.reconcile_claims(min_age_sec=0))
+
+    thread = threading.Thread(target=reconcile)
+    thread.start()
+    started.set()
+    q.reject(pending_id)
+    thread.join(timeout=10)
+
+    assert q.list() == [], q.list()
+    assert q.locks_held() == 0
+    root = str(tmp_path / "p")
+    assert not [n for n in os.listdir(root) if n.startswith(pending_id)]
+
+
+def test_an_undecodable_claim_record_does_not_stop_the_sweep(tmp_path) -> None:
+    """Invalid UTF-8 used to raise out of list(), reconciliation and risk
+    inspection, so one damaged record disabled recovery for every other claim."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    broken_id, _ = _claimed(q, "operator/broken.md")
+    good_id, good = _claimed(q, "operator/good.md")
+    q.record_outcome(good_id, claim_token=good.claim_token, commit_sha="a" * 40)
+    with open(os.path.join(str(tmp_path / "p"), f"{broken_id}.claimed"), "wb") as f:
+        f.write(b"\xff\xfe not utf-8")
+
+    states = {e["pending_id"]: e["state"] for e in q.list()}
+    assert states[broken_id] == "unreadable"
+
+    outcomes = {r["pending_id"]: r["outcome"]
+                for r in q.reconcile_claims(min_age_sec=0)}
+    assert outcomes[broken_id] == "uncertain"
+    assert outcomes[good_id] == "committed", "one bad record stopped the sweep"
+    assert q.claims_at_risk("kb-session/anything")

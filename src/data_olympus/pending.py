@@ -308,7 +308,7 @@ class PendingQueue:
                 # A concurrent claim renamed the file out from under this walk.
                 # Skipping is correct: the next pass sees it under its new name.
                 continue
-            except (OSError, json.JSONDecodeError) as exc:
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
                 # NOT a race. A damaged or unreadable approval record is
                 # exactly the invisible-entry defect this batch exists to fix,
                 # so it is reported rather than skipped.
@@ -436,10 +436,11 @@ class PendingQueue:
         ``claim_for_resolve`` / ``finalize_resolve`` / ``restore_resolve`` instead,
         so a post-claim gate rejection can put the entry back (Codex round-2
         Blocker B)."""
-        entry = self._claim(pending_id)
-        resolved = self._to_resolved(pending_id, entry, edited_text)
-        self._finish_claim(pending_id, entry["target_path"])
-        return resolved
+        with self._serializer:
+            entry = self._claim(pending_id)
+            resolved = self._to_resolved(pending_id, entry, edited_text)
+            self._finish_claim(pending_id, entry["target_path"])
+            return resolved
 
     def claim_for_resolve(
         self, pending_id: str, *, edited_text: str | None = None,
@@ -493,7 +494,7 @@ class PendingQueue:
                 entry: dict[str, Any] = json.load(f)
         except FileNotFoundError:
             raise ClaimFencedError(pending_id) from None
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             # A damaged claim record is not an absent one. Surfacing it keeps
             # the history guards CLOSED for that claim rather than silently
             # treating it as resolved.
@@ -645,7 +646,7 @@ class PendingQueue:
                     entry = json.load(f)
             except FileNotFoundError:
                 continue
-            except (OSError, json.JSONDecodeError) as exc:
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
                 # Fail closed: a record we cannot read may be a claim whose
                 # commit a rewrite would destroy.
                 out.append({
@@ -808,8 +809,17 @@ class PendingQueue:
         return {**base, "outcome": "uncertain", "reason": reason}
 
     def reject(self, pending_id: str) -> None:
-        entry = self._claim(pending_id)
-        self._finish_claim(pending_id, entry["target_path"])
+        """Consume an entry without committing it.
+
+        The WHOLE claim-to-finish transition runs under the serializer. Split
+        across it, a rejection could claim an entry, reconciliation could read
+        that fresh claim, the rejection could finish and release its lock, and
+        reconciliation could then write its stale snapshot back, resurrecting a
+        completed rejection as an uncertain claimed entry with no lock.
+        """
+        with self._serializer:
+            entry = self._claim(pending_id)
+            self._finish_claim(pending_id, entry["target_path"])
 
     def gc_orphan_locks(self) -> int:
         """Remove lock files whose ``pending_id`` has no live entry (item 5).

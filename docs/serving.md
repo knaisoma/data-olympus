@@ -432,7 +432,12 @@ GC teardown holds the write serializer across its whole sequence, so it either
 completes or leaves the worktree and the branch both intact. A deferred push is
 not a publication failure and does not consume its retry budget. These guards
 fail closed: an unreadable claim record, or a branch that cannot be identified,
-defers the rewrite rather than permitting it.
+defers the rewrite rather than permitting it. Each guard holds the write
+serializer across its own check AND the history mutation it authorises, so the
+guard protects the history actually being rewritten rather than an earlier
+snapshot of it. The guard reconciles at the same claim TTL as the periodic
+sweep rather than from zero age, so a claim whose own resolver is still
+finishing is left alone and the rewrite simply defers.
 
 If an entry stays `uncertain`, check whether the change is present on
 `origin/main` and then resolve it by hand on the state volume: delete
