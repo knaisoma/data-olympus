@@ -85,10 +85,10 @@ async def test_proposer_cannot_resolve_gets_403(app) -> None:
 
 @pytest.mark.asyncio
 async def test_pending_readback_is_scoped_to_the_proposing_session(app) -> None:
-    """Issue #256 where the boundary is real. A propose-only principal reads
-    back its OWN draft and not another session's; the operator, who can resolve
-    the entry and could therefore see the content by approving it, reads either.
-    """
+    """Issue #256. Ownership is the AUTHENTICATED principal recorded at propose
+    time: the proposer reads its own draft, another principal does not, and the
+    operator, who can resolve the entry and could therefore see the content by
+    approving it, reads either."""
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         parked = await client.post(
@@ -102,20 +102,16 @@ async def test_pending_readback_is_scoped_to_the_proposing_session(app) -> None:
         pid = parked.json()["pending_id"]
 
         own = await client.get(
-            f"/api/v1/pending/{pid}", params={"source_session": "session-A"},
-            headers={"Authorization": "Bearer ptok"},
+            f"/api/v1/pending/{pid}", headers={"Authorization": "Bearer ptok"},
         )
         other = await client.get(
-            f"/api/v1/pending/{pid}", params={"source_session": "session-B"},
-            headers={"Authorization": "Bearer ptok"},
+            f"/api/v1/pending/{pid}", headers={"Authorization": "Bearer rtok"},
         )
         operator = await client.get(
-            f"/api/v1/pending/{pid}", params={"source_session": "session-B"},
+            f"/api/v1/pending/{pid}",
             headers={"Authorization": f"Bearer {OPERATOR}"},
         )
-        anonymous = await client.get(
-            f"/api/v1/pending/{pid}", params={"source_session": "session-A"},
-        )
+        anonymous = await client.get(f"/api/v1/pending/{pid}")
 
     assert own.status_code == 200
     assert "a draft nobody approved" in own.json()["postimage"]
@@ -128,3 +124,47 @@ async def test_pending_readback_is_scoped_to_the_proposing_session(app) -> None:
     assert "a draft nobody approved" in operator.json()["postimage"]
 
     assert anonymous.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_pending_readback_is_not_defeated_by_copying_the_listing(app) -> None:
+    """The listing already publishes `source_session` for every entry to any
+    authenticated principal, so scoping the readback on a caller-SUPPLIED
+    session is no boundary at all: a reader lists, copies another principal's
+    pending_id and source_session, and asks for the content.
+
+    Ownership has to be the authenticated principal recorded at propose time.
+    """
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        parked = await client.post(
+            "/api/v1/propose/memory",
+            headers={"Authorization": "Bearer ptok"},
+            json={"text": "a draft nobody approved", "tags": [],
+                  "source_session": "session-A", "agent_identity": "claude",
+                  "confidence": 0.4},
+        )
+        pid = parked.json()["pending_id"]
+
+        # A DIFFERENT principal reads the listing and copies what it finds.
+        listing = await client.get(
+            "/api/v1/pending", headers={"Authorization": "Bearer rtok"},
+        )
+        entry = next(e for e in listing.json()["pending"] if e["pending_id"] == pid)
+        stolen_session = entry["source_session"]
+
+        theft = await client.get(
+            f"/api/v1/pending/{pid}",
+            params={"source_session": stolen_session},
+            headers={"Authorization": "Bearer rtok"},
+        )
+        owner = await client.get(
+            f"/api/v1/pending/{pid}", headers={"Authorization": "Bearer ptok"},
+        )
+
+    assert stolen_session == "session-A", "the listing publishes the session"
+    assert theft.status_code == 403, theft.json()
+    assert theft.json()["postimage"] is None
+    # The actual proposer is unaffected.
+    assert owner.status_code == 200
+    assert "a draft nobody approved" in owner.json()["postimage"]

@@ -1017,3 +1017,49 @@ def test_an_undecodable_claim_record_does_not_stop_the_sweep(tmp_path) -> None:
     assert outcomes[broken_id] == "uncertain"
     assert outcomes[good_id] == "committed", "one bad record stopped the sweep"
     assert q.claims_at_risk("kb-session/anything")
+
+
+def test_a_partial_finalization_never_frees_a_successors_lock(tmp_path) -> None:
+    """Reproduced in review: releasing the path lock BEFORE removing the claimed
+    sidecar leaves a window where the path is free but the claim still exists.
+
+    1. A's lock is removed.
+    2. Removing A's sidecar raises.
+    3. B acquires the same path.
+    4. Reconciliation finalizes A and unconditionally removes B's lock.
+
+    Serialization does not help: these are separate acquisitions with a
+    successor legitimately created in between.
+    """
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    a_id, a = _claimed(q, "operator/contested.md")
+    q.record_outcome(a_id, claim_token=a.claim_token, commit_sha="a" * 40)
+
+    real_remove = pending_module.atomic_remove
+
+    def fail_sidecar_removal(path: str) -> None:
+        if path.endswith(".claimed"):
+            raise OSError("state volume went read-only")
+        real_remove(path)
+
+    pending_module.atomic_remove = fail_sidecar_removal
+    try:
+        with contextlib.suppress(Exception):
+            q.reconcile_claims(min_age_sec=0)
+    finally:
+        pending_module.atomic_remove = real_remove
+
+    # Whatever happened to A, the path must not have been silently freed while
+    # A's claim still exists: a successor would then be able to take it.
+    b_id = q.enqueue(
+        proposal_type="edit", target_path="operator/contested.md",
+        postimage="B's proposal", base_commit="HEAD", base_blob_sha=None,
+        target_file_hash=None, meta={"confidence": 0.4},
+    ) if q.locks_held() == 0 else None
+
+    if b_id is not None:
+        # A successor exists. Reconciling A again must NOT remove B's lock.
+        q.reconcile_claims(min_age_sec=0)
+        assert q.locks_held() == 1, "reconciling A freed the successor's lock"
+        live = {e["pending_id"]: e["state"] for e in q.list()}
+        assert live.get(b_id) == "pending", live

@@ -57,6 +57,13 @@ class FfMergeResult:
     remote_sha: str | None = None
 
 
+# git's patch divider, and the byte set git's isspace() accepts after it. NOT
+# Python's str.isspace(), which is Unicode-aware and would make this parser
+# disagree with git on exactly the inputs an attacker controls.
+_PATCH_DIVIDER = "---"
+_ASCII_SPACE = " \t\n\v\f\r"
+
+
 def _parse_trailers(message: str) -> dict[str, str]:
     """Trailers from the LAST paragraph of a commit message, exact matches only.
 
@@ -66,15 +73,26 @@ def _parse_trailers(message: str) -> dict[str, str]:
     ``Key: value`` text from being read as a trailer. A paragraph containing any
     non-trailer line is not a trailer block at all.
     """
-    # Everything from a `---` line onwards is the patch, not the message, and
-    # git's own trailer parser stops there. Reading past it was the one place
-    # this parser was LOOSER than git: a body could carry `---` followed by a
-    # forged trailer block, which git does not call trailers and we did. Being
-    # stricter than git is free, because our builder writes one fixed shape;
-    # being looser is a forgery surface.
+    # Everything from the patch divider onwards is the patch, not the message,
+    # and git's own trailer parser stops there. Reading past it, or stopping in
+    # a place git does not, are both ways to be LOOSER than git, and looser is a
+    # forgery surface: agent-controlled body text could then produce trailers
+    # git never parsed.
+    #
+    # git's predicate (trailer.c, find_patch_start) is: a line beginning with
+    # exactly `---` whose NEXT byte is ASCII whitespace, end of line included.
+    # So `---`, `--- patch` and `---\tpatch` all start the patch, while
+    # `---patch` does not, and neither does `---` followed by a non-breaking
+    # space, because U+00A0 is not ASCII whitespace. An earlier version compared
+    # `line.rstrip() == "---"`, which missed the first two and, because
+    # str.rstrip() strips Unicode whitespace, wrongly matched the last: it
+    # truncated there and accepted an earlier block git does not see at all.
     lines: list[str] = []
     for line in message.split("\n"):
-        if line.rstrip() == "---":
+        if line.startswith(_PATCH_DIVIDER) and (
+            len(line) == len(_PATCH_DIVIDER)
+            or line[len(_PATCH_DIVIDER)] in _ASCII_SPACE
+        ):
             break
         lines.append(line)
     message = "\n".join(lines)

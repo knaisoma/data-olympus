@@ -408,10 +408,45 @@ class PendingQueue:
         return data
 
     def _finish_claim(self, pending_id: str, target_path: str) -> None:
-        """Release the path lock and remove the ``.claimed`` sidecar. Called after
-        a claimed entry has been fully processed (committed or rejected)."""
-        self._release_lock(target_path)
+        """Remove the ``.claimed`` sidecar, then release the path lock. Called
+        after a claimed entry has been fully processed (committed or rejected).
+
+        The ORDER matters and it used to be the other way round. Releasing the
+        lock first leaves a window in which the path is free while the claim
+        still exists: if the sidecar removal then fails, a successor can acquire
+        the path, and a later reconciliation of the original claim would release
+        the successor's lock. Sidecar first means a failure in either step is
+        safe. Fail at step one and nothing moved, so the lock is still held by a
+        claim that still exists and reconciliation retries. Fail at step two and
+        the lock is an orphan with neither ``.json`` nor ``.claimed`` behind it,
+        which is exactly what ``gc_orphan_locks`` exists to reclaim.
+
+        The release is also OWNERSHIP-CHECKED, so even a stale caller can only
+        free the lock its own claim holds.
+        """
         atomic_remove(os.path.join(self._root, f"{pending_id}.claimed"))
+        self._release_lock_owned_by(target_path, pending_id)
+
+    def _release_lock_owned_by(self, target_path: str, pending_id: str) -> None:
+        """Delete the path lock only if ``pending_id`` is the recorded holder.
+
+        A successor re-acquires with its own ``pending_id``, so a stale holder
+        that resumes and tries to release finds a lock it does not own and
+        leaves it alone.
+        """
+        lock_path = os.path.join(self._locks_dir, _path_lock_filename(target_path))
+        try:
+            with open(lock_path) as f:
+                info = json.load(f)
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            # An unreadable lock is not provably ours, so leave it: the orphan
+            # collector reclaims one whose holder no longer exists.
+            return
+        if info.get("pending_id") != pending_id:
+            return
+        self._release_lock(target_path)
 
     def _to_resolved(
         self, pending_id: str, entry: dict[str, Any], edited_text: str | None,

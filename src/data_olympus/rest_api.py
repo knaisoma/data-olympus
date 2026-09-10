@@ -541,6 +541,7 @@ def register_routes(
                 remote_addr=request.client.host if request.client else "unknown",
                 audit_log=state.audit_log,
                 can_auto_commit=principal.can_auto_commit,
+                proposer_principal=principal.name,
                 max_text_bytes=state.config.max_text_bytes,
                 serializer=state.write_serializer, idx=state.idx,
                 evidence=body.get("evidence", []),
@@ -590,6 +591,7 @@ def register_routes(
                 remote_addr=request.client.host if request.client else "unknown",
                 audit_log=state.audit_log,
                 can_auto_commit=principal.can_auto_commit,
+                proposer_principal=principal.name,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
                 evidence=body.get("evidence", []),
@@ -659,8 +661,9 @@ def register_routes(
             # Requires an authenticated principal when auth is configured, like
             # the listing route above, because this returns the actual proposed
             # CONTENT rather than only its metadata. Which entry a caller may
-            # see is then decided by kb_get_pending_fn: the proposing session or
-            # a principal holding `resolve`.
+            # see is then decided by kb_get_pending_fn from the AUTHENTICATED
+            # principal: the one that made the proposal, or one holding
+            # `resolve`.
             principal, denied = _authorize(request, registry)
             if denied is not None:
                 return denied
@@ -671,7 +674,7 @@ def register_routes(
                 kb_get_pending_fn,
                 pending=state.pending,
                 pending_id=request.path_params["pending_id"],
-                source_session=request.query_params.get("source_session", ""),
+                principal_name=principal.name,
                 can_resolve=principal.has(CAP_RESOLVE),
             )
             code = {"ok": 200, "not_found": 404}.get(resp.status, 403)
@@ -907,6 +910,7 @@ def register_routes(
                 blocklist=state.blocklist, audit_log=state.audit_log,
                 remote_addr=request.client.host if request.client else "unknown",
                 can_auto_commit=principal.can_auto_commit,
+                proposer_principal=principal.name,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 max_files=state.config.max_bootstrap_files,
                 serializer=state.write_serializer,

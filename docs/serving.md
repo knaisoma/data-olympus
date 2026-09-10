@@ -461,18 +461,21 @@ postimage with `in_force: false` and a note saying so, because the content is a
 pending proposal: it governs nothing, and it stays out of `kb_consult` and every
 `in_force` retrieval exactly as before.
 
-Access is narrow, because the queue holds content nobody has approved:
+Ownership is the **authenticated principal** recorded when the proposal was
+made:
 
 - a principal holding `resolve` may read any entry, since it can already see the
   content by approving it;
-- otherwise the caller must supply the exact `source_session` recorded on the
-  entry.
+- otherwise the caller's principal must be the one that made the proposal;
+- an entry with no recorded proposer predates this field, so its ownership
+  cannot be established and it is resolver-only.
 
-`source_session` is caller-asserted, exactly as it is at propose time, so that
-second rule scopes rather than authenticates. The route requires an
-authenticated principal whenever auth is configured, like `/api/v1/pending`; with
-no principals configured every caller can already resolve any entry, so the
-readback is open there too and matches the posture of every other write surface.
+`source_session` deliberately plays no part. The listing publishes it for every
+entry to any authenticated caller, so scoping a content read on it would be no
+boundary at all: a reader could list the queue, copy somebody else's id and
+session, and ask for their draft. With no principals configured every caller can
+already resolve any entry, so the readback is open there too and matches the
+posture of every other write surface.
 
 A postimage the secret scanner flagged is withheld from everyone except a
 `resolve` principal. The proposer already held that content, but handing it back
@@ -970,6 +973,13 @@ Each is a comma-separated list, and each **extends** the shipped list. There is
 deliberately no setting that replaces one, because a configuration error would
 then silently remove enforcement the product already provided. Unset means add
 nothing, which is exactly the shipped behaviour.
+
+Entries are trimmed and de-duplicated, and are bounded: at most 500 per list and
+200 characters each. The classifier runs on every classified action and compiles
+a regex per keyword, so an unbounded list is an availability problem rather than
+untidiness. Anything dropped or truncated is logged with a warning naming the
+variable, because an enforcement setting that quietly does less than it says is
+worse than one that refuses.
 
 For example, a deployment that must not run window or input tests against a live
 desktop can add `KB_GOVERNED_EXTRA_KEYWORDS="window test,input test"` and have

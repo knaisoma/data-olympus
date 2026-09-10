@@ -988,6 +988,7 @@ def kb_propose_memory_fn(
     blocklist: PathBlocklist,
     remote_addr: str,
     audit_log: AuditLog | None = None,
+    proposer_principal: str = "",
     can_auto_commit: bool = True,
     max_text_bytes: int = 0,
     serializer: WriteSerializer | None = None,
@@ -1154,6 +1155,12 @@ def kb_propose_memory_fn(
                 meta={
                     "agent_identity": agent_identity,
                     "source_session": source_session,
+                    # The AUTHENTICATED principal that made this proposal
+                    # (issue #256). source_session cannot serve as ownership:
+                    # the pending listing publishes it to every authenticated
+                    # caller, so scoping a content read on it would let any
+                    # reader copy the listing and ask for the draft.
+                    "proposer_principal": proposer_principal,
                     "confidence": confidence,
                     "tags": safe_tags,
                     "secret_scan_flagged": flagged_pattern is not None,
@@ -1328,6 +1335,7 @@ def kb_propose_edit_fn(
     blocklist: PathBlocklist,
     remote_addr: str,
     audit_log: AuditLog | None = None,
+    proposer_principal: str = "",
     can_auto_commit: bool = True,
     max_postimage_bytes: int = 0,
     serializer: WriteSerializer | None = None,
@@ -1484,6 +1492,10 @@ def kb_propose_edit_fn(
                 target_file_hash=target_file_hash,
                 meta={"agent_identity": agent_identity,
                       "source_session": source_session,
+                      # See the memory path: ownership for the issue #256
+                      # readback is the AUTHENTICATED principal, never the
+                      # caller-supplied session the listing publishes.
+                      "proposer_principal": proposer_principal,
                       "confidence": confidence,
                       "reason": reason,
                       "secret_scan_flagged": flagged_pattern is not None,
@@ -1778,25 +1790,26 @@ def kb_get_pending_fn(
     *,
     pending: PendingQueue,
     pending_id: str,
-    source_session: str,
+    principal_name: str,
     can_resolve: bool,
 ) -> PendingDetailResponse:
     """Read back the postimage of a parked proposal (issue #256).
 
-    Access is deliberately narrow, because the pending queue holds content
-    nobody has approved:
+    Ownership is the AUTHENTICATED PRINCIPAL recorded at propose time:
 
     - a principal that could RESOLVE the entry may read it, since it can
       already see the content by approving it, so withholding it protects
       nothing;
-    - otherwise the caller must supply the exact ``source_session`` recorded on
-      the entry.
+    - otherwise the caller's principal must be the one that made the proposal.
 
-    ``source_session`` is caller-asserted, exactly as it is at propose time, so
-    that second rule is a convenience boundary and not an authentication one.
-    The transport layer is what requires an authenticated principal; this
-    function assumes that has already happened and decides only WHICH entry a
-    caller may see.
+    ``source_session`` deliberately plays no part. An earlier version scoped on
+    it, which was no boundary at all: the pending listing publishes
+    ``source_session`` for every entry to any authenticated caller, so a reader
+    could list the queue, copy somebody else's id and session, and ask for their
+    draft. That was demonstrated in review, not theorised.
+
+    An entry with no recorded proposer predates this field, so its ownership
+    cannot be established and it is resolver-only rather than open.
 
     A postimage the secret scanner flagged is withheld from everyone except a
     resolver. The proposer already held that content, but handing it back turns
@@ -1811,10 +1824,11 @@ def kb_get_pending_fn(
             status="not_found", pending_id=pending_id, note=_PENDING_NOTE,
         )
     meta = entry.get("meta") or {}
-    if not can_resolve and meta.get("source_session") != source_session:
+    owner = meta.get("proposer_principal") or ""
+    if not can_resolve and (not owner or owner != principal_name):
         return PendingDetailResponse(
             status="forbidden", pending_id=pending_id,
-            note="a parked proposal is readable by the session that made it, "
+            note="a parked proposal is readable by the principal that made it, "
                  "or by a principal that could resolve it",
         )
     if not can_resolve and meta.get("secret_scan_flagged"):

@@ -267,9 +267,7 @@ async def test_rest_pending_readback_is_open_when_auth_is_unconfigured(http_app)
                   "confidence": 0.4},
         )
         pending_id = parked.json()["pending_id"]
-        resp = await client.get(
-            f"/api/v1/pending/{pending_id}", params={"source_session": "session-B"},
-        )
+        resp = await client.get(f"/api/v1/pending/{pending_id}")
 
     assert resp.status_code == 200
     assert resp.json()["in_force"] is False

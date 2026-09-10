@@ -470,6 +470,16 @@ _GRAMMAR_CASES = {
     "canonical": "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n",
     "no space after colon": "s\n\nKB-Pending-Id:abc\n",
     "after a --- divider": "s\n\n---\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n",
+    "--- with a trailing word": (
+        "s\n\n--- patch\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n"
+    ),
+    "--- with a tab": (
+        "s\n\n---\tpatch\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n"
+    ),
+    "--- with a non-breaking space": (
+        "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n\n---\u00a0\n\nprose\n"
+    ),
+    "--- with no separator at all": "s\n\n---patch\n\nKB-Pending-Id: abc\n",
     "--- immediately before": "s\n\nbody\n---\nKB-Pending-Id: abc\n",
     "body line in the block": "s\n\nprose here\nKB-Pending-Id: abc\n",
     "trailing blank line": "s\n\nKB-Pending-Id: abc\n\n",
@@ -485,14 +495,24 @@ _GRAMMAR_CASES = {
 }
 
 
-def _git_sees_pending_id(message: str) -> bool:
+def _git_trailers(message: str) -> dict[str, str]:
+    """What real git parses, as key/value, not merely which keys are present."""
     import subprocess
 
     out = subprocess.run(
         ["git", "interpret-trailers", "--parse"], input=message,
         capture_output=True, text=True, check=True,
     ).stdout
-    return any(line.startswith("KB-Pending-Id:") for line in out.splitlines())
+    parsed: dict[str, str] = {}
+    for line in out.split("\n"):
+        key, sep, value = line.partition(":")
+        if sep:
+            parsed[key.strip()] = value.strip()
+    return parsed
+
+
+def _git_sees_pending_id(message: str) -> bool:
+    return "KB-Pending-Id" in _git_trailers(message)
 
 
 def test_parser_never_sees_a_trailer_git_does_not() -> None:
@@ -511,9 +531,13 @@ def test_parser_never_sees_a_trailer_git_does_not() -> None:
 
     looser = []
     for name, message in _GRAMMAR_CASES.items():
-        ours = "KB-Pending-Id" in _parse_trailers(message)
-        if ours and not _git_sees_pending_id(message):
-            looser.append(name)
+        ours = _parse_trailers(message)
+        theirs = _git_trailers(message)
+        # Both fields recovery actually uses, compared by VALUE: a key we agree
+        # exists but read differently is the same defect as one git never saw.
+        for field in ("KB-Pending-Id", "KB-Target-Path"):
+            if field in ours and ours[field] != theirs.get(field):
+                looser.append(f"{name}:{field}")
     assert not looser, f"parser is looser than git for: {looser}"
 
 

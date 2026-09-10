@@ -289,14 +289,53 @@ def _env_bool(raw: str) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+# Bounds on the operator-supplied governed vocabulary (issue #257). The
+# classifier runs on EVERY classified action and compiles a regex per keyword,
+# so an unbounded list is operator-induced latency: a 10,000-keyword
+# configuration took one classification of 4,000 characters from roughly 0.44 ms
+# to 219 ms in review. These are generous next to any real vocabulary and exist
+# to stop a runaway, not to ration.
+MAX_GOVERNED_ENTRIES = 500
+MAX_GOVERNED_ENTRY_LEN = 200
+
+
 def _csv_tuple(name: str) -> tuple[str, ...]:
-    """A comma-separated env list, empty entries dropped and each one trimmed.
+    """A comma-separated env list: trimmed, de-duplicated and bounded.
 
     Empty or unset yields the empty tuple, which every consumer treats as "add
     nothing", so an unset knob is exactly the shipped behaviour.
+
+    Over-long entries are DROPPED and an over-long list is truncated, both with
+    a warning naming the variable. Silently accepting either would let an
+    operator believe coverage is in force when it is not, which is the failure
+    mode worth avoiding here; silence is the one thing an enforcement setting
+    must not do.
     """
     raw = os.getenv(name, "")
-    return tuple(part.strip() for part in raw.split(",") if part.strip())
+    seen: dict[str, None] = {}
+    dropped = 0
+    for part in raw.split(","):
+        entry = part.strip()
+        if not entry:
+            continue
+        if len(entry) > MAX_GOVERNED_ENTRY_LEN:
+            dropped += 1
+            continue
+        seen.setdefault(entry, None)
+    if dropped:
+        _log.warning(
+            "%s: dropped %d entr%s longer than %d characters",
+            name, dropped, "y" if dropped == 1 else "ies", MAX_GOVERNED_ENTRY_LEN,
+        )
+    entries = tuple(seen)
+    if len(entries) > MAX_GOVERNED_ENTRIES:
+        _log.warning(
+            "%s: %d entries exceeds the %d-entry limit; keeping the first %d. "
+            "The rest are NOT in force.",
+            name, len(entries), MAX_GOVERNED_ENTRIES, MAX_GOVERNED_ENTRIES,
+        )
+        entries = entries[:MAX_GOVERNED_ENTRIES]
+    return entries
 
 
 def load_config() -> Config:

@@ -994,6 +994,7 @@ def build_app(
                 blocklist=state.blocklist, remote_addr="mcp",
                 audit_log=state.audit_log,
                 can_auto_commit=_current_principal.get().can_auto_commit,
+                proposer_principal=_current_principal.get().name,
                 max_text_bytes=state.config.max_text_bytes,
                 serializer=state.write_serializer, idx=state.idx,
                 evidence=evidence,
@@ -1035,6 +1036,7 @@ def build_app(
                 blocklist=state.blocklist, remote_addr="mcp",
                 audit_log=state.audit_log,
                 can_auto_commit=_current_principal.get().can_auto_commit,
+                proposer_principal=_current_principal.get().name,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
                 evidence=evidence,
@@ -1088,20 +1090,19 @@ def build_app(
             return resp.model_dump()
 
         @app.tool(title="KB Get Pending", annotations=READ_ONLY_TOOL)
-        def kb_get_pending(
-            pending_id: str, source_session: str = "",
-        ) -> dict[str, object]:
-            """Read back a parked proposal's own text, for the session that
-            made it. Returns the postimage when `source_session` matches the
-            entry, or for a principal that could resolve it. The content is
-            PENDING: it is not in force and governs nothing until approved."""
+        def kb_get_pending(pending_id: str) -> dict[str, object]:
+            """Read back a parked proposal's own text. Returns the postimage to
+            the principal that made the proposal, or to one that could resolve
+            it. The content is PENDING: it is not in force and governs nothing
+            until approved."""
             assert state.pending is not None
             from data_olympus.principals import CAP_RESOLVE
             from data_olympus.tools_write import kb_get_pending_fn
+            principal = _current_principal.get()
             resp = kb_get_pending_fn(
                 pending=state.pending, pending_id=pending_id,
-                source_session=source_session,
-                can_resolve=_current_principal.get().has(CAP_RESOLVE),
+                principal_name=principal.name,
+                can_resolve=principal.has(CAP_RESOLVE),
             )
             return resp.model_dump()
 

@@ -1144,7 +1144,8 @@ def _parked(tmp_path, *, flagged: bool = False):  # noqa: ANN001, ANN202
     from data_olympus.pending import PendingQueue
 
     q = PendingQueue(pending_root=str(tmp_path / "p"))
-    meta = {"confidence": 0.4, "source_session": "session-A"}
+    meta = {"confidence": 0.4, "source_session": "session-A",
+            "proposer_principal": "proposer"}
     if flagged:
         meta["secret_scan_flagged"] = True
         meta["matching_pattern"] = "google_api_key"
@@ -1156,7 +1157,7 @@ def _parked(tmp_path, *, flagged: bool = False):  # noqa: ANN001, ANN202
     return q, pid
 
 
-def test_the_proposing_session_can_read_its_own_draft(tmp_path) -> None:
+def test_the_proposing_principal_can_read_its_own_draft(tmp_path) -> None:
     """The gap in issue #256: a session could learn THAT it proposed something
     about a path, never WHAT it proposed, so it could not quote its own draft
     back or check it against a second proposal."""
@@ -1164,7 +1165,7 @@ def test_the_proposing_session_can_read_its_own_draft(tmp_path) -> None:
 
     q, pid = _parked(tmp_path)
     resp = kb_get_pending_fn(
-        pending=q, pending_id=pid, source_session="session-A",
+        pending=q, pending_id=pid, principal_name="proposer",
         can_resolve=False,
     )
 
@@ -1176,13 +1177,15 @@ def test_the_proposing_session_can_read_its_own_draft(tmp_path) -> None:
     assert "not in force" in resp.note.lower()
 
 
-def test_another_session_cannot_read_the_draft(tmp_path) -> None:
-    """Otherwise this is a side channel for reading queued content."""
+def test_another_principal_cannot_read_the_draft(tmp_path) -> None:
+    """Otherwise this is a side channel for reading queued content. Scoping on
+    the caller-supplied session did exactly that: the listing publishes
+    source_session, so a reader could copy it and ask for the draft."""
     from data_olympus.tools_write import kb_get_pending_fn
 
     q, pid = _parked(tmp_path)
     resp = kb_get_pending_fn(
-        pending=q, pending_id=pid, source_session="session-B",
+        pending=q, pending_id=pid, principal_name="reader",
         can_resolve=False,
     )
 
@@ -1197,7 +1200,7 @@ def test_a_resolver_can_read_any_draft(tmp_path) -> None:
 
     q, pid = _parked(tmp_path)
     resp = kb_get_pending_fn(
-        pending=q, pending_id=pid, source_session="session-B", can_resolve=True,
+        pending=q, pending_id=pid, principal_name="reader", can_resolve=True,
     )
 
     assert resp.status == "ok"
@@ -1214,14 +1217,14 @@ def test_a_secret_flagged_draft_is_withheld_from_its_own_proposer(tmp_path) -> N
     q, pid = _parked(tmp_path, flagged=True)
 
     own = kb_get_pending_fn(
-        pending=q, pending_id=pid, source_session="session-A", can_resolve=False,
+        pending=q, pending_id=pid, principal_name="proposer", can_resolve=False,
     )
     assert own.status == "forbidden_secret_flagged"
     assert own.postimage is None
     assert own.matching_pattern == "google_api_key"
 
     resolver = kb_get_pending_fn(
-        pending=q, pending_id=pid, source_session="session-A", can_resolve=True,
+        pending=q, pending_id=pid, principal_name="proposer", can_resolve=True,
     )
     assert resolver.status == "ok"
     assert resolver.postimage == "the draft body"
@@ -1232,7 +1235,7 @@ def test_an_unknown_pending_id_is_not_found(tmp_path) -> None:
 
     q, _pid = _parked(tmp_path)
     resp = kb_get_pending_fn(
-        pending=q, pending_id="0" * 32, source_session="session-A",
+        pending=q, pending_id="0" * 32, principal_name="proposer",
         can_resolve=True,
     )
     assert resp.status == "not_found"
@@ -1244,7 +1247,32 @@ def test_a_traversal_shaped_id_is_rejected_without_touching_disk(tmp_path) -> No
 
     q, _pid = _parked(tmp_path)
     resp = kb_get_pending_fn(
-        pending=q, pending_id="../../etc/passwd", source_session="session-A",
+        pending=q, pending_id="../../etc/passwd", principal_name="proposer",
         can_resolve=True,
     )
     assert resp.status == "not_found"
+
+
+def test_an_entry_with_no_recorded_proposer_is_resolver_only(tmp_path) -> None:
+    """An entry parked before ownership was recorded cannot have its owner
+    established, so it is resolver-only rather than readable by anyone who
+    happens to send an empty principal name."""
+    from data_olympus.pending import PendingQueue
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pid = q.enqueue(
+        proposal_type="edit", target_path="operator/notes.md",
+        postimage="legacy draft", base_commit="HEAD", base_blob_sha=None,
+        target_file_hash=None, meta={"confidence": 0.4},
+    )
+
+    assert kb_get_pending_fn(
+        pending=q, pending_id=pid, principal_name="", can_resolve=False,
+    ).status == "forbidden"
+    assert kb_get_pending_fn(
+        pending=q, pending_id=pid, principal_name="anyone", can_resolve=False,
+    ).status == "forbidden"
+    assert kb_get_pending_fn(
+        pending=q, pending_id=pid, principal_name="op", can_resolve=True,
+    ).postimage == "legacy draft"

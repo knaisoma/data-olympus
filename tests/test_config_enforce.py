@@ -99,3 +99,36 @@ def test_the_shipped_entry_point_actually_uses_the_configured_vocabulary(
     assert state.classifier.classify(
         intent="run a window test on the live desktop"
     ).is_governed_decision
+
+
+def test_governed_vocabulary_configuration_is_bounded(monkeypatch, caplog) -> None:  # noqa: ANN001
+    """Enforcement runs on every classified action, so an unbounded list is
+    operator-induced latency, not just untidiness: a 10,000-keyword
+    configuration took classification from well under a millisecond to
+    hundreds of milliseconds per call in review.
+
+    Oversized configuration is rejected LOUDLY rather than silently truncated,
+    so an operator never believes coverage is in force when it is not.
+    """
+    from data_olympus.config import (
+        MAX_GOVERNED_ENTRIES,
+        MAX_GOVERNED_ENTRY_LEN,
+        load_config,
+    )
+
+    monkeypatch.setenv(
+        "KB_GOVERNED_EXTRA_KEYWORDS",
+        ",".join(f"kw{i}" for i in range(MAX_GOVERNED_ENTRIES + 50)),
+    )
+    with caplog.at_level("WARNING"):
+        config = load_config()
+    assert len(config.governed_extra_keywords) == MAX_GOVERNED_ENTRIES
+    assert any("KB_GOVERNED_EXTRA_KEYWORDS" in r.message for r in caplog.records)
+
+    monkeypatch.setenv("KB_GOVERNED_EXTRA_KEYWORDS", "x" * (MAX_GOVERNED_ENTRY_LEN + 1))
+    with caplog.at_level("WARNING"):
+        assert load_config().governed_extra_keywords == ()
+
+    # Duplicates cost work on every call and add nothing.
+    monkeypatch.setenv("KB_GOVERNED_EXTRA_KEYWORDS", "alpha, alpha ,beta,alpha")
+    assert load_config().governed_extra_keywords == ("alpha", "beta")
