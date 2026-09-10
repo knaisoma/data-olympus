@@ -453,13 +453,13 @@ the content first; that pair is the only remaining record of the decision.
 A session that parks a proposal can read its own draft back:
 
 ```text
-GET /api/v1/pending/<pending_id>?source_session=<the session that proposed it>
+GET /api/v1/pending/<pending_id>
 ```
 
-and the `kb_get_pending` MCP tool takes the same two arguments. It returns the
-postimage with `in_force: false` and a note saying so, because the content is a
-pending proposal: it governs nothing, and it stays out of `kb_consult` and every
-`in_force` retrieval exactly as before.
+and the `kb_get_pending` MCP tool takes the same single `pending_id`. It returns
+the postimage with `in_force: false` and a note saying so, because the content is
+a pending proposal: it governs nothing, and it stays out of `kb_consult` and
+every `in_force` retrieval exactly as before.
 
 Ownership is the **authenticated principal** recorded when the proposal was
 made:
@@ -476,6 +476,21 @@ boundary at all: a reader could list the queue, copy somebody else's id and
 session, and ask for their draft. With no principals configured every caller can
 already resolve any entry, so the readback is open there too and matches the
 posture of every other write surface.
+
+Principal names are ownership identities, so they must be unique. The registry
+refuses a configuration with two credentials of the same name, including two
+unnamed ones, because they would otherwise share ownership of each other's
+drafts.
+
+**What this boundary does not cover.** Only the POSTIMAGE is owner-scoped.
+`GET /api/v1/pending` and `kb_list_pending` remain visible to every
+authenticated principal and carry each entry's `target_path`, `reason`,
+`evidence` and identities. Those are content-derived: a target path can name
+what a draft is about, and an evidence string can quote it. The secret scanner
+redacts credential-shaped values, not ordinary confidential text. So the pending
+queue's metadata is shared within a deployment, deliberately and as it always
+has been, and this change does not narrow it. If that is not the boundary you
+want, do not put confidential material in a proposal's path or evidence.
 
 A postimage the secret scanner flagged is withheld from everyone except a
 `resolve` principal. The proposer already held that content, but handing it back

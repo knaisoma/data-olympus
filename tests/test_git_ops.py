@@ -480,6 +480,14 @@ _GRAMMAR_CASES = {
         "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n\n---\u00a0\n\nprose\n"
     ),
     "--- with no separator at all": "s\n\n---patch\n\nKB-Pending-Id: abc\n",
+    "--- with a vertical tab": (
+        "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n\n---\v\n\nprose\n"
+    ),
+    "--- with a form feed": (
+        "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n\n---\f\n\nprose\n"
+    ),
+    "--- on the very first line": "---\n\nKB-Pending-Id: abc\n",
+    "CRLF line endings": "s\r\n\r\nKB-Pending-Id: abc\r\nKB-Target-Path: a.md\r\n",
     "--- immediately before": "s\n\nbody\n---\nKB-Pending-Id: abc\n",
     "body line in the block": "s\n\nprose here\nKB-Pending-Id: abc\n",
     "trailing blank line": "s\n\nKB-Pending-Id: abc\n\n",

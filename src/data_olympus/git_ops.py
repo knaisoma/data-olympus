@@ -57,11 +57,16 @@ class FfMergeResult:
     remote_sha: str | None = None
 
 
-# git's patch divider, and the byte set git's isspace() accepts after it. NOT
-# Python's str.isspace(), which is Unicode-aware and would make this parser
-# disagree with git on exactly the inputs an attacker controls.
+# git's patch divider, and the byte set git's own isspace() accepts after it.
+#
+# This is git's table (ctype.c), NOT C's and NOT Python's. It is exactly
+# space, tab, CR and LF. Git deliberately excludes vertical tab and form feed,
+# and Python's str.isspace() additionally accepts a swathe of Unicode. Every one
+# of those extras is a construction where this parser would call something a
+# patch divider that git does not, truncate there, and accept a trailer block
+# git never parsed. Copy the table; do not approximate it.
 _PATCH_DIVIDER = "---"
-_ASCII_SPACE = " \t\n\v\f\r"
+_ASCII_SPACE = " \t\r\n"
 
 
 def _parse_trailers(message: str) -> dict[str, str]:

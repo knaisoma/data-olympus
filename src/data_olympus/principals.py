@@ -144,11 +144,25 @@ class PrincipalRegistry:
             self._by_token.append(
                 (auth_token, Principal("operator", ALL_CAPABILITIES, authenticated=True))
             )
+        # Ownership of a parked proposal is the principal NAME (issue #256), so
+        # two credentials sharing a name share ownership. Two unnamed
+        # principals both defaulting to "agent" was enough for a read-only
+        # credential to read a proposer's draft. A collision is refused at
+        # construction rather than resolved silently: an operator who meant two
+        # identities must say so, and one who meant an alias can say that too.
+        seen_names = {"operator"} if auth_token else set()
         for spec in principals or []:
             token = str(spec.get("token", "")).strip()
             if not token:
                 continue
             name = str(spec.get("name", "")).strip() or "agent"
+            if name in seen_names:
+                raise ValueError(
+                    f"duplicate principal name {name!r}: principal names are "
+                    "ownership identities and must be unique. Give each "
+                    "credential its own 'name'."
+                )
+            seen_names.add(name)
             caps = spec.get("capabilities")
             if caps is None:
                 # Least-privilege default (item 5): read + propose only. An entry

@@ -1165,6 +1165,7 @@ def build_app(
                 blocklist=state.blocklist, audit_log=state.audit_log,
                 remote_addr="mcp",
                 can_auto_commit=_current_principal.get().can_auto_commit,
+                proposer_principal=_current_principal.get().name,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 max_files=state.config.max_bootstrap_files,
                 serializer=state.write_serializer,

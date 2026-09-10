@@ -1063,3 +1063,49 @@ def test_a_partial_finalization_never_frees_a_successors_lock(tmp_path) -> None:
         assert q.locks_held() == 1, "reconciling A freed the successor's lock"
         live = {e["pending_id"]: e["state"] for e in q.list()}
         assert live.get(b_id) == "pending", live
+
+
+def test_orphan_gc_never_deletes_a_successors_lock(tmp_path) -> None:
+    """Reproduced in review: the orphan collector read A's lock, saw no live
+    entry, then A released its own lock and B enqueued on the same path, and the
+    collector's unlink removed B's brand-new lock. B was left pending with zero
+    locks and no protection at all.
+
+    The collector now runs under the serializer that enqueue also holds, and
+    re-reads the holder immediately before unlinking, so it can only free a lock
+    it actually judged orphaned.
+    """
+    from data_olympus.write_gate import WriteSerializer
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"), serializer=WriteSerializer())
+    path = "operator/contested.md"
+    a_id, a = _claimed(q, path)
+
+    # Strand A the way an interrupted resolve does, then remove its entry so its
+    # lock genuinely looks orphaned to the collector.
+    os.remove(os.path.join(str(tmp_path / "p"), f"{a_id}.claimed"))
+
+    # A successor takes the path before the collector runs.
+    b_id = q.enqueue(
+        proposal_type="edit", target_path=path, postimage="B's proposal",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        meta={"confidence": 0.4},
+    ) if q.locks_held() == 0 else None
+    if b_id is None:
+        # A's lock is still held, so the collector should free exactly it.
+        assert q.gc_orphan_locks() == 1
+        b_id = q.enqueue(
+            proposal_type="edit", target_path=path, postimage="B's proposal",
+            base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+            meta={"confidence": 0.4},
+        )
+
+    # Now the collector runs again with B holding the path.
+    q.gc_orphan_locks()
+
+    assert q.locks_held() == 1, "the collector freed the successor's lock"
+    held = q.held_locks()[0]
+    assert held["pending_id"] == b_id
+    assert held["target_path"] == path
+    # And B is still a live, protected proposal.
+    assert [e["pending_id"] for e in q.list()] == [b_id]

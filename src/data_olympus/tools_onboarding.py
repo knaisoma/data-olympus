@@ -93,6 +93,7 @@ def kb_bootstrap_project_fn(
     audit_log: AuditLog | None = None,
     remote_addr: str = "mcp",
     can_auto_commit: bool = True,
+    proposer_principal: str = "",
     max_postimage_bytes: int = 0,
     max_files: int = 0,
     in_flight: BootstrapInFlight | None = None,
@@ -214,6 +215,7 @@ def kb_bootstrap_project_fn(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             rate_limiter=rate_limiter, blocklist=blocklist,
             remote_addr=remote_addr, can_auto_commit=can_auto_commit,
+            proposer_principal=proposer_principal,
             max_postimage_bytes=max_postimage_bytes, max_files=max_files,
             serializer=serializer,
         )
@@ -244,6 +246,7 @@ def _bootstrap_admitted(
     blocklist: PathBlocklist,
     remote_addr: str,
     can_auto_commit: bool,
+    proposer_principal: str,
     max_postimage_bytes: int,
     max_files: int,
     serializer: WriteSerializer | None = None,
@@ -499,6 +502,10 @@ def _bootstrap_admitted(
                     base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
                     meta={"agent_identity": agent_identity,
                           "source_session": source_session,
+                          # The authenticated proposer, so a bootstrap entry is
+                          # readable by its owner like any other (issue #256)
+                          # rather than silently becoming resolver-only.
+                          "proposer_principal": proposer_principal,
                           "confidence": confidence,
                           "bootstrap": True,
                           "bundle_id": bundle_id,

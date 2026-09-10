@@ -261,24 +261,32 @@ class PendingQueue:
                 f"pending queue at capacity ({self._cap})"
             )
         pending_id = uuid.uuid4().hex
-        self._acquire_lock(target_path, pending_id)
-        try:
-            entry = {
-                "pending_id": pending_id,
-                "proposal_type": proposal_type,
-                "target_path": target_path,
-                "postimage": postimage,
-                "base_commit": base_commit,
-                "base_blob_sha": base_blob_sha,
-                "target_file_hash": target_file_hash,
-                "meta": meta,
-                "enqueued_at": time.time(),
-            }
-            atomic_write_json(os.path.join(self._root, f"{pending_id}.json"), entry)
-        except Exception:
-            self._release_lock(target_path)
-            raise
-        return pending_id
+        # The lock and the entry are published as ONE critical section, under
+        # the same serializer the orphan collector holds. Between acquiring the
+        # lock and writing the entry the lock looks orphaned, and a GC pass that
+        # saw it in that window used to unlink it, leaving this entry pending
+        # with no lock at all.
+        with self._serializer:
+            self._acquire_lock(target_path, pending_id)
+            try:
+                entry = {
+                    "pending_id": pending_id,
+                    "proposal_type": proposal_type,
+                    "target_path": target_path,
+                    "postimage": postimage,
+                    "base_commit": base_commit,
+                    "base_blob_sha": base_blob_sha,
+                    "target_file_hash": target_file_hash,
+                    "meta": meta,
+                    "enqueued_at": time.time(),
+                }
+                atomic_write_json(
+                    os.path.join(self._root, f"{pending_id}.json"), entry,
+                )
+            except Exception:
+                self._release_lock(target_path)
+                raise
+            return pending_id
 
     def list(self) -> list[dict[str, Any]]:
         """Every entry on disk, each labelled with the state it is in.
@@ -869,6 +877,10 @@ class PendingQueue:
         auto-commit lock is reclaimed by the age-bounded
         :meth:`reclaim_stale_auto_commit_locks` instead. Returns the number of
         locks removed."""
+        with self._serializer:
+            return self._gc_orphan_locks_locked()
+
+    def _gc_orphan_locks_locked(self) -> int:
         if not os.path.isdir(self._locks_dir):
             return 0
         removed = 0
@@ -890,10 +902,36 @@ class PendingQueue:
             claimed = os.path.join(self._root, f"{holder}.claimed")
             if os.path.exists(live) or os.path.exists(claimed):
                 continue
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(lock_path)
-                removed += 1
+            # The unlink is OWNERSHIP-CHECKED against the holder this pass
+            # inspected, and it happens under the serializer alongside the
+            # inspection.
+            #
+            # Unconditionally unlinking the inspected path was a way to delete a
+            # SUCCESSOR's lock: read A's lock and see no live entry, A then
+            # releases its own lock and B enqueues on the same path, and this
+            # unlink removes B's brand-new lock, leaving B pending with no
+            # protection at all. Holding the serializer keeps enqueue's
+            # lock-plus-entry publication out of the window, and re-reading the
+            # holder immediately before the unlink means even an interleaving
+            # that got past that frees only the lock this pass judged orphaned.
+            if self._lock_holder_is(lock_path, holder):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(lock_path)
+                    removed += 1
         return removed
+
+    def _lock_holder_is(self, lock_path: str, expected_holder: str) -> bool:
+        """Re-read the lock and confirm it still names ``expected_holder``."""
+        try:
+            with open(lock_path) as f:
+                info = json.load(f)
+        except FileNotFoundError:
+            return False
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            # Not provably orphaned, so leave it rather than free a lock that
+            # may be protecting somebody.
+            return False
+        return bool(info.get("pending_id") == expected_holder)
 
     def reclaim_stale_auto_commit_locks(
         self,
