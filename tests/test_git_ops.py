@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -439,40 +440,88 @@ def test_find_claim_commit_rejects_unicode_separator_forgery(tmp_path) -> None: 
         ) is False, f"forged with U+{codepoint:04X}"
 
 
-def test_trailers_follow_git_on_a_duplicated_key() -> None:
-    """git keeps the LAST value for a repeated key, and this parser now agrees
-    because it asks git.
+def test_a_duplicated_key_is_ambiguous_evidence_and_yields_nothing() -> None:
+    """git emits BOTH values for a repeated key, so picking one is this
+    product's policy rather than git's answer.
 
-    An earlier version refused the whole block, which was stricter than git and
-    therefore safe, but strictness is not the property being defended: agreeing
-    with git is. A duplicate buys an attacker nothing anyway, because the real
-    protection is that the builder chooses the KEYS. See
-    test_a_hostile_target_path_cannot_forge_a_claim_link.
+    Ambiguous evidence must not close an operator's decision, so a duplicated
+    key drops out entirely. This is stated as policy, not as a claim about what
+    git does.
     """
     from data_olympus.git_ops import _parse_trailers
 
     assert _parse_trailers(
         "s\n\nKB-Target-Path: a.md\nKB-Target-Path: b.md\n"
-    ) == {"KB-Target-Path": "b.md"}
+    ) == {}
+    # A single occurrence alongside a duplicate is unaffected.
+    assert _parse_trailers(
+        "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\nKB-Target-Path: b.md\n"
+    ) == {"KB-Pending-Id": "abc"}
 
 
-def test_trailers_follow_git_on_unicode_whitespace_in_a_value() -> None:
-    """`git interpret-trailers --parse` trims a value, so a trailing U+00A0 is
-    removed and this parser reports what git reports.
+def test_a_value_is_returned_exactly_as_git_emits_it() -> None:
+    """Delegation is worthless if the wrapper reinterprets the answer.
 
-    This is the reverse of what an earlier hand-written version asserted, and
-    the reversal is the point: the property is agreement with git, not a
-    prediction about git. The forgery this used to guard against is closed at
-    the builder instead, which decides the key set.
+    `text=True` applies universal-newline decoding, so a CR inside a value
+    becomes a line break and one trailer reads as two. `str.strip` removes
+    Unicode whitespace git preserved, turning a value that does NOT name a claim
+    into one that does. Both were plumbing that widened acceptance, so the
+    message goes in as bytes and comes back as bytes.
     """
     from data_olympus.git_ops import _parse_trailers
 
     pid = "f" * 32
     for codepoint in (0x00A0, 0x2007, 0x202F, 0x3000):
         parsed = _parse_trailers(f"s\n\nKB-Pending-Id: {pid}{chr(codepoint)}\n")
-        assert parsed.get("KB-Pending-Id") == _git_trailers(
-            f"s\n\nKB-Pending-Id: {pid}{chr(codepoint)}\n"
-        ).get("KB-Pending-Id")
+        assert parsed.get("KB-Pending-Id") == pid + chr(codepoint), (
+            f"U+{codepoint:04X} was trimmed"
+        )
+
+    # A CR inside a value is one trailer to git, not two.
+    parsed = _parse_trailers(f"s\n\nKB-Pending-Id: {pid}\rKB-Target-Path: a.md\n")
+    assert "KB-Target-Path" not in parsed
+    assert parsed.get("KB-Pending-Id") != pid
+
+
+def test_git_configuration_cannot_rename_a_key_into_the_claim_link() -> None:
+    """git's own trailer CONFIG can defeat the builder's key ownership.
+
+    A `[trailer "KB-Agent-Identity"] key = KB-Pending-Id` stanza makes git
+    rename an ordinary builder-owned key into the claim key, so an ordinary
+    write whose agent identity is somebody else's pending id parses as that
+    claim's evidence. Reproduced against git 2.50.1. The parse therefore runs
+    with global, system and environment-injected configuration disabled and
+    repository discovery ceilinged.
+    """
+    from data_olympus.git_ops import _parse_trailers
+
+    victim = "e" * 32
+    import tempfile
+    hostile = pathlib.Path(tempfile.mkdtemp())
+    (hostile / "gitconfig").write_text(
+        '[trailer "KB-Agent-Identity"]\n\tkey = KB-Pending-Id\n', encoding="utf-8",
+    )
+    message = (
+        f"s\n\nKB-Agent-Identity: {victim}\nKB-Target-Path: a.md\n"
+    )
+    previous = os.environ.get("GIT_CONFIG_GLOBAL")
+    os.environ["GIT_CONFIG_GLOBAL"] = str(hostile / "gitconfig")
+    try:
+        # Sanity: the hostile config really does rewrite the key for a plain
+        # invocation, so this test would catch a regression in the isolation.
+        import subprocess
+        raw = subprocess.run(
+            ["git", "interpret-trailers", "--parse"], input=message,
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "KB-Pending-Id" in raw, "the hostile config did not apply"
+
+        assert "KB-Pending-Id" not in _parse_trailers(message)
+    finally:
+        if previous is None:
+            os.environ.pop("GIT_CONFIG_GLOBAL", None)
+        else:
+            os.environ["GIT_CONFIG_GLOBAL"] = previous
 
 
 def test_a_hostile_target_path_cannot_forge_a_claim_link() -> None:
@@ -750,3 +799,33 @@ def test_find_claim_commit_rejects_forgeries_in_real_commits(tmp_path) -> None: 
     assert git.find_claim_commit(
         ref="main", since_sha=before, pending_id=pid, target_path="other.md",
     ) is False
+
+
+def test_the_search_deadline_bounds_the_whole_walk(tmp_path) -> None:  # noqa: ANN001
+    """`timeout_sec` bounds the entire search, not each candidate.
+
+    Reconciliation holds the write serializer, so a per-candidate timeout let a
+    range with many candidates stall unrelated writes for a multiple of it.
+    Exhausting the deadline is uncertainty, which keeps the claim's lock and has
+    the sweep retry later.
+    """
+    from unittest import mock
+
+    from data_olympus.git_ops import GitOps
+
+    pid = "e" * 32
+    body = f"s\n\nKB-Pending-Id: {pid}\nKB-Target-Path: a.md\n"
+    log = mock.Mock(returncode=0, stdout="\0".join([body] * 5))
+    git = GitOps(str(tmp_path))
+
+    # monotonic() is read once to set the deadline and once per candidate; the
+    # second reading is already past it.
+    with mock.patch("data_olympus.git_ops.subprocess.run", return_value=log), \
+         mock.patch("data_olympus.git_ops.time.monotonic",
+                    side_effect=[0.0, 100.0]):
+        found = git.find_claim_commit(
+            ref="main", since_sha="a" * 40, pending_id=pid,
+            target_path="a.md", timeout_sec=1.0,
+        )
+
+    assert found is None, "an exhausted deadline must be uncertainty"

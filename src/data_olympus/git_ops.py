@@ -5,6 +5,8 @@ import contextlib
 import os
 import re
 import subprocess
+import tempfile
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -74,51 +76,104 @@ _PATCH_DIVIDER = "---"
 _ASCII_SPACE = " \t\r\n"
 
 
-def _parse_trailers(message: str) -> dict[str, str]:
+def _trailer_env() -> dict[str, str]:
+    """A minimal environment that isolates git from ALL inherited configuration.
+
+    Delegating the parse to git is only sound if git is answering the question
+    this product asked. Configuration can change the answer: a
+    ``[trailer "KB-Agent-Identity"] key = KB-Pending-Id`` stanza makes git
+    RENAME an ordinary builder-owned key into the claim key, so an ordinary
+    write whose agent identity is somebody else's pending id parses as that
+    claim's evidence. Reproduced against git 2.50.1. ``trailer.<alias>.key`` and
+    ``core.commentChar`` shift block recognition the same way.
+
+    So the environment is CONSTRUCTED rather than inherited: no global, system
+    or environment-injected config, and a ceiling that stops repository
+    discovery from walking up out of the scratch directory the filter runs in.
+    ``interpret-trailers`` is a pure text filter and needs no repository.
+    """
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "LC_ALL": "C",
+    }
+
+
+def _parse_trailers(message: str, *, timeout_sec: float = 10.0) -> dict[str, str]:
     """Trailers of a commit message, as GIT parses them.
 
     This asks git rather than reimplementing it, and that is a deliberate
-    reversal. The hand-written version was corrected five times, each time for a
+    reversal. The hand-written version was corrected five times, each for a
     different message-boundary rule it did not know: a patch divider, the
     whitespace byte that must follow one, git's own whitespace table rather than
-    Python's, end-of-input where no byte follows at all, and the scissors
-    cutoff. Every one of those was a way for agent-controlled commit text to
-    manufacture evidence that an operator decision had been applied. The rule
-    that kept being broken is that this parser must never see a trailer git does
-    not, and the reliable way to satisfy it is to let git decide.
+    Python's, end-of-input where no byte follows, and the scissors cutoff. Every
+    one was a way for agent-controlled commit text to manufacture evidence that
+    an operator decision had been applied.
 
-    ``--parse`` implies ``--only-trailers --only-input --unfold``, so folded
-    continuation lines are joined the way git joins them and nothing is
-    reformatted. ``trailer.separators`` is pinned so repository or user config
-    cannot change what counts as a trailer under us.
+    Delegation is only worth anything if nothing on either side of it quietly
+    reinterprets the answer, so the message goes in as BYTES and comes back as
+    bytes. ``text=True`` applies universal-newline decoding, which turns a CR
+    inside a trailer value into a line break and splits one trailer into two;
+    ``str.strip`` removes Unicode whitespace git preserved. Both widened
+    acceptance while appearing to be plumbing.
 
-    A message that does not end in a newline yields nothing, conservatively.
-    ``git interpret-trailers`` APPENDS a missing final newline before parsing,
-    so for such a body the CLI would answer a question about a different input
-    than the one recovery holds. Refusing is safe: the worst outcome is an
-    uncertain reconciliation, never a false acceptance. Every message this
-    product writes ends in a newline.
+    A DUPLICATED key returns nothing at all. git emits both values, and picking
+    either one is this product's choice rather than git's answer; ambiguous
+    evidence should not close an operator's decision.
+
+    A message that does not end in a newline yields nothing, conservatively:
+    ``git interpret-trailers`` appends a missing final newline before parsing,
+    so it would answer about a different input than the one recovery holds.
+    Every message this product writes ends in a newline.
 
     Returns an empty mapping when git cannot be run, for the same reason.
     """
     if not message.endswith("\n"):
         return {}
     try:
-        result = subprocess.run(
-            ["git", "-c", "trailer.separators=:", "interpret-trailers", "--parse"],
-            input=message, check=False, capture_output=True, text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
+        encoded = message.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
         return {}
+    with tempfile.TemporaryDirectory(prefix="kb-trailers-") as scratch:
+        env = _trailer_env()
+        # Stop repository discovery from walking above the scratch directory,
+        # so no repository config is picked up either.
+        env["GIT_CEILING_DIRECTORIES"] = scratch
+        try:
+            result = subprocess.run(
+                ["git", "-c", "trailer.separators=:",
+                 "interpret-trailers", "--parse"],
+                input=encoded, check=False, capture_output=True,
+                cwd=scratch, env=env, timeout=max(0.1, timeout_sec),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return {}
     if result.returncode != 0:
         return {}
     trailers: dict[str, str] = {}
-    for line in result.stdout.split("\n"):
-        key, sep, value = line.partition(":")
+    duplicated: set[str] = set()
+    # Split on LF only. The CLI's framing is one trailer per LF-terminated line;
+    # everything inside a line is git's, not ours to normalise.
+    for raw in result.stdout.split(b"\n"):
+        if not raw:
+            continue
+        key_bytes, sep, value_bytes = raw.partition(b":")
         if not sep:
             continue
-        trailers[key.strip()] = value.strip()
+        key = key_bytes.decode("utf-8", errors="replace")
+        value = value_bytes.decode("utf-8", errors="replace")
+        # git separates key and value with ": ", so exactly one leading space is
+        # framing. Nothing else is removed.
+        if value.startswith(" "):
+            value = value[1:]
+        if key in trailers:
+            duplicated.add(key)
+        trailers[key] = value
+    for key in duplicated:
+        trailers.pop(key, None)
     return trailers
 
 
@@ -339,7 +394,9 @@ class GitOps:
         - ``True``: found. The decision committed.
         - ``False``: searched successfully and no commit satisfies the claim.
         - ``None``: could not search (no ref, no pre-write sha, a missing
-          branch, a timeout, an unreadable repository).
+          branch, a timeout, an unreadable repository). ``timeout_sec`` bounds
+          the WHOLE search, including every delegated trailer parse, because
+          this runs while the write serializer is held.
 
         ``False`` is deliberately NOT proof that nothing committed. A rebase can
         drop a commit that upstream already acquired as an equivalent patch, and
@@ -349,6 +406,7 @@ class GitOps:
         """
         if not ref or not since_sha or not pending_id:
             return None
+        deadline = time.monotonic() + timeout_sec
         try:
             result = subprocess.run(
                 # NUL-delimited so a message body can never be mistaken for a
@@ -372,7 +430,15 @@ class GitOps:
             # range.
             if "KB-Pending-Id" not in message:
                 continue
-            trailers = _parse_trailers(message)
+            # ONE deadline across the whole search, not one per candidate.
+            # Reconciliation runs holding the write serializer, so a range with
+            # many candidates could otherwise stall unrelated writes for a
+            # multiple of the timeout. Running out of time is uncertainty, which
+            # is the safe answer: the claim keeps its lock and is retried.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            trailers = _parse_trailers(message, timeout_sec=remaining)
             if trailers.get("KB-Pending-Id") != pending_id:
                 continue
             if target_path and trailers.get("KB-Target-Path") != target_path:

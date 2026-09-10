@@ -463,7 +463,11 @@ every `in_force` retrieval exactly as before.
 
 Recovery identifies a claim's commit by a `KB-Pending-Id` trailer, and it asks
 `git interpret-trailers` to read that trailer rather than parsing the message
-itself. Commit text is agent-controlled, so a parser that disagreed with git in
+itself. That parse runs with global, system and environment-injected git
+configuration disabled and repository discovery ceilinged, because git's own
+`trailer.<alias>.key` configuration can RENAME an ordinary key into the claim
+key and turn an unrelated commit into evidence. A duplicated key is treated as
+ambiguous and yields nothing. Commit text is agent-controlled, so a parser that disagreed with git in
 the accepting direction would let an ordinary write close somebody's decision;
 delegating removes that whole class rather than chasing git's message-boundary
 rules one at a time. A commit body that does not end in a newline is treated as
