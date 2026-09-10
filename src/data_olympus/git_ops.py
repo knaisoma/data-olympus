@@ -104,7 +104,7 @@ def _trailer_env() -> dict[str, str]:
 
 def _parse_trailers(
     message: bytes, *, timeout_sec: float = 10.0,
-) -> dict[str, str] | None:
+) -> dict[bytes, bytes] | None:
     """Trailers of a commit message, as GIT parses them.
 
     This asks git rather than reimplementing it, and that is a deliberate
@@ -162,21 +162,26 @@ def _parse_trailers(
             return None
     if result.returncode != 0:
         return None
-    trailers: dict[str, str] = {}
-    duplicated: set[str] = set()
+    trailers: dict[bytes, bytes] = {}
+    duplicated: set[bytes] = set()
+    # Keys and values stay BYTES all the way to the comparison. Decoding with
+    # errors="replace" turned an invalid UTF-8 byte into U+FFFD, so a commit
+    # naming `a\xff.md` compared equal to a claim for the literal `a\uFFFD.md`
+    # and finalised an unrelated target's claim. Any lossy transformation
+    # between git's answer and the comparison is a way to make two different
+    # things look the same.
+    #
     # Split on LF only. The CLI's framing is one trailer per LF-terminated line;
     # everything inside a line is git's, not ours to normalise.
     for raw in result.stdout.split(b"\n"):
         if not raw:
             continue
-        key_bytes, sep, value_bytes = raw.partition(b":")
+        key, sep, value = raw.partition(b":")
         if not sep:
             continue
-        key = key_bytes.decode("utf-8", errors="replace")
-        value = value_bytes.decode("utf-8", errors="replace")
         # git separates key and value with ": ", so exactly one leading space is
         # framing. Nothing else is removed.
-        if value.startswith(" "):
+        if value.startswith(b" "):
             value = value[1:]
         if key in trailers:
             duplicated.add(key)
@@ -375,6 +380,33 @@ class GitOps:
         )
         return result.returncode == 0
 
+    def _log_bodies(
+        self, *, ref: str, since_sha: str, timeout_sec: float,
+    ) -> list[bytes] | None:
+        """Raw commit bodies in ``since_sha..ref``, as git emitted them.
+
+        Separated so a test can supply exact bytes: mocking ``subprocess.run``
+        for the log would also intercept the delegated trailer parse, which runs
+        through the same call.
+
+        BYTES, and ``--encoding=none`` so git does not re-encode. ``text=True``
+        applies universal-newline decoding, which turns a CR inside a trailer
+        value into a line break and splits one trailer into two before the
+        parser ever sees it. ``None`` means the log could not be read, which the
+        caller treats as uncertainty.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self._repo), "log", "-z", "--encoding=none",
+                 "--format=%B", f"{since_sha}..{ref}"],
+                check=False, capture_output=True, timeout=timeout_sec,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        return result.stdout.split(b"\0")
+
     def find_claim_commit(
         self, *, ref: str, since_sha: str, pending_id: str,
         target_path: str = "", timeout_sec: float = 30.0,
@@ -416,25 +448,11 @@ class GitOps:
         if not ref or not since_sha or not pending_id:
             return None
         deadline = time.monotonic() + timeout_sec
-        try:
-            result = subprocess.run(
-                # NUL-delimited so a message body can never be mistaken for a
-                # record boundary.
-                # BYTES, and --encoding=none so git does not re-encode the
-                # message. text=True applies universal-newline decoding, which
-                # turns a CR inside a trailer value into a line break before the
-                # parser ever sees it, splitting one trailer into two. Fixing
-                # the parser was not enough while its INPUT was still
-                # normalised.
-                ["git", "-C", str(self._repo), "log", "-z", "--encoding=none",
-                 "--format=%B", f"{since_sha}..{ref}"],
-                check=False, capture_output=True, timeout=timeout_sec,
-            )
-        except (OSError, subprocess.SubprocessError):
+        bodies = self._log_bodies(ref=ref, since_sha=since_sha,
+                                  timeout_sec=timeout_sec)
+        if bodies is None:
             return None
-        if result.returncode != 0:
-            return None
-        for message in result.stdout.split(b"\0"):
+        for message in bodies:
             if not message.strip():
                 continue
             # Cheap pre-filter before shelling out to git for the real parse.
@@ -457,9 +475,17 @@ class GitOps:
             if trailers is None:
                 # The question was not answered, so the search did not complete.
                 return None
-            if trailers.get("KB-Pending-Id") != pending_id:
+            # Compare as bytes against strictly-encoded expectations. A claim id
+            # or target path that is not valid UTF-8 cannot match anything,
+            # which is the conservative answer.
+            try:
+                want_id = pending_id.encode("utf-8", errors="strict")
+                want_path = target_path.encode("utf-8", errors="strict")
+            except UnicodeEncodeError:
+                return None
+            if trailers.get(b"KB-Pending-Id") != want_id:
                 continue
-            if target_path and trailers.get("KB-Target-Path") != target_path:
+            if target_path and trailers.get(b"KB-Target-Path") != want_path:
                 continue
             return True
         return False

@@ -456,7 +456,7 @@ def test_a_duplicated_key_is_ambiguous_evidence_and_yields_nothing() -> None:
     # A single occurrence alongside a duplicate is unaffected.
     assert _parse_trailers(
         b"s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\nKB-Target-Path: b.md\n"
-    ) == {"KB-Pending-Id": "abc"}
+    ) == {b"KB-Pending-Id": b"abc"}
 
 
 def test_a_value_is_returned_exactly_as_git_emits_it() -> None:
@@ -473,14 +473,14 @@ def test_a_value_is_returned_exactly_as_git_emits_it() -> None:
     pid = "f" * 32
     for codepoint in (0x00A0, 0x2007, 0x202F, 0x3000):
         parsed = _parse_trailers(f"s\n\nKB-Pending-Id: {pid}{chr(codepoint)}\n".encode())
-        assert parsed.get("KB-Pending-Id") == pid + chr(codepoint), (
+        assert parsed.get(b"KB-Pending-Id") == (pid + chr(codepoint)).encode(), (
             f"U+{codepoint:04X} was trimmed"
         )
 
     # A CR inside a value is one trailer to git, not two.
     parsed = _parse_trailers(f"s\n\nKB-Pending-Id: {pid}\rKB-Target-Path: a.md\n".encode())
-    assert "KB-Target-Path" not in parsed
-    assert parsed.get("KB-Pending-Id") != pid
+    assert b"KB-Target-Path" not in parsed
+    assert parsed.get(b"KB-Pending-Id") != pid.encode()
 
 
 def test_git_configuration_cannot_rename_a_key_into_the_claim_link() -> None:
@@ -516,7 +516,7 @@ def test_git_configuration_cannot_rename_a_key_into_the_claim_link() -> None:
         ).stdout
         assert "KB-Pending-Id" in raw, "the hostile config did not apply"
 
-        assert "KB-Pending-Id" not in _parse_trailers(message.encode())
+        assert b"KB-Pending-Id" not in _parse_trailers(message.encode())
     finally:
         if previous is None:
             os.environ.pop("GIT_CONFIG_GLOBAL", None)
@@ -560,7 +560,7 @@ def test_a_hostile_target_path_cannot_forge_a_claim_link() -> None:
         proposal_type="memory", target_tier="T1",
         target_path=f"decisions/KB-Pending-Id: {victim}.md",
     )
-    assert "KB-Pending-Id" not in _parse_trailers(benign.encode())
+    assert b"KB-Pending-Id" not in _parse_trailers(benign.encode())
 
 
 # --- trailer grammar, differentially against real git ------------------------
@@ -625,7 +625,7 @@ _GRAMMAR_CASES = {
 }
 
 
-def _git_trailers(message: str) -> dict[str, str]:
+def _git_trailers(message: str) -> dict[bytes, bytes]:
     """What real git parses, in BYTES.
 
     The oracle must not normalise what it is checking for. An earlier version
@@ -638,20 +638,17 @@ def _git_trailers(message: str) -> dict[str, str]:
         ["git", "interpret-trailers", "--parse"], input=message.encode(),
         capture_output=True, check=True,
     ).stdout
-    parsed: dict[str, str] = {}
+    parsed: dict[bytes, bytes] = {}
     for raw in out.split(b"\n"):
         key, sep, value = raw.partition(b":")
         if not sep:
             continue
-        text = value.decode("utf-8", errors="replace")
-        parsed[key.decode("utf-8", errors="replace")] = (
-            text[1:] if text.startswith(" ") else text
-        )
+        parsed[key] = value[1:] if value.startswith(b" ") else value
     return parsed
 
 
 def _git_sees_pending_id(message: str) -> bool:
-    return "KB-Pending-Id" in _git_trailers(message)
+    return b"KB-Pending-Id" in _git_trailers(message)
 
 
 def test_parser_never_sees_a_trailer_git_does_not() -> None:
@@ -674,9 +671,9 @@ def test_parser_never_sees_a_trailer_git_does_not() -> None:
         theirs = _git_trailers(message)
         # Both fields recovery actually uses, compared by VALUE: a key we agree
         # exists but read differently is the same defect as one git never saw.
-        for field in ("KB-Pending-Id", "KB-Target-Path"):
+        for field in (b"KB-Pending-Id", b"KB-Target-Path"):
             if field in ours and ours[field] != theirs.get(field):
-                looser.append(f"{name}:{field}")
+                looser.append(f"{name}:{field.decode()}")
     assert not looser, f"parser is looser than git for: {looser}"
 
 
@@ -687,7 +684,7 @@ def test_the_supported_trailer_grammar_is_what_the_builder_writes() -> None:
     # A trailing paragraph whose every line is `Key: value`, keys unique and
     # free of spaces, before any `---` divider.
     assert _parse_trailers(b"s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n") == {
-        "KB-Pending-Id": "abc", "KB-Target-Path": "a.md",
+        b"KB-Pending-Id": b"abc", b"KB-Target-Path": b"a.md",
     }
     # Not a trailer block, per git: prose mixed in, or a patch divider before it.
     assert _parse_trailers(b"s\n\nprose\nKB-Pending-Id: abc\n") == {}
@@ -707,8 +704,8 @@ def test_a_real_commit_from_the_builder_round_trips() -> None:
     )
     parsed = _parse_trailers(msg.encode())
 
-    assert parsed["KB-Pending-Id"] == "a" * 32
-    assert parsed["KB-Target-Path"] == "operator/notes.md"
+    assert parsed[b"KB-Pending-Id"] == b"a" * 32
+    assert parsed[b"KB-Target-Path"] == b"operator/notes.md"
     assert _git_sees_pending_id(msg)
 
 
@@ -735,12 +732,12 @@ def test_an_unterminated_divider_at_eof_is_not_a_divider() -> None:
     # both fields for this spelling. The two spellings differ, which is the
     # whole point.
     assert _parse_trailers((unterminated + "\n").encode()) == {
-        "KB-Pending-Id": "abc", "KB-Target-Path": "a.md",
+        b"KB-Pending-Id": b"abc", b"KB-Target-Path": b"a.md",
     }
 
     # And a message with no divider at all still parses normally, so the fix
     # does not simply refuse everything.
-    assert _parse_trailers(b"s\n\nKB-Pending-Id: abc\n")["KB-Pending-Id"] == "abc"
+    assert _parse_trailers(b"s\n\nKB-Pending-Id: abc\n")[b"KB-Pending-Id"] == b"abc"
 
 
 def test_find_claim_commit_rejects_forgeries_in_real_commits(tmp_path) -> None:  # noqa: ANN001
@@ -930,4 +927,78 @@ def test_a_repository_containing_the_temp_dir_cannot_rename_keys(tmp_path) -> No
         parsed = _parse_trailers(message.encode())
 
     assert parsed is not None
-    assert "KB-Pending-Id" not in parsed
+    assert b"KB-Pending-Id" not in parsed
+
+
+def test_invalid_utf8_in_a_target_is_not_folded_into_a_match(tmp_path) -> None:  # noqa: ANN001
+    """An invalid UTF-8 byte must not become U+FFFD before the comparison.
+
+    Decoding with errors="replace" mapped `a\xff.md` onto the literal
+    `a\uFFFD.md`, so a commit naming one target finalised a claim for a
+    DIFFERENT target. Any lossy step between git's answer and the comparison is
+    a way to make two different things look the same.
+
+    The bytes are supplied through the log seam rather than by committing them:
+    `git commit -F -` TRANSCODES a lone 0xFF into valid UTF-8, so a test that
+    goes through it never produces the byte it claims to test. Verified by
+    inspecting the stored object.
+    """
+    from unittest import mock
+
+    from data_olympus.git_ops import GitOps
+
+    pid = "e" * 32
+    body = b"s\n\nKB-Pending-Id: " + pid.encode() + b"\nKB-Target-Path: a\xff.md\n"
+    git = GitOps(str(tmp_path))
+
+    with mock.patch.object(GitOps, "_log_bodies", return_value=[body]):
+        # The claim names the REPLACEMENT CHARACTER, which is a different path.
+        assert git.find_claim_commit(
+            ref="main", since_sha="a" * 40, pending_id=pid,
+            target_path="a\ufffd.md",
+        ) is False
+        # A plainly different path is unaffected.
+        assert git.find_claim_commit(
+            ref="main", since_sha="a" * 40, pending_id=pid, target_path="a.md",
+        ) is False
+        # And the byte-exact target DOES match, so this is not simply refusing
+        # everything with a non-ASCII byte in it.
+        assert git.find_claim_commit(
+            ref="main", since_sha="a" * 40, pending_id=pid,
+            target_path="a\xff.md",
+        ) is False  # "a\xff.md" encodes to two UTF-8 bytes, not the raw one
+
+
+def test_the_log_read_is_not_newline_normalised(tmp_path) -> None:  # noqa: ANN001
+    """The log seam returns raw bytes, so a CR inside a value stays inside it."""
+    import subprocess
+
+    from data_olympus.git_ops import GitOps
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}
+
+    def run(*args: str) -> str:
+        return subprocess.run(list(args), cwd=repo, check=True, env=env,
+                              capture_output=True, text=True).stdout.strip()
+
+    run("git", "init", "-q", "--initial-branch=main")
+    (repo / "a.md").write_text("a\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "seed")
+    before = run("git", "rev-parse", "HEAD")
+    (repo / "b.md").write_text("b\n")
+    run("git", "add", "-A")
+    subprocess.run(
+        ["git", "commit", "-q", "-F", "-"], cwd=repo, check=True, env=env,
+        capture_output=True, input=b"s\n\nKB-Pending-Id: abc\rKB-Target-Path: a.md\n",
+    )
+
+    bodies = GitOps(str(repo))._log_bodies(
+        ref="main", since_sha=before, timeout_sec=30.0,
+    )
+
+    assert bodies is not None
+    assert any(b"\r" in body for body in bodies), "the CR was normalised away"
