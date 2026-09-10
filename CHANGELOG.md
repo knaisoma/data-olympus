@@ -12,6 +12,31 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* **Indexing a modest corpus no longer needs more than a gigabyte of memory.**
+  The co-occurrence pass that powers query expansion counted every token pair in
+  the corpus in one in-memory table. The per-document token cap bounded each
+  document's contribution but nothing bounded the union across documents, and
+  the union is what was held: on a 536-file, 3.6 MiB corpus that was 6.2 million
+  distinct pairs and a 1445 MiB peak, above a 1 GiB container limit on its own,
+  so every index rebuild OOM-killed the pod. Pair counting now drops terms that
+  cannot appear in any surviving pair, keys pairs by integer rather than by
+  string tuple, bounds the per-term candidate lists, and spills to a temporary
+  SQLite database once it reaches `KB_COOCCURRENCE_MAX_PAIRS` distinct pairs
+  (default 500000). The same corpus now peaks at 105 MiB. The related-terms
+  table produced is byte-for-byte identical, so no search result moves. The
+  trade is build time: that corpus goes from 6.6 s to 16.3 s, measured on one
+  machine. Set `KB_COOCCURRENCE_MAX_PAIRS=0` to disable the spill and keep the
+  previous speed where memory allows. See `docs/serving.md`.
+* **A failed co-occurrence build no longer fails the whole index build.** The
+  spill writes to a temporary file, so it can fail on a full or read-only disk.
+  Because the index only rebuilds when the corpus changes and `/readyz` rejects
+  a failed build, that would have left the service unready until the next
+  commit. The build now logs a warning and continues without a related-terms
+  table: the index still serves, and only query expansion is lost until the next
+  successful build.
+
 ## [0.7.3] - 2026-09-07
 
 ### Fixed

@@ -827,6 +827,42 @@ Tune it with:
   auto-disabled (default `50`).
 - `KB_COOCCURRENCE_MAX_DOC_TOKENS`: per-document unique-token cap on the pair
   counting, bounding the O(n^2) work on large docs (default `400`).
+- `KB_COOCCURRENCE_MAX_PAIRS`: how many distinct pairs the counter may hold in
+  memory before spilling to a temporary SQLite file (default `500000`). `0`
+  disables the spill and keeps everything in memory.
+
+### Build memory
+
+The per-document token cap bounds each document's contribution. It does not
+bound the union of pairs across documents, and that union is what the counter
+holds. On the maintainers' corpus of 536 markdown files (3.6 MiB) the union was
+6.2 million distinct pairs, and the build peaked at 1445 MiB, which is above a
+1 GiB container limit on its own. Since the pair space grows superlinearly with
+corpus size, this is a wall every deployment eventually reaches; where it sits
+depends on the corpus.
+
+`KB_COOCCURRENCE_MAX_PAIRS` bounds it. Once the counter reaches that many
+entries it is flushed into a temporary SQLite database and cleared, and the
+counts are aggregated back out at the end. The table produced is identical
+either way, so no search result moves; only memory and build time change. On
+the same corpus, measured on one laptop:
+
+| `KB_COOCCURRENCE_MAX_PAIRS` | peak RSS | build time |
+| --- | --- | --- |
+| (behaviour before this bound existed) | 1445 MiB | 6.6 s |
+| `0`, no spill | 502 MiB | 3.2 s |
+| `500000`, the default | 105 MiB | 16.3 s |
+
+The default trades build time for a ceiling that does not grow with the corpus.
+Raise it, or set it to `0`, on a host with memory to spare and a corpus that
+fits. The bound is on pair counting specifically: parsed documents, per-document
+token sets and the candidate lists sit outside it, and the counter is checked
+between documents, so it can exceed the cap by at most one document's own pairs.
+
+The spill writes to a temporary file, so it can fail on a full or read-only
+disk. That failure does not fail the index build: the build logs a warning and
+continues with no related-terms table, so the index still serves and only
+co-occurrence expansion is lost until the next successful build.
 
 ## Trigram fuzzy-match fallback
 
