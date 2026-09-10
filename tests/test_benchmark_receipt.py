@@ -281,9 +281,11 @@ def test_docs_guard_surfaces_receipt_drift(tmp_path: Path, monkeypatch) -> None:
 
     # The empty document has neither dependency_lock nor source_tree to bind, so
     # both historical checks contribute their own problem alongside the
-    # preserved one.
+    # preserved one, and it is not usable as a comparison reference either.
     assert check_benchmark_docs.receipt_problems(tmp_path) == [
         "outputs sha256 does not match the repository",
+        "receipt cannot be used as a comparison reference: reference receipt is "
+        "missing required field 'schema_version'",
         "dependency_lock is missing from the receipt",
         "source_tree is missing from the receipt",
     ]
@@ -619,3 +621,164 @@ def test_docs_guard_rejects_a_receipt_recording_no_source(tmp_path: Path) -> Non
 
     problems = check_benchmark_docs.historical_source_tree_problems(receipt, root)
     assert problems == ["source_tree records no measured source files"]
+
+
+# --- reference comparison (issue #158) ---------------------------------------
+
+
+def _reference_receipt(tmp_path: Path) -> dict:
+    from benchmarks.receipt import build_receipt
+
+    return build_receipt(_benchmark_repo(tmp_path / "ref"), _SOURCE_COMMIT)
+
+
+def test_compare_reports_both_levels_matched_for_an_exact_reproduction(
+    tmp_path: Path,
+) -> None:
+    from benchmarks.receipt import compare_receipts
+
+    reference = _reference_receipt(tmp_path)
+    report = compare_receipts(reference=reference, candidate=dict(reference))
+
+    assert report["inputs"]["status"] == "matched"
+    assert report["results"]["status"] == "matched"
+    assert report["reproduction_status"] == "reproduced"
+
+
+def test_compare_reports_inputs_mismatched_and_names_the_field(
+    tmp_path: Path,
+) -> None:
+    """A different source commit is an input difference, and the report has to
+    say WHICH input differed or a discrepancy report is not actionable."""
+    from benchmarks.receipt import compare_receipts
+
+    reference = _reference_receipt(tmp_path)
+    candidate = dict(reference)
+    candidate["source_commit"] = "b" * 40
+    report = compare_receipts(reference=reference, candidate=candidate)
+
+    assert report["inputs"]["status"] == "mismatched"
+    assert report["results"]["status"] == "matched"
+    assert report["reproduction_status"] == "inputs_differ_results_matched"
+    assert any(d["field"] == "source_commit" for d in report["inputs"]["differences"])
+
+
+def test_compare_reports_inputs_matched_with_results_differing(
+    tmp_path: Path,
+) -> None:
+    """The interesting discrepancy: the same declared inputs produced different
+    artifacts. The two levels fail independently, which is the whole point of
+    reporting them separately."""
+    from benchmarks.receipt import compare_receipts
+
+    reference = _reference_receipt(tmp_path)
+    candidate = json.loads(json.dumps(reference))
+    candidate["outputs"]["sha256"] = "0" * 64
+    report = compare_receipts(reference=reference, candidate=candidate)
+
+    assert report["inputs"]["status"] == "matched"
+    assert report["results"]["status"] == "mismatched"
+    assert report["reproduction_status"] == "inputs_matched_results_differ"
+    assert any(d["field"] == "outputs.sha256" for d in report["results"]["differences"])
+
+
+def test_compare_reports_both_levels_mismatched(tmp_path: Path) -> None:
+    from benchmarks.receipt import compare_receipts
+
+    reference = _reference_receipt(tmp_path)
+    candidate = json.loads(json.dumps(reference))
+    candidate["source_commit"] = "c" * 40
+    candidate["outputs"]["sha256"] = "0" * 64
+    report = compare_receipts(reference=reference, candidate=candidate)
+
+    assert report["reproduction_status"] == "unreproduced"
+
+
+def test_compare_rejects_a_receipt_missing_a_required_field(
+    tmp_path: Path,
+) -> None:
+    """Two omissions are not agreement. A receipt that cannot be compared is an
+    error naming the field, never a match."""
+    from benchmarks.receipt import ReceiptFieldMissingError, compare_receipts
+
+    reference = _reference_receipt(tmp_path)
+    candidate = json.loads(json.dumps(reference))
+    del candidate["seeds"]
+    try:
+        compare_receipts(reference=reference, candidate=candidate)
+    except ReceiptFieldMissingError as exc:
+        assert "seeds" in str(exc)
+        assert "candidate" in str(exc)
+    else:
+        raise AssertionError("a missing required field must be rejected")
+
+    stripped = json.loads(json.dumps(reference))
+    del stripped["seeds"]
+    del stripped["outputs"]
+    try:
+        compare_receipts(reference=stripped, candidate=stripped)
+    except ReceiptFieldMissingError:
+        pass
+    else:
+        raise AssertionError("two receipts both missing a field must not match")
+
+
+def test_compare_report_never_claims_independent_validation(
+    tmp_path: Path,
+) -> None:
+    """The comparison is over RECORDED inputs and RECORDED results. receipt.py
+    does not execute or observe the benchmark run, so the report must not read
+    as execution attestation or as independent validation."""
+    from benchmarks.receipt import compare_receipts
+
+    reference = _reference_receipt(tmp_path)
+    report = compare_receipts(reference=reference, candidate=dict(reference))
+    text = json.dumps(report).lower()
+
+    assert "recorded" in report["provenance"].lower()
+    assert "independent" not in text or "not independent" in text
+    assert "attest" not in text
+
+
+def test_compare_cli_exits_nonzero_on_a_discrepancy(tmp_path: Path) -> None:
+    from benchmarks import receipt as receipt_module
+
+    reference = _reference_receipt(tmp_path)
+    candidate = json.loads(json.dumps(reference))
+    candidate["outputs"]["sha256"] = "0" * 64
+    ref_path = tmp_path / "reference.json"
+    cand_path = tmp_path / "candidate.json"
+    ref_path.write_text(json.dumps(reference), encoding="utf-8")
+    cand_path.write_text(json.dumps(candidate), encoding="utf-8")
+
+    assert receipt_module.main(
+        ["compare", "--reference", str(ref_path), "--candidate", str(ref_path)]
+    ) == 0
+    assert receipt_module.main(
+        ["compare", "--reference", str(ref_path), "--candidate", str(cand_path)]
+    ) == 1
+
+
+def test_docs_guard_rejects_a_receipt_that_cannot_be_compared(
+    tmp_path: Path, monkeypatch,  # noqa: ANN001
+) -> None:
+    """The committed receipt is the reference a third party compares against, so
+    it has to stay comparable. A schema change that drops a field the comparison
+    needs must fail CI here rather than surfacing as a rejected reproduction."""
+    from benchmarks import receipt
+    from scripts import check_benchmark_docs
+
+    reference = build_committed_receipt_fixture(tmp_path)
+    del reference["seeds"]
+    receipt_path = tmp_path / receipt.RECEIPT_PATH
+    _write(receipt_path, json.dumps(reference) + "\n")
+    monkeypatch.setattr(receipt, "verify_receipt", lambda _document, _root: [])
+
+    problems = check_benchmark_docs.receipt_problems(tmp_path)
+    assert any("seeds" in problem for problem in problems), problems
+
+
+def build_committed_receipt_fixture(tmp_path: Path) -> dict:
+    from benchmarks.receipt import build_receipt
+
+    return build_receipt(_benchmark_repo(tmp_path / "fixture"), _SOURCE_COMMIT)

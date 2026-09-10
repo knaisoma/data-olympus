@@ -12,6 +12,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+* **A reproduction of the benchmarks can now be compared against the published
+  one.** `python -m benchmarks.receipt compare --reference <path> --candidate
+  <path>` reports two levels that fail independently: whether the recorded
+  inputs match (commit, environment, commands, seeds, configuration) and whether
+  the recorded results match (artifact digests and the reported summary). A run
+  can match the first and not the second, which is the discrepancy worth
+  reporting, and it can match the second and not the first. `reproduction_status`
+  is therefore the outcome of a comparison against a named reference, never a
+  property a single receipt carries. A receipt missing a field the comparison
+  needs is rejected rather than counted as a match, and the CI guard now fails
+  if the committed receipt stops being usable as a reference. Exits 0 when both
+  levels match, 1 on a difference, 2 on a missing field. `benchmarks/README.md`
+  documents how a third party publishes a reproduction and reports a
+  discrepancy. The comparison is over RECORDED inputs and results: this tool
+  does not execute or observe a run, and the published tables stay labelled
+  maintainer-produced and not independently reproduced.
+
 ### Fixed
 
 * **Indexing a modest corpus no longer needs more than a gigabyte of memory.**
