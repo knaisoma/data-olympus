@@ -92,13 +92,30 @@ def _parse_trailers(message: str) -> dict[str, str]:
     # `line.rstrip() == "---"`, which missed the first two and, because
     # str.rstrip() strips Unicode whitespace, wrongly matched the last: it
     # truncated there and accepted an earlier block git does not see at all.
+    # git's predicate needs an actual whitespace BYTE after `---`. A bare `---`
+    # in mid-message qualifies because the newline that ends the line IS that
+    # byte; the same three characters at END OF INPUT do not, because there is
+    # no following byte at all. Splitting on "\n" erases that difference, so the
+    # terminator is reconstructed here: every line except the last was followed
+    # by a newline.
+    #
+    # This distinction cannot be caught by comparing against
+    # `git interpret-trailers`, because the CLI appends a missing final newline
+    # before parsing. Production reads raw `%B` bodies from `git log -z`, which
+    # does not. An oracle that normalises the input hides exactly the case the
+    # code has to get right.
+    raw_lines = message.split("\n")
+    last = len(raw_lines) - 1
     lines: list[str] = []
-    for line in message.split("\n"):
-        if line.startswith(_PATCH_DIVIDER) and (
-            len(line) == len(_PATCH_DIVIDER)
-            or line[len(_PATCH_DIVIDER)] in _ASCII_SPACE
-        ):
-            break
+    for index, line in enumerate(raw_lines):
+        if line.startswith(_PATCH_DIVIDER):
+            rest = line[len(_PATCH_DIVIDER):]
+            if rest:
+                if rest[0] in _ASCII_SPACE:
+                    break          # `--- patch`, `---<TAB>patch`
+            elif index < last:
+                break              # a bare `---` whose newline is the byte
+            # else: `---` at end of input, with no following byte at all
         lines.append(line)
     message = "\n".join(lines)
 

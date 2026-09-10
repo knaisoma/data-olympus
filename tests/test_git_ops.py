@@ -580,3 +580,54 @@ def test_a_real_commit_from_the_builder_round_trips() -> None:
     assert parsed["KB-Pending-Id"] == "a" * 32
     assert parsed["KB-Target-Path"] == "operator/notes.md"
     assert _git_sees_pending_id(msg)
+
+
+def test_an_unterminated_divider_at_eof_is_not_a_divider() -> None:
+    """git requires an actual whitespace BYTE after `---`. At end of input there
+    is none, so a message ending in a bare `---` has no patch divider, its final
+    paragraph is ordinary text, and the block before it is therefore not the
+    trailer block.
+
+    This case cannot be caught by the differential test above, and that is the
+    point of asserting it separately: `git interpret-trailers` appends a missing
+    final newline before parsing, so the CLI oracle normalises the very
+    difference that matters. Production does not go through the CLI; it reads
+    raw `%B` bodies out of `git log -z`.
+    """
+    from data_olympus.git_ops import _parse_trailers
+
+    unterminated = "s\n\nKB-Pending-Id: abc\nKB-Target-Path: a.md\n\n---"
+    assert _parse_trailers(unterminated) == {}
+
+    # The same message WITH the terminator DOES have a divider, so parsing stops
+    # there and the block before it is the last paragraph, which is the trailer
+    # block. Verified against real git: `git interpret-trailers --parse` returns
+    # both fields for this spelling. The two spellings differ, which is the
+    # whole point.
+    assert _parse_trailers(unterminated + "\n") == {
+        "KB-Pending-Id": "abc", "KB-Target-Path": "a.md",
+    }
+
+    # And a message with no divider at all still parses normally, so the fix
+    # does not simply refuse everything.
+    assert _parse_trailers("s\n\nKB-Pending-Id: abc\n")["KB-Pending-Id"] == "abc"
+
+
+def test_find_claim_commit_rejects_an_unterminated_divider(tmp_path) -> None:  # noqa: ANN001
+    """The same case through the real search, with the raw body production
+    consumes rather than a CLI-normalised one."""
+    from unittest import mock
+
+    from data_olympus.git_ops import GitOps
+
+    forged = "s\n\nKB-Pending-Id: " + "e" * 32 + "\nKB-Target-Path: a.md\n\n---"
+    completed = mock.Mock(returncode=0, stdout=forged + "\0")
+    git = GitOps(str(tmp_path))
+
+    with mock.patch("data_olympus.git_ops.subprocess.run", return_value=completed):
+        found = git.find_claim_commit(
+            ref="main", since_sha="a" * 40, pending_id="e" * 32,
+            target_path="a.md",
+        )
+
+    assert found is False

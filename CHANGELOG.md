@@ -21,14 +21,26 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   park reason, but nothing returned the text. So an agent could learn THAT it
   proposed something about a path and never WHAT it proposed: it could not
   re-read its own draft, quote it back to the operator, or check it against a
-  second proposal. `GET /api/v1/pending/<id>?source_session=<id>` and the
-  `kb_get_pending` MCP tool now return the postimage, with `in_force: false` and
-  a note saying the content governs nothing until approved. It stays out of
-  `kb_consult` and every `in_force` retrieval exactly as before. Access is the
-  proposing session or a principal holding `resolve`, and a postimage the secret
+  second proposal. `GET /api/v1/pending/<id>` and the `kb_get_pending` MCP tool
+  now return the postimage, with `in_force: false` and a note saying the content
+  governs nothing until approved. It stays out of `kb_consult` and every
+  `in_force` retrieval exactly as before.
+
+  Ownership is the AUTHENTICATED principal recorded when the proposal was made,
+  or any principal holding `resolve`; an entry parked before this release is
+  resolver-only, since its owner cannot be established. A postimage the secret
   scanner flagged is withheld from everyone but a resolver, since handing one
-  back would turn the queue into a place to retrieve a credential from.
-  Requested in #256 after a public discussion of read-your-own-writes.
+  back would turn the queue into a place to retrieve a credential from. Only the
+  postimage is owner-scoped: the pending LISTING remains visible to every
+  authenticated principal with each entry's target path, reason and evidence,
+  unchanged by this release and documented in `docs/serving.md`.
+
+  Because a principal name is now an ownership identity, **the server refuses to
+  start on a configuration with two credentials sharing a name**, including two
+  unnamed ones, which both defaulted to `agent`. Give each credential a unique
+  `name` before upgrading, and avoid `operator` when `KB_AUTH_TOKEN` supplies
+  that identity. Requested in #256 after a public discussion of
+  read-your-own-writes.
 
 * **The governed action vocabulary is configurable.** The enforcement gate
   classified actions from three lists compiled into `enforce_policy.py`, and the
