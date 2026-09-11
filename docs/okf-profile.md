@@ -1,8 +1,8 @@
 # The data-olympus OKF profile
 
 This document is the field-by-field reference for data-olympus as an [Open
-Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
-(OKF) profile: which frontmatter fields are stable and lint-guarded, which are
+Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format)
+(OKF) v0.2 profile: which frontmatter fields are stable and lint-guarded, which are
 runtime-only serving-envelope fields that never touch frontmatter, which are
 experimental candidates tracked against open OKF discussions, and how each
 maps to OKF baseline compatibility. It exists so an adjacent OKF implementer
@@ -38,16 +38,20 @@ sections 3-5). Specifically:
   and every other data-olympus addition.
 
 **On the conformance wording, deliberately careful:** CI pins official Google
-OKF commit `d44368c15e38e7c92481c5992e4f9b5b421a801d` and verifies the fixture and
-Apache 2.0 license checksums from `tests/okf/reference.json`. Google's reference
-visualization consumer reads every concept in `example-bundle`. In the reverse
-direction, the data-olympus OKF importer converts the pinned official Bitcoin
-sample into governed drafts, then the linter, index, search, and retrieval paths
-consume all five concepts. These are executable interoperability checks for the
-named revision and fixtures. They are not a formal certification, a round-trip
+OKF v0.2 commit `ad30107c31c06aec8a7d5636e0d1058118604e6f` in the dedicated
+`GoogleCloudPlatform/open-knowledge-format` repository and verifies the fixture
+and Apache 2.0 license checksums from `tests/okf/reference.json`. The `okf/`
+copy in `GoogleCloudPlatform/knowledge-catalog`, pinned before, is a frozen
+snapshot and is no longer accepted as a pin. Google's reference visualization
+consumer reads every concept in `example-bundle`. In the reverse direction, the
+data-olympus OKF importer converts the pinned official Bitcoin sample into
+governed drafts, then the linter, index, search, and retrieval paths consume all
+nine concepts. These are executable interoperability checks for the named
+revision and fixtures. They are not a formal certification, a round-trip
 fidelity claim, or evidence for every possible OKF bundle. A scheduled workflow
-reports upstream pin drift by maintaining one GitHub issue and never updates the
-pin automatically.
+reports upstream drift of the vendored FIXTURE by maintaining one GitHub issue
+and never updates the pin automatically; a change confined to the upstream
+reference consumer, SPEC, or license is not detected by that workflow.
 
 ---
 
@@ -55,7 +59,7 @@ pin automatically.
 
 These fields are shipped, schema-checked by `data-olympus lint`
 (`src/data_olympus/format/lint.py` via `validate_document` and the cross-file
-lifecycle pass), and part of the current `SPEC.md` (version 0.2). "Stable"
+lifecycle pass), and part of the current `SPEC.md` (version 0.3). "Stable"
 here means the field name and semantics are not expected to change shape; it
 does not mean the field is required in every bundle unless stated, and two
 fields (`applies_when`, `owner`) are stable documented conventions with no
@@ -175,9 +179,11 @@ All dates normalize to ISO `YYYY-MM-DD` at index/lint time
 (`normalize_validity_date`). `kb lint` treats a malformed `validity` value (an
 unparsable date, or `validity` present but not a mapping) as **absent** (fail
 open) while still emitting a warning (`_validity_findings` in `validate.py`).
-`timestamp` (the existing recommended content-change field) is explicitly
-*not* a staleness signal: `SPEC.md` section 4.2 states tooling MUST NOT derive
-expiry or freshness from `timestamp` or a file's `last_modified`.
+The content-change time (`generated.at`, or the legacy `timestamp`) is
+explicitly *not* a staleness signal: `SPEC.md` section 4.2 states tooling MUST
+NOT derive expiry or freshness from it or from a file's `last_modified`. OKF
+v0.2's own `stale_after` and `verified` families are preserved on import and
+not interpreted by data-olympus.
 
 ---
 
@@ -302,7 +308,8 @@ OKF consumer choke on this" and "what does data-olympus tooling do with it".
 | `description` | yes (OKF recommends it) | warning if missing | Indexed below `title`/`applies_when`; deliberately excluded from the abstention gate. |
 | `applies_when` | yes (unknown key) | none (documented, not lint-checked) | Highest-weight `kb_search` field; feeds the abstention gate. |
 | `tags` | partially (OKF recommends the key) | warning if missing; warning if present and not a list | Faceted search; part of the abstention gate's discriminating column set. |
-| `timestamp` | yes (OKF recommends it) | warning if missing | Content-change metadata; MUST NOT be read as freshness. |
+| `generated` | yes (OKF v0.2 defines it) | warning if neither it nor `timestamp` gives a content-change time; warning if malformed (structural check only) | `{ by, at }`. Written by `init`, the importers and server-rendered memories with the tool actor `data-olympus/<version>`, never a principal. MUST NOT be read as freshness. |
+| `timestamp` | yes (OKF v0.1; superseded by `generated.at` in v0.2) | satisfies the content-change recommendation; the missing-time warning keeps this field name | Legacy content-change metadata, still accepted; no longer written by data-olympus. An OKF v0.1-only consumer that requires it will not accept documents written by data-olympus 0.8.0 or later. |
 | `supersedes` | yes (unknown key) | error (shape/self/cycle), warning (dangling/asymmetric/path-shaped) | Extracted into the `edges` table; source of the in-force-source graph-exclusion guard. |
 | `superseded_by` | yes (unknown key) | error (shape/self), warning (dangling/asymmetric/path-shaped/in-force) | Same edges table; surfaced on `kb_get`/compact hits (deviation-only). |
 | `contradicts` | yes (unknown key) | error (shape), warning (dangling/path-shaped/in-force pair) | Annotation only; never filters or ranks. |

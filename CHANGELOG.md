@@ -81,7 +81,33 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   examples no longer pin an old version. The maintainer procedure is unchanged
   and now section 7.2. Part of #151.
 
+### Changed
+
+* **OKF v0.2: data-olympus writes `generated` instead of `timestamp`.** OKF
+  v0.2 supersedes `timestamp` with `generated: { by, at }`. `data-olympus init`,
+  the importers and server-rendered memories now write `generated`, and `init`
+  declares `okf_version: "0.2"` and format `spec_version: "0.3"`. The writer is
+  always the tool actor `data-olympus/<version>`, never a principal name or
+  agent identity, so agent-written content is never attributed to a human
+  author; memories keep `created_by` and `created_at`. The OKF importer keeps a
+  source's `generated` and legacy `timestamp` as written, flags a malformed
+  `generated` for review, and resolves colliding `date`/`updated` aliases in a
+  fixed order, reporting the value it drops. Lint accepts a `generated.at` or a
+  legacy `timestamp` as the content-change time and warns on a structurally
+  malformed `generated`. Existing bundles are not rewritten and see no new
+  finding. **Compatibility:** an OKF v0.1-only consumer that requires
+  `timestamp` will not accept newly written documents. Part of #173.
+
 ### Fixed
+
+* **Interoperability evidence is pinned to where OKF now lives.** OKF moved to
+  `GoogleCloudPlatform/open-knowledge-format`, and the `okf/` directory the pin
+  pointed at in `knowledge-catalog` became a frozen snapshot. The pin, the
+  conformance script, CI and the freshness workflow now use the dedicated
+  repository at OKF v0.2 commit `ad30107c`; the vendored sample has nine
+  concepts; the frozen copy is rejected as a pin. The freshness workflow
+  monitors the fixture only, and says so. Closes #173.
+
 
 * **A dropped connection mid-approval is now visible, and recovers on its own
   whenever the evidence allows.** Approving a pending write claims the entry, holds its path lock,

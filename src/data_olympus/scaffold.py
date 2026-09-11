@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 # Must track the current SPEC.md format version (the drift test in
 # tests/test_cli_init.py compares this against SPEC.md's header and
 # example-bundle/index.md, so a future format bump fails fast here).
-SPEC_VERSION = "0.2"
+SPEC_VERSION = "0.3"
 OKF_VERSION = "0.2"
 
 # The six top-level tier directories `--tiers` selects among (issue #66's

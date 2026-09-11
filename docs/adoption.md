@@ -60,7 +60,11 @@ Including these fields improves search quality and the generated index:
 - `title`: human-readable name.
 - `description`: one-sentence summary.
 - `tags`: list of keywords.
-- `timestamp`: ISO 8601 date the document was last meaningfully updated.
+- `generated`: who produced the content and when it last meaningfully
+  changed, as `{ by, at }` (OKF v0.2). Use `by: human:<your-id>` for content
+  you write by hand, and an ISO 8601 datetime with an offset for `at`, for
+  example `"2026-06-24T00:00:00Z"`. A legacy `timestamp` date is still
+  accepted, so existing documents need no change.
 - `applies_when`: list of trigger phrases describing the coding intents this
   document governs (see below).
 
@@ -169,9 +173,12 @@ uv run data-olympus import <source> --kind <kind> --tier <tier> [options]
   with draft-safe defaults, and every inference is reported.
 
 The OKF path is covered by executable interoperability checks against official
-Google OKF commit `d44368c15e38e7c92481c5992e4f9b5b421a801d`. The pinned official
-Bitcoin sample imports as five lint-clean governed drafts, all five are indexed,
-and search plus retrieval complete successfully. The reverse check runs Google's
+Google OKF v0.2 commit `ad30107c31c06aec8a7d5636e0d1058118604e6f` in
+`GoogleCloudPlatform/open-knowledge-format`. The pinned official Bitcoin sample
+imports as nine lint-clean governed drafts, all nine are indexed, and search
+plus retrieval complete successfully. The importer keeps a source's OKF v0.2
+`generated` record and legacy `timestamp` as written, and stamps `generated`
+naming the data-olympus tool only when a document records neither. The reverse check runs Google's
 reference visualization consumer over every concept in `example-bundle`. To
 repeat both checks from a source checkout:
 
