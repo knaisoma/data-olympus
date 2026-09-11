@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from .provenance import generated_problems, has_content_change_time
+
 if TYPE_CHECKING:
     from .document import Document
 
@@ -324,8 +326,26 @@ def validate_document(doc: Document, *, today: str | None = None) -> list[Findin
             )
 
     for key in RECOMMENDED:
+        if key == "timestamp":
+            # OKF v0.2 records the content-change time as `generated.at`; the
+            # legacy `timestamp` still satisfies the recommendation. The finding
+            # stays on field 'timestamp' so existing filters keep working.
+            if not has_content_change_time(fm):
+                findings.append(
+                    Finding(
+                        "warning",
+                        "timestamp",
+                        "missing recommended content-change time: 'generated.at' "
+                        "(OKF v0.2) or the legacy 'timestamp'",
+                    )
+                )
+            continue
         if not fm.get(key):
             findings.append(Finding("warning", key, f"missing recommended field '{key}'"))
+
+    if "generated" in fm:
+        for problem in generated_problems(fm["generated"]):
+            findings.append(Finding("warning", "generated", problem))
 
     tags_val = fm.get("tags")
     if tags_val is not None and not isinstance(tags_val, list):
