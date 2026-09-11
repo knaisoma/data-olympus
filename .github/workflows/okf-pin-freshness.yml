@@ -1,5 +1,10 @@
 name: OKF pin freshness
 
+# Monitors the vendored FIXTURE only: it compares tests/okf/reference.json's
+# fixture_sha256 against the same fixture on official OKF main. A change
+# confined to the reference consumer, the SPEC or the license is not detected
+# here. It never changes the pin; a refresh is always a reviewed pull request.
+
 on:
   schedule:
     - cron: "17 7 * * 1"
@@ -26,13 +31,13 @@ jobs:
             const title = "[automation] OKF reference pin is stale";
             const upstream = await github.rest.repos.getCommit({
               owner: "GoogleCloudPlatform",
-              repo: "knowledge-catalog",
+              repo: "open-knowledge-format",
               ref: "main",
             });
             const upstreamSha = upstream.data.sha;
             const tree = await github.rest.git.getTree({
               owner: "GoogleCloudPlatform",
-              repo: "knowledge-catalog",
+              repo: "open-knowledge-format",
               tree_sha: upstream.data.commit.tree.sha,
               recursive: "true",
             });
@@ -52,7 +57,7 @@ jobs:
             for (const blob of blobs) {
               const response = await github.rest.git.getBlob({
                 owner: "GoogleCloudPlatform",
-                repo: "knowledge-catalog",
+                repo: "open-knowledge-format",
                 file_sha: blob.sha,
               });
               const content = Buffer.from(response.data.content.replace(/\n/g, ""), "base64");

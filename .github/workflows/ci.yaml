@@ -30,7 +30,7 @@ jobs:
       - name: Check out the exact official OKF revision
         uses: actions/checkout@v7
         with:
-          repository: GoogleCloudPlatform/knowledge-catalog
+          repository: GoogleCloudPlatform/open-knowledge-format
           ref: ${{ steps.okf-pin.outputs.sha }}
           path: to-delete/okf-reference
           persist-credentials: false

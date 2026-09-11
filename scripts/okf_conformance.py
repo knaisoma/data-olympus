@@ -15,7 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-OFFICIAL_REPOSITORY = "https://github.com/GoogleCloudPlatform/knowledge-catalog.git"
+# OKF moved to its own repository in 2026-08. The okf/ directory of the older
+# knowledge-catalog repository is a frozen snapshot and is not accepted.
+OFFICIAL_REPOSITORY = "https://github.com/GoogleCloudPlatform/open-knowledge-format.git"
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_PATH = ROOT / "tests" / "okf" / "reference.json"
 _LOWER_SHA = re.compile(r"[0-9a-f]{40}")
@@ -37,6 +39,10 @@ class ReferencePin:
     fixture_path: str
     local_fixture_path: str
     fixture_sha256: str
+    # Where the reference consumer's Python package root lives in the pinned
+    # checkout. Part of the pin, so a future upstream layout move is a reviewed
+    # pin edit rather than a code change.
+    consumer_path: str
     license: LicensePin
 
 
@@ -105,6 +111,9 @@ def load_reference(path: Path) -> ReferencePin:
             field="local_fixture_path",
         ),
         fixture_sha256=fixture_sha256,
+        consumer_path=_relative_path(
+            _required_string(data, "consumer_path"), field="consumer_path"
+        ),
         license=license_pin,
     )
 
@@ -182,7 +191,7 @@ def consume_data_olympus(
     verify_fixture(pin, upstream_root / pin.fixture_path)
     _verify_file(upstream_root / pin.license.path, pin.license.sha256, label="upstream license")
 
-    source_root = upstream_root / "okf" / "src"
+    source_root = upstream_root / pin.consumer_path
     bundle_root = project_root / "example-bundle"
     expected = sum(
         1 for path in bundle_root.rglob("*.md") if path.name != "index.md"
@@ -206,7 +215,7 @@ print(json.dumps(result, sort_keys=True))
         ).rstrip(os.pathsep)
         completed = subprocess.run(
             [sys.executable, "-c", code, str(bundle_root), str(output)],
-            cwd=upstream_root / "okf",
+            cwd=upstream_root,
             env=env,
             check=False,
             capture_output=True,
