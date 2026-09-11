@@ -321,6 +321,142 @@ def test_okf_output_lint_clean(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# OKF v0.2 provenance: `generated`, legacy `timestamp`, aliases (issue #173)    #
+# --------------------------------------------------------------------------- #
+
+
+def _import_one_okf(tmp_path: Path, frontmatter: str) -> tuple[object, Document]:
+    """Import a single OKF doc whose frontmatter lines are given verbatim."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "c.md").write_text(
+        "---\nid: OKF-P\ntype: standard\ntier: T2\n" + frontmatter
+        + "---\nA concept used to check provenance handling on import.\n",
+        encoding="utf-8",
+    )
+    report = run_import(source=src, kind="okf", tier="T2", out=tmp_path / "out")
+    doc = next(iter(_load_drafts(tmp_path / "out").values()))
+    return report, doc
+
+
+def test_okf_v02_quoted_generated_is_preserved_without_a_timestamp(tmp_path):
+    report, doc = _import_one_okf(
+        tmp_path,
+        'generated: { by: reference_agent/gemini-2.5-pro, at: "2026-07-10T23:16:06+00:00" }\n',
+    )
+    assert doc.frontmatter["generated"] == {
+        "by": "reference_agent/gemini-2.5-pro", "at": "2026-07-10T23:16:06+00:00",
+    }
+    assert "timestamp" not in doc.frontmatter
+    assert not any("defaulted" in n and "generated" in n for n in report.inferences)
+
+
+def test_okf_v02_unquoted_generated_at_is_preserved_as_parsed(tmp_path):
+    import datetime
+
+    _, doc = _import_one_okf(
+        tmp_path, "generated: { by: reference_agent/x, at: 2026-06-20T22:53:05Z }\n",
+    )
+    at = doc.frontmatter["generated"]["at"]
+    assert at == datetime.datetime(2026, 6, 20, 22, 53, 5, tzinfo=datetime.UTC)
+    assert "timestamp" not in doc.frontmatter
+
+
+def test_okf_generated_and_legacy_timestamp_are_both_kept(tmp_path):
+    import datetime
+
+    _, doc = _import_one_okf(
+        tmp_path,
+        'timestamp: "2026-05-28"\n'
+        'generated: { by: reference_agent/x, at: "2026-07-10T23:16:06Z" }\n',
+    )
+    assert doc.frontmatter["timestamp"] == "2026-05-28"
+    assert doc.frontmatter["generated"]["at"] == "2026-07-10T23:16:06Z"
+    assert not isinstance(doc.frontmatter["timestamp"], datetime.date)
+
+
+def test_okf_without_any_change_time_stamps_the_tool_actor(tmp_path):
+    import re
+
+    from data_olympus import __version__
+
+    report, doc = _import_one_okf(tmp_path, "")
+    generated = doc.frontmatter["generated"]
+    assert generated["by"] == f"data-olympus/{__version__}"
+    assert isinstance(generated["at"], str)
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", generated["at"])
+    assert "timestamp" not in doc.frontmatter
+    assert any("missing generated" in n for n in report.inferences)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["generated: null\n", "generated: yesterday\n", "generated: [a, b]\n"],
+)
+def test_okf_null_or_malformed_generated_is_preserved_and_flagged(tmp_path, raw):
+    import yaml
+
+    report, doc = _import_one_okf(tmp_path, raw)
+    assert "generated" in doc.frontmatter
+    assert doc.frontmatter["generated"] == yaml.safe_load(raw)["generated"]
+    assert "timestamp" not in doc.frontmatter
+    assert any("generated" in n for n in report.needs_review)
+
+
+@pytest.mark.parametrize(
+    "aliases",
+    ["date: 2026-01-01\nupdated: 2026-02-02\n", "updated: 2026-02-02\ndate: 2026-01-01\n"],
+)
+def test_okf_alias_collision_is_order_independent_and_reported(tmp_path, aliases):
+    import datetime
+
+    report, doc = _import_one_okf(tmp_path, aliases)
+    assert doc.frontmatter["timestamp"] == datetime.date(2026, 2, 2)
+    dropped = [n for n in report.inferences if "dropped alias field 'date'" in n]
+    assert dropped and "2026-01-01" in dropped[0]
+
+
+def test_okf_canonical_timestamp_beats_its_aliases(tmp_path):
+    import datetime
+
+    report, doc = _import_one_okf(
+        tmp_path, "updated: 2026-02-02\ntimestamp: 2026-03-03\n",
+    )
+    assert doc.frontmatter["timestamp"] == datetime.date(2026, 3, 3)
+    dropped = [n for n in report.inferences if "dropped alias field 'updated'" in n]
+    assert dropped and "2026-02-02" in dropped[0]
+
+
+def test_okf_alias_timestamp_coexists_with_generated(tmp_path):
+    import datetime
+
+    _, doc = _import_one_okf(
+        tmp_path,
+        'updated: 2026-02-02\ngenerated: { by: reference_agent/x, at: "2026-07-10T23:16:06Z" }\n',
+    )
+    assert doc.frontmatter["timestamp"] == datetime.date(2026, 2, 2)
+    assert doc.frontmatter["generated"]["at"] == "2026-07-10T23:16:06Z"
+
+
+def test_okf_v02_families_are_preserved_uninterpreted(tmp_path):
+    import yaml
+
+    families = (
+        "sources:\n"
+        "  - id: ga4-schema\n"
+        "    resource: https://developers.google.com/analytics/bigquery/export-schema\n"
+        "    last_modified: 2026-05-30T00:00:00Z\n"
+        "verified: { by: human:ahormati, at: 2026-06-25T09:00:00Z }\n"
+        "stale_after: 2026-09-23T00:00:00Z\n"
+        "usage_window: { from: 2026-06-01T00:00:00Z, to: 2026-06-30T00:00:00Z }\n"
+    )
+    _, doc = _import_one_okf(tmp_path, families)
+    expected = yaml.safe_load(families)
+    for key in ("sources", "verified", "stale_after", "usage_window"):
+        assert doc.frontmatter[key] == expected[key], key
+
+
+# --------------------------------------------------------------------------- #
 # Cross-cutting invariants                                                     #
 # --------------------------------------------------------------------------- #
 
