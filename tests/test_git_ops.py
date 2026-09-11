@@ -961,12 +961,63 @@ def test_invalid_utf8_in_a_target_is_not_folded_into_a_match(tmp_path) -> None: 
         assert git.find_claim_commit(
             ref="main", since_sha="a" * 40, pending_id=pid, target_path="a.md",
         ) is False
-        # And the byte-exact target DOES match, so this is not simply refusing
-        # everything with a non-ASCII byte in it.
+        # The str "a\xff.md" is U+00FF, which encodes to the two UTF-8 bytes
+        # C3 BF, not the lone raw 0xFF in the trailer, so it must not match
+        # either. Positive coverage for non-ASCII targets is in
+        # test_a_valid_utf8_non_ascii_target_matches below.
         assert git.find_claim_commit(
             ref="main", since_sha="a" * 40, pending_id=pid,
             target_path="a\xff.md",
-        ) is False  # "a\xff.md" encodes to two UTF-8 bytes, not the raw one
+        ) is False
+
+
+def test_a_valid_utf8_non_ascii_target_matches(tmp_path) -> None:  # noqa: ANN001
+    """Strict byte comparison must still accept a correctly encoded target.
+
+    Guards against a comparison that refuses every non-ASCII path, or encodes
+    the expectation with anything other than UTF-8.
+    """
+    from unittest import mock
+
+    from data_olympus.git_ops import GitOps
+
+    pid = "f" * 32
+    body = (b"s\n\nKB-Pending-Id: " + pid.encode()
+            + b"\nKB-Target-Path: docs/caf\xc3\xa9.md\n")
+    git = GitOps(str(tmp_path))
+
+    with mock.patch.object(GitOps, "_log_bodies", return_value=[body]):
+        assert git.find_claim_commit(
+            ref="main", since_sha="a" * 40, pending_id=pid,
+            target_path="docs/café.md",
+        ) is True
+
+
+def test_an_unencodable_expectation_is_uncertain_even_without_candidates(
+    tmp_path,  # noqa: ANN001
+) -> None:
+    """An expectation that cannot be encoded answers None, never False.
+
+    A lone surrogate cannot be strict-encoded, so no commit can prove the
+    claim. The answer used to depend on whether some commit happened to carry
+    the key: False with no candidate, None with one. Both keep the claim
+    uncertain, but a caller must not see two answers for one question.
+    """
+    from unittest import mock
+
+    from data_olympus.git_ops import GitOps
+
+    pid = "0" * 32
+    git = GitOps(str(tmp_path))
+    unrelated = b"s\n\nordinary commit with no trailers\n"
+    candidate = b"s\n\nKB-Pending-Id: " + pid.encode() + b"\nKB-Target-Path: a.md\n"
+
+    for bodies in ([], [unrelated], [candidate]):
+        with mock.patch.object(GitOps, "_log_bodies", return_value=bodies):
+            assert git.find_claim_commit(
+                ref="main", since_sha="a" * 40, pending_id=pid,
+                target_path="a\udcff.md",
+            ) is None, bodies
 
 
 def test_the_log_read_is_not_newline_normalised(tmp_path) -> None:  # noqa: ANN001

@@ -435,7 +435,9 @@ class GitOps:
         - ``True``: found. The decision committed.
         - ``False``: searched successfully and no commit satisfies the claim.
         - ``None``: could not search (no ref, no pre-write sha, a missing
-          branch, a timeout, an unreadable repository). ``timeout_sec`` bounds
+          branch, a timeout, an unreadable repository), or the claim id or
+          target path cannot be strictly UTF-8 encoded, so no commit could
+          prove it whatever the log contains. ``timeout_sec`` bounds
           the WHOLE search, including every delegated trailer parse, because
           this runs while the write serializer is held.
 
@@ -446,6 +448,14 @@ class GitOps:
         non-commit; a negative search here means uncertain.
         """
         if not ref or not since_sha or not pending_id:
+            return None
+        # Compare as bytes against strictly-encoded expectations. A claim id or
+        # target path that is not valid UTF-8 cannot be proven by any commit, so
+        # the answer is uncertain before searching, whatever the log contains.
+        try:
+            want_id = pending_id.encode("utf-8", errors="strict")
+            want_path = target_path.encode("utf-8", errors="strict")
+        except UnicodeEncodeError:
             return None
         deadline = time.monotonic() + timeout_sec
         bodies = self._log_bodies(ref=ref, since_sha=since_sha,
@@ -474,14 +484,6 @@ class GitOps:
             trailers = _parse_trailers(message, timeout_sec=remaining)
             if trailers is None:
                 # The question was not answered, so the search did not complete.
-                return None
-            # Compare as bytes against strictly-encoded expectations. A claim id
-            # or target path that is not valid UTF-8 cannot match anything,
-            # which is the conservative answer.
-            try:
-                want_id = pending_id.encode("utf-8", errors="strict")
-                want_path = target_path.encode("utf-8", errors="strict")
-            except UnicodeEncodeError:
                 return None
             if trailers.get(b"KB-Pending-Id") != want_id:
                 continue
