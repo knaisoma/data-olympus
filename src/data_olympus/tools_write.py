@@ -1296,14 +1296,25 @@ def _render_memory(
     the SAME postimage this function returns, it passes through the existing
     full-postimage secret scan the propose path already runs -- no separate
     scan is needed here.
+
+    ``generated`` (issue #173, OKF v0.2 provenance) names the fixed
+    data-olympus tool actor as the writer, at the same instant as
+    ``created_at``. It is NEVER derived from ``agent_identity``: that is client
+    input, and a principal named ``human:alice`` must not be recorded as the
+    human author of agent-written content. The proposer stays in
+    ``created_by``.
     """
     import yaml
 
+    from data_olympus.format.provenance import tool_actor
+
+    created_at = datetime.datetime.now(datetime.UTC).isoformat()
     fm: dict[str, Any] = {
         "type": "memory",
         "status": "proposed",
         "created_by": agent_identity,
-        "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
+        "created_at": created_at,
+        "generated": {"by": tool_actor(), "at": created_at},
     }
     if tags:
         # Coerce to plain str so a non-str element can't smuggle a YAML tag.

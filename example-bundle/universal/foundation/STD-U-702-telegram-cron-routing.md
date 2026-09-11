@@ -6,7 +6,9 @@ tier: T1
 title: Telegram Cron Job Delivery Routing
 description: Knaisoma standard for routing Hermes cron job deliveries to appropriate Telegram group channels.
 tags: [operations, cron, telegram, delivery, routing]
-timestamp: 2026-07-30
+generated:
+  by: human:data-olympus-maintainers
+  at: "2026-07-30T00:00:00Z"
 applies_when:
   - "configuring Hermes cron job delivery targets"
   - "routing notification messages to Telegram groups"

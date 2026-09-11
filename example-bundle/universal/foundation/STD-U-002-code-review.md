@@ -6,7 +6,9 @@ tier: T1
 title: Code Review Standard
 description: Rules for conducting and recording code reviews at Acme so that quality gates are consistent and auditable.
 tags: [foundation, code-review, quality]
-timestamp: 2026-06-24
+generated:
+  by: human:data-olympus-maintainers
+  at: "2026-06-24T00:00:00Z"
 ---
 # Purpose
 

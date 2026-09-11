@@ -396,6 +396,37 @@ def test_render_memory_omits_evidence_key_when_absent() -> None:
     assert "evidence" not in fm
 
 
+# ---- issue #173: OKF v0.2 provenance on server-rendered memories ----
+
+
+def test_render_memory_records_the_tool_as_generator_at_created_at() -> None:
+    """`generated.by` is the data-olympus tool actor and `generated.at` is the
+    same instant as `created_at`. The memory carries no legacy timestamp."""
+    import yaml
+
+    from data_olympus import __version__
+    from data_olympus.tools_write import _render_memory
+    out = _render_memory(text="body", tags=[], agent_identity="claude")
+    fm = yaml.safe_load(out.split("---\n", 2)[1])
+    assert isinstance(fm["created_at"], str)
+    assert fm["generated"] == {"by": f"data-olympus/{__version__}", "at": fm["created_at"]}
+    assert "timestamp" not in fm
+    assert fm["created_by"] == "claude"
+
+
+def test_render_memory_human_identity_never_becomes_the_generator() -> None:
+    """A principal named like a human actor stays the proposer; it is never
+    recorded as the author of agent-written content."""
+    import yaml
+
+    from data_olympus import __version__
+    from data_olympus.tools_write import _render_memory
+    out = _render_memory(text="body", tags=[], agent_identity="human:alice")
+    fm = yaml.safe_load(out.split("---\n", 2)[1])
+    assert fm["created_by"] == "human:alice"
+    assert fm["generated"]["by"] == f"data-olympus/{__version__}"
+
+
 def test_propose_memory_forged_tag_does_not_forge_id(tmp_path, monkeypatch) -> None:
     """End-to-end: a malicious tag through the propose path is stored inertly."""
     import yaml

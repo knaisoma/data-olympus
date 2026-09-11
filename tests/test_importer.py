@@ -471,6 +471,23 @@ def test_everything_lands_as_draft(tmp_path):
             assert doc.frontmatter["status"] == "draft", f"{bundle}/{doc.path.name} not draft"
 
 
+def test_flat_import_stamps_generated_with_the_tool_actor(tmp_path):
+    """Issue #173: synthesized drafts record OKF v0.2 `generated`, not a legacy
+    `timestamp` of the import date."""
+    import re
+
+    from data_olympus import __version__
+
+    run_import(source=FIXTURES / "CLAUDE.md", kind="claude-md", tier="T3", out=tmp_path / "flat")
+    docs = list(_load_drafts(tmp_path / "flat").values())
+    assert docs
+    for doc in docs:
+        assert "timestamp" not in doc.frontmatter, doc.path.name
+        generated = doc.frontmatter["generated"]
+        assert generated["by"] == f"data-olympus/{__version__}"
+        assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", generated["at"])
+
+
 def test_stamped_vocab_is_single_sourced():
     # The importer must only stamp values the schema knows.
     from data_olympus.importer.stamp import DEFAULT_TYPE, DRAFT_STATUS

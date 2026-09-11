@@ -6,7 +6,9 @@ tier: T1
 title: Commit Message Format (v1)
 description: Original commit message convention for Acme repositories. Replaced by STD-U-004, which adds a required scope segment.
 tags: [git, commits, superseded]
-timestamp: "2026-05-10"
+generated:
+  by: human:data-olympus-maintainers
+  at: "2026-05-10T00:00:00Z"
 superseded_by: STD-U-004
 ---
 # Rule
