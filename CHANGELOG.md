@@ -71,6 +71,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   does not execute or observe a run, and the published tables stay labelled
   maintainer-produced and not independently reproduced.
 
+* **Release channels are documented for users.** `docs/operations.md` section
+  7.1 states the stable and candidate names on every surface (GHCR immutable
+  tags and the `rc`, `stable` and `latest` channels, PyPI versions, GitHub
+  releases), how to try a candidate by its exact version, how to check it with
+  `data-olympus verify` and what each exit code means, what promotion guarantees
+  (the stable image is the candidate digest, and the stable wheel is compared
+  with the candidate), and how to roll back. The README and quickstart candidate
+  examples no longer pin an old version. The maintainer procedure is unchanged
+  and now section 7.2. Part of #151.
+
 ### Fixed
 
 * **A dropped connection mid-approval is now visible, and recovers on its own

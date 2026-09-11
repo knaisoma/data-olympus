@@ -583,6 +583,68 @@ Set `KB_ENDPOINT` / `KB_AUTH_TOKEN` in the hook's environment the same way
 
 ## 7. Release operations
 
+### 7.1 Release channels
+
+Every release is published to three places. Each release has an immutable
+name that never changes once published; container images also have moving
+channels that are re-pointed as new releases appear.
+
+| Surface | Candidate | Stable |
+| --- | --- | --- |
+| Container image, immutable | `ghcr.io/knaisoma/data-olympus:X.Y.Z-rc.N` | `ghcr.io/knaisoma/data-olympus:vX.Y.Z` |
+| Container image, moving | `rc` | `stable` and `latest` |
+| Python package on PyPI | `data-olympus==X.Y.ZrcN` | `data-olympus==X.Y.Z` |
+| GitHub | prerelease `X.Y.Z-rc.N` | release `vX.Y.Z` |
+
+`rc` moves to each complete candidate. `stable` and `latest` move together to
+each promoted stable release. In production, pin an immutable version or an
+image digest; the moving channels are for trying things out.
+
+**Trying a candidate.** A candidate is announced on the
+[releases page](https://github.com/knaisoma/data-olympus/releases) as a
+prerelease, with its notes and a `release-provenance.json` naming the exact
+source commit and image digest. Nothing installs a candidate unless you name
+it: Python installers skip prereleases unless the exact version is requested.
+
+```bash
+uvx --from 'data-olympus==X.Y.ZrcN' data-olympus --help
+```
+
+For a container deployment, point the image at `X.Y.Z-rc.N` or at the digest
+recorded in the provenance file.
+
+**Verify before adopting.** Run `data-olympus verify --target <base-url>`
+against the deployed candidate. It checks health, readiness, a search round
+trip and the enforcement plane, and exits:
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | every selected check passed |
+| `1` | the target was unreachable: every check failed to connect |
+| `4` | at least one check failed |
+| `2` | `--checks` named an unknown check |
+
+Without a token, the enforcement check passes informationally when the routes
+are absent or require authentication. Pass `--token`, or set `KB_AUTH_TOKEN`,
+to exercise an authenticated round trip.
+
+**What promotion guarantees.** A stable release is promoted only from the
+highest complete candidate of that version, and only when the candidate's
+source commit is on `main`. The stable image IS the candidate image: promotion
+re-tags the candidate digest as `vX.Y.Z`, `stable` and `latest` without
+rebuilding, so the image you verified is the image you get. The stable Python
+package must carry a different version, so it is rebuilt from the same source
+commit and compared file by file with the candidate wheel; any difference other
+than the version fails the promotion.
+
+**Rolling back.** Pin the previous immutable version, `vX.Y.Z` for the image or
+`data-olympus==X.Y.Z` for the package, or the previous image digest, and
+redeploy. Published versions are never overwritten or deleted, so the previous
+release stays available. An unsuitable candidate is superseded by a higher
+candidate number rather than replaced.
+
+### 7.2 Publishing and promotion (maintainers)
+
 Candidate publication is a complete transaction across PyPI, GHCR, and GitHub.
 Dispatch `rc-publish.yml` from `main` with the reviewed source in `ref` and an
 explicit positive `number`. Send that number as a decimal string in the GitHub

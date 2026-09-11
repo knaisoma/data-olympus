@@ -41,14 +41,17 @@ data-olympus init my-kb
 data-olympus-mcp --help
 ```
 
-An announced candidate remains opt in through its exact PyPI version:
+An announced candidate remains opt in through its exact PyPI version. Replace
+`X.Y.ZrcN` with the candidate named on the
+[releases page](https://github.com/knaisoma/data-olympus/releases), if any:
 
 ```bash
-uvx --from 'data-olympus==0.7.1rc1' data-olympus --help
+uvx --from 'data-olympus==X.Y.ZrcN' data-olympus --help
 ```
 
-See the [releases page](https://github.com/knaisoma/data-olympus/releases)
-for the current candidate, if any.
+See [release channels](docs/operations.md#71-release-channels) for what each
+channel means, how to verify a candidate before adopting it, and how to roll
+back.
 
 See `docs/quickstart.md` for bundle initialization, server startup, readiness,
 agent registration, and the contributor source installation.
@@ -61,7 +64,7 @@ See `docs/adoption.md` for the full bundle authoring guide.
 - [`docs/quickstart.md`](docs/quickstart.md): verified local-run procedure.
 - [`docs/adoption.md`](docs/adoption.md): bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - [`docs/serving.md`](docs/serving.md): single-replica serving model, read-only replicas, git pull loop, health/readiness/liveness split, proxy headers, audit-log rotation.
-- [`docs/operations.md`](docs/operations.md): production runbook — backup, upgrade, recovery playbooks (degraded/fetch-failed, history rewrite, frozen/demoted push entries, orphaned locks), and the health/alerting model.
+- [`docs/operations.md`](docs/operations.md): production runbook — backup, upgrade, recovery playbooks (degraded/fetch-failed, history rewrite, frozen/demoted push entries, orphaned locks), the health/alerting model, and release channels (stable and candidate, verification, rollback).
 - [`docs/comparison.md`](docs/comparison.md): how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 - [`docs/okf-profile.md`](docs/okf-profile.md): field-by-field OKF profile — which governance extensions are stable, which are runtime-only serving fields, and which are experimental candidates.
 - [`docs/glama.md`](docs/glama.md): Glama registry claim, release, and score-maintenance notes.
