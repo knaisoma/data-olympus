@@ -596,9 +596,13 @@ channels that are re-pointed as new releases appear.
 | Python package on PyPI | `data-olympus==X.Y.ZrcN` | `data-olympus==X.Y.Z` |
 | GitHub | prerelease `X.Y.Z-rc.N` | release `vX.Y.Z` |
 
-`rc` moves to each complete candidate. `stable` and `latest` move together to
-each promoted stable release. In production, pin an immutable version or an
-image digest; the moving channels are for trying things out.
+`rc` moves to a candidate once its image and Python packages are published and
+read back; the GitHub prerelease is created after that, so for a short time the
+channel can name a candidate whose prerelease page does not exist yet. Stable
+promotion moves `stable` and `latest` together. Maintainers can also re-point a
+single channel on its own, for example to roll it back. In production, pin an
+immutable version or an image digest; the moving channels are for trying things
+out.
 
 **Trying a candidate.** A candidate is announced on the
 [releases page](https://github.com/knaisoma/data-olympus/releases) as a
@@ -634,8 +638,9 @@ source commit is on `main`. The stable image IS the candidate image: promotion
 re-tags the candidate digest as `vX.Y.Z`, `stable` and `latest` without
 rebuilding, so the image you verified is the image you get. The stable Python
 package must carry a different version, so it is rebuilt from the same source
-commit and compared file by file with the candidate wheel; any difference other
-than the version fails the promotion.
+commit and compared with the candidate wheel after the version-bearing metadata
+is normalized; any other difference fails the promotion. The two wheels are not
+byte-identical archives, because their version metadata differs.
 
 **Rolling back.** Pin the previous immutable version, `vX.Y.Z` for the image or
 `data-olympus==X.Y.Z` for the package, or the previous image digest, and

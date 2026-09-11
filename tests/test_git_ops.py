@@ -1020,6 +1020,27 @@ def test_an_unencodable_expectation_is_uncertain_even_without_candidates(
             ) is None, bodies
 
 
+def test_an_unencodable_claim_id_is_answered_without_reading_the_log(
+    tmp_path,  # noqa: ANN001
+) -> None:
+    """The encoding check runs before any git work, so the log is never read.
+
+    Uses an EMPTY target path, which encodes to b"" and means "no path
+    constraint"; the unencodable claim id alone decides the answer.
+    """
+    from unittest import mock
+
+    from data_olympus.git_ops import GitOps
+
+    git = GitOps(str(tmp_path))
+    with mock.patch.object(GitOps, "_log_bodies") as log_bodies:
+        assert git.find_claim_commit(
+            ref="main", since_sha="a" * 40, pending_id="id\udcff",
+            target_path="",
+        ) is None
+    log_bodies.assert_not_called()
+
+
 def test_the_log_read_is_not_newline_normalised(tmp_path) -> None:  # noqa: ANN001
     """The log seam returns raw bytes, so a CR inside a value stays inside it."""
     import subprocess
