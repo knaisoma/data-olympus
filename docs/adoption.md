@@ -170,7 +170,10 @@ uv run data-olympus import <source> --kind <kind> --tier <tier> [options]
   imported as `status: draft` so it does not become in-force before review.
 - **OKF bundles** are normalized into the governance profile: alias field names
   are renamed to the canonical schema keys, missing required fields are filled
-  with draft-safe defaults, and every inference is reported.
+  with draft-safe defaults, and every inference is reported. When a document
+  uses two aliases for one field, the canonical key wins, then `identifier`
+  over `uid`, `kind` over `doctype` and `updated` over `date`; the dropped value
+  is reported.
 
 The OKF path is covered by executable interoperability checks against official
 Google OKF v0.2 commit `ad30107c31c06aec8a7d5636e0d1058118604e6f` in

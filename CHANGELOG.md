@@ -86,16 +86,22 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * **OKF v0.2: data-olympus writes `generated` instead of `timestamp`.** OKF
   v0.2 supersedes `timestamp` with `generated: { by, at }`. `data-olympus init`,
   the importers and server-rendered memories now write `generated`, and `init`
-  declares `okf_version: "0.2"` and format `spec_version: "0.3"`. The writer is
-  always the tool actor `data-olympus/<version>`, never a principal name or
-  agent identity, so agent-written content is never attributed to a human
-  author; memories keep `created_by` and `created_at`. The OKF importer keeps a
-  source's `generated` and legacy `timestamp` as written, flags a malformed
-  `generated` for review, and resolves colliding `date`/`updated` aliases in a
-  fixed order, reporting the value it drops. Lint accepts a `generated.at` or a
-  legacy `timestamp` as the content-change time and warns on a structurally
-  malformed `generated`. Existing bundles are not rewritten and see no new
-  finding. **Compatibility:** an OKF v0.1-only consumer that requires
+  declares `okf_version: "0.2"` and format `spec_version: "0.3"`. When
+  data-olympus synthesizes this record, its writer is always the tool actor
+  `data-olympus/<version>`, never a principal name or agent identity, so that
+  metadata never attributes agent-written content to a human author; memories
+  keep `created_by` and `created_at`. A proposed edit still carries whatever
+  frontmatter its author supplies. The OKF importer keeps a source's `generated`
+  and legacy `timestamp` as written, and flags a malformed `generated` for
+  review. When a source uses two aliases for one field, the canonical key wins,
+  then `identifier` over `uid`, `kind` over `doctype` and `updated` over `date`,
+  and the dropped value is reported; previously the later key in the source won,
+  so the imported `id`, `type` or date could depend on key order. Lint accepts a
+  `generated.at` or a legacy `timestamp` as the content-change time and warns on
+  a structurally malformed `generated`. Existing bundles are not rewritten; a
+  document relying on `timestamp` sees no new finding, but one that already
+  carries a malformed `generated` (for example `generated: null`) now gets a
+  warning. **Compatibility:** an OKF v0.1-only consumer that requires
   `timestamp` will not accept newly written documents. Part of #173.
 
 ### Fixed

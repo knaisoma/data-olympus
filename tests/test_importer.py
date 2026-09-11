@@ -438,6 +438,49 @@ def test_okf_alias_timestamp_coexists_with_generated(tmp_path):
     assert doc.frontmatter["generated"]["at"] == "2026-07-10T23:16:06Z"
 
 
+def _import_raw_okf(tmp_path: Path, frontmatter: str) -> tuple[object, Document]:
+    """Import one OKF doc whose ENTIRE frontmatter is given verbatim."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "c.md").write_text(
+        "---\n" + frontmatter + "---\nA concept used to check alias precedence.\n",
+        encoding="utf-8",
+    )
+    report = run_import(source=src, kind="okf", tier="T2", out=tmp_path / "out")
+    doc = next(iter(_load_drafts(tmp_path / "out").values()))
+    return report, doc
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "field", "winner", "dropped"),
+    [
+        ("identifier: A\nuid: B\ntype: standard\n", "id", "A", "uid"),
+        ("uid: B\nidentifier: A\ntype: standard\n", "id", "A", "uid"),
+        ("id: C\nuid: B\nidentifier: A\ntype: standard\n", "id", "C", "identifier"),
+        ("id: X-1\nkind: standard\ndoctype: decision\n", "type", "standard", "doctype"),
+        ("id: X-1\ndoctype: decision\nkind: standard\n", "type", "standard", "doctype"),
+    ],
+    ids=["identifier-first", "uid-first", "canonical-id-wins", "kind-first", "doctype-first"],
+)
+def test_okf_alias_precedence_is_fixed_for_every_family(
+    tmp_path, frontmatter, field, winner, dropped,
+):
+    """One key supplies each field whatever the source order: the canonical key,
+    then the alias declared first. Previously the later key in the source won."""
+    report, doc = _import_raw_okf(tmp_path, frontmatter)
+    assert doc.frontmatter[field] == winner
+    assert any(f"dropped alias field {dropped!r}" in n for n in report.inferences)
+
+
+def test_okf_malformed_generated_mapping_is_preserved_and_flagged(tmp_path):
+    report, doc = _import_one_okf(
+        tmp_path, 'generated: { by: "", at: "2026-07-10T23:16:06Z" }\n',
+    )
+    assert doc.frontmatter["generated"] == {"by": "", "at": "2026-07-10T23:16:06Z"}
+    assert "timestamp" not in doc.frontmatter
+    assert any("generated.by" in n for n in report.needs_review)
+
+
 def test_okf_v02_families_are_preserved_uninterpreted(tmp_path):
     import yaml
 

@@ -607,8 +607,9 @@ out.
 **Trying a candidate.** A candidate is announced on the
 [releases page](https://github.com/knaisoma/data-olympus/releases) as a
 prerelease, with its notes and a `release-provenance.json` naming the exact
-source commit and image digest. Nothing installs a candidate unless you name
-it: Python installers skip prereleases unless the exact version is requested.
+source commit and image digest. Python installers select stable releases by
+default; pinning the exact candidate version, as below, is the reproducible way
+to try one.
 
 ```bash
 uvx --from 'data-olympus==X.Y.ZrcN' data-olympus --help
