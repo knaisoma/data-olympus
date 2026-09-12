@@ -64,6 +64,17 @@ class ResolvedPending:
     meta: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class RunningContestReceipt:
+    target_path: str
+    under_review: bool
+    contested: bool
+    pending_id: str | None = None
+    reason: str | None = None
+    contradicts: str | None = None
+    agent_identity: str | None = None
+
+
 def _path_lock_filename(target_path: str) -> str:
     import hashlib
     return hashlib.sha256(target_path.encode("utf-8")).hexdigest() + ".lock"
@@ -552,3 +563,59 @@ class PendingQueue:
         if not os.path.isdir(self._locks_dir):
             return 0
         return sum(1 for f in os.listdir(self._locks_dir) if f.endswith(".lock"))
+
+    def derive_running_contest(self, target_path: str) -> RunningContestReceipt:
+        """Derive running review / contest status at read-time from active path-locks.
+
+        Avoids mutating in-force documents or dirtying git state for unpromoted proposals.
+        Handles both live (.json) and claimed (.claimed) entry states during gated resolution.
+        """
+        lock_filename = _path_lock_filename(target_path)
+        lock_path = os.path.join(self._locks_dir, lock_filename)
+        if not os.path.exists(lock_path):
+            return RunningContestReceipt(
+                target_path=target_path,
+                under_review=False,
+                contested=False,
+            )
+
+        try:
+            with open(lock_path, "r", encoding="utf-8") as f:
+                lock_info = json.load(f)
+        except (FileNotFoundError, ValueError):
+            return RunningContestReceipt(target_path=target_path, under_review=False, contested=False)
+
+        pending_id = lock_info.get("pending_id")
+        owner_kind = lock_info.get("owner_kind", "pending")
+        if owner_kind == "auto_commit" or not pending_id:
+            return RunningContestReceipt(target_path=target_path, under_review=False, contested=False)
+
+        entry_path = os.path.join(self._root, f"{pending_id}.json")
+        if not os.path.exists(entry_path):
+            entry_path = os.path.join(self._root, f"{pending_id}.claimed")
+        if not os.path.exists(entry_path):
+            return RunningContestReceipt(target_path=target_path, under_review=False, contested=False)
+
+        try:
+            with open(entry_path, "r", encoding="utf-8") as f:
+                entry = json.load(f)
+        except (FileNotFoundError, ValueError):
+            return RunningContestReceipt(target_path=target_path, under_review=False, contested=False)
+
+        meta = entry.get("meta", {})
+        is_dispute = bool(
+            meta.get("intent") == "contest"
+            or meta.get("dispute")
+            or meta.get("contradicts")
+            # Note: per issue #241 maintainer consensus, 'supersedes' is a document frontmatter
+            # relation, not an unresolved contest, so it is deliberately omitted here.
+        )
+        return RunningContestReceipt(
+            target_path=target_path,
+            under_review=True,
+            contested=is_dispute,
+            pending_id=pending_id,
+            reason=meta.get("reason"),
+            contradicts=meta.get("contradicts"),
+            agent_identity=meta.get("agent_identity"),
+        )
