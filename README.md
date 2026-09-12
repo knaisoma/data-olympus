@@ -3,6 +3,8 @@
 [![knaisoma/data-olympus MCP server](https://glama.ai/mcp/servers/knaisoma/data-olympus/badges/score.svg)](https://glama.ai/mcp/servers/knaisoma/data-olympus)
 [![MCP Marketplace](https://img.shields.io/badge/MCP%20Marketplace-Indexed-blueviolet)](https://getlulu.dev/mcps)
 
+<!-- mcp-name: io.github.knaisoma/data-olympus -->
+
 **New here? Start with [WHY.md](WHY.md).** It is the story behind the project: the
 problem we kept hitting with coding agents, what data-olympus does differently, how
 it relates to Google's Open Knowledge Format, and where our benchmarks say it is
@@ -65,6 +67,7 @@ See `docs/adoption.md` for the full bundle authoring guide.
 - [`docs/comparison.md`](docs/comparison.md): how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 - [`docs/okf-profile.md`](docs/okf-profile.md): field-by-field OKF profile — which governance extensions are stable, which are runtime-only serving fields, and which are experimental candidates.
 - [`docs/glama.md`](docs/glama.md): Glama registry claim, release, and score-maintenance notes.
+- [`docs/mcp-registry.md`](docs/mcp-registry.md): official MCP Registry notes, what `server.json` declares, and the checklist for publishing.
 - [`docs/enforcement.md`](docs/enforcement.md): turning the KB into a mandatory consultation gate (hooks, `kb enforce`).
 - [`benchmarks/README.md`](benchmarks/README.md): retrieval benchmark methodology and how to reproduce the numbers in `docs/comparison.md`.
 - [`SECURITY.md`](SECURITY.md): supported versions and how to report a vulnerability.

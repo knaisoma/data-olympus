@@ -1,0 +1,59 @@
+# Official MCP Registry notes
+
+Data Olympus is not published in the official registry at
+<https://registry.modelcontextprotocol.io> yet. Two searches of its v0 API,
+`?search=data-olympus` and `?search=knaisoma`, returned zero servers on 2026-09-12.
+
+This file records what publication needs, so the work is a checklist rather than a
+research task. It is the registry equivalent of [`glama.md`](./glama.md).
+
+## Why it matters
+
+`modelcontextprotocol/servers` no longer accepts new server implementations. Its
+CONTRIBUTING directs authors to the registry, and its README tells readers looking for
+a list of servers to browse the registry rather than that repository. Several catalogues
+treat a registry entry as a credential.
+
+## What is in this repository
+
+[`server.json`](../server.json) at the repository root declares the server:
+
+- `name` is `io.github.knaisoma/data-olympus`. The `io.github.*` namespace authenticates
+  through GitHub, so no DNS verification is needed.
+- The package entry is `registryType: pypi`, identifier `data-olympus`, against
+  `https://pypi.org`, which is on the registry's list of accepted package sources.
+- The transport is `streamable-http` at `http://localhost:8080/mcp`, which is what
+  `data-olympus-mcp` actually serves and what [`adoption.md`](./adoption.md) documents.
+  This server is not stdio.
+- `version` tracks the released version the entry describes, so it moves with a release
+  rather than with every commit.
+
+`README.md` carries `<!-- mcp-name: io.github.knaisoma/data-olympus -->` below the
+badges. That string is how the registry verifies package ownership: it looks for
+`mcp-name: $SERVER_NAME` in the README that PyPI serves as the package description.
+
+## What is not done, and why
+
+**The marker is not on PyPI yet.** The published description for 0.7.3 contains no
+`mcp-name` line, because the marker landed after that release. Publication therefore has
+to follow a release that ships this README.
+
+**Publication authenticates as a person or as CI.** The `mcp-publisher` flow signs in
+with GitHub OAuth for an `io.github.*` namespace, or uses GitHub OIDC when it runs from
+Actions. Neither path is a file change, so it is a deliberate step by a maintainer or a
+workflow, not something a docs PR completes.
+
+## Checklist for whoever publishes
+
+1. Cut a release whose PyPI description contains the `mcp-name` marker.
+2. Set `version` in `server.json` to that released version.
+3. Authenticate: `mcp-publisher login github`, or publish from Actions with OIDC.
+4. Publish, then confirm the entry resolves by searching the registry API for
+   `data-olympus`.
+5. Record the resulting registry name here.
+
+## Status of the registry itself
+
+The registry reports an API freeze for v0.1 while development continues on v0, and warns
+that the preview may bring breaking changes or data resets. Treat an entry as something
+to re-verify after upstream changes rather than as permanent.
