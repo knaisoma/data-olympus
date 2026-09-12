@@ -13,6 +13,7 @@ import os
 import re
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -71,13 +72,23 @@ class RunningContestReceipt:
     contested: bool
     pending_id: str | None = None
     reason: str | None = None
-    contradicts: str | None = None
+    contradicts: list[str] | None = None
     agent_identity: str | None = None
 
 
 def _path_lock_filename(target_path: str) -> str:
     import hashlib
     return hashlib.sha256(target_path.encode("utf-8")).hexdigest() + ".lock"
+
+
+def _as_id_list(value: object) -> list[str]:
+    """Normalize a decision-chain reference authored as either a scalar ID
+    or a list of IDs into a list of strings."""
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
 
 
 class PendingQueue:
@@ -569,6 +580,18 @@ class PendingQueue:
 
         Avoids mutating in-force documents or dirtying git state for unpromoted proposals.
         Handles both live (.json) and claimed (.claimed) entry states during gated resolution.
+
+        Dispute Metadata Contract:
+            A pending proposal is recognized as an active contest (`contested=True`) if its
+            `meta` mapping defines any of the following fields:
+            - `intent`: literal string `"contest"`.
+            - `dispute`: boolean `True`.
+            - `contradicts`: a single target identifier string or list of target identifier strings
+              referencing decisions or assertions contradicted by this proposal (normalized to `list[str]`).
+
+            Note: Per issue #241 maintainer consensus, `supersedes` represents standard document
+            lineage and decision-chain succession, not an active contest, and is deliberately
+            excluded from contest derivation.
         """
         lock_filename = _path_lock_filename(target_path)
         lock_path = os.path.join(self._locks_dir, lock_filename)
@@ -585,37 +608,55 @@ class PendingQueue:
         except (FileNotFoundError, ValueError):
             return RunningContestReceipt(target_path=target_path, under_review=False, contested=False)
 
-        pending_id = lock_info.get("pending_id")
+        if not isinstance(lock_info, Mapping):
+            return RunningContestReceipt(target_path=target_path, under_review=False, contested=False)
+
         owner_kind = lock_info.get("owner_kind", "pending")
-        if owner_kind == "auto_commit" or not pending_id:
+        if owner_kind == "auto_commit":
             return RunningContestReceipt(target_path=target_path, under_review=False, contested=False)
 
-        entry_path = os.path.join(self._root, f"{pending_id}.json")
-        if not os.path.exists(entry_path):
-            entry_path = os.path.join(self._root, f"{pending_id}.claimed")
-        if not os.path.exists(entry_path):
+        pending_id = lock_info.get("pending_id")
+        if not isinstance(pending_id, str) or not _PENDING_ID_RE.fullmatch(pending_id):
             return RunningContestReceipt(target_path=target_path, under_review=False, contested=False)
 
-        try:
-            with open(entry_path, "r", encoding="utf-8") as f:
-                entry = json.load(f)
-        except (FileNotFoundError, ValueError):
+        # Bounded retry across .json and .claimed to eliminate the rename race
+        # where _claim renames .json -> .claimed or restore_resolve renames .claimed -> .json
+        # between checking existence and opening the file under a held path lock.
+        entry: Mapping[str, Any] | None = None
+        for _ in range(3):
+            for ext in (".json", ".claimed"):
+                entry_file = os.path.join(self._root, f"{pending_id}{ext}")
+                try:
+                    with open(entry_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, Mapping):
+                        entry = data
+                        break
+                except (FileNotFoundError, ValueError):
+                    continue
+            if entry is not None:
+                break
+
+        if entry is None:
             return RunningContestReceipt(target_path=target_path, under_review=False, contested=False)
 
-        meta = entry.get("meta", {})
+        raw_meta = entry.get("meta")
+        meta = raw_meta if isinstance(raw_meta, Mapping) else {}
+
+        raw_contradicts = meta.get("contradicts")
+        contradicts_list = _as_id_list(raw_contradicts) if raw_contradicts is not None else None
+
         is_dispute = bool(
             meta.get("intent") == "contest"
-            or meta.get("dispute")
-            or meta.get("contradicts")
-            # Note: per issue #241 maintainer consensus, 'supersedes' is a document frontmatter
-            # relation, not an unresolved contest, so it is deliberately omitted here.
+            or meta.get("dispute") is True
+            or (contradicts_list and len(contradicts_list) > 0)
         )
         return RunningContestReceipt(
             target_path=target_path,
             under_review=True,
             contested=is_dispute,
             pending_id=pending_id,
-            reason=meta.get("reason"),
-            contradicts=meta.get("contradicts"),
-            agent_identity=meta.get("agent_identity"),
+            reason=meta.get("reason") if isinstance(meta.get("reason"), str) else None,
+            contradicts=contradicts_list,
+            agent_identity=meta.get("agent_identity") if isinstance(meta.get("agent_identity"), str) else None,
         )
