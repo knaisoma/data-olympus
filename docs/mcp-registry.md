@@ -33,9 +33,9 @@ badges. That string is how the registry verifies package ownership: it looks for
 
 ## What is not done, and why
 
-**The marker is not on PyPI yet.** This change adds the marker to `README.md`; the
-published description for 0.7.3 lacks it. Publication therefore has to follow a release
-that ships this README.
+**The marker is not on PyPI yet.** This change adds the marker to `README.md`; every
+published description up to and including 0.7.3 lacks it. 0.8.0 is the first release that
+ships this README, so publication has to follow it reaching PyPI.
 
 **The package and the MCP executable have different names.** The package is
 `data-olympus`, and the console script that starts the MCP server is `data-olympus-mcp`,
@@ -64,7 +64,8 @@ workflow, not something a docs PR completes.
 2. Set **both** version fields in `server.json` to that release: the top-level `version`
    and `packages[0].version`. Leaving the package pinned to an older version points the
    entry at a description that does not carry the marker. Then re-validate the file
-   against the published schema.
+   against the published schema. Both fields are pinned to `0.8.0`, so this step is
+   already done for that release and is only owed again on the next one.
 3. Confirm that the pinned release's own description carries the exact marker. Run from
    the repository root:
 
@@ -79,8 +80,9 @@ workflow, not something a docs PR completes.
 
    It reads the version-specific endpoint rather than `/pypi/data-olympus/json`, which
    returns the latest release, and it matches the complete comment rather than the
-   fragment `mcp-name` anywhere in the response. Today it prints `false` and exits 1,
-   because 0.7.3 predates the marker.
+   fragment `mcp-name` anywhere in the response. It prints `false` and exits 1 for any
+   version up to 0.7.3, which predate the marker, and is expected to pass once 0.8.0 is
+   on PyPI. Run it rather than assuming it.
 4. Authenticate: `mcp-publisher login github`, or publish from Actions with OIDC.
 5. Publish, then confirm the entry resolves by searching the registry API for
    `data-olympus`.

@@ -81,6 +81,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   examples no longer pin an old version. The maintainer procedure is unchanged
   and now section 7.2. Part of #151.
 
+* **data-olympus can be listed in the official MCP registry.** The registry is
+  where `modelcontextprotocol/servers` now sends new server implementations, and
+  data-olympus was absent from it: two searches of its v0 API returned zero
+  results. A `server.json` at the repository root declares
+  `io.github.knaisoma/data-olympus` against the PyPI package, with the
+  `streamable-http` transport this server actually serves rather than stdio, and
+  `README.md` carries the `mcp-name` ownership marker the registry looks for in
+  the description PyPI serves. 0.8.0 is the first release whose description
+  carries that marker, which is what unblocks verification.
+
+  This release declares the entry; it does not publish it. Publication
+  authenticates as a maintainer through GitHub OAuth or from Actions through
+  OIDC, which is a deliberate step rather than a file change.
+  `docs/mcp-registry.md` records what it needs. Part of #111.
+
 ### Changed
 
 * **OKF v0.2: data-olympus writes `generated` instead of `timestamp`.** OKF

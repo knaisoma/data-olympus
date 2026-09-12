@@ -3,7 +3,7 @@
   "name": "io.github.knaisoma/data-olympus",
   "title": "Data Olympus",
   "description": "Governance-grade knowledge-base format (OKF-compatible) plus CLI and single-writer MCP server",
-  "version": "0.7.3",
+  "version": "0.8.0",
   "websiteUrl": "https://github.com/knaisoma/data-olympus",
   "repository": {
     "url": "https://github.com/knaisoma/data-olympus",
@@ -14,7 +14,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "data-olympus",
-      "version": "0.7.3",
+      "version": "0.8.0",
       "transport": {
         "type": "streamable-http",
         "url": "http://localhost:8080/mcp"
