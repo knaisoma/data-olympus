@@ -65,8 +65,22 @@ workflow, not something a docs PR completes.
    and `packages[0].version`. Leaving the package pinned to an older version points the
    entry at a description that does not carry the marker. Then re-validate the file
    against the published schema.
-3. Confirm that exact PyPI version's description contains the marker, for example
-   `curl -s https://pypi.org/pypi/data-olympus/json | grep -c mcp-name`.
+3. Confirm that the pinned release's own description carries the exact marker. Run from
+   the repository root:
+
+   ```bash
+   set -euo pipefail
+   release=$(jq -er '.packages[0].version' server.json)
+   server_name=$(jq -er '.name' server.json)
+   curl -fsS "https://pypi.org/pypi/data-olympus/${release}/json" |
+     jq -e --arg marker "<!-- mcp-name: ${server_name} -->" \
+       '(.info.description // "") | contains($marker)'
+   ```
+
+   It reads the version-specific endpoint rather than `/pypi/data-olympus/json`, which
+   returns the latest release, and it matches the complete comment rather than the
+   fragment `mcp-name` anywhere in the response. Today it prints `false` and exits 1,
+   because 0.7.3 predates the marker.
 4. Authenticate: `mcp-publisher login github`, or publish from Actions with OIDC.
 5. Publish, then confirm the entry resolves by searching the registry API for
    `data-olympus`.
