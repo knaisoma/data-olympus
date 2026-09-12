@@ -33,9 +33,10 @@ badges. That string is how the registry verifies package ownership: it looks for
 
 ## What is not done, and why
 
-**The marker is not on PyPI yet.** This change adds the marker to `README.md`; every
-published description up to and including 0.7.3 lacks it. 0.8.0 is the first release that
-ships this README, so publication has to follow it reaching PyPI.
+**Registry publication requires the marker-bearing package on PyPI.** This change adds
+the marker to `README.md`. Every description published up to and including 0.7.3 predates
+it; this release includes it. Publish the registry entry only after the version-specific
+check below succeeds.
 
 **The package and the MCP executable have different names.** The package is
 `data-olympus`, and the console script that starts the MCP server is `data-olympus-mcp`,
@@ -62,7 +63,7 @@ workflow, not something a docs PR completes.
 
 1. Cut a release whose PyPI description contains the `mcp-name` marker.
 2. Set **both** version fields in `server.json` to that release: the top-level `version`
-   and `packages[0].version`. Leaving the package pinned to an older version points the
+   and `packages[0].version`. Leaving the package pinned to 0.7.3 or earlier points the
    entry at a description that does not carry the marker. Then re-validate the file
    against the published schema. Both fields are pinned to `0.8.0`, so this step is
    already done for that release and is only owed again on the next one.

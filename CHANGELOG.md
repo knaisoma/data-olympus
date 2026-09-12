@@ -88,8 +88,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `io.github.knaisoma/data-olympus` against the PyPI package, with the
   `streamable-http` transport this server actually serves rather than stdio, and
   `README.md` carries the `mcp-name` ownership marker the registry looks for in
-  the description PyPI serves. 0.8.0 is the first release whose description
-  carries that marker, which is what unblocks verification.
+  the description PyPI serves. 0.8.0 is the first stable release whose
+  description carries that marker, which is what unblocks verification.
 
   This release declares the entry; it does not publish it. Publication
   authenticates as a maintainer through GitHub OAuth or from Actions through
