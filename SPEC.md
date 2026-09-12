@@ -1,8 +1,8 @@
 # data-olympus Knowledge Format
 
-**Version:** 0.2
-**Date:** 2026-07-08
-**Status:** Stable (shipped with data-olympus v0.4.0; the format is versioned independently of the package, see section 10)
+**Version:** 0.3
+**Date:** 2026-09-21
+**Status:** Stable (0.3 ships with data-olympus 0.8.0; the format is versioned independently of the package, see section 10)
 
 ---
 
@@ -10,7 +10,7 @@
 
 Knowledge that lives in plain markdown with YAML frontmatter is version-controllable, portable, and readable by both humans and automated agents without any special runtime. A git repository becomes the primary audit trail: every change is a commit, rollback is `git revert`, and the full history ships with the bundle.
 
-This specification is **readable by consumers of Google's Open Knowledge Format (OKF)**: it inherits OKF's directory structure, frontmatter conventions, reserved filenames, and link model. Executable CI checks pin official Google OKF commit `d44368c15e38e7c92481c5992e4f9b5b421a801d`. The pinned reference visualization consumer reads every concept in the data-olympus example bundle, and data-olympus imports, lints, indexes, searches, and retrieves the pinned official sample bundle. This proves those two fixture-scoped interoperability directions; it does not claim that every possible OKF bundle or future upstream revision has been tested. On top of that baseline we layer **governance extensions**: a stable `id` field decoupled from path, a controlled type vocabulary, explicit `status` and `tier` fields, ADR chain links, and a single-writer MCP server that enforces propose/review/commit safety across multiple concurrent agents.
+This specification is **readable by consumers of Google's Open Knowledge Format (OKF)**: it inherits OKF's directory structure, frontmatter conventions, reserved filenames, and link model. Executable CI checks pin official Google OKF v0.2 commit `ad30107c31c06aec8a7d5636e0d1058118604e6f` in [GoogleCloudPlatform/open-knowledge-format](https://github.com/GoogleCloudPlatform/open-knowledge-format). The pinned reference visualization consumer reads every concept in the data-olympus example bundle, and data-olympus imports, lints, indexes, searches, and retrieves the pinned official sample bundle. This proves those two fixture-scoped interoperability directions; it does not claim that every possible OKF bundle or future upstream revision has been tested. On top of that baseline we layer **governance extensions**: a stable `id` field decoupled from path, a controlled type vocabulary, explicit `status` and `tier` fields, ADR chain links, and a single-writer MCP server that enforces propose/review/commit safety across multiple concurrent agents.
 
 The result is a format that is portable and human-readable at rest (plain files, no database required) while supporting structured queries, multi-agent write safety, and progressive disclosure when served through the data-olympus MCP.
 
@@ -65,7 +65,7 @@ The following conventions are inherited from OKF for interoperability. The exact
 - Documents are UTF-8 encoded markdown files.
 - Structured metadata is expressed as a YAML frontmatter block at the top of the file, opened and closed by a bare `---` line.
 - The `type` field is required (see controlled vocabulary below).
-- Recommended OKF fields: `title`, `description`, `resource`, `tags`, `timestamp`.
+- Recommended OKF fields: `title`, `description`, `resource`, `tags`, and the OKF v0.2 content-change record `generated` (`{ by, at }`). The legacy `timestamp` that `generated.at` supersedes is still accepted.
 - Reserved filenames (`index.md`, `log.md`, `template.md`) are exempt from schema validation.
 - Bundle-relative cross-links are preferred (see section 5).
 - Consumers MUST tolerate unknown `type` values, unknown extra keys, missing optional fields, and broken links.
@@ -86,7 +86,7 @@ The following fields are added by this profile. OKF consumers silently ignore un
 - `title`: short human-readable name for the concept.
 - `description`: one or two sentences summarizing the concept; used in generated index files and search results.
 - `tags`: a YAML list of lowercase strings for faceted search.
-- `timestamp`: ISO 8601 date or datetime of last meaningful content change.
+- `generated`: a mapping recording who or what produced the current content and when it last meaningfully changed, following OKF v0.2. `by` is an actor: `human:<id>` for a person (required for hand-authored content), `process:<id>` for an automated process, or `<tool>/<version>` for an agent or tool. `at` is an ISO 8601 datetime with an explicit offset. When the data-olympus reference implementation synthesizes this record itself (`init`, an import that found no content-change time, a server-rendered memory), it names the tool actor `data-olympus/<version>`, never a principal or agent identity. It preserves a `generated` an imported source already carries, and a proposed edit carries whatever frontmatter its author supplies. A document may instead carry the legacy `timestamp` (an ISO 8601 date or datetime), which satisfies the same recommendation; existing documents need no change.
 - `applies_when`: a YAML list of short trigger phrases describing the coding intents this document governs (see below). Recommended for `standard` and `decision` documents in particular, since these are the concepts an agent needs to retrieve mid-task.
 
 `tags` should always be a list; a scalar value is a warning. `applies_when` is parsed the same way (a non-list value is silently treated as empty, matching `tags`' parsing), but unlike `tags`, `kb lint` does not currently emit a warning when `applies_when` is missing or malformed — it is recommended by this spec but not yet schema-checked. See section 9 for the exact set of fields `kb lint` checks.
@@ -120,7 +120,9 @@ applies_when:
   - "logging a request or response body"
   - "writing a script that calls a secrets manager"
 tags: [security, secrets, credentials]
-timestamp: "2026-06-24"
+generated:
+  by: human:platform-team
+  at: "2026-06-24T00:00:00Z"
 ---
 ```
 
@@ -128,7 +130,7 @@ An agent mid-task on "I need to log this API response for debugging" shares no v
 
 #### `validity`: freshness metadata with hard expiry semantics
 
-`validity` is an optional nested object, concept-level only (it does not apply to reserved files). It declares a document's time-bounded applicability, separately from `timestamp` (see below). All sub-fields are optional; an ISO date (`"2026-07-08"`) or an ISO datetime (optionally timezone-suffixed, including the `Z` shorthand for UTC) is accepted and normalized to a plain date at index/lint time.
+`validity` is an optional nested object, concept-level only (it does not apply to reserved files). It declares a document's time-bounded applicability, separately from the content-change time (`generated.at`, or the legacy `timestamp`; see below). All sub-fields are optional; an ISO date (`"2026-07-08"`) or an ISO datetime (optionally timezone-suffixed, including the `Z` shorthand for UTC) is accepted and normalized to a plain date at index/lint time.
 
 - `valid_from`: the document is not yet in force before this date. A future `valid_from` marks the document `upcoming`.
 - `valid_until`: the document is expired on or after the day *after* this date (the day itself is still in force: the boundary is inclusive). **Expiry has teeth**: a document past `valid_until` is excluded from `kb_search`'s in-force filter (`in_force=true`) AND from every default `kb_search` result, not merely soft-downranked. Rationale: unlike a superseded document, an expired one has no named successor to outrank it — left visible it could be the top hit and would incorrectly govern. Retrieve it anyway with `include_expired=true`, or via the `validity_state` audit facet (below); `kb_get` by id always resolves it regardless of expiry.
@@ -145,7 +147,7 @@ validity:
   verification_source: "Q3 security review"
 ```
 
-**`timestamp` is content-change metadata, not staleness.** `timestamp` (section 4.2, recommended fields) records when the document's content last meaningfully changed; it says nothing about whether the guidance is still applicable. Tooling MUST NOT derive expiry, staleness, or freshness from `timestamp` or from a file's `last_modified` (git-commit or mtime provenance) — a document can be perfectly fresh and untouched for years, or freshly edited and already past its `valid_until`. `validity` is the only source for freshness semantics.
+**The content-change time is not staleness.** `generated.at`, or the legacy `timestamp` (section 4.2, recommended fields), records when the document's content last meaningfully changed; it says nothing about whether the guidance is still applicable. Tooling MUST NOT derive expiry, staleness, or freshness from `generated.at`, `timestamp`, or a file's `last_modified` (git-commit or mtime provenance) — a document can be perfectly fresh and untouched for years, or freshly edited and already past its `valid_until`. `validity` is the only source for freshness semantics.
 
 The reference implementation's `kb_search` accepts `include_expired` (default `false`) and a `validity_state` facet (`"expired"`, `"stale"`, or `"expiring_within:N"` for N days) for audit queries such as "what expired last month" or "what expires soon"; filtering for `"expired"` implies including expired documents regardless of `include_expired`. Compact search hits carry a deviation-only `freshness` field (`stale` / `expired` / `upcoming`), omitted when the document is fresh or has no `validity` block; `expired` only ever appears when the hit was explicitly included. See the `kb_search` and `kb_get` MCP tool descriptions for the full parameter contract.
 
@@ -193,7 +195,9 @@ tags:
   - writing
   - style
   - standards
-timestamp: "2026-05-15"
+generated:
+  by: human:platform-team
+  at: "2026-05-15T00:00:00Z"
 owner: platform-team
 applies_when:
   - "writing a new document or README"
@@ -330,7 +334,7 @@ These three are mirrored as the `kb_consult`, `kb_gate_check`, and `kb_complianc
 **`kb lint` severity levels:**
 
 - `error`: missing required field, invalid enum value, YAML parse failure, a malformed `supersedes`/`superseded_by`/`contradicts` value shape, a document that supersedes or is superseded_by itself, or a supersession cycle (see section 4.2). Blocks CI.
-- `warning`: missing recommended field (`title`, `description`, `tags`, `timestamp`), `tags` is not a list, or one of the three `validity` findings below. A dangling `supersedes`/`superseded_by`/`contradicts` target id, an asymmetric supersession pair, a path-shaped target value, `superseded_by` set on an in-force document, `status: superseded` with no `superseded_by`, or an in-force `contradicts` pair (see section 4.2). Does not block CI by default. Broken links and missing/malformed `owner` are not checked and produce no finding either way (see sections 4.2 and 5). `applies_when` is recommended by this spec but is not yet in `kb lint`'s checked field set: a missing or malformed `applies_when` produces no finding today, even though a non-list value is silently parsed as empty (matching `tags`' parsing, minus the warning).
+- `warning`: missing recommended field (`title`, `description`, `tags`, or a content-change time: a `generated.at` or the legacy `timestamp`; this finding keeps the field name `timestamp`), a malformed `generated` (not a mapping; `by` missing or empty; or `at` blank, a date, a datetime without an offset, a number, or null), `tags` is not a list, or one of the three `validity` findings below. The `generated` check is structural: a non-blank string `at` is accepted without being validated as an ISO 8601 datetime. A dangling `supersedes`/`superseded_by`/`contradicts` target id, an asymmetric supersession pair, a path-shaped target value, `superseded_by` set on an in-force document, `status: superseded` with no `superseded_by`, or an in-force `contradicts` pair (see section 4.2). Does not block CI by default. Broken links and missing/malformed `owner` are not checked and produce no finding either way (see sections 4.2 and 5). `applies_when` is recommended by this spec but is not yet in `kb lint`'s checked field set: a missing or malformed `applies_when` produces no finding today, even though a non-list value is silently parsed as empty (matching `tags`' parsing, minus the warning).
 
 **`kb lint` validity findings** (always `warning`, never `error` — these are wall-clock-relative checks, and an error would make CI flake purely with the passage of time):
 
@@ -352,7 +356,9 @@ Version numbering follows semver semantics:
 - **Minor version increment** (for example, `0.1` to `0.2`): backward-compatible additions. New optional or recommended fields, new allowed enum values, new conventions that existing consumers can safely ignore.
 - **Major version increment** (for example, `0.x` to `1.0`, or `1.x` to `2.0`): breaking changes. Removal of fields, changes to required field semantics, or changes to the parsing model that would cause existing conformant bundles to fail validation.
 
-This document is now at `0.2`, incrementing from `0.1`: the addition of the optional `validity` frontmatter object plus the typed lifecycle-relationship validation of `supersedes`/`superseded_by`/`contradicts` (both section 4.2) are backward-compatible minor changes — existing bundles without these fields are unaffected, and an OKF or pre-`0.2` consumer silently ignores the unknown keys per section 4.1's forward-compatibility rule. The one **behavior** change accompanying the `validity` addition lives in the reference implementation, not the format itself: a document past its `valid_until` is now excluded from default `kb_search` results (previously the reference implementation had no `validity` concept at all, so nothing was ever excluded on this basis).
+Version `0.2` incremented from `0.1` (historical; the current version is described below): the addition of the optional `validity` frontmatter object plus the typed lifecycle-relationship validation of `supersedes`/`superseded_by`/`contradicts` (both section 4.2) are backward-compatible minor changes — existing bundles without these fields are unaffected, and an OKF or pre-`0.2` consumer silently ignores the unknown keys per section 4.1's forward-compatibility rule. The one **behavior** change accompanying the `validity` addition lives in the reference implementation, not the format itself: a document past its `valid_until` is now excluded from default `kb_search` results (previously the reference implementation had no `validity` concept at all, so nothing was ever excluded on this basis).
+
+This document is at `0.3`, incrementing from `0.2`, because what a conformant writer produces changed: OKF v0.2 supersedes `timestamp` with `generated: { by, at }`, so the recommended content-change field is now `generated` (section 4.2). The change is backward compatible for readers: a legacy `timestamp` still satisfies the recommendation and no bundle needs rewriting. The only new finding an existing document can gain is a warning for a `generated` value it already carries in a malformed shape (for example `generated: null`), which earlier versions ignored. Bundles scaffolded by `data-olympus init` declare `spec_version: "0.3"` and `okf_version: "0.2"`. A consumer that implements only OKF v0.1 and requires `timestamp` will not accept newly written documents; OKF v0.2 consumers require only `type`.
 
 The `spec_version` field is optional in bundles targeting this `0.1` draft. It becomes required at `1.0`.
 
@@ -364,7 +370,7 @@ The `spec_version` field is optional in bundles targeting this `0.1` draft. It b
 
 ## 11. Relationship to other formats
 
-**OKF (Open Knowledge Format).** data-olympus is readable by OKF consumers: our governance extensions (`id`, `status`, `tier`, `supersedes`, `superseded_by`, `contradicts`, `owner`, and the write pipeline) are invisible to a permissive OKF consumer because OKF requires tolerating unknown keys. CI pins official Google OKF commit `d44368c15e38e7c92481c5992e4f9b5b421a801d`, verifies the vendored fixture and Apache 2.0 license checksums, runs the pinned reference visualization consumer over every concept in `example-bundle`, and runs the data-olympus importer, linter, index, search, and retrieval path over the pinned official sample. These checks prove the named fixtures and revision only. The two formats are complementary: OKF defines the interoperable baseline; data-olympus adds the governance layer needed for multi-agent write safety and ADR chain tracking. The relationship is analogous to how OpenAPI is a profile of JSON Schema. See [`docs/okf-profile.md`](docs/okf-profile.md) for the full field-by-field profile and the exact evidence boundary.
+**OKF (Open Knowledge Format).** data-olympus is readable by OKF consumers: our governance extensions (`id`, `status`, `tier`, `supersedes`, `superseded_by`, `contradicts`, `owner`, and the write pipeline) are invisible to a permissive OKF consumer because OKF requires tolerating unknown keys. CI pins official Google OKF v0.2 commit `ad30107c31c06aec8a7d5636e0d1058118604e6f` in the dedicated [GoogleCloudPlatform/open-knowledge-format](https://github.com/GoogleCloudPlatform/open-knowledge-format) repository (the `okf/` copy in `knowledge-catalog` is a frozen snapshot), verifies the vendored fixture and Apache 2.0 license checksums, runs the pinned reference visualization consumer over every concept in `example-bundle`, and runs the data-olympus importer, linter, index, search, and retrieval path over the pinned official sample. These checks prove the named fixtures and revision only. OKF's own `status` key names a different vocabulary (`draft`, `stable`, `deprecated` in OKF) from the governance lifecycle defined in section 4.2; OKF v0.2 consumers must tolerate values they do not recognise, and the data-olympus importer maps OKF lifecycle values to `draft` on import. The two formats are complementary: OKF defines the interoperable baseline; data-olympus adds the governance layer needed for multi-agent write safety and ADR chain tracking. The relationship is analogous to how OpenAPI is a profile of JSON Schema. See [`docs/okf-profile.md`](docs/okf-profile.md) for the full field-by-field profile and the exact evidence boundary.
 
 **Obsidian and Notion.** Both support markdown files with YAML frontmatter and backlink graphs. data-olympus bundles can be opened in Obsidian as a vault; the frontmatter is visible in properties panels and the body renders normally. The difference is governance: Obsidian and Notion have no concept of propose/pending/resolve write pipelines, controlled-vocabulary enforcement, or tier-based access control. data-olympus complements these tools rather than replacing them: a team may author in Obsidian and commit conformant bundles to git for the MCP server to serve.
 

@@ -316,3 +316,19 @@ def test_bootstrap_refuses_a_missing_corpus_with_the_actionable_message(
     with pytest.raises(NotADirectoryError) as excinfo:
         server.build_app_from_config(cfg, bootstrap_now=True)
     assert "KB_MAIN_PATH" in str(excinfo.value)
+
+
+def test_pending_claim_ttl_defaults_and_clamps(monkeypatch) -> None:  # noqa: ANN001
+    """The claim TTL only decides WHICH claims to reconcile, never the outcome,
+    but a non-positive value would sweep a live resolver's claim on every pass.
+    Clamp it the way the auto-commit lock TTL is clamped."""
+    from data_olympus.config import load_config
+
+    monkeypatch.delenv("KB_PENDING_CLAIM_TTL_SEC", raising=False)
+    assert load_config().pending_claim_ttl_sec == 900
+
+    monkeypatch.setenv("KB_PENDING_CLAIM_TTL_SEC", "120")
+    assert load_config().pending_claim_ttl_sec == 120
+
+    monkeypatch.setenv("KB_PENDING_CLAIM_TTL_SEC", "0")
+    assert load_config().pending_claim_ttl_sec == 900

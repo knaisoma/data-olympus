@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from data_olympus.format.frontmatter import parse_frontmatter
+from data_olympus.format.provenance import generated_problems, tool_generated
 from data_olympus.format.validate import STATUSES, TIERS, TYPES
 
 from .stamp import DEFAULT_TYPE, DRAFT_STATUS, first_sentence
@@ -27,6 +28,9 @@ if TYPE_CHECKING:
 
 # Alias -> canonical frontmatter key. Only unambiguous renames; we never guess a
 # value, only relocate a field the author already wrote under a different name.
+# DECLARATION ORDER IS PRECEDENCE: when several aliases of one canonical key are
+# present, the canonical key wins, then the alias declared first here. So
+# `updated` (the last change) outranks `date`, whatever order the source uses.
 _ALIASES: dict[str, str] = {
     "identifier": "id",
     "uid": "id",
@@ -37,12 +41,13 @@ _ALIASES: dict[str, str] = {
     "name": "title",
     "summary": "description",
     "keywords": "tags",
-    "date": "timestamp",
     "updated": "timestamp",
+    "date": "timestamp",
 }
 
 # Recommended fields we backfill from the body when absent (title/description),
-# reporting the inference. tags/timestamp get generic defaults.
+# reporting the inference. tags get a generic default; a document with no
+# content-change time gets a `generated` stamp naming the tool.
 
 
 @dataclass
@@ -55,19 +60,34 @@ class NormalizedOKF:
 
 
 def _apply_aliases(fm: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    """Rename alias keys to canonical keys. Reports each rename. A canonical key
-    already present wins over its alias (the alias is dropped and reported)."""
+    """Rename alias keys to canonical keys, reporting each rename.
+
+    One key supplies each canonical field: the canonical key itself if present,
+    otherwise the first alias in ``_ALIASES`` declaration order. The result does
+    not depend on the order of keys in the source. Every other alias is dropped
+    and reported together with its value, so no metadata disappears silently.
+    """
+    winners: dict[str, str] = {}
+    for canonical in dict.fromkeys(_ALIASES.values()):
+        candidates = [canonical, *(a for a, c in _ALIASES.items() if c == canonical)]
+        for key in candidates:
+            if key in fm:
+                winners[canonical] = key
+                break
     out: dict[str, Any] = {}
     inferences: list[str] = []
     for key, value in fm.items():
         canonical = _ALIASES.get(key, key)
-        if canonical != key:
-            if canonical in fm and canonical != key:
-                inferences.append(
-                    f"dropped alias field {key!r} (canonical {canonical!r} already set)"
-                )
-                continue
-            inferences.append(f"renamed field {key!r} -> {canonical!r}")
+        if canonical == key:
+            out[key] = value
+            continue
+        if winners[canonical] != key:
+            inferences.append(
+                f"dropped alias field {key!r} (value {value}); "
+                f"{winners[canonical]!r} supplies {canonical!r}"
+            )
+            continue
+        inferences.append(f"renamed field {key!r} -> {canonical!r}")
         out[canonical] = value
     return out, inferences
 
@@ -147,11 +167,23 @@ def normalize_okf_doc(path: Path, *, default_tier: str, category: str | None) ->
         inferences.append("tags coerced to a list")
     else:
         fm["tags"] = [str(t) for t in tags]
-    if not fm.get("timestamp"):
-        import datetime
-
-        fm["timestamp"] = datetime.date.today().isoformat()
-        inferences.append("missing timestamp; defaulted to today")
+    # Content-change time (OKF v0.2 `generated`, or the legacy `timestamp` it
+    # supersedes). A PRESENT `generated` is the source's own provenance and is
+    # preserved whatever its shape; a malformed one is flagged for review, never
+    # repaired. Only when the source records no change time at all is one
+    # stamped, naming the tool, never a principal.
+    if "generated" in fm:
+        problems = generated_problems(fm["generated"])
+        if problems:
+            needs_review.append(
+                f"{path.name}: " + "; ".join(problems) + " (preserved as written)"
+            )
+    elif not fm.get("timestamp"):
+        fm["generated"] = tool_generated()
+        inferences.append(
+            "missing generated and timestamp; stamped generated with the "
+            "data-olympus tool actor"
+        )
     if category and not fm.get("category"):
         fm["category"] = category
 
@@ -162,7 +194,10 @@ def normalize_okf_doc(path: Path, *, default_tier: str, category: str | None) ->
     )
 
 
-_ORDER = ("id", "type", "status", "tier", "category", "title", "description", "tags", "timestamp")
+_ORDER = (
+    "id", "type", "status", "tier", "category", "title", "description", "tags",
+    "timestamp", "generated",
+)
 
 
 def _reorder(fm: dict[str, Any]) -> dict[str, Any]:

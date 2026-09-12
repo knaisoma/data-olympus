@@ -396,6 +396,37 @@ def test_render_memory_omits_evidence_key_when_absent() -> None:
     assert "evidence" not in fm
 
 
+# ---- issue #173: OKF v0.2 provenance on server-rendered memories ----
+
+
+def test_render_memory_records_the_tool_as_generator_at_created_at() -> None:
+    """`generated.by` is the data-olympus tool actor and `generated.at` is the
+    same instant as `created_at`. The memory carries no legacy timestamp."""
+    import yaml
+
+    from data_olympus import __version__
+    from data_olympus.tools_write import _render_memory
+    out = _render_memory(text="body", tags=[], agent_identity="claude")
+    fm = yaml.safe_load(out.split("---\n", 2)[1])
+    assert isinstance(fm["created_at"], str)
+    assert fm["generated"] == {"by": f"data-olympus/{__version__}", "at": fm["created_at"]}
+    assert "timestamp" not in fm
+    assert fm["created_by"] == "claude"
+
+
+def test_render_memory_human_identity_never_becomes_the_generator() -> None:
+    """A principal named like a human actor stays the proposer; it is never
+    recorded as the author of agent-written content."""
+    import yaml
+
+    from data_olympus import __version__
+    from data_olympus.tools_write import _render_memory
+    out = _render_memory(text="body", tags=[], agent_identity="human:alice")
+    fm = yaml.safe_load(out.split("---\n", 2)[1])
+    assert fm["created_by"] == "human:alice"
+    assert fm["generated"]["by"] == f"data-olympus/{__version__}"
+
+
 def test_propose_memory_forged_tag_does_not_forge_id(tmp_path, monkeypatch) -> None:
     """End-to-end: a malicious tag through the propose path is stored inertly."""
     import yaml
@@ -1095,3 +1126,184 @@ def test_propose_edit_evidence_rejects_too_many_items(tmp_path) -> None:
         evidence=[f"item {i}" for i in range(11)],
     )
     assert resp.status == "rejected_invalid_evidence"
+
+
+def test_list_pending_labels_claimed_entries(tmp_path) -> None:  # noqa: ANN001
+    """kb_list_pending must show a claimed entry rather than reading empty.
+
+    Issue #254: after a transport drop mid-resolve the queue read as empty,
+    which is indistinguishable from 'the decision was applied'. The operator
+    concluded the write had landed; it had not.
+    """
+    from data_olympus.pending import PendingQueue
+    from data_olympus.tools_write import kb_list_pending_fn
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id = q.enqueue(
+        proposal_type="edit", target_path="operator/notes.md", postimage="body",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        meta={"confidence": 0.4},
+    )
+    assert [e.state for e in kb_list_pending_fn(pending=q).pending] == ["pending"]
+
+    q.claim_for_resolve(pending_id)
+    entries = kb_list_pending_fn(pending=q).pending
+
+    assert [e.pending_id for e in entries] == [pending_id]
+    assert entries[0].state == "claimed"
+
+
+def test_a_signal_killed_commit_is_unknown_not_a_failure() -> None:
+    """git can update the ref and then be killed before it exits. subprocess
+    reports that as CalledProcessError, and treating it as a failed commit would
+    record a proven non-commit for a write that may have landed."""
+    import subprocess
+
+    from data_olympus.tools_write import _classify_commit_error
+
+    killed = subprocess.CalledProcessError(-9, ["git", "commit"])
+    declined = subprocess.CalledProcessError(1, ["git", "commit"])
+
+    assert _classify_commit_error(killed) == "unknown"
+    assert _classify_commit_error(declined) == "failed"
+
+
+# --- reading back your own parked proposal (issue #256) ----------------------
+
+
+def _parked(tmp_path, *, flagged: bool = False):  # noqa: ANN001, ANN202
+    from data_olympus.pending import PendingQueue
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    meta = {"confidence": 0.4, "source_session": "session-A",
+            "proposer_principal": "proposer"}
+    if flagged:
+        meta["secret_scan_flagged"] = True
+        meta["matching_pattern"] = "google_api_key"
+    pid = q.enqueue(
+        proposal_type="edit", target_path="operator/notes.md",
+        postimage="the draft body", base_commit="HEAD", base_blob_sha=None,
+        target_file_hash=None, meta=meta,
+    )
+    return q, pid
+
+
+def test_the_proposing_principal_can_read_its_own_draft(tmp_path) -> None:
+    """The gap in issue #256: a session could learn THAT it proposed something
+    about a path, never WHAT it proposed, so it could not quote its own draft
+    back or check it against a second proposal."""
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q, pid = _parked(tmp_path)
+    resp = kb_get_pending_fn(
+        pending=q, pending_id=pid, principal_name="proposer",
+        can_resolve=False,
+    )
+
+    assert resp.status == "ok"
+    assert resp.postimage == "the draft body"
+    assert resp.target_path == "operator/notes.md"
+    # It must say plainly that this content does not govern.
+    assert resp.in_force is False
+    assert "not in force" in resp.note.lower()
+
+
+def test_another_principal_cannot_read_the_draft(tmp_path) -> None:
+    """Otherwise this is a side channel for reading queued content. Scoping on
+    the caller-supplied session did exactly that: the listing publishes
+    source_session, so a reader could copy it and ask for the draft."""
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q, pid = _parked(tmp_path)
+    resp = kb_get_pending_fn(
+        pending=q, pending_id=pid, principal_name="reader",
+        can_resolve=False,
+    )
+
+    assert resp.status == "forbidden"
+    assert resp.postimage is None
+
+
+def test_a_resolver_can_read_any_draft(tmp_path) -> None:
+    """A principal that could approve the entry can already see the content by
+    approving it, so withholding it from them protects nothing."""
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q, pid = _parked(tmp_path)
+    resp = kb_get_pending_fn(
+        pending=q, pending_id=pid, principal_name="reader", can_resolve=True,
+    )
+
+    assert resp.status == "ok"
+    assert resp.postimage == "the draft body"
+
+
+def test_a_secret_flagged_draft_is_withheld_from_its_own_proposer(tmp_path) -> None:
+    """A postimage the scanner flagged contains credential-shaped content. The
+    proposing session already had it, but reading it BACK through the service
+    turns the queue into a place to retrieve one, so only a principal that could
+    approve it gets it back."""
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q, pid = _parked(tmp_path, flagged=True)
+
+    own = kb_get_pending_fn(
+        pending=q, pending_id=pid, principal_name="proposer", can_resolve=False,
+    )
+    assert own.status == "forbidden_secret_flagged"
+    assert own.postimage is None
+    assert own.matching_pattern == "google_api_key"
+
+    resolver = kb_get_pending_fn(
+        pending=q, pending_id=pid, principal_name="proposer", can_resolve=True,
+    )
+    assert resolver.status == "ok"
+    assert resolver.postimage == "the draft body"
+
+
+def test_an_unknown_pending_id_is_not_found(tmp_path) -> None:
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q, _pid = _parked(tmp_path)
+    resp = kb_get_pending_fn(
+        pending=q, pending_id="0" * 32, principal_name="proposer",
+        can_resolve=True,
+    )
+    assert resp.status == "not_found"
+    assert resp.postimage is None
+
+
+def test_a_traversal_shaped_id_is_rejected_without_touching_disk(tmp_path) -> None:
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q, _pid = _parked(tmp_path)
+    resp = kb_get_pending_fn(
+        pending=q, pending_id="../../etc/passwd", principal_name="proposer",
+        can_resolve=True,
+    )
+    assert resp.status == "not_found"
+
+
+def test_an_entry_with_no_recorded_proposer_is_resolver_only(tmp_path) -> None:
+    """An entry parked before ownership was recorded cannot have its owner
+    established, so it is resolver-only rather than readable by anyone who
+    happens to send an empty principal name."""
+    from data_olympus.pending import PendingQueue
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pid = q.enqueue(
+        proposal_type="edit", target_path="operator/notes.md",
+        postimage="legacy draft", base_commit="HEAD", base_blob_sha=None,
+        target_file_hash=None, meta={"confidence": 0.4},
+    )
+
+    assert kb_get_pending_fn(
+        pending=q, pending_id=pid, principal_name="", can_resolve=False,
+    ).status == "forbidden"
+    assert kb_get_pending_fn(
+        pending=q, pending_id=pid, principal_name="anyone", can_resolve=False,
+    ).status == "forbidden"
+    assert kb_get_pending_fn(
+        pending=q, pending_id=pid, principal_name="op", can_resolve=True,
+    ).postimage == "legacy draft"

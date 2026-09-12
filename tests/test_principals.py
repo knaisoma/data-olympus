@@ -121,3 +121,52 @@ def test_parse_principals_env_tolerates_garbage() -> None:
     assert parse_principals_env('[{"name":"a","token":"t"}]') == [
         {"name": "a", "token": "t"}
     ]
+
+
+def test_principal_names_must_be_unique() -> None:
+    """Ownership of a parked proposal is the principal NAME (issue #256), so two
+    credentials sharing a name share ownership.
+
+    Reproduced in review with two unnamed principals: both default to "agent",
+    and a read-only credential read the proposer's complete postimage because
+    the names matched. An accidental collision must be refused rather than
+    silently collapsing two identities into one.
+    """
+    import pytest
+
+    from data_olympus.principals import PrincipalRegistry
+
+    with pytest.raises(ValueError, match="duplicate principal name"):
+        PrincipalRegistry(auth_token="", principals=[
+            {"token": "t1", "capabilities": ["read", "propose"]},
+            {"token": "t2", "capabilities": ["read"]},
+        ])
+
+    with pytest.raises(ValueError, match="duplicate principal name"):
+        PrincipalRegistry(auth_token="", principals=[
+            {"token": "t1", "name": "svc", "capabilities": ["read"]},
+            {"token": "t2", "name": "svc", "capabilities": ["read"]},
+        ])
+
+    # Distinct names are fine, and so is a single unnamed principal.
+    registry = PrincipalRegistry(auth_token="", principals=[
+        {"token": "t1", "name": "a", "capabilities": ["read"]},
+        {"token": "t2", "name": "b", "capabilities": ["read"]},
+    ])
+    assert registry.auth_configured
+    assert PrincipalRegistry(auth_token="", principals=[
+        {"token": "t1", "capabilities": ["read"]},
+    ]).auth_configured
+
+
+def test_a_principal_cannot_take_the_operator_name() -> None:
+    """The operator token is registered as "operator", so a configured
+    principal claiming that name would inherit its ownership."""
+    import pytest
+
+    from data_olympus.principals import PrincipalRegistry
+
+    with pytest.raises(ValueError, match="duplicate principal name"):
+        PrincipalRegistry(auth_token="optok", principals=[
+            {"token": "t1", "name": "operator", "capabilities": ["read"]},
+        ])

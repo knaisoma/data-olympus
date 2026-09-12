@@ -242,9 +242,30 @@ def receipt_problems(repo_root: Path) -> list[str]:
     problems = [p for p in verify_receipt(document, repo_root) if p not in replaced]
     return (
         problems
+        + comparability_problems(document)
         + historical_lock_problems(document, repo_root)
         + historical_source_tree_problems(document, repo_root)
     )
+
+
+def comparability_problems(document: object) -> list[str]:
+    """The committed receipt must stay usable as a comparison REFERENCE.
+
+    A third party reproduces the benchmark and compares its own receipt against
+    this one (issue #158). ``compare`` rejects a receipt missing a field it
+    needs, because two omissions are not agreement, so a schema change that
+    drops such a field would surface as a rejected reproduction for an outside
+    contributor rather than as a failure here. Fail it here instead.
+    """
+    from benchmarks.receipt import ReceiptFieldMissingError, compare_receipts
+
+    if not isinstance(document, dict):
+        return ["receipt is not a JSON object, so it cannot serve as a reference"]
+    try:
+        compare_receipts(reference=document, candidate=document)
+    except ReceiptFieldMissingError as exc:
+        return [f"receipt cannot be used as a comparison reference: {exc}"]
+    return []
 
 
 def main() -> int:

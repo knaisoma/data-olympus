@@ -6,7 +6,9 @@ tier: meta
 title: Acme App API endpoint reference
 description: Enumerates the REST endpoints exposed by the Acme App API component, for lookup rather than governance.
 tags: [reference, api, acme-app]
-timestamp: "2026-06-24"
+generated:
+  by: human:data-olympus-maintainers
+  at: "2026-06-24T00:00:00Z"
 ---
 # Acme App API endpoints
 

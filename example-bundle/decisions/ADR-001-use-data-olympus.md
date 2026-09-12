@@ -6,7 +6,9 @@ tier: meta
 title: Adopt data-olympus for the knowledge base
 description: Acme stores its knowledge as a data-olympus bundle.
 tags: [architecture]
-timestamp: 2026-06-24
+generated:
+  by: human:data-olympus-maintainers
+  at: "2026-06-24T00:00:00Z"
 ---
 # Context
 Acme needs a portable, agent-readable knowledge base.

@@ -1,6 +1,6 @@
 ---
-spec_version: "0.2"
-okf_version: "0.1"
+spec_version: "0.3"
+okf_version: "0.2"
 ---
 # Acme Knowledge Bundle
 

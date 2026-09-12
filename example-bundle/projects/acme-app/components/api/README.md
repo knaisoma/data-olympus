@@ -6,7 +6,9 @@ tier: T4
 title: Acme App API Component
 description: Component-level knowledge for the Acme App REST API, including module conventions and deployment notes.
 tags: [acme-app, api, nestjs, component]
-timestamp: 2026-06-24
+generated:
+  by: human:data-olympus-maintainers
+  at: "2026-06-24T00:00:00Z"
 ---
 # Acme App API Component
 

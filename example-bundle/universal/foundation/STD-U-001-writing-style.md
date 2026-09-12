@@ -6,7 +6,9 @@ tier: T1
 title: Writing Style
 description: How Acme writes clear, agent-readable documentation.
 tags: [foundation, writing]
-timestamp: 2026-06-24
+generated:
+  by: human:data-olympus-maintainers
+  at: "2026-06-24T00:00:00Z"
 applies_when:
   - "writing a new document or README"
   - "drafting a docstring or code comment"

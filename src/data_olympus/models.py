@@ -32,6 +32,12 @@ class HealthResponse(BaseModel):
     # operator unfreeze path in docs/serving.md).
     push_queue_frozen: int = 0
     path_locks_held: int = 0
+    # WHICH paths are locked, not just how many (issue #253). A leaked lock
+    # blocks every write to one path, and a bare count gave no way to tell
+    # which: it had to be found by exec-ing into the pod and reading the state
+    # volume. Each record carries target_path, owner_kind, pending_id,
+    # acquired_at and age_seconds.
+    path_locks: list[dict[str, object]] = []
     last_index_build_status: str = "ok"
     last_index_error: str | None = None
     last_index_error_at: float | None = None
@@ -466,8 +472,41 @@ class ResolvePendingResponse(BaseModel):
     push_state: str | None = None
 
 
+class PendingDetailResponse(BaseModel):
+    """One parked proposal, read back by its proposer (issue #256).
+
+    A session that parks a proposal could previously learn THAT it proposed
+    something about a path and never WHAT it proposed, so it could not re-read
+    its own draft, quote it back, or check it against a second proposal.
+
+    This is a readback for the producer, not a retrieval surface: a pending
+    postimage is not in force, it stays out of `kb_consult` and every
+    `in_force` retrieval exactly as before, and `in_force` is reported as False
+    on every successful response so no caller has to infer it.
+    """
+
+    status: str
+    pending_id: str
+    in_force: bool = False
+    note: str = ""
+    target_path: str | None = None
+    proposal_type: str | None = None
+    postimage: str | None = None
+    created_at: float | None = None
+    reason: str | None = None
+    matching_pattern: str | None = None
+
+
 class PendingEntry(BaseModel):
     pending_id: str
+    # Which state the entry is in (issue #254). "pending" is awaiting an
+    # operator decision. "claimed" means a resolve took the entry and did not
+    # finish: the decision is neither applied nor still offered, and the entry
+    # holds its path lock. Claimed entries used to be omitted from this list
+    # entirely, so the queue read as empty and an operator reasonably concluded
+    # every approval had landed. Defaults to "pending" so a caller reading an
+    # entry produced before this field existed is not misled.
+    state: str = "pending"
     proposal_type: str
     target_path: str
     confidence: float | None = None

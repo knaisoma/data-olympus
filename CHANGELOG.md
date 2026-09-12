@@ -12,6 +12,175 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-21
+
+### Added
+
+* **A session can read back its own parked proposal.** A write that parks
+  returned a pending id, and the listing showed its target path, confidence and
+  park reason, but nothing returned the text. So an agent could learn THAT it
+  proposed something about a path and never WHAT it proposed: it could not
+  re-read its own draft, quote it back to the operator, or check it against a
+  second proposal. `GET /api/v1/pending/<id>` and the `kb_get_pending` MCP tool
+  now return the postimage, with `in_force: false` and a note saying the content
+  governs nothing until approved. It stays out of `kb_consult` and every
+  `in_force` retrieval exactly as before.
+
+  Ownership is the AUTHENTICATED principal recorded when the proposal was made,
+  or any principal holding `resolve`; an entry parked before this release is
+  resolver-only, since its owner cannot be established. A postimage the secret
+  scanner flagged is withheld from everyone but a resolver, since handing one
+  back would turn the queue into a place to retrieve a credential from. Only the
+  postimage is owner-scoped: the pending LISTING remains visible to every
+  authenticated principal with each entry's target path, reason and evidence,
+  unchanged by this release and documented in `docs/serving.md`.
+
+  Because a principal name is now an ownership identity, **the server refuses to
+  start on a configuration with two credentials sharing a name**, including two
+  unnamed ones, which both defaulted to `agent`. Give each credential a unique
+  `name` before upgrading, and avoid `operator` when `KB_AUTH_TOKEN` supplies
+  that identity. Requested in #256 after a public discussion of
+  read-your-own-writes.
+
+* **The governed action vocabulary is configurable.** The enforcement gate
+  classified actions from three lists compiled into `enforce_policy.py`, and the
+  shipped entry point never threaded a classifier, so extending coverage meant
+  embedding the server in your own Python. `KB_GOVERNED_EXTRA_KEYWORDS`,
+  `KB_GOVERNED_EXTRA_PATH_GLOBS` and `KB_GOVERNED_EXTRA_COMMAND_PATTERNS` now
+  add to those lists. They extend and never replace, so a configuration error
+  cannot silently remove enforcement the product already provided, and this
+  changes only what counts as governed: a fresh explicit consultation is still
+  the only thing that clears the gate. Part of #257; the SubagentStart half of
+  that issue remains open and needs its payload verified first.
+
+
+* **A reproduction of the benchmarks can now be compared against the published
+  one.** `python -m benchmarks.receipt compare --reference <path> --candidate
+  <path>` reports two levels that fail independently: whether the recorded
+  inputs match (commit, environment, commands, seeds, configuration) and whether
+  the recorded results match (artifact digests and the reported summary). A run
+  can match the first and not the second, which is the discrepancy worth
+  reporting, and it can match the second and not the first. `reproduction_status`
+  is therefore the outcome of a comparison against a named reference, never a
+  property a single receipt carries. A receipt missing a field the comparison
+  needs is rejected rather than counted as a match, and the CI guard now fails
+  if the committed receipt stops being usable as a reference. Exits 0 when both
+  levels match, 1 on a difference, 2 on a missing field. `benchmarks/README.md`
+  documents how a third party publishes a reproduction and reports a
+  discrepancy. The comparison is over RECORDED inputs and results: this tool
+  does not execute or observe a run, and the published tables stay labelled
+  maintainer-produced and not independently reproduced.
+
+* **Release channels are documented for users.** `docs/operations.md` section
+  7.1 states the stable and candidate names on every surface (GHCR immutable
+  tags and the `rc`, `stable` and `latest` channels, PyPI versions, GitHub
+  releases), how to try a candidate by its exact version, how to check it with
+  `data-olympus verify` and what each exit code means, what promotion guarantees
+  (the stable image is the candidate digest, and the stable wheel is compared
+  with the candidate), and how to roll back. The README and quickstart candidate
+  examples no longer pin an old version. The maintainer procedure is unchanged
+  and now section 7.2. Part of #151.
+
+* **data-olympus can be listed in the official MCP registry.** The registry is
+  where `modelcontextprotocol/servers` now sends new server implementations, and
+  data-olympus was absent from it: two searches of its v0 API returned zero
+  results. A `server.json` at the repository root declares
+  `io.github.knaisoma/data-olympus` against the PyPI package, with the
+  `streamable-http` transport this server actually serves rather than stdio, and
+  `README.md` carries the `mcp-name` ownership marker the registry looks for in
+  the description PyPI serves. 0.8.0 is the first stable release whose
+  description carries that marker, which is what unblocks verification.
+
+  This release declares the entry; it does not publish it. Publication
+  authenticates as a maintainer through GitHub OAuth or from Actions through
+  OIDC, which is a deliberate step rather than a file change.
+  `docs/mcp-registry.md` records what it needs. Part of #111.
+
+### Changed
+
+* **OKF v0.2: data-olympus writes `generated` instead of `timestamp`.** OKF
+  v0.2 supersedes `timestamp` with `generated: { by, at }`. `data-olympus init`,
+  the importers and server-rendered memories now write `generated`, and `init`
+  declares `okf_version: "0.2"` and format `spec_version: "0.3"`. When
+  data-olympus synthesizes this record, its writer is always the tool actor
+  `data-olympus/<version>`, never a principal name or agent identity, so that
+  metadata never attributes agent-written content to a human author; memories
+  keep `created_by` and `created_at`. A proposed edit still carries whatever
+  frontmatter its author supplies. The OKF importer keeps a source's `generated`
+  and legacy `timestamp` as written, and flags a malformed `generated` for
+  review. When a source uses two aliases for one field, the canonical key wins,
+  then `identifier` over `uid`, `kind` over `doctype` and `updated` over `date`,
+  and the dropped value is reported; previously the later key in the source won,
+  so the imported `id`, `type` or date could depend on key order. Lint accepts a
+  `generated.at` or a legacy `timestamp` as the content-change time and warns on
+  a structurally malformed `generated`. Existing bundles are not rewritten; a
+  document relying on `timestamp` sees no new finding, but one that already
+  carries a malformed `generated` (for example `generated: null`) now gets a
+  warning. **Compatibility:** an OKF v0.1-only consumer that requires
+  `timestamp` will not accept newly written documents. Part of #173.
+
+### Fixed
+
+* **Interoperability evidence is pinned to where OKF now lives.** OKF moved to
+  `GoogleCloudPlatform/open-knowledge-format`, and the `okf/` directory the pin
+  pointed at in `knowledge-catalog` became a frozen snapshot. The pin, the
+  conformance script, CI and the freshness workflow now use the dedicated
+  repository at OKF v0.2 commit `ad30107c`; the vendored sample has nine
+  concepts; the frozen copy is rejected as a pin. The freshness workflow
+  monitors the fixture only, and says so. Closes #173.
+
+
+* **A dropped connection mid-approval is now visible, and recovers on its own
+  whenever the evidence allows.** Approving a pending write claims the entry, holds its path lock,
+  commits, then releases both. If the process died in between, the entry was
+  left in a claimed state that nothing could reach: it was excluded from
+  `kb_list_pending`, the orphan-lock GC treated its sidecar as a legitimate lock
+  holder, and pending-owned locks were never TTL-reclaimed. The path stayed
+  refused with `rejected_path_lock_busy` across restarts, while the queue read
+  as empty, which is indistinguishable from "the decision was applied".
+
+  Entries now carry an explicit `state` (`pending`, `claimed` or `uncertain`)
+  and claimed ones are listed rather than hidden, health reports `path_locks`
+  with each lock's target path and age instead of only a count, and a background
+  pass reconciles claims older than `KB_PENDING_CLAIM_TTL_SEC` (default 900).
+  Reconciliation runs on evidence, not on age: the write records its own outcome
+  durably before anything else, and failing that the commit is looked up by its
+  new `KB-Pending-Id` trailer on the recorded session ref. Only a recorded
+  failure restores an entry to pending. Anything unproven stays `uncertain` with
+  its lock held and is re-checked on every later pass, because a rebase or a
+  squash can remove a commit that really was made, and restoring on its absence
+  would offer an already-applied decision for approval a second time. An entry
+  that stays uncertain keeps its lock deliberately, and `docs/serving.md`
+  documents the manual recovery for it. The named history-rewriting paths (the
+  base rebase, the push recovery that calls it, and the worktree GC) reconcile
+  first and defer while a claim on that branch has begun its write.
+
+* **Indexing a modest corpus no longer needs more than a gigabyte of memory.**
+  The co-occurrence pass that powers query expansion counted every token pair in
+  the corpus in one in-memory table. The per-document token cap bounded each
+  document's contribution but nothing bounded the union across documents, and
+  the union is what was held: on a 536-file, 3.6 MiB corpus that was 6.2 million
+  distinct pairs and a 1445 MiB peak, above a 1 GiB container limit on its own,
+  so every index rebuild OOM-killed the pod. Pair counting now drops terms that
+  cannot appear in any surviving pair, keys pairs by integer rather than by
+  string tuple, bounds the per-term candidate lists, and spills to a temporary
+  SQLite database once it reaches `KB_COOCCURRENCE_MAX_PAIRS` distinct pairs
+  (default 500000). The same corpus now peaks at 105 MiB, measured for the
+  co-occurrence build itself. For identical inputs and configuration, a
+  successful build produces a byte-for-byte identical related-terms table, so no
+  search result moves; a build that degrades on a spill failure has no table at
+  all until the next successful one. The
+  trade is build time: that corpus goes from 6.6 s to 16.3 s, measured on one
+  machine. Set `KB_COOCCURRENCE_MAX_PAIRS=0` to disable the spill and keep the
+  previous speed where memory allows. See `docs/serving.md`.
+* **A failed co-occurrence build no longer fails the whole index build.** The
+  spill writes to a temporary file, so it can fail on a full or read-only disk.
+  Because the index only rebuilds when the corpus changes and `/readyz` rejects
+  a failed build, that would have left the service unready until the next
+  commit. The build now logs a warning and continues without a related-terms
+  table: the index still serves, and only query expansion is lost until the next
+  successful build.
+
 ## [0.7.3] - 2026-09-07
 
 ### Fixed
@@ -2012,7 +2181,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/knaisoma/data-olympus/compare/v0.7.3...v0.8.0
 [0.7.3]: https://github.com/knaisoma/data-olympus/compare/v0.7.2...v0.7.3
 [0.6.0]: https://github.com/knaisoma/data-olympus/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/knaisoma/data-olympus/compare/v0.4.2...v0.5.0

@@ -193,3 +193,76 @@ uv run python -m benchmarks.docs_tables --write
 
 The committed `benchmarks/results/report.md` contains the actual numbers cited
 in `docs/comparison.md § Quantified comparison`.
+
+## Publishing a reproduction, and reporting a discrepancy
+
+The committed [`results/receipt.json`](results/receipt.json) is the **reference
+receipt**. A third party reproduces the run, writes its own **candidate
+receipt**, and compares the two. The comparison, not the receipt, is what
+carries a reproduction claim: a receipt that only describes itself has nothing
+to disagree with.
+
+The reproduction runs at the revision the reference receipt names, and the
+comparison runs from a checkout that has the comparison tooling. Those are not
+always the same revision: `compare` was added in 0.8.0, and a reference receipt
+measured before that names a commit where the subcommand does not exist.
+
+```bash
+# 1. Reproduce at the measured revision.
+git clone https://github.com/knaisoma/data-olympus measure && cd measure
+git checkout <the source_commit recorded in benchmarks/results/receipt.json>
+cp benchmarks/results/receipt.json /tmp/reference-receipt.json   # keep the reference
+uv venv --python 3.13 && uv pip install -e '.[dev]'
+
+uv run python -m benchmarks.generate_artifacts
+uv run python -m benchmarks.generate_governance_artifacts
+uv run python -m benchmarks.real_corpus_eval --corpus example-bundle \
+    --queries benchmarks/real_corpus/example_bundle_queries.json \
+    --lexical-only --out benchmarks/real_corpus/example_bundle_result.json
+uv run python -m benchmarks.receipt write --source-commit $(git rev-parse HEAD)
+cp benchmarks/results/receipt.json /tmp/candidate-receipt.json
+
+# 2. Compare from a checkout that has the tooling (0.8.0 or later).
+cd .. && git clone https://github.com/knaisoma/data-olympus compare && cd compare
+uv venv --python 3.13 && uv pip install -e '.[dev]'
+uv run python -m benchmarks.receipt compare \
+    --reference /tmp/reference-receipt.json \
+    --candidate /tmp/candidate-receipt.json
+```
+
+Do **not** run `benchmarks.docs_tables --write` as part of a reproduction. It
+rewrites the documentation tables from your run's results, which is maintainer
+housekeeping, not part of reproducing a measurement.
+
+`compare` exits 0 when both levels match, 1 on any difference, and 2 when either
+receipt is missing a field the comparison needs. It prints a report whose
+`reproduction_status` is one of:
+
+| `reproduction_status` | Meaning |
+| --- | --- |
+| `reproduced` | Recorded inputs and recorded results both match the reference. |
+| `inputs_matched_results_differ` | Same declared commit, environment, commands, seeds and configuration; different artifacts. This is the discrepancy worth reporting. |
+| `inputs_differ_results_matched` | Different declared inputs, same artifacts. |
+| `unreproduced` | Both levels differ. |
+
+The two levels fail independently, which is why they are reported separately
+rather than collapsed into one verdict, and a receipt missing a required field
+is an error rather than a match, because two omissions are not agreement.
+
+To report a discrepancy, open an issue with the full `compare` output, your
+candidate receipt, and the exact commands you ran. The `differences` array names
+each field that differed with both values, so a report is actionable without a
+second round trip.
+
+### What this establishes, and what it does not
+
+The comparison is over **recorded** inputs and **recorded** results. This module
+writes down what a run declares; it does not execute or observe that run, and it
+cannot attest that the recorded commands are what actually ran. Artifact digests
+are compared exactly and there is no tolerance mode.
+
+A successful comparison by a third party is that third party's evidence, and it
+is what makes independent reproduction a fact rather than a claim. Until such a
+receipt is published against this reference, the published tables remain
+labelled maintainer-produced and not independently reproduced, and nothing in
+this repository should be read as saying otherwise.

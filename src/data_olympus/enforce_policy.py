@@ -12,6 +12,7 @@ import re
 import tempfile
 import threading
 from dataclasses import dataclass, field
+from typing import Any
 
 # Keyword signals that a user prompt is a governed code/architectural decision.
 GOVERNED_KEYWORDS: tuple[str, ...] = (
@@ -309,3 +310,26 @@ class ConsultationLedger:
     def get(self, *, session_id: str, workspace: str) -> LedgerEntry | None:
         with self._lock:
             return self._entries.get((session_id, workspace))
+
+
+def classifier_from_config(config: Any) -> IntentClassifier:
+    """Build the classifier an operator's configuration asks for (issue #257).
+
+    The shipped vocabulary is the floor. `KB_GOVERNED_EXTRA_*` adds to it, so a
+    deployment can govern an action class this product has never heard of, such
+    as the reporter's own example of not running window and input tests against
+    a live desktop, without embedding the server in their own Python. A shipped
+    default list is the wrong place to chase every such class.
+
+    Extension only: there is deliberately no knob that REPLACES a shipped list,
+    because that would let a configuration error silently remove enforcement the
+    product already provided.
+    """
+    return IntentClassifier(
+        keywords=GOVERNED_KEYWORDS + tuple(
+            getattr(config, "governed_extra_keywords", ()) or ()),
+        path_globs=GOVERNED_PATH_GLOBS + tuple(
+            getattr(config, "governed_extra_path_globs", ()) or ()),
+        command_patterns=GOVERNED_COMMAND_PATTERNS + tuple(
+            getattr(config, "governed_extra_command_patterns", ()) or ()),
+    )

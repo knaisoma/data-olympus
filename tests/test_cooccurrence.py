@@ -16,7 +16,9 @@ import sqlite3
 from typing import TYPE_CHECKING
 
 from data_olympus.cooccurrence import (
+    DEFAULT_MAX_PAIRS_IN_MEMORY,
     build_cooccurrence_table,
+    build_cooccurrence_table_with_stats,
     compose_expanders,
     cooccurrence_build_params,
     cooccurrence_enabled,
@@ -220,10 +222,11 @@ def test_cooccurrence_build_params_from_env(
     monkeypatch.setenv("KB_COOCCURRENCE_MIN_PMI", "1.5")
     monkeypatch.setenv("KB_COOCCURRENCE_MIN_DOCS", "7")
     monkeypatch.setenv("KB_COOCCURRENCE_MAX_DOC_TOKENS", "123")
+    monkeypatch.setenv("KB_COOCCURRENCE_MAX_PAIRS", "9999")
     params = cooccurrence_build_params()
     assert params == {
         "k": 3, "min_count": 4, "min_pmi": 1.5,
-        "min_docs": 7, "max_doc_tokens": 123,
+        "min_docs": 7, "max_doc_tokens": 123, "max_pairs_in_memory": 9999,
     }
 
 
@@ -386,3 +389,163 @@ def test_cooccurrence_disabled_skips_table(
     idx.build(kb, source_commit="x")
     # Disabled -> empty table -> no related terms.
     assert idx.related_terms("helm", limit=5) == []
+
+
+# --- bounded build memory (issue #252) ---------------------------------------
+
+
+def _memory_corpus(
+    *, docs: int = 240, tokens_per_doc: int = 60, vocabulary: int = 900,
+) -> list[set[str]]:
+    """A corpus whose PAIR space is far larger than any single document's.
+
+    Each document draws a deterministic stride of tokens from a shared
+    vocabulary, so every document is small (``tokens_per_doc`` unique tokens,
+    well under ``max_doc_tokens``) while the union of pairs across documents is
+    large. That union is exactly what issue #252 showed to be unbounded: the
+    per-document cap says nothing about it.
+    """
+    vocab = [f"tok{i:04d}" for i in range(vocabulary)]
+    corpus: list[set[str]] = []
+    for d in range(docs):
+        start = (d * 37) % vocabulary
+        stride = 1 + (d % 7)
+        corpus.append({
+            vocab[(start + i * stride) % vocabulary] for i in range(tokens_per_doc)
+        })
+    return corpus
+
+
+def test_build_stats_report_the_pair_counter_high_water_mark() -> None:
+    """The builder reports how many pairs it actually held at once.
+
+    Without this the memory bound is unobservable, and issue #252 was only
+    diagnosed by profiling the process from outside.
+    """
+    corpus = _memory_corpus()
+    _table, stats = build_cooccurrence_table_with_stats(
+        corpus, min_docs=2, max_pairs_in_memory=0,
+    )
+    assert stats.documents == len(corpus)
+    assert stats.spills == 0
+    assert stats.max_resident_pairs > 100_000
+
+
+def test_spilling_bounds_the_resident_pair_count() -> None:
+    """With a cap, the resident pair count is bounded by the cap plus at most
+    one document's own pairs, whatever the corpus size.
+
+    The counter is checked between documents, not inside the inner loop, so a
+    single document can carry it past the cap before the next flush. That
+    overshoot is bounded by C(max_doc_tokens, 2) and is independent of corpus
+    size, which is the property issue #252 needed. Asserting a flat ``<= cap``
+    would be asserting something the implementation does not promise.
+    """
+    corpus = _memory_corpus(tokens_per_doc=60)
+    cap = 20_000
+    per_doc_pairs = 60 * 59 // 2
+    _table, stats = build_cooccurrence_table_with_stats(
+        corpus, min_docs=2, max_pairs_in_memory=cap,
+    )
+    assert stats.spills > 0
+    assert stats.max_resident_pairs <= cap + per_doc_pairs
+
+
+def test_spilling_does_not_change_the_table() -> None:
+    """The bound is a memory change only. A spilled build and an unspilled build
+    of the same corpus must produce exactly the same table, because a search
+    result that moved would be a regression, not an optimisation."""
+    corpus = _memory_corpus()
+    unspilled, stats_unspilled = build_cooccurrence_table_with_stats(
+        corpus, min_docs=2, max_pairs_in_memory=0,
+    )
+    spilled, stats_spilled = build_cooccurrence_table_with_stats(
+        corpus, min_docs=2, max_pairs_in_memory=20_000,
+    )
+    assert stats_unspilled.spills == 0
+    assert stats_spilled.spills > 0
+    assert spilled == unspilled
+    assert unspilled != {}
+
+
+def test_terms_below_min_count_never_enter_pair_counting() -> None:
+    """A term appearing in fewer than ``min_count`` documents cannot be in any
+    surviving pair, because c_ab <= min(c_a, c_b). Dropping it before pair
+    counting is lossless, and it is where most of the pair space goes."""
+    # 'rare' appears in one doc only; 'alpha'/'beta' appear in many.
+    corpus: list[set[str]] = [{"alpha", "beta", "gamma"} for _ in range(6)]
+    corpus.append({"alpha", "rare"})
+    table, stats = build_cooccurrence_table_with_stats(
+        corpus, min_count=3, min_pmi=-10.0, min_docs=2, max_pairs_in_memory=0,
+    )
+    assert "rare" in stats.vocabulary_terms
+    assert "rare" not in stats.counted_terms
+    assert "alpha" in stats.counted_terms
+    assert "rare" not in table
+    assert "rare" not in table.get("alpha", [])
+
+
+def test_bounded_build_holds_far_less_memory(
+) -> None:
+    """Traced peak allocation during a capped build is a fraction of an
+    uncapped one on the same corpus. This is the regression guard for the
+    1445 MiB peak measured on a 536-document corpus at v0.7.3."""
+    import gc
+    import tracemalloc
+
+    corpus = _memory_corpus()
+
+    def traced_peak(cap: int) -> int:
+        gc.collect()
+        tracemalloc.start()
+        try:
+            build_cooccurrence_table_with_stats(
+                corpus, min_docs=2, max_pairs_in_memory=cap,
+            )
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    uncapped = traced_peak(0)
+    capped = traced_peak(20_000)
+    assert capped < uncapped * 0.5, f"capped={capped} uncapped={uncapped}"
+
+
+def test_build_params_expose_the_pair_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KB_COOCCURRENCE_MAX_PAIRS", "1234")
+    assert cooccurrence_build_params()["max_pairs_in_memory"] == 1234
+    monkeypatch.delenv("KB_COOCCURRENCE_MAX_PAIRS", raising=False)
+    assert cooccurrence_build_params()["max_pairs_in_memory"] == DEFAULT_MAX_PAIRS_IN_MEMORY
+
+
+def test_index_build_degrades_when_the_cooccurrence_table_fails(
+    tmp_path: Path, tmp_index_path: Path, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failed co-occurrence table must not fail the whole index build.
+
+    The spill in issue #252 writes to a temporary file, so it can fail on a full
+    or read-only disk. `refresh` only rebuilds when git changes and `/readyz`
+    rejects a failed build status, so a transient disk fault that failed the
+    build would leave the service unready until the next corpus commit. Query
+    expansion is the optional part; degrade to no table and keep serving.
+    """
+    import data_olympus.index as index_module
+
+    monkeypatch.setenv("KB_COOCCURRENCE_MIN_DOCS", "2")
+
+    def boom(*_args: object, **_kwargs: object) -> dict[str, list[str]]:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(index_module, "build_cooccurrence_table", boom)
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    _write_cooccurrence_corpus(kb)
+    idx = Index(tmp_index_path)
+    with caplog.at_level("WARNING"):
+        idx.build(kb, source_commit="x")
+    assert idx.search("kubernetes", limit=5)
+    assert idx.related_terms("helm", limit=5) == []
+    assert any("co-occurrence" in r.message.lower() for r in caplog.records)

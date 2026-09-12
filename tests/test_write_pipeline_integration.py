@@ -12,6 +12,8 @@ remote, per the epic's acceptance criteria:
 """
 from __future__ import annotations
 
+import contextlib
+import json
 import os
 import subprocess
 import threading
@@ -59,13 +61,34 @@ def _bare_remote_with_clone(tmp_path):
 
 
 def _server_pieces(tmp_path, main):
-    git = GitOps(main)
-    reg = WorktreeRegistry(git=git, worktree_root=str(tmp_path / "wts"))
+    # Wire the pieces the way the server does (issues #253, #254): one shared
+    # serializer across the claim lifecycle and the GC teardown, and a real
+    # claim guard on git's history-rewriting paths. A fixture without these
+    # cannot exercise the protections at all.
+    serializer = WriteSerializer()
+    holder = {}
+
+    def claims_at_risk(ref):
+        # Production's guard RECONCILES before reporting, at the configured
+        # claim TTL rather than at zero age. A fixture that only inspects
+        # cannot exercise the races that ordering exists to prevent.
+        pen_ = holder.get("pending")
+        if pen_ is None:
+            return []
+        with contextlib.suppress(Exception):
+            pen_.reconcile_claims(min_age_sec=900)
+        return list(pen_.claims_at_risk(ref))
+
+    git = GitOps(main, claim_guard=claims_at_risk, serializer=serializer)
+    reg = WorktreeRegistry(git=git, worktree_root=str(tmp_path / "wts"),
+                           serializer=serializer)
     pq = PushQueue(queue_root=str(tmp_path / "push-q"))
-    pen = PendingQueue(pending_root=str(tmp_path / "pending"))
+    pen = PendingQueue(pending_root=str(tmp_path / "pending"),
+                       serializer=serializer)
+    holder["pending"] = pen
     rl = SlidingWindowLimiter(max_per_hour=1000)
     bl = PathBlocklist(tier_blocks=[], path_blocks=[])
-    return git, reg, pq, pen, rl, bl
+    return git, reg, pq, pen, rl, bl, serializer
 
 
 def test_two_session_interleaved_writes_both_publish(tmp_path, monkeypatch) -> None:
@@ -81,8 +104,7 @@ def test_two_session_interleaved_writes_both_publish(tmp_path, monkeypatch) -> N
     # governed-lane status clamp and demote instead of commit.
     monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     remote, main = _bare_remote_with_clone(tmp_path)
-    git, reg, pq, pen, rl, bl = _server_pieces(tmp_path, main)
-    serializer = WriteSerializer()
+    git, reg, pq, pen, rl, bl, serializer = _server_pieces(tmp_path, main)
 
     # Session A commits an edit to file-a.md.
     ra = kb_propose_edit_fn(
@@ -158,9 +180,8 @@ def test_rebase_conflict_demotes_to_pending(tmp_path, monkeypatch) -> None:
     # one under test.
     monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     remote, main = _bare_remote_with_clone(tmp_path)
-    git, reg, pq, pen, rl, bl = _server_pieces(tmp_path, main)
+    git, reg, pq, pen, rl, bl, serializer = _server_pieces(tmp_path, main)
     audit = AuditLog(log_path=str(tmp_path / "audit.log"), hmac_key="")
-    serializer = WriteSerializer()
 
     # Session A edits the shared STD-U-001 file.
     ra = kb_propose_edit_fn(
@@ -224,8 +245,7 @@ def test_threaded_concurrent_writes_one_path_no_interleave(
     # governed-lane status clamp and demote instead of commit.
     monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
     _remote, main = _bare_remote_with_clone(tmp_path)
-    git, reg, pq, pen, rl, bl = _server_pieces(tmp_path, main)
-    serializer = WriteSerializer()
+    git, reg, pq, pen, rl, bl, serializer = _server_pieces(tmp_path, main)
 
     results: list[str] = []
     lock = threading.Lock()
@@ -265,3 +285,297 @@ def test_threaded_concurrent_writes_one_path_no_interleave(
     # Every committed write produced exactly one queue entry.
     committed = results.count("committed")
     assert pq.size() == committed
+
+# --- interrupted resolve recovery (issues #253, #254) -------------------------
+
+
+def _propose_pending(reg, pq, pen, rl, bl, serializer):  # noqa: ANN001, ANN202
+    """Propose below the auto-commit threshold so the write parks as pending."""
+    from data_olympus.tools_write import kb_propose_edit_fn
+
+    resp = kb_propose_edit_fn(
+        target_path="decisions/DEC-resolve.md",
+        postimage="---\nid: DEC-resolve\ntype: decision\nstatus: accepted\n"
+                  "tier: meta\n---\nresolved content\n",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        reason="r", source_session="s1", agent_identity="claude",
+        confidence=0.4, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.1.1.1",
+        serializer=serializer,
+    )
+    assert resp.status == "pending_confirmation", resp
+    return resp.pending_id
+
+
+def _resolve_env(tmp_path, monkeypatch):  # noqa: ANN001, ANN202
+    for k, v in _env().items():
+        if k.startswith("GIT_"):
+            monkeypatch.setenv(k, v)
+    monkeypatch.setenv("KB_GOVERNED_LANE_PROTECTION", "off")
+    _remote, main = _bare_remote_with_clone(tmp_path)
+    git, reg, pq, pen, rl, bl, serializer = _server_pieces(tmp_path, main)
+    # The SAME serializer the queue and the registry hold, not a fresh one:
+    # otherwise nothing in these tests shares a lock and the concurrency
+    # guarantees they claim to cover are not exercised at all.
+    return main, git, reg, pq, pen, rl, bl, serializer
+
+
+def test_resolved_commit_carries_its_claim_link_and_records_the_outcome(
+    tmp_path, monkeypatch,
+) -> None:
+    """The happy path establishes the evidence recovery depends on: the commit
+    names the claim it satisfied, and the entry is consumed, not restored."""
+    from data_olympus.tools_write import kb_resolve_pending_fn
+
+    main, git, reg, pq, pen, rl, bl, serializer = _resolve_env(tmp_path, monkeypatch)
+    pending_id = _propose_pending(reg, pq, pen, rl, bl, serializer)
+
+    resp = kb_resolve_pending_fn(
+        pending_id=pending_id, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=pq, pending=pen, source_session="s1",
+        agent_identity="claude", serializer=serializer,
+    )
+
+    assert resp.status == "committed"
+    assert pen.list() == []
+    assert pen.locks_held() == 0
+    wt_path = str(reg.get_or_create(
+        source_session="s1", agent_identity="claude").path)
+    body = subprocess.run(
+        ["git", "-C", wt_path, "log", "-1", "--format=%B"],
+        check=True, capture_output=True, text=True, env=_env(),
+    ).stdout
+    # A real trailer LINE, not a substring anywhere in the message: forged text
+    # in a subject or another trailer's value must never count as evidence.
+    assert f"KB-Pending-Id: {pending_id}" in body.splitlines()
+    assert "KB-Target-Path: decisions/DEC-resolve.md" in body.splitlines()
+
+
+def test_an_unobserved_commit_is_not_restored(tmp_path, monkeypatch) -> None:
+    """The reviewer's named regression. git commit succeeds, the following sha
+    lookup fails, and the entry must NOT go back to pending: the decision may
+    already have been applied, and re-presenting it would duplicate the write.
+    """
+    import data_olympus.tools_write as tw
+    from data_olympus.tools_write import _WriteOutcomeUnknown, kb_resolve_pending_fn
+
+    main, git, reg, pq, pen, rl, bl, serializer = _resolve_env(tmp_path, monkeypatch)
+    pending_id = _propose_pending(reg, pq, pen, rl, bl, serializer)
+
+    real_check_output = tw.subprocess.check_output
+    # Fail ONLY the post-commit sha lookup. The pre-write context capture also
+    # runs rev-parse, and breaking that too would test a different fault.
+    seen = {"pre_write": False}
+
+    def flaky(cmd, *a, **kw):  # noqa: ANN001, ANN202
+        if "rev-parse" in cmd and "HEAD" in cmd and "--abbrev-ref" not in cmd:
+            if seen["pre_write"]:
+                raise OSError("cannot read HEAD")
+            seen["pre_write"] = True
+        return real_check_output(cmd, *a, **kw)
+
+    monkeypatch.setattr(tw.subprocess, "check_output", flaky)
+    try:
+        kb_resolve_pending_fn(
+            pending_id=pending_id, decision="approve", edited_text=None,
+            worktrees=reg, push_queue=pq, pending=pen, source_session="s1",
+            agent_identity="claude", serializer=serializer,
+        )
+    except _WriteOutcomeUnknown:
+        pass
+    else:
+        raise AssertionError("an unobserved commit must surface as unknown")
+    monkeypatch.setattr(tw.subprocess, "check_output", real_check_output)
+
+    entries = pen.list()
+    assert [e["state"] for e in entries] == ["claimed"]
+    assert pen.claim_record(pending_id)["write_outcome"]["outcome"] == "unknown"
+    # And reconciliation finds the commit that really was made, so the decision
+    # is closed rather than offered again.
+    def find_commit(record):  # noqa: ANN001, ANN202
+        # The production search, not a hand-written substring match, so this
+        # test exercises the strict trailer parsing and the target binding.
+        return git.find_claim_commit(
+            ref=record["session_ref"],
+            since_sha=record["pre_write_ref_sha"],
+            pending_id=record["pending_id"],
+            target_path=record["target_path"],
+        )
+
+    results = pen.reconcile_claims(min_age_sec=0, find_commit=find_commit)
+    assert [r["outcome"] for r in results] == ["committed"], results
+    assert pen.list() == []
+    assert pen.locks_held() == 0
+
+
+def test_a_failed_write_context_prevents_the_commit(tmp_path, monkeypatch) -> None:
+    """Recovery needs the session ref and the pre-write tip, captured before the
+    write. If they cannot be recorded the write must not start: continuing would
+    leave recovery with no search reference and no guard protecting the
+    evidence. Failing here is safe because nothing has been written, so it is a
+    provable non-commit and the entry is restorable."""
+    from data_olympus.tools_write import (
+        _WriteContextUnavailable,
+        kb_resolve_pending_fn,
+    )
+
+    main, git, reg, pq, pen, rl, bl, serializer = _resolve_env(tmp_path, monkeypatch)
+    pending_id = _propose_pending(reg, pq, pen, rl, bl, serializer)
+
+    def refuse(*_a, **_k):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("state volume is read-only")
+
+    monkeypatch.setattr(pen, "record_write_context", refuse)
+    try:
+        kb_resolve_pending_fn(
+            pending_id=pending_id, decision="approve", edited_text=None,
+            worktrees=reg, push_queue=pq, pending=pen, source_session="s1",
+            agent_identity="claude", serializer=serializer,
+        )
+    except _WriteContextUnavailable:
+        pass
+    else:
+        raise AssertionError("the write must not start without recovery context")
+
+    monkeypatch.undo()
+    # Provably nothing committed, so the entry is back and re-resolvable.
+    assert [e["state"] for e in pen.list()] == ["pending"]
+    wt_path = str(reg.get_or_create(
+        source_session="s1", agent_identity="claude").path)
+    assert not os.path.exists(os.path.join(wt_path, "decisions/DEC-resolve.md"))
+
+
+def test_a_signal_killed_commit_leaves_the_entry_claimed(tmp_path, monkeypatch) -> None:
+    """git can update the ref and then be killed. Recording that as a failure
+    would restore an entry whose write may already have landed."""
+    import data_olympus.tools_write as tw
+    from data_olympus.tools_write import _WriteOutcomeUnknown, kb_resolve_pending_fn
+
+    main, git, reg, pq, pen, rl, bl, serializer = _resolve_env(tmp_path, monkeypatch)
+    pending_id = _propose_pending(reg, pq, pen, rl, bl, serializer)
+    real_run = tw.subprocess.run
+
+    def killed(cmd, *a, **kw):  # noqa: ANN001, ANN202
+        if "commit" in cmd:
+            raise subprocess.CalledProcessError(-9, cmd)
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(tw.subprocess, "run", killed)
+    try:
+        kb_resolve_pending_fn(
+            pending_id=pending_id, decision="approve", edited_text=None,
+            worktrees=reg, push_queue=pq, pending=pen, source_session="s1",
+            agent_identity="claude", serializer=serializer,
+        )
+    except _WriteOutcomeUnknown:
+        pass
+    else:
+        raise AssertionError("a signalled commit must surface as unknown")
+    monkeypatch.undo()
+
+    assert [e["state"] for e in pen.list()] == ["claimed"]
+    assert pen.claim_record(pending_id)["write_outcome"]["outcome"] == "unknown"
+
+
+def test_a_live_resolver_still_reports_its_own_success(tmp_path, monkeypatch) -> None:
+    """Reconciliation forced INTO the gap between commit and finalization, with
+    the claim already older than the TTL, must not consume the claim out from
+    under its live owner.
+
+    Age thresholds only shrink that gap: with KB_PENDING_CLAIM_TTL_SEC=1 a
+    resolver taking two seconds is eligible while still alive. What removes it
+    is finalizing inside the commit's own serializer acquisition. This test
+    drives reconciliation at the exact moment the old code lost the race, so it
+    fails if finalization moves back outside that acquisition.
+    """
+    import data_olympus.tools_write as tw
+    from data_olympus.tools_write import kb_resolve_pending_fn
+
+    main, git, reg, pq, pen, rl, bl, serializer = _resolve_env(tmp_path, monkeypatch)
+    pending_id = _propose_pending(reg, pq, pen, rl, bl, serializer)
+
+    reconciled: list[object] = []
+    real_enqueue = tw._enqueue_after_commit
+
+    def enqueue_then_reconcile(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        # The commit is durable and its outcome is recorded; this is exactly
+        # where a guard or sweep pass used to consume the claim.
+        state = real_enqueue(*args, **kwargs)
+        reconciled.append(pen.reconcile_claims(min_age_sec=0))
+        return state
+
+    monkeypatch.setattr(tw, "_enqueue_after_commit", enqueue_then_reconcile)
+    resp = kb_resolve_pending_fn(
+        pending_id=pending_id, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=pq, pending=pen, source_session="s1",
+        agent_identity="claude", serializer=serializer,
+    )
+    monkeypatch.undo()
+
+    assert reconciled, "the interleaving did not run"
+    assert resp.status == "committed", resp
+    assert resp.commit_sha
+    assert pen.list() == []
+    assert pen.locks_held() == 0
+
+
+def test_a_deferred_push_does_not_consume_its_retry_budget(tmp_path) -> None:
+    """A rebase deferred to preserve claim evidence is not a publication
+    failure. Charging it to the retry budget freezes a perfectly good commit
+    while it waits for reconciliation, and a frozen entry stays frozen."""
+    from data_olympus.git_ops import ClaimEvidenceAtRiskError
+    from data_olympus.push_queue import PushQueue
+
+    pq = PushQueue(queue_root=str(tmp_path / "q"))
+    pq.enqueue(sha="a" * 40, worktree_path=str(tmp_path / "wt"), meta={})
+
+    def always_deferred(*_a, **_k):
+        raise ClaimEvidenceAtRiskError(ref="kb-session/x", pending_ids=["z" * 32])
+
+    for _ in range(3):
+        pq.drain(push_fn=always_deferred, max_attempts=2)
+
+    assert pq.size() == 1
+    assert pq.frozen_count() == 0, "a deferral must not freeze a good commit"
+    with open(os.path.join(str(tmp_path / "q"), "a" * 40 + ".json")) as f:
+        entry = json.load(f)
+    assert entry["attempts"] == 0, entry
+
+
+def test_a_failed_finalization_still_publishes_the_commit(tmp_path, monkeypatch) -> None:
+    """A finalization I/O failure must not strand a durable commit outside the
+    push queue.
+
+    The commit is on the branch and its outcome is recorded, so the write
+    succeeded; only consuming the claim failed. Skipping the enqueue would leave
+    publication waiting for branch recovery instead of the queue that exists for
+    it. The claim stays claimed and reconciliation finalizes it later from the
+    committed record it already holds.
+    """
+    from data_olympus.tools_write import kb_resolve_pending_fn
+
+    main, git, reg, pq, pen, rl, bl, serializer = _resolve_env(tmp_path, monkeypatch)
+    pending_id = _propose_pending(reg, pq, pen, rl, bl, serializer)
+
+    real_finalize = pen.finalize_resolve
+
+    def broken_finalize(*_a, **_k):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("state volume went read-only")
+
+    monkeypatch.setattr(pen, "finalize_resolve", broken_finalize)
+    resp = kb_resolve_pending_fn(
+        pending_id=pending_id, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=pq, pending=pen, source_session="s1",
+        agent_identity="claude", serializer=serializer,
+    )
+    monkeypatch.setattr(pen, "finalize_resolve", real_finalize)
+
+    # The write succeeded and is queued for publication.
+    assert resp.status == "committed", resp
+    assert pq.size() == 1, "a durable commit was left out of the push queue"
+    # The claim is still claimed, carrying the committed sha, and reconciliation
+    # closes it without needing to search git.
+    assert [e["state"] for e in pen.list()] == ["claimed"]
+    assert pen.claim_record(pending_id)["write_outcome"]["outcome"] == "committed"
+    assert [r["outcome"] for r in pen.reconcile_claims(min_age_sec=0)] == ["committed"]
+    assert pen.locks_held() == 0

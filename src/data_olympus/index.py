@@ -1246,15 +1246,31 @@ class Index:
             # never sees a half-built related_terms table.
             if build_cooccurrence:
                 params = cooccurrence_build_params()
-                table = build_cooccurrence_table(
-                    doc_token_sets,
-                    k=int(params["k"]),
-                    min_count=int(params["min_count"]),
-                    min_pmi=float(params["min_pmi"]),
-                    min_docs=int(params["min_docs"]),
-                    max_doc_tokens=int(params["max_doc_tokens"]),
-                )
-                write_cooccurrence_table(conn, table)
+                # Query expansion is the optional layer, so its failure must
+                # not fail the index build (issue #252). The pair counter
+                # spills to a temporary file once the corpus is large, which
+                # can fail on a full or read-only disk; `refresh` only rebuilds
+                # when git changes and `/readyz` rejects a failed build, so
+                # propagating that error would leave the service unready until
+                # the next corpus commit. Degrade to no related_terms instead.
+                try:
+                    table = build_cooccurrence_table(
+                        doc_token_sets,
+                        k=int(params["k"]),
+                        min_count=int(params["min_count"]),
+                        min_pmi=float(params["min_pmi"]),
+                        min_docs=int(params["min_docs"]),
+                        max_doc_tokens=int(params["max_doc_tokens"]),
+                        max_pairs_in_memory=int(params["max_pairs_in_memory"]),
+                    )
+                except (OSError, sqlite3.Error, MemoryError):
+                    logger.warning(
+                        "co-occurrence table build failed; continuing without "
+                        "query expansion for this index build",
+                        exc_info=True,
+                    )
+                else:
+                    write_cooccurrence_table(conn, table)
             now = time.time()
             # Maintenance ledger (issue #113): computed from the SAME corpus
             # walk above, so the audit is nearly free. ``today`` is injectable

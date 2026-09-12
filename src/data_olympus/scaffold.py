@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from data_olympus.cli.indexgen import regenerate_indexes
+from data_olympus.format.provenance import tool_actor
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -29,8 +30,8 @@ if TYPE_CHECKING:
 # Must track the current SPEC.md format version (the drift test in
 # tests/test_cli_init.py compares this against SPEC.md's header and
 # example-bundle/index.md, so a future format bump fails fast here).
-SPEC_VERSION = "0.2"
-OKF_VERSION = "0.1"
+SPEC_VERSION = "0.3"
+OKF_VERSION = "0.2"
 
 # The six top-level tier directories `--tiers` selects among (issue #66's
 # sketch). Order is both the CLI default and the order tiers are scaffolded
@@ -100,7 +101,7 @@ def _doc(
     title: str,
     description: str,
     tags: list[str],
-    timestamp: str,
+    generated_at: str,
     body: str,
     applies_when: list[str] | None = None,
     supersedes: list[str] | None = None,
@@ -115,7 +116,11 @@ def _doc(
         f"title: {title}",
         f"description: {description}",
         f"tags: [{', '.join(tags)}]",
-        f'timestamp: "{timestamp}"',
+        # OKF v0.2 provenance (issue #173). `init` renders these documents, so
+        # the writer is the data-olympus tool actor.
+        "generated:",
+        f"  by: {tool_actor()}",
+        f'  at: "{generated_at}"',
     ]
     if supersedes:
         lines.append(f"supersedes: [{', '.join(supersedes)}]")
@@ -166,7 +171,9 @@ def _template_doc() -> str:
         "title: <short human-readable name>\n"
         "description: <one or two sentences; used in generated indexes and search>\n"
         "tags: [<lowercase>, <keywords>]\n"
-        'timestamp: "<YYYY-MM-DD>"\n'
+        "generated:                     # when the content last meaningfully changed\n"
+        '  by: "human:<your-id>"        # actor: human:<id>, process:<id> or <tool>/<version>\n'
+        '  at: "<YYYY-MM-DDTHH:MM:SSZ>" # ISO 8601 datetime with an explicit offset\n'
         "applies_when:                  # recommended for standard/decision docs\n"
         '  - "<coding intent this document governs, e.g. writing a migration>"\n'
         "# supersedes: [<ID>]           # optional: IDs this document replaces\n"
@@ -192,7 +199,7 @@ def _write_universal_tier(dest: Path) -> list[Path]:
             "Placeholder standard superseded by STD-INIT-002. Demonstrates the "
             "superseded/superseded_by chain; replace with your own content."
         ),
-        tags=["example", "superseded"], timestamp="2026-01-01",
+        tags=["example", "superseded"], generated_at="2026-01-01T00:00:00Z",
         superseded_by="STD-INIT-002",
         body=(
             "# Example superseded standard\n\n"
@@ -210,7 +217,7 @@ def _write_universal_tier(dest: Path) -> list[Path]:
             "Placeholder active standard that supersedes STD-INIT-001. "
             "Demonstrates applies_when trigger metadata; replace with your own content."
         ),
-        tags=["example"], timestamp="2026-01-01",
+        tags=["example"], generated_at="2026-01-01T00:00:00Z",
         supersedes=["STD-INIT-001"],
         applies_when=[
             "writing a new standard or policy document",
@@ -240,7 +247,7 @@ def _write_tech_stacks_tier(dest: Path) -> list[Path]:
             "Placeholder stack-specific convention; replace with a real "
             "tech-stack standard."
         ),
-        tags=["example", "tech-stack"], timestamp="2026-01-01",
+        tags=["example", "tech-stack"], generated_at="2026-01-01T00:00:00Z",
         body=(
             "# Example stack convention\n\n"
             "Stack-specific standards (tier `T2`) live under `tech-stacks/"
@@ -260,7 +267,7 @@ def _write_projects_tier(dest: Path) -> list[Path]:
             "Placeholder project-scoped concept; replace with your actual "
             "project's knowledge."
         ),
-        tags=["example", "project"], timestamp="2026-01-01",
+        tags=["example", "project"], generated_at="2026-01-01T00:00:00Z",
         body=(
             "# Example project\n\n"
             "Project-scoped concepts (tier `T3`) live under `projects/"
@@ -278,7 +285,7 @@ def _write_decisions_tier(dest: Path) -> list[Path]:
         id_="ADR-INIT-001", type_="decision", status="accepted", tier="meta",
         title="Example Architectural Decision",
         description="Placeholder decision record; replace with a real ADR.",
-        tags=["example", "architecture"], timestamp="2026-01-01",
+        tags=["example", "architecture"], generated_at="2026-01-01T00:00:00Z",
         body=(
             "# Context\n\n"
             "Describe the problem that prompted this decision.\n\n"
@@ -298,7 +305,7 @@ def _write_workflows_tier(dest: Path) -> list[Path]:
         id_="WF-INIT-001", type_="workflow", status="active", tier="meta",
         title="Example Workflow",
         description="Placeholder step-by-step process; replace with a real workflow.",
-        tags=["example", "workflow"], timestamp="2026-01-01",
+        tags=["example", "workflow"], generated_at="2026-01-01T00:00:00Z",
         body=(
             "# Purpose\n\n"
             "Describe what this workflow accomplishes.\n\n"
@@ -319,7 +326,7 @@ def _write_tooling_tier(dest: Path) -> list[Path]:
             "Placeholder lookup reference (current-state facts, not a governing "
             "rule); replace with real reference material."
         ),
-        tags=["example", "reference"], timestamp="2026-01-01",
+        tags=["example", "reference"], generated_at="2026-01-01T00:00:00Z",
         body=(
             "# Example reference\n\n"
             "A `reference` document describes current state for lookup, not a "
@@ -334,7 +341,7 @@ def _write_tooling_tier(dest: Path) -> list[Path]:
             "Placeholder recorded incident or one-off learning, not a general "
             "standard; replace with a real memory entry or delete it."
         ),
-        tags=["example", "memory"], timestamp="2026-01-01",
+        tags=["example", "memory"], generated_at="2026-01-01T00:00:00Z",
         body=(
             "# What happened\n\n"
             "Record a specific incident or one-off learning here.\n\n"

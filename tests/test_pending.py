@@ -1,12 +1,14 @@
 """Tests for PendingQueue: enqueue with CAS metadata, same-path lock, resolve."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
 
 import pytest
 
+from data_olympus import pending as pending_module
 from data_olympus.pending import (
     PathLockBusyError,
     PendingQueue,
@@ -567,3 +569,612 @@ def test_reclaim_recognises_legacy_pre_fix_auto_commit_lock(tmp_path) -> None:
     assert q.reclaim_stale_auto_commit_locks(max_age_sec=600) == 0
     assert q.reclaim_stale_auto_commit_locks(max_age_sec=0) == 0
     assert q.locks_held() == 1
+
+
+# --- claimed-entry visibility (issues #253, #254) ----------------------------
+
+
+def _enqueued(q: PendingQueue, path: str = "operator/notes.md") -> str:
+    return q.enqueue(
+        proposal_type="edit", target_path=path, postimage="body",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        meta={"confidence": 0.4, "agent_identity": "test"},
+    )
+
+
+def test_list_labels_a_pending_entry_with_its_state(tmp_path) -> None:
+    """Every listed entry says which state it is in. Without the field a caller
+    cannot tell a live proposal from one stranded mid-resolve."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    _enqueued(q)
+    entries = q.list()
+
+    assert [e["state"] for e in entries] == ["pending"]
+
+
+def test_list_reports_a_claimed_entry_instead_of_hiding_it(tmp_path) -> None:
+    """The defect in issue #254: a resolve that is interrupted after the claim
+    leaves the entry in a state that is neither pending, nor committed, nor
+    visible. `kb_list_pending` read as empty, which is indistinguishable from
+    'the decision was applied', so the operator believed the write landed."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id = _enqueued(q)
+    q.claim_for_resolve(pending_id)
+
+    entries = q.list()
+
+    assert [e["pending_id"] for e in entries] == [pending_id]
+    assert entries[0]["state"] == "claimed"
+    assert entries[0]["target_path"] == "operator/notes.md"
+
+
+def test_size_still_counts_only_resolvable_entries(tmp_path) -> None:
+    """A claimed entry is visible but is NOT awaiting an operator decision, so
+    it must not inflate pending_count or consume queue capacity."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id = _enqueued(q)
+    assert q.size() == 1
+    q.claim_for_resolve(pending_id)
+    assert q.size() == 0
+
+
+def test_held_locks_report_their_path_and_age(tmp_path) -> None:
+    """Issue #253 asked for this by name: `path_locks_held` was a bare count, so
+    finding WHICH path was wedged meant exec-ing into the pod and reading files
+    off the state volume."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    before = time.time()
+    _enqueued(q, "operator/agent-overrides/claude.md")
+
+    held = q.held_locks()
+
+    assert len(held) == 1
+    assert held[0]["target_path"] == "operator/agent-overrides/claude.md"
+    assert held[0]["owner_kind"] == "pending"
+    assert held[0]["acquired_at"] >= before
+    assert held[0]["age_seconds"] >= 0
+
+
+def test_held_locks_survive_the_claim_that_keeps_them(tmp_path) -> None:
+    """The lock is held across claim -> commit by design, so a claimed entry's
+    lock must still be reported with the claim as its owner."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id = _enqueued(q)
+    q.claim_for_resolve(pending_id)
+
+    held = q.held_locks()
+
+    assert len(held) == 1
+    assert held[0]["pending_id"] == pending_id
+    assert held[0]["target_path"] == "operator/notes.md"
+
+
+def test_held_locks_is_empty_with_no_locks(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    assert q.held_locks() == []
+
+
+# --- fenced completion and outcome reconciliation (issues #253, #254) --------
+
+
+def _claimed(q: PendingQueue, path: str = "operator/notes.md"):
+    pending_id = _enqueued(q, path)
+    resolved = q.claim_for_resolve(pending_id)
+    return pending_id, resolved
+
+
+def test_claim_stamps_a_token_and_a_time(tmp_path) -> None:
+    """The claim is an explicit record, not an inference from a rename. A rename
+    carries no reliable timestamp and no ownership token, and both are needed to
+    tell an abandoned claim from a live resolver."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+
+    assert resolved.claim_token
+    record = q.claim_record(pending_id)
+    assert record["claim_token"] == resolved.claim_token
+    assert record["claimed_at"] > 0
+
+
+def test_finalize_is_fenced_on_the_claim_token(tmp_path) -> None:
+    """A resolver reclaimed while it was queued must not release a lock or
+    delete a sidecar that now belong to a successor."""
+    from data_olympus.pending import ClaimFencedError
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+
+    with pytest.raises(ClaimFencedError):
+        q.finalize_resolve(
+            pending_id, "operator/notes.md", claim_token="stale-token",
+        )
+
+    # Nothing moved: the successor's state is intact.
+    assert q.claim_record(pending_id)["claim_token"] == resolved.claim_token
+    assert q.locks_held() == 1
+
+
+def test_restore_is_fenced_on_the_claim_token(tmp_path) -> None:
+    from data_olympus.pending import ClaimFencedError
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+
+    with pytest.raises(ClaimFencedError):
+        q.restore_resolve(pending_id, claim_token="stale-token")
+
+    assert [e["state"] for e in q.list()] == ["claimed"]
+
+
+def test_a_recorded_commit_is_finalized_never_re_presented(tmp_path) -> None:
+    """Positive evidence that the write committed. Re-resolving a committed
+    entry would duplicate it, so it is consumed, not restored."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+    q.record_outcome(
+        pending_id, claim_token=resolved.claim_token, commit_sha="a" * 40,
+    )
+
+    results = q.reconcile_claims(min_age_sec=0)
+
+    assert [r["outcome"] for r in results] == ["committed"]
+    assert q.list() == []
+    assert q.locks_held() == 0
+
+
+def test_a_recorded_failure_is_restored_to_pending(tmp_path) -> None:
+    """Positive evidence that the write did NOT commit is the only thing that
+    authorises a restore."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+    q.record_outcome(
+        pending_id, claim_token=resolved.claim_token, failure="commit rejected",
+    )
+
+    results = q.reconcile_claims(min_age_sec=0)
+
+    assert [r["outcome"] for r in results] == ["restored"]
+    entries = q.list()
+    assert [e["state"] for e in entries] == ["pending"]
+    assert entries[0]["pending_id"] == pending_id
+    # The path lock is preserved across the restore: the entry is live again.
+    assert q.locks_held() == 1
+
+
+def test_an_unrecorded_outcome_searches_for_the_commit(tmp_path) -> None:
+    """The one window the search covers: git may have committed but no durable
+    outcome was recorded. Finding the claim-linked commit proves it did."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+    seen = []
+
+    def find_commit(record):  # noqa: ANN001, ANN202
+        seen.append(record["pending_id"])
+        return True
+
+    results = q.reconcile_claims(min_age_sec=0, find_commit=find_commit)
+
+    assert seen == [pending_id]
+    assert [r["outcome"] for r in results] == ["committed"]
+    assert q.locks_held() == 0
+
+
+def test_a_negative_search_is_uncertain_and_never_a_restore(tmp_path) -> None:
+    """The refuted rule. A negative search cannot prove non-commitment: a rebase
+    or a squash can drop the trailer-bearing commit while leaving a readable
+    branch, so restoring on absence would re-present an already-committed
+    decision. Absence yields uncertain, and the lock is kept."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+
+    results = q.reconcile_claims(min_age_sec=0, find_commit=lambda _r: False)
+
+    assert [r["outcome"] for r in results] == ["uncertain"]
+    entries = q.list()
+    assert [e["state"] for e in entries] == ["uncertain"]
+    assert entries[0]["pending_id"] == pending_id
+    assert q.locks_held() == 1
+    assert results[0]["reason"]
+
+
+def test_age_alone_never_resolves_a_claim(tmp_path) -> None:
+    """The TTL selects an entry for reconciliation. It never decides the
+    outcome: with no recorded outcome and no way to search, the answer is
+    uncertain, not a restore and not a finalize."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+
+    results = q.reconcile_claims(min_age_sec=0)
+
+    assert [r["outcome"] for r in results] == ["uncertain"]
+    assert q.locks_held() == 1
+    assert [e["pending_id"] for e in q.list()] == [pending_id]
+
+
+def test_a_fresh_claim_is_left_alone(tmp_path) -> None:
+    """A live resolver's claim must not be reclaimed out from under it."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    _claimed(q)
+
+    assert q.reconcile_claims(min_age_sec=3600) == []
+    assert [e["state"] for e in q.list()] == ["claimed"]
+
+
+def test_an_uncertain_claim_is_retried_and_can_still_resolve(tmp_path) -> None:
+    """A transient unreadable repository must heal itself. Reconciliation runs
+    on every sweep rather than deciding once and giving up."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    _claimed(q)
+
+    assert [r["outcome"] for r in q.reconcile_claims(
+        min_age_sec=0, find_commit=lambda _r: None)] == ["uncertain"]
+    assert [r["outcome"] for r in q.reconcile_claims(
+        min_age_sec=0, find_commit=lambda _r: True)] == ["committed"]
+    assert q.locks_held() == 0
+
+
+def test_reconcile_records_the_write_context_for_the_search(tmp_path) -> None:
+    """The searcher needs the ref the commit would be on and an immutable
+    pre-write sha, both captured BEFORE the write."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+    q.record_write_context(
+        pending_id, claim_token=resolved.claim_token,
+        session_ref="kb-session/abc", pre_write_ref_sha="b" * 40,
+    )
+    captured = {}
+
+    q.reconcile_claims(min_age_sec=0,
+                       find_commit=lambda r: captured.update(r) or True)
+
+    assert captured["session_ref"] == "kb-session/abc"
+    assert captured["pre_write_ref_sha"] == "b" * 40
+    assert captured["target_path"] == "operator/notes.md"
+
+
+def test_claims_at_risk_only_counts_writes_that_may_have_committed(tmp_path) -> None:
+    """A rebase or a branch deletion can destroy the evidence recovery needs, so
+    those operations defer while a claim on that ref might have a commit.
+
+    "Might have a commit" starts at the write, not at the claim: a claim that has
+    not written anything has no commit to lose, and treating it as at risk would
+    deadlock the resolve's own refresh_base against its own claim.
+    """
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+
+    assert q.claims_at_risk("kb-session/abc") == []
+
+    q.record_write_context(
+        pending_id, claim_token=resolved.claim_token,
+        session_ref="kb-session/abc", pre_write_ref_sha="b" * 40,
+    )
+    at_risk = q.claims_at_risk("kb-session/abc")
+    assert [c["pending_id"] for c in at_risk] == [pending_id]
+    assert q.claims_at_risk("kb-session/other") == []
+
+
+def test_a_finalized_claim_is_no_longer_at_risk(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, resolved = _claimed(q)
+    q.record_write_context(
+        pending_id, claim_token=resolved.claim_token,
+        session_ref="kb-session/abc", pre_write_ref_sha="b" * 40,
+    )
+    q.record_outcome(
+        pending_id, claim_token=resolved.claim_token, commit_sha="a" * 40,
+    )
+    q.reconcile_claims(min_age_sec=0)
+
+    assert q.claims_at_risk("kb-session/abc") == []
+
+
+# --- the interleavings the round-1 review reproduced --------------------------
+
+
+def test_a_successor_cannot_claim_midway_through_a_restore(tmp_path) -> None:
+    """The interleaving the review reproduced: A publishes the restored entry,
+    B claims it and stamps B's token, then A's delete removes B's sidecar and
+    NEITHER entry file is left.
+
+    Publishing through a rename removes a torn-write window but does not close
+    this one on its own, because the restored entry is visible while the claimed
+    sidecar still exists. What closes it is holding the shared write serializer
+    across the WHOLE transition. So this asserts the property that matters: a
+    concurrent claim cannot complete while a restore is mid-transition.
+    """
+    import threading
+
+    from data_olympus.write_gate import WriteSerializer
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"), serializer=WriteSerializer())
+    pending_id, resolved = _claimed(q)
+
+    midway = threading.Event()
+    claimed_during = threading.Event()
+    real_remove = pending_module.atomic_remove
+
+    def slow_remove(path: str) -> None:
+        # The entry is published and the sidecar is not yet gone: exactly the
+        # point at which the successor used to get in.
+        midway.set()
+        claimed_during.wait(timeout=0.5)
+        real_remove(path)
+
+    def successor() -> None:
+        midway.wait(timeout=5)
+        with contextlib.suppress(Exception):
+            q.claim_for_resolve(pending_id)
+        claimed_during.set()
+
+    thread = threading.Thread(target=successor)
+    pending_module.atomic_remove = slow_remove
+    try:
+        thread.start()
+        q.restore_resolve(pending_id, claim_token=resolved.claim_token)
+        completed_during_restore = claimed_during.is_set()
+        thread.join(timeout=10)
+    finally:
+        pending_module.atomic_remove = real_remove
+
+    assert not completed_during_restore, (
+        "a claim completed while a restore was mid-transition; the serializer "
+        "does not cover the whole claim lifecycle"
+    )
+    # And whatever ran, the entry still exists: one of the two files, never none.
+    root = str(tmp_path / "p")
+    final = {n for n in os.listdir(root) if n.startswith(pending_id)}
+    assert final in ({f"{pending_id}.json"}, {f"{pending_id}.claimed"}), final
+
+
+def test_a_reclaimed_resolver_cannot_release_a_successors_lock(tmp_path) -> None:
+    """A passes its token check, reconciliation finalizes A, a successor claims
+    the path, and A resumes. A must mutate nothing."""
+    from data_olympus.pending import ClaimFencedError
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, first = _claimed(q)
+    q.record_outcome(
+        pending_id, claim_token=first.claim_token, failure="rejected",
+    )
+    q.reconcile_claims(min_age_sec=0)          # restores it
+    second = q.claim_for_resolve(pending_id)   # the successor
+
+    with pytest.raises(ClaimFencedError):
+        q.finalize_resolve(
+            pending_id, "operator/notes.md", claim_token=first.claim_token,
+        )
+
+    assert q.locks_held() == 1
+    assert q.claim_record(pending_id)["claim_token"] == second.claim_token
+
+
+def test_an_unreadable_claim_record_is_reported_not_skipped(tmp_path) -> None:
+    """A damaged approval record is the invisible-entry defect this batch
+    fixes, so it must never be swallowed as a rename race."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+    claimed_path = os.path.join(str(tmp_path / "p"), f"{pending_id}.claimed")
+    with open(claimed_path, "w") as f:
+        f.write("{ this is not json")
+
+    entries = q.list()
+    assert [e["state"] for e in entries] == ["unreadable"]
+    # It also blocks a rewrite, because it MIGHT be a claim with a commit.
+    assert q.claims_at_risk("kb-session/anything")
+    # And reconciliation reports it rather than deciding an outcome.
+    assert [r["outcome"] for r in q.reconcile_claims(min_age_sec=0)] == ["uncertain"]
+    assert q.locks_held() == 1
+
+
+def test_a_rejection_is_not_resurrected_by_reconciliation(tmp_path) -> None:
+    """The reviewer reproduced this: a rejection claims an entry, reconciliation
+    reads that fresh claim, the rejection finishes and releases its lock, and
+    reconciliation writes its stale snapshot back. The result was a completed
+    rejection resurrected as an uncertain claimed entry with no lock.
+    """
+    import threading
+
+    from data_olympus.write_gate import WriteSerializer
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"), serializer=WriteSerializer())
+    pending_id = _enqueued(q)
+
+    started = threading.Event()
+    outcomes: list[object] = []
+
+    def reconcile() -> None:
+        started.wait(timeout=5)
+        outcomes.append(q.reconcile_claims(min_age_sec=0))
+
+    thread = threading.Thread(target=reconcile)
+    thread.start()
+    started.set()
+    q.reject(pending_id)
+    thread.join(timeout=10)
+
+    assert q.list() == [], q.list()
+    assert q.locks_held() == 0
+    root = str(tmp_path / "p")
+    assert not [n for n in os.listdir(root) if n.startswith(pending_id)]
+
+
+def test_an_undecodable_claim_record_does_not_stop_the_sweep(tmp_path) -> None:
+    """Invalid UTF-8 used to raise out of list(), reconciliation and risk
+    inspection, so one damaged record disabled recovery for every other claim."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    broken_id, _ = _claimed(q, "operator/broken.md")
+    good_id, good = _claimed(q, "operator/good.md")
+    q.record_outcome(good_id, claim_token=good.claim_token, commit_sha="a" * 40)
+    with open(os.path.join(str(tmp_path / "p"), f"{broken_id}.claimed"), "wb") as f:
+        f.write(b"\xff\xfe not utf-8")
+
+    states = {e["pending_id"]: e["state"] for e in q.list()}
+    assert states[broken_id] == "unreadable"
+
+    outcomes = {r["pending_id"]: r["outcome"]
+                for r in q.reconcile_claims(min_age_sec=0)}
+    assert outcomes[broken_id] == "uncertain"
+    assert outcomes[good_id] == "committed", "one bad record stopped the sweep"
+    assert q.claims_at_risk("kb-session/anything")
+
+
+def test_a_partial_finalization_never_frees_a_successors_lock(tmp_path) -> None:
+    """Reproduced in review: releasing the path lock BEFORE removing the claimed
+    sidecar leaves a window where the path is free but the claim still exists.
+
+    1. A's lock is removed.
+    2. Removing A's sidecar raises.
+    3. B acquires the same path.
+    4. Reconciliation finalizes A and unconditionally removes B's lock.
+
+    Serialization does not help: these are separate acquisitions with a
+    successor legitimately created in between.
+    """
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    a_id, a = _claimed(q, "operator/contested.md")
+    q.record_outcome(a_id, claim_token=a.claim_token, commit_sha="a" * 40)
+
+    real_remove = pending_module.atomic_remove
+
+    def fail_sidecar_removal(path: str) -> None:
+        if path.endswith(".claimed"):
+            raise OSError("state volume went read-only")
+        real_remove(path)
+
+    pending_module.atomic_remove = fail_sidecar_removal
+    try:
+        with contextlib.suppress(Exception):
+            q.reconcile_claims(min_age_sec=0)
+    finally:
+        pending_module.atomic_remove = real_remove
+
+    # Whatever happened to A, the path must not have been silently freed while
+    # A's claim still exists: a successor would then be able to take it.
+    b_id = q.enqueue(
+        proposal_type="edit", target_path="operator/contested.md",
+        postimage="B's proposal", base_commit="HEAD", base_blob_sha=None,
+        target_file_hash=None, meta={"confidence": 0.4},
+    ) if q.locks_held() == 0 else None
+
+    if b_id is not None:
+        # A successor exists. Reconciling A again must NOT remove B's lock.
+        q.reconcile_claims(min_age_sec=0)
+        assert q.locks_held() == 1, "reconciling A freed the successor's lock"
+        live = {e["pending_id"]: e["state"] for e in q.list()}
+        assert live.get(b_id) == "pending", live
+
+
+def test_orphan_gc_never_deletes_a_successors_lock(tmp_path) -> None:
+    """Reproduced in review: the collector read A's lock, saw no live entry,
+    then A released its own lock and B enqueued on the same path, and the
+    collector's unlink removed B's brand-new lock. B was left pending with zero
+    locks and no protection at all.
+
+    The interleaving is what matters, so this drives it: the collector is held
+    between INSPECTING the lock and unlinking it while a competing thread frees
+    A and enqueues B on that same path. A sequential version of this test would
+    pass against the old collector and prove nothing.
+    """
+    import threading
+
+    from data_olympus.write_gate import WriteSerializer
+
+    q = PendingQueue(pending_root=str(tmp_path / "p"), serializer=WriteSerializer())
+    root = str(tmp_path / "p")
+    path = "operator/contested.md"
+    a_id, _a = _claimed(q, path)
+    # Strand A so its lock genuinely looks orphaned: the entry is gone, the lock
+    # is not.
+    os.remove(os.path.join(root, f"{a_id}.claimed"))
+
+    inspected = threading.Event()
+    successor_ready = threading.Event()
+    b_id: list[str] = []
+    errors: list[BaseException] = []
+
+    def successor() -> None:
+        try:
+            assert inspected.wait(timeout=5), "the collector never inspected"
+            # A's lock is freed and B takes the path, all while the collector is
+            # mid-sweep. This is the window the old collector unlinked into.
+            q._release_lock(path)
+            b_id.append(q.enqueue(
+                proposal_type="edit", target_path=path, postimage="B's proposal",
+                base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+                meta={"confidence": 0.4},
+            ))
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
+            errors.append(exc)
+        finally:
+            successor_ready.set()
+
+    real_exists = pending_module.os.path.exists
+
+    def slow_exists(target: str) -> bool:
+        out = real_exists(target)
+        if target.endswith(f"{a_id}.claimed"):
+            inspected.set()
+            successor_ready.wait(timeout=5)
+        return out
+
+    thread = threading.Thread(target=successor)
+    pending_module.os.path.exists = slow_exists
+    try:
+        thread.start()
+        q.gc_orphan_locks()
+        thread.join(timeout=10)
+    finally:
+        pending_module.os.path.exists = real_exists
+
+    # Every one of these is unconditional: a setup that did not actually reach
+    # the interleaving must FAIL rather than quietly report success.
+    assert not thread.is_alive(), "the successor thread did not finish"
+    assert not errors, errors
+    assert inspected.is_set(), "the collector never reached A's lock"
+    assert len(b_id) == 1, b_id
+    assert q.locks_held() == 1, "the collector freed the successor's lock"
+    held = q.held_locks()[0]
+    assert held["pending_id"] == b_id[0]
+    assert held["target_path"] == path
+    assert [e["pending_id"] for e in q.list()] == [b_id[0]]
+
+
+def test_orphan_gc_rechecks_the_holder_before_unlinking(tmp_path) -> None:
+    """The collector's ownership re-check, isolated.
+
+    The threaded test above proves the SERIALIZER closes the succession race,
+    and it passes with this re-check removed, so it does not prove the re-check.
+    This does: the lock file is replaced with one naming a different holder
+    between the collector's inspection and its unlink, exactly as a successor
+    would, and the collector must leave it alone.
+    """
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    root = str(tmp_path / "p")
+    path = "operator/contested.md"
+    a_id = _enqueued(q, path)
+    os.remove(os.path.join(root, f"{a_id}.json"))   # A's lock is now orphaned
+
+    lock_file = os.path.join(
+        root, "locks", pending_module._path_lock_filename(path),
+    )
+    real_exists = pending_module.os.path.exists
+
+    def swap_holder(target: str) -> bool:
+        out = real_exists(target)
+        if target.endswith(f"{a_id}.claimed"):
+            # A successor takes the path in the instant after inspection.
+            with open(lock_file, "w") as f:
+                json.dump({"pending_id": "b" * 32, "target_path": path,
+                           "owner_kind": "pending", "acquired_at": time.time()}, f)
+        return out
+
+    pending_module.os.path.exists = swap_holder
+    try:
+        removed = q.gc_orphan_locks()
+    finally:
+        pending_module.os.path.exists = real_exists
+
+    assert removed == 0, "the collector unlinked a lock it no longer owned"
+    assert q.locks_held() == 1
+    assert q.held_locks()[0]["pending_id"] == "b" * 32

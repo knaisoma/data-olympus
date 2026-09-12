@@ -35,14 +35,17 @@ Design constraints (see issue #40):
 """
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import re
+import sqlite3
+import tempfile
 from collections import Counter
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import sqlite3
     from collections.abc import Callable, Iterable
 
 # Token = a run of letters (with internal digits allowed after the first letter,
@@ -129,6 +132,134 @@ DEFAULT_MIN_DOCS = 50
 # so the cap trims the long tail of incidental vocabulary, not the signal.
 DEFAULT_MAX_DOC_TOKENS = 400
 
+# Ceiling on the number of DISTINCT pairs held in the in-memory counter at once
+# (issue #252). ``max_doc_tokens`` bounds each document; nothing bounded the
+# union across documents, and the union is what is resident. A 536-document,
+# 3.6 MiB corpus held 6,202,615 distinct tuple keys and peaked at 1445 MiB,
+# above a 1 GiB container limit, which OOM-killed the pod on every rebuild.
+#
+# Once the counter reaches this many entries it is flushed into a temporary
+# SQLite table and cleared, and the final counts are aggregated back out with
+# GROUP BY. That makes resident memory a function of this constant rather than
+# of corpus size. The table produced is IDENTICAL either way; only the memory
+# and the build time change. Set ``KB_COOCCURRENCE_MAX_PAIRS=0`` to disable the
+# spill and keep everything in memory, which is faster on a corpus that fits.
+DEFAULT_MAX_PAIRS_IN_MEMORY = 500_000
+
+# How many entries a term's candidate list may accumulate before it is pruned
+# back to k, as a multiple of k. The sort key ``(-pmi, -count, other)`` is a
+# strict total order over a term's DISTINCT partners, so pruning to the best k
+# part way through yields exactly the same k as one final sort over everything.
+_CANDIDATE_PRUNE_FACTOR = 4
+
+
+@dataclass(frozen=True, slots=True)
+class CooccurrenceBuildStats:
+    """What the build actually held, so the memory bound is observable.
+
+    Issue #252 was diagnosed only by profiling the process from outside; the
+    builder itself reported nothing. ``max_resident_pairs`` is the high-water
+    mark of the in-memory pair counter and ``spills`` how many times it was
+    flushed to disk, so a deployment can see whether it is near its ceiling
+    without a profiler.
+    """
+
+    documents: int
+    vocabulary_terms: frozenset[str]
+    counted_terms: frozenset[str]
+    spills: int
+    max_resident_pairs: int
+
+
+def _capped_doc_tokens(tokens: set[str], max_doc_tokens: int) -> list[str]:
+    """The per-document token list fed into pair counting, alphabetically sorted.
+
+    Keeps the longest tokens (most topical) when the document exceeds the cap,
+    tie-broken alphabetically so the trim is deterministic, then re-sorts
+    alphabetically so pairs are always emitted in a stable (a < b) order.
+    """
+    ordered = sorted(tokens)
+    if max_doc_tokens > 0 and len(ordered) > max_doc_tokens:
+        ordered = sorted(
+            sorted(ordered, key=lambda t: (-len(t), t))[:max_doc_tokens]
+        )
+    return ordered
+
+
+class _PairCounter:
+    """Counts distinct token pairs with a bounded resident footprint.
+
+    Pairs arrive as dense integer keys (``a_id * vocabulary + b_id``) rather
+    than string tuples, which is where most of the per-entry cost went. When the
+    counter reaches ``max_entries`` it is flushed into a temporary SQLite table
+    and cleared; ``items()`` then aggregates the flushed partial counts back
+    together. With ``max_entries <= 0`` nothing is ever written to disk and the
+    counter behaves exactly as before, just with cheaper keys.
+    """
+
+    def __init__(self, max_entries: int) -> None:
+        self._max_entries = max_entries
+        self._counts: Counter[int] = Counter()
+        self._tmpdir: tempfile.TemporaryDirectory[str] | None = None
+        self._conn: sqlite3.Connection | None = None
+        self.spills = 0
+        self.max_resident_pairs = 0
+
+    def add(self, key: int) -> None:
+        self._counts[key] += 1
+
+    def checkpoint(self) -> None:
+        """Flush if the counter has grown past its ceiling. Called between
+        documents so a single document is never split across a flush."""
+        resident = len(self._counts)
+        if resident > self.max_resident_pairs:
+            self.max_resident_pairs = resident
+        if self._max_entries > 0 and resident >= self._max_entries:
+            self._flush()
+
+    def _flush(self) -> None:
+        if self._conn is None:
+            self._tmpdir = tempfile.TemporaryDirectory(prefix="kb-cooc-")
+            self._conn = sqlite3.connect(
+                os.path.join(self._tmpdir.name, "pairs.db")
+            )
+            # This database is scratch space that never outlives the build, so
+            # durability pragmas buy nothing and cost a great deal of time.
+            self._conn.execute("PRAGMA journal_mode=OFF")
+            self._conn.execute("PRAGMA synchronous=OFF")
+            self._conn.execute(
+                "CREATE TABLE pairs (key INTEGER NOT NULL, n INTEGER NOT NULL)"
+            )
+        self._conn.executemany(
+            "INSERT INTO pairs (key, n) VALUES (?, ?)", self._counts.items()
+        )
+        self._counts.clear()
+        self.spills += 1
+
+    def items(self, *, min_count: int) -> Iterable[tuple[int, int]]:
+        """Yield ``(key, total_count)`` for pairs reaching ``min_count``."""
+        if self._conn is None:
+            for key, count in self._counts.items():
+                if count >= min_count:
+                    yield (key, count)
+            return
+        if self._counts:
+            self._flush()
+        yield from self._conn.execute(
+            "SELECT key, SUM(n) FROM pairs GROUP BY key HAVING SUM(n) >= ?",
+            (min_count,),
+        )
+
+    def close(self) -> None:
+        self._counts.clear()
+        if self._conn is not None:
+            with contextlib.suppress(sqlite3.Error):
+                self._conn.close()
+            self._conn = None
+        if self._tmpdir is not None:
+            self._tmpdir.cleanup()
+            self._tmpdir = None
+
 
 def build_cooccurrence_table(
     doc_token_sets: Iterable[set[str]],
@@ -138,6 +269,7 @@ def build_cooccurrence_table(
     min_pmi: float = DEFAULT_MIN_PMI,
     min_docs: int = DEFAULT_MIN_DOCS,
     max_doc_tokens: int = DEFAULT_MAX_DOC_TOKENS,
+    max_pairs_in_memory: int = DEFAULT_MAX_PAIRS_IN_MEMORY,
 ) -> dict[str, list[str]]:
     """Compute a bounded ``{term: [related...]}`` table from per-doc token sets.
 
@@ -163,48 +295,131 @@ def build_cooccurrence_table(
     is O(unique-tokens^2) per doc, so an unbounded huge doc is a build-time cliff.
     The kept tokens are the longest ones (most topical), tie-broken alphabetically.
     """
+    table, _stats = build_cooccurrence_table_with_stats(
+        doc_token_sets,
+        k=k,
+        min_count=min_count,
+        min_pmi=min_pmi,
+        min_docs=min_docs,
+        max_doc_tokens=max_doc_tokens,
+        max_pairs_in_memory=max_pairs_in_memory,
+    )
+    return table
+
+
+def build_cooccurrence_table_with_stats(
+    doc_token_sets: Iterable[set[str]],
+    *,
+    k: int = DEFAULT_K,
+    min_count: int = DEFAULT_MIN_COUNT,
+    min_pmi: float = DEFAULT_MIN_PMI,
+    min_docs: int = DEFAULT_MIN_DOCS,
+    max_doc_tokens: int = DEFAULT_MAX_DOC_TOKENS,
+    max_pairs_in_memory: int = DEFAULT_MAX_PAIRS_IN_MEMORY,
+) -> tuple[dict[str, list[str]], CooccurrenceBuildStats]:
+    """:func:`build_cooccurrence_table` plus what the build held (issue #252).
+
+    Separated so the memory bound is observable and testable. See
+    :class:`CooccurrenceBuildStats`.
+    """
     materialised = [s for s in doc_token_sets if s]
     n_docs = len(materialised)
     # Corpus-size floor: below it PMI is noise, so skip building entirely.
     if n_docs < max(2, min_docs) or k <= 0:
-        return {}
+        return {}, CooccurrenceBuildStats(
+            documents=n_docs,
+            vocabulary_terms=frozenset(),
+            counted_terms=frozenset(),
+            spills=0,
+            max_resident_pairs=0,
+        )
 
+    # Pass one: per-document token lists (trimmed to max_doc_tokens) and the
+    # per-term document counts that PMI needs. Both are computed exactly as
+    # before, so ``term_counts`` and ``n_docs`` are unchanged by the bounds
+    # below. In particular a document whose tokens are all dropped from pair
+    # counting still counts towards ``n_docs``.
     term_counts: Counter[str] = Counter()
-    pair_counts: Counter[tuple[str, str]] = Counter()
+    capped: list[list[str]] = []
     for tokens in materialised:
-        ordered = sorted(tokens)
-        # Cap the per-doc unique-token count fed into O(n^2) pair counting. Keep
-        # the longest tokens (most topical), tie-broken alphabetically so the
-        # trim is deterministic, then re-sort alphabetically for stable pairing.
-        if max_doc_tokens > 0 and len(ordered) > max_doc_tokens:
-            ordered = sorted(
-                sorted(ordered, key=lambda t: (-len(t), t))[:max_doc_tokens]
-            )
+        ordered = _capped_doc_tokens(tokens, max_doc_tokens)
+        capped.append(ordered)
         for tok in ordered:
             term_counts[tok] += 1
-        for i, a in enumerate(ordered):
-            for b in ordered[i + 1 :]:
-                pair_counts[(a, b)] += 1
 
-    # candidates[term] = list of (pmi, count, other)
-    candidates: dict[str, list[tuple[float, int, str]]] = {}
-    for (a, b), c_ab in pair_counts.items():
-        if c_ab < min_count:
-            continue
-        c_a = term_counts[a]
-        c_b = term_counts[b]
-        pmi = math.log((c_ab * n_docs) / (c_a * c_b))
-        if pmi < min_pmi:
-            continue
-        candidates.setdefault(a, []).append((pmi, c_ab, b))
-        candidates.setdefault(b, []).append((pmi, c_ab, a))
+    # Lossless prefilter (issue #252). A pair can only co-occur in a document
+    # containing BOTH terms, so c_ab <= min(c_a, c_b). A term whose document
+    # count is below min_count therefore cannot appear in any pair that clears
+    # the min_count cut below, and dropping it before pair counting cannot
+    # change the result. On the maintainers' 536-document corpus this removes
+    # 5,947 of 11,070 terms and 1,875,263 of 6,202,615 distinct pairs.
+    counted = sorted(t for t, c in term_counts.items() if c >= min_count)
+    ids = {term: i for i, term in enumerate(counted)}
+    vocabulary = len(ids)
+    vocabulary_terms = frozenset(term_counts)
+    counted_terms = frozenset(ids)
+    if vocabulary < 2:
+        return {}, CooccurrenceBuildStats(
+            documents=n_docs,
+            vocabulary_terms=vocabulary_terms,
+            counted_terms=counted_terms,
+            spills=0,
+            max_resident_pairs=0,
+        )
+
+    # Pair keys are dense integers (a_id * vocabulary + b_id) rather than string
+    # tuples. ids are assigned in sorted term order, so id order IS alphabetical
+    # order and the canonical a < b orientation is preserved.
+    pairs = _PairCounter(max_pairs_in_memory)
+    try:
+        for ordered in capped:
+            row = sorted(ids[t] for t in ordered if t in ids)
+            for i, a_id in enumerate(row):
+                base = a_id * vocabulary
+                for b_id in row[i + 1 :]:
+                    pairs.add(base + b_id)
+            pairs.checkpoint()
+        capped.clear()
+
+        # candidates[term] = list of (pmi, count, other), pruned to the best k
+        # once a list grows past _CANDIDATE_PRUNE_FACTOR * k. Counts are final
+        # by this point (the spill has been aggregated), and the sort key is a
+        # strict total order over a term's distinct partners, so an early prune
+        # keeps exactly the same k as one final sort would.
+        candidates: dict[str, list[tuple[float, int, str]]] = {}
+        prune_at = max(_CANDIDATE_PRUNE_FACTOR * k, 2 * k)
+
+        def offer(term: str, entry: tuple[float, int, str]) -> None:
+            partners = candidates.setdefault(term, [])
+            partners.append(entry)
+            if len(partners) > prune_at:
+                partners.sort(key=lambda t: (-t[0], -t[1], t[2]))
+                del partners[k:]
+
+        for key, c_ab in pairs.items(min_count=min_count):
+            a = counted[key // vocabulary]
+            b = counted[key % vocabulary]
+            pmi = math.log((c_ab * n_docs) / (term_counts[a] * term_counts[b]))
+            if pmi < min_pmi:
+                continue
+            offer(a, (pmi, c_ab, b))
+            offer(b, (pmi, c_ab, a))
+        stats = CooccurrenceBuildStats(
+            documents=n_docs,
+            vocabulary_terms=vocabulary_terms,
+            counted_terms=counted_terms,
+            spills=pairs.spills,
+            max_resident_pairs=pairs.max_resident_pairs,
+        )
+    finally:
+        pairs.close()
 
     table: dict[str, list[str]] = {}
     for term, partners in candidates.items():
         # Sort by PMI desc, then count desc, then partner asc (deterministic).
         partners.sort(key=lambda t: (-t[0], -t[1], t[2]))
         table[term] = [other for _pmi, _c, other in partners[:k]]
-    return table
+    return table, stats
 
 
 # --- SQLite persistence (built inside Index.build, read at query time) --------
@@ -389,5 +604,8 @@ def cooccurrence_build_params() -> dict[str, int | float]:
         "min_docs": _env_int("KB_COOCCURRENCE_MIN_DOCS", DEFAULT_MIN_DOCS),
         "max_doc_tokens": _env_int(
             "KB_COOCCURRENCE_MAX_DOC_TOKENS", DEFAULT_MAX_DOC_TOKENS
+        ),
+        "max_pairs_in_memory": _env_int(
+            "KB_COOCCURRENCE_MAX_PAIRS", DEFAULT_MAX_PAIRS_IN_MEMORY
         ),
     }
