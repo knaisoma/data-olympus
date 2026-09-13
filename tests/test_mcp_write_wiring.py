@@ -155,3 +155,25 @@ async def test_mcp_kb_session_recap_counts_writes(
         assert isinstance(data, dict)
         assert data["source_session"] == "recap-mcp"
         assert data["committed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_mcp_propose_edit_rejects_blob_sha_as_file_hash(
+    tmp_git_kb: Path, tmp_path: Path,
+) -> None:
+    """#263 over MCP: a git blob id in target_file_hash is refused before
+    anything is parked, with the field named and the value not echoed."""
+    app = _app_with_pipeline(tmp_git_kb, tmp_path)
+    blob_like = "a" * 40
+    async with Client(app) as client:
+        res = await client.call_tool("kb_propose_edit", {
+            "target_path": "universal/foundation/STD-U-001.md",
+            "postimage": "x\n", "base_commit": "HEAD",
+            "base_blob_sha": None, "target_file_hash": blob_like,
+            "reason": "test", "source_session": "s",
+            "agent_identity": "claude", "confidence": 0.5,
+        })
+    rendered = str(res.data if getattr(res, "data", None) is not None else res)
+    assert "rejected_invalid_base" in rendered
+    assert "target_file_hash" in rendered
+    assert blob_like not in rendered

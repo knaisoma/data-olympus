@@ -147,6 +147,33 @@ def _validate_evidence(evidence: object) -> str | None:
     return None
 
 
+# issue #263: CAS compares ``base_blob_sha`` with the git blob id of the current
+# file (SHA-1, 40 lowercase hex) and ``target_file_hash`` with its sha256 (64
+# lowercase hex), literally. A value in any other form, most often a blob id in
+# the file-hash field, parks a proposal that can never be approved. Reject it
+# up front instead. Absent (None or "") keeps meaning "no marker".
+_BLOB_SHA_RE = re.compile(r"[0-9a-f]{40}")
+_FILE_HASH_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _validate_base_markers(base_blob_sha: object, target_file_hash: object) -> str | None:
+    """Return a rejection reason naming the malformed field, else None.
+
+    The reason never includes the submitted value."""
+    checks = (
+        ("base_blob_sha", base_blob_sha, _BLOB_SHA_RE,
+         "the file's git blob id: 40 lowercase hex characters"),
+        ("target_file_hash", target_file_hash, _FILE_HASH_RE,
+         "the sha256 of the file's current bytes: 64 lowercase hex characters"),
+    )
+    for field, value, pattern, expected in checks:
+        if value is None or value == "":
+            continue
+        if not isinstance(value, str) or not pattern.fullmatch(value):
+            return f"{field} must be {expected}"
+    return None
+
+
 def _redact_evidence(evidence: list[str]) -> list[str]:
     """Scan each evidence item for a secret pattern, replacing a flagged item
     with a redacted placeholder (pattern name only) before it is persisted to
@@ -1423,6 +1450,13 @@ def kb_propose_edit_fn(
                                    "reason": evidence_error})
         return ProposeResponse(status="rejected_invalid_evidence",
                                reason=evidence_error, target_path=target_path)
+
+    base_marker_error = _validate_base_markers(base_blob_sha, target_file_hash)
+    if base_marker_error is not None:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_invalid_base",
+                                   "reason": base_marker_error})
+        return ProposeResponse(status="rejected_invalid_base",
+                               reason=base_marker_error, target_path=target_path)
 
     # Redacted copy for pending meta / audit events (never the raw value if a
     # scan flagged an item -- postimage here is caller-supplied verbatim, so

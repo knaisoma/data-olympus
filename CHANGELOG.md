@@ -19,6 +19,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   left by a hand edit) raised an error that hid every other entry in the
   listing. It is now listed as `claimed`, which is how the running-contest check
   already reads it. (#265)
+* **A proposal with a malformed base marker is refused when it is made.**
+  `kb_propose_edit` accepted any string as `target_file_hash` or `base_blob_sha`.
+  A git blob id in the sha256 field parked a proposal that could never be
+  approved: every approval came back `rejected_stale_base` although the file had
+  not changed. Both markers are now checked for their exact format and a bad one
+  is refused as `rejected_invalid_base`, naming the field without echoing it.
+  `docs/serving.md` describes how to recover a proposal parked before this
+  release. (#263)
 
 ## [0.8.0] - 2026-09-14
 

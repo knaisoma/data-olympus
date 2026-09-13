@@ -1,10 +1,12 @@
 """Tests for the 4 write MCP tool functions."""
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING
+
+import pytest
 
 from data_olympus.auth import PathBlocklist
 from data_olympus.git_ops import GitOps
@@ -18,9 +20,6 @@ from data_olympus.tools_write import (
     kb_resolve_pending_fn,
 )
 from data_olympus.worktrees import WorktreeRegistry
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def _env() -> dict[str, str]:
@@ -1307,3 +1306,82 @@ def test_an_entry_with_no_recorded_proposer_is_resolver_only(tmp_path) -> None:
     assert kb_get_pending_fn(
         pending=q, pending_id=pid, principal_name="op", can_resolve=True,
     ).postimage == "legacy draft"
+
+
+_GOOD_BLOB = "a" * 40
+_GOOD_FILE_HASH = "b" * 64
+
+
+def _propose_edit_with_markers(state, target, *, blob, file_hash, confidence=0.5):
+    git, reg, pq, pen, rl, bl = state
+    return kb_propose_edit_fn(
+        target_path=target, postimage="new body\n", base_commit="HEAD",
+        base_blob_sha=blob, target_file_hash=file_hash, reason="markers",
+        source_session="s", agent_identity="claude", confidence=confidence,
+        confidence_threshold=0.85, worktrees=reg, push_queue=pq, pending=pen,
+        rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+
+
+@pytest.mark.parametrize(("blob", "file_hash", "field"), [
+    ("a" * 64, None, "base_blob_sha"),            # sha256-length blob id
+    ("A" * 40, None, "base_blob_sha"),            # uppercase
+    (" " + "a" * 39, None, "base_blob_sha"),      # whitespace
+    ("g" * 40, None, "base_blob_sha"),            # non-hex
+    ("a" * 39, None, "base_blob_sha"),            # short
+    (None, "a" * 40, "target_file_hash"),         # blob sha in the file-hash field (#263)
+    (None, "B" * 64, "target_file_hash"),         # uppercase
+    (None, "b" * 63, "target_file_hash"),         # short
+    (None, "b" * 64 + "\n", "target_file_hash"),  # trailing newline
+])
+def test_propose_edit_rejects_malformed_base_markers(tmp_path, blob, file_hash, field) -> None:
+    state = _state(tmp_path)
+    target, _real_blob = _seed_t1_file(state[0]._repo)
+
+    resp = _propose_edit_with_markers(state, target, blob=blob, file_hash=file_hash)
+
+    assert resp.status == "rejected_invalid_base"
+    assert field in (resp.reason or "")
+    submitted = blob if field == "base_blob_sha" else file_hash
+    assert submitted.strip() not in (resp.reason or "")
+    assert state[3].size() == 0, "nothing may be parked"
+    assert state[3].locks_held() == 0, "no path lock may be taken"
+
+
+@pytest.mark.parametrize(("blob", "file_hash"), [(None, None), ("", ""), ("", None)])
+def test_propose_edit_accepts_absent_base_markers(tmp_path, blob, file_hash) -> None:
+    state = _state(tmp_path)
+    target, _real_blob = _seed_t1_file(state[0]._repo)
+
+    resp = _propose_edit_with_markers(state, target, blob=blob, file_hash=file_hash)
+
+    assert resp.status == "pending_confirmation"
+
+
+def test_validate_base_markers_rejects_non_strings() -> None:
+    from data_olympus.tools_write import _validate_base_markers
+
+    assert "base_blob_sha" in (_validate_base_markers(123, None) or "")
+    assert "target_file_hash" in (_validate_base_markers(None, ["x"]) or "")
+    assert _validate_base_markers(_GOOD_BLOB, _GOOD_FILE_HASH) is None
+
+
+def test_correct_marker_pair_proposes_and_resolves(tmp_path, monkeypatch) -> None:
+    """End to end: the correct blob id and sha256 for the current file park and
+    then commit. This is the case #263 could never reach."""
+    _set_git_env(monkeypatch)
+    state = _state(tmp_path)
+    git, reg, pq, pen, rl, bl = state
+    repo = git._repo
+    target, blob = _seed_t1_file(repo)
+    file_hash = hashlib.sha256((repo / target).read_bytes()).hexdigest()
+
+    parked = _propose_edit_with_markers(state, target, blob=blob, file_hash=file_hash)
+    assert parked.status == "pending_confirmation"
+
+    resolved = kb_resolve_pending_fn(
+        pending_id=parked.pending_id, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=pq, pending=pen,
+        source_session="s", agent_identity="operator",
+    )
+    assert resolved.status == "committed", resolved.reason

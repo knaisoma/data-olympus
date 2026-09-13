@@ -234,6 +234,14 @@ section so concurrent writes cannot corrupt each other:
   A bare `base_commit` of `HEAD` is advisory (no per-file expectation), and when
   no marker is supplied the pre-0.3.0 behavior is preserved (a refresh failure is
   non-fatal; the push path's non-FF recovery publishes the commit).
+  Both hash markers are validated when the proposal is made. `base_blob_sha`
+  must be the file's git blob id (40 lowercase hex characters) and
+  `target_file_hash` the sha256 of its current bytes (64 lowercase hex
+  characters); either may be omitted. Any other form is refused as
+  `rejected_invalid_base`, naming the field. A proposal parked by an earlier
+  release with a malformed marker cannot pass the check, so every approval of it
+  returns `rejected_stale_base` even when the file has not changed. Recover by
+  rejecting it and proposing the same content again with correct markers.
 - Ordering of side effects: the commit message and all gates are evaluated
   BEFORE the file is written and `git add`-ed, and on any failure after the add
   the worktree is hard-reset, so a rejected write never leaves a staged leftover
