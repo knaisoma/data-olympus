@@ -96,6 +96,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   OIDC, which is a deliberate step rather than a file change.
   `docs/mcp-registry.md` records what it needs. Part of #111.
 
+* **`PendingQueue.derive_running_contest` derives review and contest status at read-time.**
+  Inspects held path locks and pending proposals without mutating documents or dirtying git state for unpromoted entries. Bridges the resolution window across both `.json` and `.claimed` entry states under active locks, and returns a `RunningContestReceipt` indicating whether a target path is under review or contested. ([#241](https://github.com/knaisoma/data-olympus/issues/241), [#261](https://github.com/knaisoma/data-olympus/pull/261))
+
 ### Changed
 
 * **OKF v0.2: data-olympus writes `generated` instead of `timestamp`.** OKF
