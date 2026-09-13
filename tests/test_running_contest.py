@@ -484,3 +484,21 @@ def test_unreadable_entry_is_reported_not_raised(tmp_path, monkeypatch) -> None:
     assert receipt.state == "unreadable"
     assert receipt.pending_id == pid
     assert receipt.contested is False
+
+
+def test_invalid_json_entry_is_treated_as_absent(tmp_path) -> None:
+    """Pins the inherited behaviour for an entry that opens but does not parse.
+
+    Unlike ``list``, which reports such a file as ``unreadable``, the receipt
+    treats it as absent. The docstring states that limit, so this test keeps the
+    documentation and the behaviour from drifting apart silently.
+    """
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    target = "universal/foundation/STD-U-011.md"
+    pid = _enqueue_routine(q, target)
+    with open(os.path.join(q.root, f"{pid}.json"), "w", encoding="utf-8") as f:
+        f.write("{not json")
+
+    receipt = q.derive_running_contest(target)
+    assert (receipt.under_review, receipt.state) == (False, None)
+    assert [e["state"] for e in q.list()] == ["unreadable"]

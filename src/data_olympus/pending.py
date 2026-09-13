@@ -1152,10 +1152,16 @@ class PendingQueue:
             a decision, `claimed` is being applied, and `uncertain` is a claim
             whose outcome reconciliation could not prove, which keeps its path
             lock deliberately. All three hold the path, so all three report
-            `under_review=True`. An entry that exists but cannot be read is
-            `unreadable` and also reports `under_review=True`: the path is still
-            locked, and saying otherwise would tell a caller it is free. Only a
-            missing file is treated as the entry having moved.
+            `under_review=True`. An entry whose file cannot be opened, for
+            example on a permission error, is `unreadable` and also reports
+            `under_review=True`, because a well-formed pending id still holds the
+            path lock. A missing file is treated as the entry having moved.
+
+            This is not full parity with `list`. An entry file that opens but is
+            not valid JSON is treated like a missing one and returns
+            `under_review=False` with no state, where `list` reports it as
+            `unreadable`. `under_review=False` therefore does not mean the path
+            is free: an orphan or auto-commit lock also returns it.
 
             Note: Per issue #241 maintainer consensus, `supersedes` represents standard document
             lineage and decision-chain succession, not an active contest, and is deliberately

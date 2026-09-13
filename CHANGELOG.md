@@ -101,10 +101,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   without writing anything, whether a path is held by a proposal and whether
   that proposal declares itself a contest: `intent: "contest"`, `dispute: true`,
   or a `contradicts` reference in its metadata. `supersedes` is ordinary
-  succession and deliberately does not count. The receipt carries the same
-  `state` that `kb_list_pending` reports, so a claimed or uncertain entry is
-  distinguishable from one awaiting a decision, and an entry that exists but
-  cannot be read is reported as locked rather than raised. No tool or endpoint
+  succession and deliberately does not count. The receipt carries a `state`
+  spelled as `kb_list_pending` spells it, so a claimed or uncertain entry is
+  distinguishable from one awaiting a decision, and an entry file that cannot
+  be opened is reported as `unreadable` rather than raising. An entry file
+  that is not valid JSON is still treated as absent, unlike the listing, and
+  `under_review=False` does not by itself mean a path is free. No tool or endpoint
   calls it yet, and nothing writes the contest fields today: this is the
   read-side half of #241. Contributed by @RemanenetSpy in #261.
 
