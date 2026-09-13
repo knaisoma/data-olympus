@@ -1,7 +1,7 @@
 # data-olympus Knowledge Format
 
 **Version:** 0.3
-**Date:** 2026-09-21
+**Date:** 2026-09-14
 **Status:** Stable (0.3 ships with data-olympus 0.8.0; the format is versioned independently of the package, see section 10)
 
 ---
