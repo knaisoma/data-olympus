@@ -8,12 +8,12 @@ carry a derived status, but the orchestrator flags any non-draft.
 
 from __future__ import annotations
 
-import datetime
 import re
 from typing import Any
 
 import yaml
 
+from data_olympus.format.provenance import tool_generated
 from data_olympus.format.validate import STATUSES, TIERS, TYPES
 
 DEFAULT_TYPE = "standard"
@@ -206,8 +206,9 @@ def build_frontmatter(
     """Assemble a schema-ordered frontmatter mapping.
 
     Required fields first (id/type/status/tier), then the recommended fields
-    (title/description/tags/timestamp) so a stamped draft is lint-clean without
-    warnings. ``extra`` carries governance extensions (supersedes/superseded_by).
+    (title/description/tags, and the OKF v0.2 ``generated`` content-change
+    record naming the tool) so a stamped draft is lint-clean without warnings.
+    ``extra`` carries governance extensions (supersedes/superseded_by).
     """
     fm: dict[str, Any] = {
         "id": doc_id,
@@ -220,7 +221,7 @@ def build_frontmatter(
     fm["title"] = title
     fm["description"] = description
     fm["tags"] = [str(t) for t in tags]
-    fm["timestamp"] = datetime.date.today().isoformat()
+    fm["generated"] = tool_generated()
     if extra:
         for key, value in extra.items():
             fm[key] = value

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.knaisoma/data-olympus",
+  "title": "Data Olympus",
+  "description": "Governance-grade knowledge-base format (OKF-compatible) plus CLI and single-writer MCP server",
+  "version": "0.8.0",
+  "websiteUrl": "https://github.com/knaisoma/data-olympus",
+  "repository": {
+    "url": "https://github.com/knaisoma/data-olympus",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "data-olympus",
+      "version": "0.8.0",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://localhost:8080/mcp"
+      },
+      "environmentVariables": [
+        {
+          "name": "KB_MAIN_PATH",
+          "description": "Path to the git-backed knowledge bundle this server indexes and serves."
+        },
+        {
+          "name": "KB_INDEX_PATH",
+          "description": "Path to the generated SQLite index. Rebuilt atomically and swapped in."
+        },
+        {
+          "name": "KB_HTTP_PORT",
+          "description": "Port the streamable HTTP MCP server listens on. Defaults to 8080."
+        }
+      ]
+    }
+  ]
+}

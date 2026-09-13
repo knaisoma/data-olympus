@@ -170,3 +170,38 @@ def test_gc_defers_when_reachability_cannot_be_proven(tmp_path) -> None:
     removed = reg.gc(idle_sec=3600)
     assert wt.path not in removed, "GC removed a worktree whose push state is unknown"
     assert os.path.isdir(wt.path)
+
+
+def test_gc_teardown_is_all_or_nothing(tmp_path) -> None:  # noqa: ANN001
+    """The reviewer reproduced a partial teardown: the worktree was removed and
+    only then did the branch guard defer, leaving a half-removed session. The
+    teardown must leave the worktree AND the branch both present or both gone.
+    """
+    import subprocess
+
+    from data_olympus.git_ops import GitOps
+    from data_olympus.worktrees import WorktreeRegistry
+
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}
+    main = tmp_path / "main"
+    main.mkdir()
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=main,
+                   check=True, env=env)
+    (main / "a.md").write_text("a\n")
+    subprocess.run(["git", "add", "-A"], cwd=main, check=True, env=env)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=main, check=True, env=env)
+
+    git = GitOps(str(main), claim_guard=lambda _ref: [{"pending_id": "z" * 32}])
+    reg = WorktreeRegistry(git=git, worktree_root=str(tmp_path / "wts"))
+    wt = reg.get_or_create(source_session="s1", agent_identity="claude")
+
+    removed = reg.gc(idle_sec=0)
+
+    assert removed == []
+    assert os.path.isdir(wt.path), "the worktree must survive a deferred teardown"
+    branch = f"kb-session/{os.path.basename(wt.path)}"
+    assert subprocess.run(
+        ["git", "-C", str(main), "rev-parse", "--verify", "--quiet",
+         f"refs/heads/{branch}"], check=False, capture_output=True,
+    ).returncode == 0, "the branch must survive with it"

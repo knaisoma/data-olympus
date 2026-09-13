@@ -42,10 +42,37 @@ def test_conformance_runner_exists() -> None:
 
 def test_load_reference_accepts_pinned_official_repository() -> None:
     pin = _module().load_reference(REFERENCE)
-    assert pin.repository == "https://github.com/GoogleCloudPlatform/knowledge-catalog.git"
-    assert pin.commit == "d44368c15e38e7c92481c5992e4f9b5b421a801d"
-    assert pin.fixture_path == "okf/bundles/crypto_bitcoin"
+    assert pin.repository == "https://github.com/GoogleCloudPlatform/open-knowledge-format.git"
+    assert pin.commit == "ad30107c31c06aec8a7d5636e0d1058118604e6f"
+    assert pin.fixture_path == "bundles/crypto_bitcoin"
+    assert pin.consumer_path == "src"
+    assert pin.license.path == "LICENSE.md"
     assert pin.license.spdx == "Apache-2.0"
+
+
+def test_load_reference_rejects_the_frozen_knowledge_catalog_copy(tmp_path: Path) -> None:
+    """OKF moved to its own repository; the old copy is a frozen snapshot."""
+    payload = _reference_payload()
+    payload["repository"] = "https://github.com/GoogleCloudPlatform/knowledge-catalog.git"
+    with pytest.raises(ValueError, match="official Google OKF repository"):
+        _module().load_reference(_write_reference(tmp_path, payload))
+
+
+def test_load_reference_requires_consumer_path(tmp_path: Path) -> None:
+    payload = _reference_payload()
+    payload.pop("consumer_path")
+    with pytest.raises(ValueError, match="consumer_path"):
+        _module().load_reference(_write_reference(tmp_path, payload))
+
+
+@pytest.mark.parametrize("consumer_path", ["../src", "/src", "src/../../x"])
+def test_load_reference_rejects_unsafe_consumer_path(
+    tmp_path: Path, consumer_path: str
+) -> None:
+    payload = _reference_payload()
+    payload["consumer_path"] = consumer_path
+    with pytest.raises(ValueError, match="consumer_path must be a safe relative path"):
+        _module().load_reference(_write_reference(tmp_path, payload))
 
 
 @pytest.mark.parametrize("commit", ["main", "abc123", "g" * 40, "A" * 40])
@@ -95,8 +122,10 @@ def test_verify_fixture_rejects_drift(tmp_path: Path) -> None:
 def test_data_olympus_consumes_pinned_upstream_fixture() -> None:
     module = _module()
     result = module.consume_upstream(module.load_reference(REFERENCE), ROOT)
-    assert result["imported"] == 5
-    assert result["indexed"] == 5
+    # Nine concepts at the pin: four tables, one dataset, three joins and one
+    # metric under references/. The index.md files are navigation, not concepts.
+    assert result["imported"] == 9
+    assert result["indexed"] == 9
     assert result["search_hits"] > 0
     assert result["retrieved_id"]
 
@@ -129,7 +158,7 @@ def test_ci_checks_out_and_consumes_exact_okf_pin() -> None:
         step
         for step in steps
         if step.get("with", {}).get("repository")
-        == "GoogleCloudPlatform/knowledge-catalog"
+        == "GoogleCloudPlatform/open-knowledge-format"
     )
     assert checkout["with"]["ref"] == "${{ steps.okf-pin.outputs.sha }}"
     assert checkout["with"]["path"] == "to-delete/okf-reference"
@@ -150,6 +179,9 @@ def test_okf_pin_freshness_workflow_only_manages_one_issue() -> None:
         for step in workflow["jobs"]["check"]["steps"]
     )
     assert "[automation] OKF reference pin is stale" in script
+    # OKF lives in its own repository; the knowledge-catalog copy is frozen.
+    assert 'repo: "open-knowledge-format"' in script
+    assert "knowledge-catalog" not in script
     assert "github.paginate" in script
     assert "issues.listForRepo" in script
     assert "issues.create" in script

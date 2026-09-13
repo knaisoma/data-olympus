@@ -416,3 +416,89 @@ def test_claim_rename_race_interleaving(tmp_path, monkeypatch) -> None:
     assert receipt.under_review is True
     assert receipt.pending_id == pid
     assert receipt.reason == "Testing rename race"
+
+
+def _enqueue_routine(q: PendingQueue, target: str) -> str:
+    return q.enqueue(
+        proposal_type="edit",
+        target_path=target,
+        postimage="# Routine edit\n",
+        base_commit="abc1234",
+        base_blob_sha=None,
+        target_file_hash=None,
+        meta={"reason": "routine"},
+    )
+
+
+def test_receipt_state_matches_the_pending_listing(tmp_path) -> None:
+    """The receipt names the same lifecycle state kb_list_pending reports.
+
+    A claimed entry is being applied and an uncertain one has an outcome the
+    service could not prove, so it keeps its lock deliberately. Both lock the
+    path exactly like a pending proposal, and without a state a consumer of
+    the receipt could not tell any of the three apart.
+    """
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    target = "universal/foundation/STD-U-009.md"
+
+    assert q.derive_running_contest(target).state is None
+
+    pid = _enqueue_routine(q, target)
+    pending = q.derive_running_contest(target)
+    assert (pending.under_review, pending.state) == (True, "pending")
+
+    q.claim_for_resolve(pid)
+    claimed = q.derive_running_contest(target)
+    assert (claimed.under_review, claimed.state) == (True, "claimed")
+
+    q.reconcile_claims(min_age_sec=0, find_commit=lambda _r: False)
+    uncertain = q.derive_running_contest(target)
+    assert (uncertain.under_review, uncertain.state) == (True, "uncertain")
+    assert uncertain.pending_id == pid
+    assert [e["state"] for e in q.list()] == ["uncertain"]
+
+
+def test_unreadable_entry_is_reported_not_raised(tmp_path, monkeypatch) -> None:
+    """An entry that exists but cannot be read fails closed, as the listing does.
+
+    The path is still locked by a well-formed pending id, so reporting it as not
+    under review would tell a caller the path is free when every write to it is
+    refused. Only a missing file is treated as the entry having moved.
+    """
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    target = "universal/foundation/STD-U-010.md"
+    pid = _enqueue_routine(q, target)
+    json_path = os.path.abspath(os.path.join(q.root, f"{pid}.json"))
+
+    real_open = open
+
+    def denied_open(file, *args, **kwargs):
+        if os.path.abspath(str(file)) == json_path:
+            raise PermissionError(f"denied: {file}")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", denied_open)
+
+    receipt = q.derive_running_contest(target)
+    assert receipt.under_review is True
+    assert receipt.state == "unreadable"
+    assert receipt.pending_id == pid
+    assert receipt.contested is False
+
+
+def test_invalid_json_entry_is_treated_as_absent(tmp_path) -> None:
+    """Pins the inherited behaviour for an entry that opens but does not parse.
+
+    Unlike ``list``, which reports such a file as ``unreadable``, the receipt
+    treats it as absent. The docstring states that limit, so this test keeps the
+    documentation and the behaviour from drifting apart silently.
+    """
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    target = "universal/foundation/STD-U-011.md"
+    pid = _enqueue_routine(q, target)
+    with open(os.path.join(q.root, f"{pid}.json"), "w", encoding="utf-8") as f:
+        f.write("{not json")
+
+    receipt = q.derive_running_contest(target)
+    assert (receipt.under_review, receipt.state) == (False, None)
+    assert [e["state"] for e in q.list()] == ["unreadable"]

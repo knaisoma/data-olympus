@@ -6,7 +6,9 @@ tier: meta
 title: NestJS module naming collision with the shared `users` package
 description: A recorded incident where a new `users` feature module collided with an existing shared package of the same name, and the resolution the team settled on.
 tags: [nestjs, memory, incident]
-timestamp: "2026-06-20"
+generated:
+  by: human:data-olympus-maintainers
+  at: "2026-06-20T00:00:00Z"
 applies_when:
   - "adding a new NestJS feature module named users"
   - "naming a module that might collide with a shared package"

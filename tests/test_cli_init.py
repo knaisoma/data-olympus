@@ -219,6 +219,45 @@ def test_init_missing_path_argument_returns_nonzero():
         main(["init"])
 
 
+def test_init_documents_carry_okf_v02_provenance(tmp_path):
+    """Issue #173: `init` writes OKF v0.2 `generated`, never `timestamp`, and
+    declares OKF 0.2 in the bundle-root index."""
+    from data_olympus import __version__
+
+    dest = tmp_path / "kb"
+    assert main(["init", str(dest)]) == 0
+    docs = _docs(dest)
+    assert docs
+    for d in docs:
+        assert "timestamp" not in d.frontmatter, d.path.name
+        assert d.frontmatter["generated"] == {
+            "by": f"data-olympus/{__version__}", "at": "2026-01-01T00:00:00Z",
+        }, d.path.name
+    assert Document.load(dest / "index.md").frontmatter["okf_version"] == "0.2"
+    template = (dest / "template.md").read_text(encoding="utf-8")
+    assert "generated:" in template
+    assert "timestamp:" not in template
+    assert main(["lint", str(dest)]) == 0
+
+
+def test_example_bundle_declares_okf_02_with_maintainer_provenance() -> None:
+    """The example bundle is hand-authored, so its actor is a `human:` one."""
+    from pathlib import Path
+
+    from data_olympus.format import discover_bundle_files
+    from data_olympus.scaffold import OKF_VERSION
+
+    root = Path(__file__).resolve().parents[1] / "example-bundle"
+    assert OKF_VERSION == "0.2"
+    assert Document.load(root / "index.md").frontmatter["okf_version"] == "0.2"
+    docs = [Document.load(p) for p in discover_bundle_files(root)]
+    assert len(docs) == 14
+    for d in docs:
+        assert "timestamp" not in d.frontmatter, d.path.name
+        assert d.frontmatter["generated"]["by"] == "human:data-olympus-maintainers"
+        assert isinstance(d.frontmatter["generated"]["at"], str), d.path.name
+
+
 def test_scaffold_spec_version_tracks_current_format() -> None:
     """The scaffold's SPEC_VERSION must match both SPEC.md's header and
     example-bundle/index.md, so `data-olympus init` never generates a fresh

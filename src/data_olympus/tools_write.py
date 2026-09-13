@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from data_olympus.audit_trailers import build_commit_message
@@ -25,12 +26,18 @@ from data_olympus.governed_lane import (
     governed_lane_protection_enabled,
 )
 from data_olympus.models import (
+    PendingDetailResponse,
     PendingEntry,
     PendingListResponse,
     ProposeResponse,
     ResolvePendingResponse,
 )
-from data_olympus.pending import PathLockBusyError, PendingQueue, PendingQueueFullError
+from data_olympus.pending import (
+    PathLockBusyError,
+    PendingNotFoundError,
+    PendingQueue,
+    PendingQueueFullError,
+)
 from data_olympus.write_gate import (
     SecretMatch,
     WriteSerializer,
@@ -334,6 +341,7 @@ def _commit_in_worktree(
     hold_path_lock: bool = False,
     secret_scan_override: bool = False,
     governed_target_check: bool = False,
+    claim_recorder: _ClaimRecorder | None = None,
 ) -> tuple[str, str, SecretMatch | None]:
     """Serialized write -> git add -> commit -> enqueue critical section.
 
@@ -437,6 +445,9 @@ def _commit_in_worktree(
                 proposal_type=proposal_type,
                 target_tier=target_tier,
                 target_path=target_path,
+                pending_id=(
+                    claim_recorder.pending_id if claim_recorder else None
+                ),
             )
 
             # 3. Symlink-escape containment.
@@ -543,23 +554,106 @@ def _commit_in_worktree(
                     raise _WriteDemoted("governed_target")
 
             # 6. Write + add + commit + enqueue; reset on any post-add failure.
+            #
+            # The three git calls below are deliberately NOT one try block any
+            # more (issues #253, #254). They fail with different meanings, and
+            # collapsing them made every failure look like "nothing committed",
+            # which is exactly the misclassification that would restore an
+            # already-applied decision:
+            #
+            #   add fails                     -> nothing committed, provably
+            #   commit exits non-zero         -> nothing committed, provably
+            #   commit fails any other way    -> UNKNOWN, a commit may exist
+            #   rev-parse fails               -> UNKNOWN, the commit is made
+            #
+            # Record the write context first, so a crash from here on still
+            # leaves recovery something to search from.
+            if claim_recorder is not None:
+                try:
+                    claim_recorder.context(
+                        session_ref=_session_ref(wt.path),
+                        pre_write_ref_sha=_head_sha(wt.path),
+                    )
+                except Exception as exc:
+                    # Nothing has been written, so this IS a provable
+                    # non-commit and the entry is safely restorable.
+                    claim_recorder.failed(f"write context unavailable: {exc}")
+                    raise _WriteContextUnavailable(str(exc)) from exc
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(postimage)
             try:
                 subprocess.run(
                     ["git", "-C", wt.path, "add", target_path], check=True)
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    reset_worktree(wt.path)
+                if claim_recorder is not None:
+                    claim_recorder.failed(f"git add failed: {exc}")
+                raise
+            try:
                 subprocess.run(
                     ["git", "-C", wt.path, "commit", "-m", msg], check=True)
+            except subprocess.CalledProcessError as exc:
+                with contextlib.suppress(Exception):
+                    reset_worktree(wt.path)
+                if _classify_commit_error(exc) == "unknown":
+                    # The child was killed by a signal, and git can update the
+                    # ref and then be killed before it exits. Treating that as a
+                    # failed commit would record a proven non-commit for a write
+                    # that may well have landed, and the sweep would then
+                    # restore an already-applied decision.
+                    if claim_recorder is not None:
+                        claim_recorder.unknown(
+                            f"git commit killed by signal {-exc.returncode}"
+                        )
+                    raise _WriteOutcomeUnknown(str(exc)) from exc
+                # A POSITIVE exit is git telling us it declined to commit.
+                if claim_recorder is not None:
+                    claim_recorder.failed(f"git commit exited {exc.returncode}")
+                raise
+            except Exception as exc:
+                # Anything else (a timeout, a failure to spawn observed after
+                # the child may have run) leaves the outcome unobserved.
+                with contextlib.suppress(Exception):
+                    reset_worktree(wt.path)
+                if claim_recorder is not None:
+                    claim_recorder.unknown(f"git commit outcome unobserved: {exc}")
+                raise _WriteOutcomeUnknown(str(exc)) from exc
+            try:
                 sha = subprocess.check_output(
                     ["git", "-C", wt.path, "rev-parse", "HEAD"], text=True,
                 ).strip()
-            except Exception:
-                # Something failed after the file was written/staged; discard so
-                # the leftover is not swept into the session's next commit (item 8).
-                with contextlib.suppress(Exception):
-                    reset_worktree(wt.path)
-                raise
+            except Exception as exc:
+                # The commit is made; only reading its sha failed. Never a
+                # failure outcome.
+                if claim_recorder is not None:
+                    claim_recorder.unknown(f"commit sha lookup failed: {exc}")
+                raise _WriteOutcomeUnknown(str(exc)) from exc
+            if claim_recorder is not None:
+                # Persist the outcome and consume the claim ADJACENTLY, before
+                # enqueue or any other post-commit work. Both are inside this
+                # `with serializer`, so no reconciliation can observe a
+                # committed-but-unconsumed claim and finish it on the owner's
+                # behalf: the owner would then fail fenced and its caller would
+                # lose a truthful success and its committed audit event.
+                claim_recorder.committed(sha)
+                # Consuming the claim must not gate PUBLICATION. The commit is
+                # durable and its outcome is recorded, so the write succeeded;
+                # if only the finalize fails, skipping the enqueue below would
+                # leave a good commit waiting for branch recovery instead of the
+                # push queue that exists for it. The claim then stays claimed
+                # carrying its committed sha, and reconciliation closes it from
+                # that record without needing to search git.
+                try:
+                    claim_recorder.finalize(target_path)
+                except Exception:
+                    _log.warning(
+                        "resolve %s committed %s but could not consume its "
+                        "claim; publication continues and reconciliation will "
+                        "close it", claim_recorder.pending_id, sha,
+                        exc_info=True,
+                    )
             # Enqueue AFTER the commit is durable. It must not turn a made commit
             # into an exception path (that would drop the bootstrap in-flight guard
             # and lose the resolve claim -- Codex round-2 Blocker C), so a failure
@@ -570,6 +664,132 @@ def _commit_in_worktree(
             # picks it up without waiting for a restart.
             push_state = _enqueue_after_commit(push_queue, sha, wt.path, push_meta)
             return sha, push_state, secret_override
+
+
+def _classify_commit_error(exc: subprocess.CalledProcessError) -> str:
+    """Did a failed ``git commit`` prove that nothing was committed?
+
+    Only a POSITIVE return code does. A negative one means the child was killed
+    by a signal, and git can update the ref and then be killed before it exits,
+    so the outcome is unobserved rather than known (issue #254).
+    """
+    if exc.returncode is not None and exc.returncode < 0:
+        return "unknown"
+    return "failed"
+
+
+def _session_ref(worktree_path: str) -> str:
+    """The branch the session worktree commits onto, or "" if unreadable."""
+    try:
+        return subprocess.check_output(
+            ["git", "-C", worktree_path, "rev-parse", "--abbrev-ref", "HEAD"],
+            text=True,
+        ).strip()
+    except Exception:  # noqa: BLE001 - an unreadable ref only costs a search hint
+        return ""
+
+
+def _head_sha(worktree_path: str) -> str:
+    """The session ref's tip BEFORE the write, or "" if unreadable."""
+    try:
+        return subprocess.check_output(
+            ["git", "-C", worktree_path, "rev-parse", "HEAD"], text=True,
+        ).strip()
+    except Exception:  # noqa: BLE001 - same
+        return ""
+
+
+class _WriteContextUnavailable(Exception):
+    """Recovery context could not be recorded, so the write must not start.
+
+    Raised BEFORE anything is written, which makes it a provable non-commit: the
+    entry can be restored safely. Writing without it would leave recovery unable
+    to search for the commit and unable to protect it from a rewrite.
+    """
+
+
+class _WriteOutcomeUnknown(Exception):
+    """The write may or may not have committed, and nothing observed which.
+
+    Raised when git's own exit status could not be established, or when the
+    subsequent ``rev-parse HEAD`` failed. Distinct from an ordinary failure on
+    purpose: a caller must never treat this as proof that nothing committed,
+    because restoring the entry would re-present a decision that had already
+    been applied (issue #254).
+    """
+
+
+@dataclass
+class _ClaimRecorder:
+    """Persists what a resolve's write actually did, into the claim record.
+
+    This is the durable positive evidence recovery runs on. Without it the only
+    thing left after a crash is a branch, and a branch cannot distinguish "never
+    committed" from "committed and then rewritten".
+    """
+
+    pending: PendingQueue
+    pending_id: str
+    claim_token: str
+    last_outcome: str = ""
+    finalized: bool = False
+    finalize_attempted: bool = False
+
+    def context(self, *, session_ref: str, pre_write_ref_sha: str) -> None:
+        """Record where the commit will land. A PRECONDITION of writing.
+
+        This used to swallow every failure, which made the invariant "no
+        recorded context means no write began" untrue: the write proceeded, and
+        if the outcome record then also failed, recovery had neither a search
+        reference nor a guard protecting the evidence. It now raises, and the
+        caller aborts before touching the worktree. Failing here is safe
+        precisely because nothing has been written yet, so it is a PROVABLE
+        non-commit.
+        """
+        if not session_ref or not pre_write_ref_sha:
+            raise _WriteContextUnavailable(
+                "cannot identify the session ref or its pre-write tip"
+            )
+        self.pending.record_write_context(
+            self.pending_id, claim_token=self.claim_token,
+            session_ref=session_ref, pre_write_ref_sha=pre_write_ref_sha,
+        )
+
+    def committed(self, sha: str) -> None:
+        self.last_outcome = "committed"
+        self.pending.record_outcome(
+            self.pending_id, claim_token=self.claim_token, commit_sha=sha,
+        )
+
+    def failed(self, reason: str) -> None:
+        self.last_outcome = "failed"
+        with contextlib.suppress(Exception):
+            self.pending.record_outcome(
+                self.pending_id, claim_token=self.claim_token, failure=reason,
+            )
+
+    def unknown(self, reason: str) -> None:
+        self.last_outcome = "unknown"
+        with contextlib.suppress(Exception):
+            self.pending.record_outcome(
+                self.pending_id, claim_token=self.claim_token, unknown=reason,
+            )
+
+    def finalize(self, target_path: str) -> None:
+        """Consume the claim while the commit still holds the serializer.
+
+        Finalizing after the commit released the lock left a gap in which a
+        guard or sweep reconciliation could consume the durable committed
+        record first. The write still landed, but this resolver then failed
+        fenced and its caller lost a truthful success response and its
+        committed audit event. Age thresholds only make that gap smaller; doing
+        it inside the same acquisition removes it.
+        """
+        self.finalize_attempted = True
+        self.pending.finalize_resolve(
+            self.pending_id, target_path, claim_token=self.claim_token,
+        )
+        self.finalized = True
 
 
 def _enqueue_after_commit(
@@ -768,6 +988,7 @@ def kb_propose_memory_fn(
     blocklist: PathBlocklist,
     remote_addr: str,
     audit_log: AuditLog | None = None,
+    proposer_principal: str = "",
     can_auto_commit: bool = True,
     max_text_bytes: int = 0,
     serializer: WriteSerializer | None = None,
@@ -934,6 +1155,12 @@ def kb_propose_memory_fn(
                 meta={
                     "agent_identity": agent_identity,
                     "source_session": source_session,
+                    # The AUTHENTICATED principal that made this proposal
+                    # (issue #256). source_session cannot serve as ownership:
+                    # the pending listing publishes it to every authenticated
+                    # caller, so scoping a content read on it would let any
+                    # reader copy the listing and ask for the draft.
+                    "proposer_principal": proposer_principal,
                     "confidence": confidence,
                     "tags": safe_tags,
                     "secret_scan_flagged": flagged_pattern is not None,
@@ -1069,14 +1296,25 @@ def _render_memory(
     the SAME postimage this function returns, it passes through the existing
     full-postimage secret scan the propose path already runs -- no separate
     scan is needed here.
+
+    ``generated`` (issue #173, OKF v0.2 provenance) names the fixed
+    data-olympus tool actor as the writer, at the same instant as
+    ``created_at``. It is NEVER derived from ``agent_identity``: that is client
+    input, and a principal named ``human:alice`` must not be recorded as the
+    human author of agent-written content. The proposer stays in
+    ``created_by``.
     """
     import yaml
 
+    from data_olympus.format.provenance import tool_actor
+
+    created_at = datetime.datetime.now(datetime.UTC).isoformat()
     fm: dict[str, Any] = {
         "type": "memory",
         "status": "proposed",
         "created_by": agent_identity,
-        "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
+        "created_at": created_at,
+        "generated": {"by": tool_actor(), "at": created_at},
     }
     if tags:
         # Coerce to plain str so a non-str element can't smuggle a YAML tag.
@@ -1108,6 +1346,7 @@ def kb_propose_edit_fn(
     blocklist: PathBlocklist,
     remote_addr: str,
     audit_log: AuditLog | None = None,
+    proposer_principal: str = "",
     can_auto_commit: bool = True,
     max_postimage_bytes: int = 0,
     serializer: WriteSerializer | None = None,
@@ -1264,6 +1503,10 @@ def kb_propose_edit_fn(
                 target_file_hash=target_file_hash,
                 meta={"agent_identity": agent_identity,
                       "source_session": source_session,
+                      # See the memory path: ownership for the issue #256
+                      # readback is the AUTHENTICATED principal, never the
+                      # caller-supplied session the listing publishes.
+                      "proposer_principal": proposer_principal,
                       "confidence": confidence,
                       "reason": reason,
                       "secret_scan_flagged": flagged_pattern is not None,
@@ -1391,7 +1634,10 @@ def kb_resolve_pending_fn(
     parameter exists ONLY on the operator resolve path -- neither
     ``kb_propose_memory_fn`` nor ``kb_propose_edit_fn`` accept it, so an agent
     can never self-authorize past a flagged auto-commit."""
-    from data_olympus.pending import PendingAlreadyResolvedError
+    from data_olympus.pending import (
+        ClaimFencedError,
+        PendingAlreadyResolvedError,
+    )
 
     audit_base: dict[str, Any] = {
         "event_type": "resolve",
@@ -1459,8 +1705,12 @@ def kb_resolve_pending_fn(
     # + reset-on-late-failure, shared with the auto-commit path (items 1, 3, 4, 8).
     # hold_path_lock=True: the lock is already held from enqueue via the claim, so
     # _commit_in_worktree must not re-acquire it (would deadlock / raise busy).
+    recorder = _ClaimRecorder(
+        pending=pending, pending_id=pending_id, claim_token=resolved.claim_token,
+    )
     try:
         sha, push_state, secret_override = _commit_in_worktree(
+            claim_recorder=recorder,
             worktrees=worktrees, push_queue=push_queue, pending=pending,
             serializer=serializer or _DEFAULT_SERIALIZER, idx=idx,
             source_session=resolved.meta.get("source_session", source_session),
@@ -1480,26 +1730,52 @@ def kb_resolve_pending_fn(
             secret_scan_override=override_secret_scan,
         )
     except _WriteRejected as rej:
-        # Gate rejected AFTER the claim: put the entry back so the operator can
-        # re-resolve it (the postimage is not lost). The path lock stays held.
-        pending.restore_resolve(pending_id)
+        # Gate rejected BEFORE anything was written, so nothing committed. Put
+        # the entry back so the operator can re-resolve it (the postimage is not
+        # lost). The path lock stays held.
+        with contextlib.suppress(ClaimFencedError):
+            pending.restore_resolve(pending_id, claim_token=resolved.claim_token)
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
                                    "reason": resp.reason,
                                    "matching_pattern": resp.matching_pattern})
         return ResolvePendingResponse(status=resp.status, reason=resp.reason)
+    except _WriteOutcomeUnknown:
+        # A commit MAY exist. Do not restore: that would offer an
+        # already-applied decision for approval a second time. The claim record
+        # carries the unknown outcome and the write context, and the periodic
+        # reconciliation searches for the claim-linked commit.
+        _emit_audit(audit_log, **{**audit_base,
+                                   "status": "outcome_unknown_pending_recovery"})
+        raise
     except Exception:
-        # A git/enqueue failure after the claim: restore the entry rather than
-        # silently consuming it, so the write is recoverable.
-        with contextlib.suppress(Exception):
-            pending.restore_resolve(pending_id)
+        # The reviewer's named regression: this handler must NOT assume the
+        # write failed. It restores ONLY when the write itself recorded a
+        # provable non-commit; otherwise the claim is left for reconciliation,
+        # which decides on evidence rather than on the shape of an exception.
+        if recorder.last_outcome == "failed":
+            with contextlib.suppress(Exception):
+                pending.restore_resolve(
+                    pending_id, claim_token=resolved.claim_token,
+                )
         raise
     # Commit succeeded: consume the entry and release the lock. The commit is
     # durable regardless of push_state (which is surfaced truthfully below): even
     # an enqueue_failed_recovery_pending commit exists on the branch and is
     # republished by in-process/startup recovery, so re-resolving would duplicate
     # it -- the entry must be consumed, not restored (Codex round-4).
-    pending.finalize_resolve(pending_id, resolved.target_path)
+    if not recorder.finalize_attempted:
+        # Normally already done inside the commit's own serializer acquisition,
+        # which is what stops a reconciliation consuming the claim in between.
+        # This remains for a commit helper that returned without recording.
+        # Gated on ATTEMPTED, not on success: a finalize that already failed in
+        # there is deliberately left to reconciliation, and retrying it here
+        # would turn a successful write into an exception for its caller.
+        with contextlib.suppress(Exception):
+            pending.finalize_resolve(
+                pending_id, resolved.target_path,
+                claim_token=resolved.claim_token,
+            )
     # secret_override is only non-None when the operator explicitly passed
     # override_secret_scan=True AND the scanner actually flagged something, so
     # the audit trail truthfully distinguishes "override requested but nothing
@@ -1514,11 +1790,85 @@ def kb_resolve_pending_fn(
                                   push_state=push_state)
 
 
+_PENDING_NOTE = (
+    "This content is a PENDING proposal. It is not in force, it does not appear "
+    "in kb_consult or any in_force retrieval, and it governs nothing until an "
+    "operator approves it."
+)
+
+
+def kb_get_pending_fn(
+    *,
+    pending: PendingQueue,
+    pending_id: str,
+    principal_name: str,
+    can_resolve: bool,
+) -> PendingDetailResponse:
+    """Read back the postimage of a parked proposal (issue #256).
+
+    Ownership is the AUTHENTICATED PRINCIPAL recorded at propose time:
+
+    - a principal that could RESOLVE the entry may read it, since it can
+      already see the content by approving it, so withholding it protects
+      nothing;
+    - otherwise the caller's principal must be the one that made the proposal.
+
+    ``source_session`` deliberately plays no part. An earlier version scoped on
+    it, which was no boundary at all: the pending listing publishes
+    ``source_session`` for every entry to any authenticated caller, so a reader
+    could list the queue, copy somebody else's id and session, and ask for their
+    draft. That was demonstrated in review, not theorised.
+
+    An entry with no recorded proposer predates this field, so its ownership
+    cannot be established and it is resolver-only rather than open.
+
+    A postimage the secret scanner flagged is withheld from everyone except a
+    resolver. The proposer already held that content, but handing it back turns
+    the queue into a place to retrieve a credential from, and the entry's own
+    metadata (the pattern name) is returned instead so the caller still learns
+    why.
+    """
+    try:
+        entry = pending.get(pending_id)
+    except PendingNotFoundError:
+        return PendingDetailResponse(
+            status="not_found", pending_id=pending_id, note=_PENDING_NOTE,
+        )
+    meta = entry.get("meta") or {}
+    owner = meta.get("proposer_principal") or ""
+    if not can_resolve and (not owner or owner != principal_name):
+        return PendingDetailResponse(
+            status="forbidden", pending_id=pending_id,
+            note="a parked proposal is readable by the principal that made it, "
+                 "or by a principal that could resolve it",
+        )
+    if not can_resolve and meta.get("secret_scan_flagged"):
+        return PendingDetailResponse(
+            status="forbidden_secret_flagged", pending_id=pending_id,
+            matching_pattern=meta.get("matching_pattern"),
+            note="the secret scanner flagged this postimage, so it is readable "
+                 "only by a principal that could resolve it",
+        )
+    return PendingDetailResponse(
+        status="ok",
+        pending_id=pending_id,
+        in_force=False,
+        note=_PENDING_NOTE,
+        target_path=entry.get("target_path"),
+        proposal_type=entry.get("proposal_type"),
+        postimage=entry.get("postimage"),
+        created_at=entry.get("enqueued_at"),
+        reason=meta.get("reason"),
+        matching_pattern=meta.get("matching_pattern"),
+    )
+
+
 def kb_list_pending_fn(*, pending: PendingQueue) -> PendingListResponse:
     return PendingListResponse(
         pending=[
             PendingEntry(
                 pending_id=e["pending_id"],
+                state=e.get("state", "pending"),
                 proposal_type=e["proposal_type"],
                 target_path=e["target_path"],
                 confidence=e.get("confidence"),

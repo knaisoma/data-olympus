@@ -6,7 +6,9 @@ tier: T2
 title: NestJS Module Structure
 description: Prescribes the directory layout and naming conventions for NestJS modules in Acme backend services.
 tags: [nestjs, backend, architecture, typescript]
-timestamp: 2026-06-24
+generated:
+  by: human:data-olympus-maintainers
+  at: "2026-06-24T00:00:00Z"
 ---
 # Purpose
 

@@ -63,6 +63,7 @@ def _build_health(state: ServerState) -> HealthResponse:
         push_queue_size=state.push_queue_size,
         push_queue_frozen=state.push_queue_frozen,
         path_locks_held=state.pending.locks_held() if state.pending else 0,
+        path_locks=state.pending.held_locks() if state.pending else [],
         last_index_build_status=state.last_index_build_status,
         last_index_error=state.last_index_error,
         last_index_error_at=state.last_index_error_at,
@@ -540,6 +541,7 @@ def register_routes(
                 remote_addr=request.client.host if request.client else "unknown",
                 audit_log=state.audit_log,
                 can_auto_commit=principal.can_auto_commit,
+                proposer_principal=principal.name,
                 max_text_bytes=state.config.max_text_bytes,
                 serializer=state.write_serializer, idx=state.idx,
                 evidence=body.get("evidence", []),
@@ -589,6 +591,7 @@ def register_routes(
                 remote_addr=request.client.host if request.client else "unknown",
                 audit_log=state.audit_log,
                 can_auto_commit=principal.can_auto_commit,
+                proposer_principal=principal.name,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
                 evidence=body.get("evidence", []),
@@ -652,6 +655,30 @@ def register_routes(
             from data_olympus.tools_write import kb_list_pending_fn
             resp = await _offload(kb_list_pending_fn, pending=state.pending)
             return JSONResponse(resp.model_dump())
+
+        @app.custom_route("/api/v1/pending/{pending_id}", methods=["GET"])
+        async def get_pending(request: Request) -> JSONResponse:
+            # Requires an authenticated principal when auth is configured, like
+            # the listing route above, because this returns the actual proposed
+            # CONTENT rather than only its metadata. Which entry a caller may
+            # see is then decided by kb_get_pending_fn from the AUTHENTICATED
+            # principal: the one that made the proposal, or one holding
+            # `resolve`.
+            principal, denied = _authorize(request, registry)
+            if denied is not None:
+                return denied
+            if state.pending is None:
+                return JSONResponse({"error": "not_found"}, status_code=404)
+            from data_olympus.tools_write import kb_get_pending_fn
+            resp = await _offload(
+                kb_get_pending_fn,
+                pending=state.pending,
+                pending_id=request.path_params["pending_id"],
+                principal_name=principal.name,
+                can_resolve=principal.has(CAP_RESOLVE),
+            )
+            code = {"ok": 200, "not_found": 404}.get(resp.status, 403)
+            return JSONResponse(resp.model_dump(), status_code=code)
 
         @app.custom_route("/api/v1/audit", methods=["GET"])
         async def audit(request: Request) -> JSONResponse:
@@ -883,6 +910,7 @@ def register_routes(
                 blocklist=state.blocklist, audit_log=state.audit_log,
                 remote_addr=request.client.host if request.client else "unknown",
                 can_auto_commit=principal.can_auto_commit,
+                proposer_principal=principal.name,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 max_files=state.config.max_bootstrap_files,
                 serializer=state.write_serializer,

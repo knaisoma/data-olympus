@@ -57,6 +57,16 @@ class Config:
     # are NEVER reclaimed by this TTL (they live until resolve/expiry). Startup
     # reclaims every auto-commit lock unconditionally (a fresh process holds none).
     auto_commit_lock_ttl_sec: int = 600
+    # How long a claimed pending entry may sit before the sweep
+    # RECONCILES it (issues #253, #254). Age only selects what to
+    # look at; the outcome comes from durable evidence.
+    pending_claim_ttl_sec: int = 900
+    # Operator additions to the governed-action vocabulary (issue #257).
+    # These EXTEND the shipped lists in enforce_policy; they never replace
+    # them, so enabling one cannot silently drop coverage the product had.
+    governed_extra_keywords: tuple[str, ...] = ()
+    governed_extra_path_globs: tuple[str, ...] = ()
+    governed_extra_command_patterns: tuple[str, ...] = ()
     worktree_idle_sec: int = 3600
     git_key_path: str = "/tmp/git-key"
     audit_log_path: str = "/state/audit/events.log"
@@ -279,6 +289,55 @@ def _env_bool(raw: str) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+# Bounds on the operator-supplied governed vocabulary (issue #257). The
+# classifier runs on EVERY classified action and compiles a regex per keyword,
+# so an unbounded list is operator-induced latency: a 10,000-keyword
+# configuration took one classification of 4,000 characters from roughly 0.44 ms
+# to 219 ms in review. These are generous next to any real vocabulary and exist
+# to stop a runaway, not to ration.
+MAX_GOVERNED_ENTRIES = 500
+MAX_GOVERNED_ENTRY_LEN = 200
+
+
+def _csv_tuple(name: str) -> tuple[str, ...]:
+    """A comma-separated env list: trimmed, de-duplicated and bounded.
+
+    Empty or unset yields the empty tuple, which every consumer treats as "add
+    nothing", so an unset knob is exactly the shipped behaviour.
+
+    Over-long entries are DROPPED and an over-long list is truncated, both with
+    a warning naming the variable. Silently accepting either would let an
+    operator believe coverage is in force when it is not, which is the failure
+    mode worth avoiding here; silence is the one thing an enforcement setting
+    must not do.
+    """
+    raw = os.getenv(name, "")
+    seen: dict[str, None] = {}
+    dropped = 0
+    for part in raw.split(","):
+        entry = part.strip()
+        if not entry:
+            continue
+        if len(entry) > MAX_GOVERNED_ENTRY_LEN:
+            dropped += 1
+            continue
+        seen.setdefault(entry, None)
+    if dropped:
+        _log.warning(
+            "%s: dropped %d entr%s longer than %d characters",
+            name, dropped, "y" if dropped == 1 else "ies", MAX_GOVERNED_ENTRY_LEN,
+        )
+    entries = tuple(seen)
+    if len(entries) > MAX_GOVERNED_ENTRIES:
+        _log.warning(
+            "%s: %d entries exceeds the %d-entry limit; keeping the first %d. "
+            "The rest are NOT in force.",
+            name, len(entries), MAX_GOVERNED_ENTRIES, MAX_GOVERNED_ENTRIES,
+        )
+        entries = entries[:MAX_GOVERNED_ENTRIES]
+    return entries
+
+
 def load_config() -> Config:
     """Load configuration from environment, applying defaults."""
     threshold = float(os.environ.get("KB_CONFIDENCE_THRESHOLD", "0.85"))
@@ -311,6 +370,22 @@ def load_config() -> Config:
             auto_commit_lock_ttl_sec,
         )
         auto_commit_lock_ttl_sec = 600
+    pending_claim_ttl_sec = int(os.getenv("KB_PENDING_CLAIM_TTL_SEC", "900"))
+    if pending_claim_ttl_sec <= 0:
+        # A non-positive TTL would select EVERY claim on every pass, including
+        # one a live resolver is still holding while it waits on the write
+        # serializer. Reconciliation is fenced and never restores without
+        # evidence, so this cannot corrupt state, but it would churn and would
+        # report a live resolve as uncertain. Clamp to the default.
+        _log.warning(
+            "KB_PENDING_CLAIM_TTL_SEC=%s is non-positive; clamping to 900s "
+            "(it would reconcile claims a live resolver still holds)",
+            pending_claim_ttl_sec,
+        )
+        pending_claim_ttl_sec = 900
+    governed_extra_keywords = _csv_tuple("KB_GOVERNED_EXTRA_KEYWORDS")
+    governed_extra_path_globs = _csv_tuple("KB_GOVERNED_EXTRA_PATH_GLOBS")
+    governed_extra_command_patterns = _csv_tuple("KB_GOVERNED_EXTRA_COMMAND_PATTERNS")
     worktree_idle_sec = int(os.getenv("KB_WORKTREE_IDLE_SEC", "3600"))
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
     audit_log_path = os.getenv("KB_AUDIT_LOG_PATH", "/state/audit/events.log")
@@ -401,6 +476,10 @@ def load_config() -> Config:
         pending_timeout_sec=pending_timeout_sec,
         pending_queue_cap=pending_queue_cap,
         auto_commit_lock_ttl_sec=auto_commit_lock_ttl_sec,
+        pending_claim_ttl_sec=pending_claim_ttl_sec,
+        governed_extra_keywords=governed_extra_keywords,
+        governed_extra_path_globs=governed_extra_path_globs,
+        governed_extra_command_patterns=governed_extra_command_patterns,
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
         audit_log_path=audit_log_path,

@@ -1,12 +1,18 @@
 """Subprocess wrappers around the git CLI."""
 from __future__ import annotations
 
+import contextlib
 import os
+import re
 import subprocess
+import tempfile
+import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractContextManager
     from pathlib import Path
 
 
@@ -54,11 +60,236 @@ class FfMergeResult:
     remote_sha: str | None = None
 
 
+# git's patch divider, and the byte set git's own isspace() accepts after it.
+#
+# This is git's table (ctype.c), NOT C's and NOT Python's. It is exactly
+# space, tab, CR and LF. Git deliberately excludes vertical tab and form feed,
+# and Python's str.isspace() additionally accepts a swathe of Unicode. Every one
+# of those extras is a construction where this parser would call something a
+# patch divider that git does not, truncate there, and accept a trailer block
+# git never parsed. Copy the table; do not approximate it.
+# git's trailer token grammar (trailer.c): ASCII alphanumeric and hyphen only.
+# A key outside it is not a trailer line, and one such line voids the block.
+_TRAILER_KEY_RE = re.compile(r"[A-Za-z0-9-]+")
+
+_PATCH_DIVIDER = "---"
+_ASCII_SPACE = " \t\r\n"
+
+
+def _trailer_env() -> dict[str, str]:
+    """A minimal environment that isolates git from ALL inherited configuration.
+
+    Delegating the parse to git is only sound if git is answering the question
+    this product asked. Configuration can change the answer: a
+    ``[trailer "KB-Agent-Identity"] key = KB-Pending-Id`` stanza makes git
+    RENAME an ordinary builder-owned key into the claim key, so an ordinary
+    write whose agent identity is somebody else's pending id parses as that
+    claim's evidence. Reproduced against git 2.50.1. ``trailer.<alias>.key`` and
+    ``core.commentChar`` shift block recognition the same way.
+
+    So the environment is CONSTRUCTED rather than inherited: no global, system
+    or environment-injected config, and a ceiling that stops repository
+    discovery from walking up out of the scratch directory the filter runs in.
+    ``interpret-trailers`` is a pure text filter and needs no repository.
+    """
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "LC_ALL": "C",
+    }
+
+
+def _parse_trailers(
+    message: bytes, *, timeout_sec: float = 10.0,
+) -> dict[bytes, bytes] | None:
+    """Trailers of a commit message, as GIT parses them.
+
+    This asks git rather than reimplementing it, and that is a deliberate
+    reversal. The hand-written version was corrected five times, each for a
+    different message-boundary rule it did not know: a patch divider, the
+    whitespace byte that must follow one, git's own whitespace table rather than
+    Python's, end-of-input where no byte follows, and the scissors cutoff. Every
+    one was a way for agent-controlled commit text to manufacture evidence that
+    an operator decision had been applied.
+
+    Delegation is only worth anything if nothing on either side of it quietly
+    reinterprets the answer, so the message goes in as BYTES and comes back as
+    bytes. ``text=True`` applies universal-newline decoding, which turns a CR
+    inside a trailer value into a line break and splits one trailer into two;
+    ``str.strip`` removes Unicode whitespace git preserved. Both widened
+    acceptance while appearing to be plumbing.
+
+    A DUPLICATED key returns nothing at all. git emits both values, and picking
+    either one is this product's choice rather than git's answer; ambiguous
+    evidence should not close an operator's decision.
+
+    A message that does not end in a newline yields nothing, conservatively:
+    ``git interpret-trailers`` appends a missing final newline before parsing,
+    so it would answer about a different input than the one recovery holds.
+    Every message this product writes ends in a newline.
+
+    Returns ``None`` when git could not be run or did not finish, which is
+    DISTINCT from an empty mapping. An empty mapping means git parsed the
+    message and found no trailers; ``None`` means the question was not answered,
+    and the caller must treat that as uncertainty rather than as a completed
+    negative search.
+    """
+    if not message.endswith(b"\n"):
+        return {}
+    if timeout_sec <= 0:
+        return None
+    with tempfile.TemporaryDirectory(prefix="kb-trailers-") as ceiling:
+        # Run in a CHILD of the scratch directory with the scratch directory as
+        # the ceiling. Setting the ceiling to git's own current directory does
+        # nothing: git EXCLUDES the current directory when calculating ancestor
+        # ceilings, so discovery walked straight past it and picked up the
+        # config of whatever repository happened to contain the temp directory.
+        scratch = os.path.join(ceiling, "run")
+        os.mkdir(scratch)
+        env = _trailer_env()
+        env["GIT_CEILING_DIRECTORIES"] = os.path.realpath(ceiling)
+        try:
+            result = subprocess.run(
+                ["git", "-c", "trailer.separators=:",
+                 "interpret-trailers", "--parse"],
+                input=message, check=False, capture_output=True,
+                cwd=scratch, env=env, timeout=timeout_sec,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+    if result.returncode != 0:
+        return None
+    trailers: dict[bytes, bytes] = {}
+    duplicated: set[bytes] = set()
+    # Keys and values stay BYTES all the way to the comparison. Decoding with
+    # errors="replace" turned an invalid UTF-8 byte into U+FFFD, so a commit
+    # naming `a\xff.md` compared equal to a claim for the literal `a\uFFFD.md`
+    # and finalised an unrelated target's claim. Any lossy transformation
+    # between git's answer and the comparison is a way to make two different
+    # things look the same.
+    #
+    # Split on LF only. The CLI's framing is one trailer per LF-terminated line;
+    # everything inside a line is git's, not ours to normalise.
+    for raw in result.stdout.split(b"\n"):
+        if not raw:
+            continue
+        key, sep, value = raw.partition(b":")
+        if not sep:
+            continue
+        # git separates key and value with ": ", so exactly one leading space is
+        # framing. Nothing else is removed.
+        if value.startswith(b" "):
+            value = value[1:]
+        if key in trailers:
+            duplicated.add(key)
+        trailers[key] = value
+    for key in duplicated:
+        trailers.pop(key, None)
+    return trailers
+
+
+class ClaimEvidenceAtRiskError(Exception):
+    """A history-rewriting operation was deferred to preserve claim evidence.
+
+    An interrupted resolve may have left a trailer-bearing commit on a session
+    branch and no durable record of it. A rebase can drop that commit (git drops
+    a clean cherry-pick equivalent, and one that becomes empty), a squash can
+    rewrite the trailer away, and deleting the branch removes it outright. Any
+    of those turns "did this decision commit?" into a question nothing can
+    answer, so the operation defers and is retried later (issues #253, #254).
+    """
+
+    def __init__(self, *, ref: str, pending_ids: list[str]) -> None:
+        self.ref = ref
+        self.pending_ids = pending_ids
+        super().__init__(
+            f"deferred on {ref}: would destroy commit evidence for unresolved "
+            f"claim(s) {', '.join(pending_ids)}"
+        )
+
+
 class GitOps:
     """Wraps git subprocess calls for a single repo path."""
 
-    def __init__(self, repo_path: Path) -> None:
+    def __init__(
+        self,
+        repo_path: Path,
+        *,
+        claim_guard: Callable[[str], list[Any]] | None = None,
+        serializer: AbstractContextManager[Any] | None = None,
+    ) -> None:
         self._repo = repo_path
+        # Returns the claims on a ref whose evidence a rewrite would destroy.
+        # Optional: without it these operations behave exactly as before.
+        self._claim_guard = claim_guard
+        # Held across the guard check AND the history mutation it authorises.
+        # Checking and then rewriting without it lets a resolver record its
+        # write context in between, so the guard protects an earlier snapshot
+        # of history rather than the history actually being rewritten.
+        self._serializer = serializer or contextlib.nullcontext()
+
+    def _defer_if_claims_at_risk(self, ref: str) -> None:
+        """Reconcile claims on ``ref``, then defer if any evidence is still at
+        risk.
+
+        The guard RECONCILES first rather than only inspecting: a claim whose
+        outcome can be established is finished here and stops blocking, so a
+        rewrite is deferred only for genuinely unresolved evidence.
+
+        It fails CLOSED. An unreadable guard state, or a ref that cannot be
+        identified, is uncertainty, and uncertainty defers rather than
+        permitting the rewrite: the whole point is to preserve evidence whose
+        state we cannot currently determine.
+        """
+        if self._claim_guard is None:
+            return
+        if not ref:
+            raise ClaimEvidenceAtRiskError(ref="<unknown>", pending_ids=["*"])
+        try:
+            at_risk = self._claim_guard(ref)
+        except Exception as exc:
+            raise ClaimEvidenceAtRiskError(
+                ref=ref, pending_ids=[f"<guard unreadable: {exc}>"],
+            ) from exc
+        if not at_risk:
+            return
+        ids = [
+            str(c.get("pending_id") if isinstance(c, dict) else c)
+            for c in at_risk
+        ]
+        raise ClaimEvidenceAtRiskError(ref=ref, pending_ids=ids)
+
+    def worktree_remove_guarded(
+        self, worktree_path: str, *, branch: str, force: bool = False,
+    ) -> None:
+        """``worktree_remove`` that refuses while claim evidence is at risk.
+
+        Removing the worktree removes the checkout a claim's commit would be
+        searched from, so it is as destructive to the evidence as deleting the
+        branch and needs the same guard rather than relying on a caller to have
+        checked first (issues #253, #254).
+        """
+        with self._serializer:
+            self._defer_if_claims_at_risk(branch)
+            self.worktree_remove(worktree_path, force=force)
+
+    def delete_branch_guard(self, branch: str) -> None:
+        """Raise :class:`ClaimEvidenceAtRiskError` if deleting ``branch`` (or
+        removing its worktree) would destroy claim evidence. Lets a caller check
+        BEFORE it starts a multi-step teardown, so it defers the whole sequence
+        rather than removing the worktree and then failing on the branch."""
+        self._defer_if_claims_at_risk(branch)
+
+    def current_branch(self, worktree_path: str) -> str:
+        """The branch checked out in ``worktree_path``, or "" if unreadable."""
+        result = subprocess.run(
+            ["git", "-C", worktree_path, "rev-parse", "--abbrev-ref", "HEAD"],
+            check=False, capture_output=True, text=True,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
 
     def _run(
         self,
@@ -149,6 +380,118 @@ class GitOps:
         )
         return result.returncode == 0
 
+    def _log_bodies(
+        self, *, ref: str, since_sha: str, timeout_sec: float,
+    ) -> list[bytes] | None:
+        """Raw commit bodies in ``since_sha..ref``, as git emitted them.
+
+        Separated so a test can supply exact bytes: mocking ``subprocess.run``
+        for the log would also intercept the delegated trailer parse, which runs
+        through the same call.
+
+        BYTES, and ``--encoding=none`` so git does not re-encode. ``text=True``
+        applies universal-newline decoding, which turns a CR inside a trailer
+        value into a line break and splits one trailer into two before the
+        parser ever sees it. ``None`` means the log could not be read, which the
+        caller treats as uncertainty.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self._repo), "log", "-z", "--encoding=none",
+                 "--format=%B", f"{since_sha}..{ref}"],
+                check=False, capture_output=True, timeout=timeout_sec,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        return result.stdout.split(b"\0")
+
+    def find_claim_commit(
+        self, *, ref: str, since_sha: str, pending_id: str,
+        target_path: str = "", timeout_sec: float = 30.0,
+    ) -> bool | None:
+        """Is there a commit on ``ref`` after ``since_sha`` that satisfied this claim?
+
+        Recovery for issues #253 and #254 asks this when an interrupted resolve
+        left no durable outcome record.
+
+        The match is deliberately strict, because commit message content is
+        AGENT-CONTROLLED. A substring search would accept any of these as proof:
+
+            KB-Agent-Identity: user KB-Pending-Id: <id>
+            memory: add "KB-Pending-Id: <id>.md"
+
+        Neither needs a newline, and the second is a legal filename that git
+        prints in a log body. Accepting either would let an ordinary
+        auto-committed write close an operator decision whose own write never
+        happened. So each commit's trailer block is parsed on its own, the
+        ``KB-Pending-Id`` value must match exactly on its own line, and the same
+        commit's ``KB-Target-Path`` must be the claim's target: the evidence is
+        bound to the operation it claims to prove.
+
+        Three-valued on purpose:
+
+        - ``True``: found. The decision committed.
+        - ``False``: searched successfully and no commit satisfies the claim.
+        - ``None``: could not search (no ref, no pre-write sha, a missing
+          branch, a timeout, an unreadable repository), or the claim id or
+          target path cannot be strictly UTF-8 encoded, so no commit could
+          prove it whatever the log contains. ``timeout_sec`` bounds
+          the WHOLE search, including every delegated trailer parse, because
+          this runs while the write serializer is held.
+
+        ``False`` is deliberately NOT proof that nothing committed. A rebase can
+        drop a commit that upstream already acquired as an equivalent patch, and
+        a squash can rewrite the trailer away, both while leaving a perfectly
+        readable branch. Only the caller's own recorded outcome proves a
+        non-commit; a negative search here means uncertain.
+        """
+        if not ref or not since_sha or not pending_id:
+            return None
+        # Compare as bytes against strictly-encoded expectations. A claim id or
+        # target path that is not valid UTF-8 cannot be proven by any commit, so
+        # the answer is uncertain before searching, whatever the log contains.
+        try:
+            want_id = pending_id.encode("utf-8", errors="strict")
+            want_path = target_path.encode("utf-8", errors="strict")
+        except UnicodeEncodeError:
+            return None
+        deadline = time.monotonic() + timeout_sec
+        bodies = self._log_bodies(ref=ref, since_sha=since_sha,
+                                  timeout_sec=timeout_sec)
+        if bodies is None:
+            return None
+        for message in bodies:
+            if not message.strip():
+                continue
+            # Cheap pre-filter before shelling out to git for the real parse.
+            # A message that does not contain the key at all cannot yield that
+            # trailer, so skipping it can only REDUCE what we accept, never
+            # widen it. Reconciliation is rare and this keeps it to roughly one
+            # subprocess per candidate commit rather than one per commit in the
+            # range.
+            if b"KB-Pending-Id" not in message:
+                continue
+            # ONE deadline across the whole search, not one per candidate.
+            # Reconciliation runs holding the write serializer, so a range with
+            # many candidates could otherwise stall unrelated writes for a
+            # multiple of the timeout. Running out of time is uncertainty, which
+            # is the safe answer: the claim keeps its lock and is retried.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            trailers = _parse_trailers(message, timeout_sec=remaining)
+            if trailers is None:
+                # The question was not answered, so the search did not complete.
+                return None
+            if trailers.get(b"KB-Pending-Id") != want_id:
+                continue
+            if target_path and trailers.get(b"KB-Target-Path") != want_path:
+                continue
+            return True
+        return False
+
     def worktree_add(self, worktree_path: str, *, branch: str) -> None:
         """git worktree add <worktree_path> for <branch>. Idempotent: a no-op
         if the worktree already exists at that path.
@@ -185,11 +528,17 @@ class GitOps:
         """git branch -D <branch> in the main repo. Idempotent: a no-op if the
         branch does not exist. Used after worktree removal so a GC'd session's
         ``kb-session/<safe_id>`` branch does not linger and collide with the
-        ``worktree add -b`` a returning session performs."""
-        subprocess.run(
-            ["git", "-C", str(self._repo), "branch", "-D", branch],
-            check=False, capture_output=True,
-        )
+        ``worktree add -b`` a returning session performs.
+
+        Defers with :class:`ClaimEvidenceAtRiskError` while an unresolved claim
+        on this branch has begun its write: deleting the ref would destroy the
+        only remaining evidence of whether that decision committed."""
+        with self._serializer:
+            self._defer_if_claims_at_risk(branch)
+            subprocess.run(
+                ["git", "-C", str(self._repo), "branch", "-D", branch],
+                check=False, capture_output=True,
+            )
 
     def files_changed_in_commit(
         self, sha: str, *, worktree_path: str, timeout_sec: int = 10,
@@ -285,7 +634,16 @@ class GitOps:
         session branch onto it. Returns the resulting ``origin/main`` sha (or ""
         when there is no origin). Raises :class:`RebaseConflictError` on a conflict
         (the caller demotes to pending). ``subprocess.TimeoutExpired`` propagates
-        for a hung remote (retryable). No-op when there is no ``origin`` remote."""
+        for a hung remote (retryable). No-op when there is no ``origin`` remote.
+
+        Defers with :class:`ClaimEvidenceAtRiskError` when an unresolved claim on
+        this branch has already begun its write, because the rebase could drop
+        the very commit that would prove that decision committed."""
+        with self._serializer:
+            self._defer_if_claims_at_risk(self.current_branch(worktree_path))
+            return self._refresh_base_locked(worktree_path, timeout_sec)
+
+    def _refresh_base_locked(self, worktree_path: str, timeout_sec: int) -> str:
         remotes = subprocess.run(
             ["git", "-C", worktree_path, "remote"],
             check=False, capture_output=True, text=True, timeout=timeout_sec,

@@ -261,3 +261,40 @@ def _config_stub():
         confidence_threshold=0.85,
         http_port=8080,
     )
+
+
+def test_health_reports_which_paths_hold_locks(tmp_index_path) -> None:  # noqa: ANN001
+    """`path_locks_held` is a count, and a count of 1 does not say WHICH path is
+    wedged (issue #253). The detail list makes a leaked lock diagnosable from
+    the health endpoint instead of by exec-ing into the pod."""
+    from data_olympus.index import Index
+    from data_olympus.tools_read import kb_health_fn
+
+    idx = Index(tmp_index_path)
+    locks = [{
+        "target_path": "operator/agent-overrides/claude.md",
+        "owner_kind": "pending",
+        "pending_id": "a" * 32,
+        "acquired_at": 1788812551.395528,
+        "age_seconds": 28800.0,
+    }]
+    report = kb_health_fn(
+        idx=idx, last_git_pull_at=None, staleness_degraded_sec=600,
+        path_locks_held=1, path_locks=locks,
+    )
+
+    assert report.path_locks_held == 1
+    assert len(report.path_locks) == 1
+    assert report.path_locks[0]["target_path"] == "operator/agent-overrides/claude.md"
+    assert report.path_locks[0]["age_seconds"] == 28800.0
+
+
+def test_health_path_locks_defaults_to_empty(tmp_index_path) -> None:  # noqa: ANN001
+    from data_olympus.index import Index
+    from data_olympus.tools_read import kb_health_fn
+
+    report = kb_health_fn(
+        idx=Index(tmp_index_path), last_git_pull_at=None,
+        staleness_degraded_sec=600,
+    )
+    assert report.path_locks == []

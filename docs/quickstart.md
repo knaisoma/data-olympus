@@ -21,14 +21,16 @@ data-olympus-mcp --help
 ```
 
 To test an announced release candidate without replacing the persistent stable
-tool, select its exact PEP 440 version:
+tool, select its exact PEP 440 version. Replace `X.Y.ZrcN` with the candidate
+named on the [releases page](https://github.com/knaisoma/data-olympus/releases),
+if any:
 
 ```bash
-uvx --from 'data-olympus==0.7.1rc1' data-olympus --help
+uvx --from 'data-olympus==X.Y.ZrcN' data-olympus --help
 ```
 
-See the [releases page](https://github.com/knaisoma/data-olympus/releases)
-for the current candidate, if any.
+[Release channels](operations.md#71-release-channels) explains each channel,
+verifying a candidate before adopting it, and rolling back.
 
 ## 2. Create a bundle and run the server
 

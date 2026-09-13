@@ -248,6 +248,141 @@ def build_receipt(repo_root: Path, source_commit: str) -> dict[str, object]:
     }
 
 
+# --- reference comparison (issue #158) ----------------------------------------
+
+# What a comparison reads as the RECORDED INPUTS of a run: the revision it was
+# measured at, the material it was measured over, the environment it ran in, and
+# the commands, seeds and retrieval configuration it declares. Matching these
+# establishes that two runs DECLARE the same inputs. It does not establish that
+# the same code actually executed: this module records what a receipt says, it
+# does not execute or observe the benchmark, and `scripts/check_benchmark_docs.py`
+# already makes the same distinction about the environment it records.
+INPUT_FIELDS: tuple[tuple[str, ...], ...] = (
+    ("schema_version",),
+    ("source_commit",),
+    ("source_tree", "sha256"),
+    ("inputs", "corpora", "sha256"),
+    ("inputs", "queries", "sha256"),
+    ("dependency_lock", "sha256"),
+    ("environment",),
+    ("retrieval",),
+    ("commands",),
+    ("seeds",),
+)
+
+# What a comparison reads as the RECORDED RESULTS. Artifact digests are compared
+# EXACTLY. There is deliberately no tolerance mode: a threshold would have to be
+# defended per metric, and a digest either matches or it does not.
+RESULT_FIELDS: tuple[tuple[str, ...], ...] = (
+    ("outputs", "sha256"),
+    ("summary",),
+)
+
+_PROVENANCE = (
+    "Compares RECORDED inputs and RECORDED results between two receipts. A "
+    "receipt describes a run; it is not produced by observing one, so a match "
+    "means the two receipts agree, not that the same execution occurred. "
+    "Maintainer-produced results stay labelled as such until a third party "
+    "publishes its own receipt against the same reference."
+)
+
+
+class ReceiptFieldMissingError(ValueError):
+    """A receipt lacks a field the comparison needs.
+
+    Raised rather than reported as a match: two receipts that both omit a field
+    agree about nothing, and silently counting that as agreement is how a
+    comparison starts overstating what it establishes.
+    """
+
+
+def _field_value(receipt: Mapping[str, object], path: tuple[str, ...]) -> object:
+    value: object = receipt
+    for key in path:
+        if not isinstance(value, Mapping) or key not in value:
+            raise KeyError(".".join(path))
+        value = value[key]
+    return value
+
+
+def _read_fields(
+    receipt: Mapping[str, object], fields: tuple[tuple[str, ...], ...], *, label: str,
+) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for path in fields:
+        try:
+            values[".".join(path)] = _field_value(receipt, path)
+        except KeyError as exc:
+            raise ReceiptFieldMissingError(
+                f"{label} receipt is missing required field {exc.args[0]!r}"
+            ) from None
+    return values
+
+
+def _differences(
+    reference: Mapping[str, object], candidate: Mapping[str, object],
+) -> list[dict[str, object]]:
+    return [
+        {"field": name, "reference": reference[name], "candidate": candidate[name]}
+        for name in reference
+        if reference[name] != candidate[name]
+    ]
+
+
+def compare_receipts(
+    *, reference: Mapping[str, object], candidate: Mapping[str, object],
+) -> dict[str, object]:
+    """Compare a candidate receipt against a named reference receipt.
+
+    ``reproduction_status`` is the outcome of a COMPARISON, never a property a
+    single receipt can carry: a receipt that only describes itself has nothing
+    to disagree with. The two levels fail independently. Matching recorded
+    inputs says the declared commit, environment, commands, seeds and
+    configuration agree. Matching recorded results says the artifact digests and
+    reported summary agree. A run can satisfy the first and fail the second,
+    which is the discrepancy worth reporting, and it can satisfy the second and
+    fail the first, which is why the levels are reported separately rather than
+    collapsed into one verdict.
+
+    Raises :class:`ReceiptFieldMissingError` when either receipt lacks a field
+    the comparison needs.
+    """
+    ref_inputs = _read_fields(reference, INPUT_FIELDS, label="reference")
+    cand_inputs = _read_fields(candidate, INPUT_FIELDS, label="candidate")
+    ref_results = _read_fields(reference, RESULT_FIELDS, label="reference")
+    cand_results = _read_fields(candidate, RESULT_FIELDS, label="candidate")
+
+    input_differences = _differences(ref_inputs, cand_inputs)
+    result_differences = _differences(ref_results, cand_results)
+    inputs_matched = not input_differences
+    results_matched = not result_differences
+
+    if inputs_matched and results_matched:
+        status = "reproduced"
+    elif inputs_matched:
+        status = "inputs_matched_results_differ"
+    elif results_matched:
+        status = "inputs_differ_results_matched"
+    else:
+        status = "unreproduced"
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "reference_source_commit": reference.get("source_commit"),
+        "candidate_source_commit": candidate.get("source_commit"),
+        "inputs": {
+            "status": "matched" if inputs_matched else "mismatched",
+            "differences": input_differences,
+        },
+        "results": {
+            "status": "matched" if results_matched else "mismatched",
+            "differences": result_differences,
+        },
+        "reproduction_status": status,
+        "provenance": _PROVENANCE,
+    }
+
+
 def _group_sha(receipt: Mapping[str, object], *path: str) -> str | None:
     value: object = receipt
     for key in path:
@@ -366,8 +501,26 @@ def main(argv: list[str] | None = None) -> int:
     write_parser.add_argument("--source-commit")
     verify_parser = subparsers.add_parser("verify", help="verify the committed receipt")
     verify_parser.add_argument("--receipt", type=Path, default=RECEIPT_PATH)
+    compare_parser = subparsers.add_parser(
+        "compare",
+        help="compare a candidate receipt against a named reference receipt",
+    )
+    compare_parser.add_argument("--reference", type=Path, required=True)
+    compare_parser.add_argument("--candidate", type=Path, required=True)
     args = parser.parse_args(argv)
     repo_root = Path(__file__).resolve().parent.parent
+
+    if args.command == "compare":
+        try:
+            report = compare_receipts(
+                reference=json.loads(args.reference.read_text(encoding="utf-8")),
+                candidate=json.loads(args.candidate.read_text(encoding="utf-8")),
+            )
+        except ReceiptFieldMissingError as exc:
+            print(f"benchmark receipt compare: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report["reproduction_status"] == "reproduced" else 1
 
     if args.command == "write":
         path = write_receipt(

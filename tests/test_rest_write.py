@@ -231,3 +231,43 @@ async def test_rest_list_pending_returns_entries(http_app) -> None:
         resp = await client.get("/api/v1/pending")
     body = resp.json()
     assert len(body["pending"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_rest_pending_readback_does_not_leak_into_listing(http_app) -> None:
+    """The listing stays metadata-only. Only the scoped detail route returns
+    content, so an ordinary observability call cannot sweep up every draft."""
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/api/v1/propose/memory",
+            json={"text": "another unapproved draft", "tags": [],
+                  "source_session": "session-A", "agent_identity": "claude",
+                  "confidence": 0.4},
+        )
+        listing = await client.get("/api/v1/pending")
+
+    assert listing.status_code == 200
+    assert "another unapproved draft" not in listing.text
+
+
+@pytest.mark.asyncio
+async def test_rest_pending_readback_is_open_when_auth_is_unconfigured(http_app) -> None:
+    """With no principals configured every caller can already resolve any entry,
+    and so can already see its content by approving it. Gating the readback more
+    tightly than resolve would protect nothing, so it matches the posture of
+    every other write surface here. The session scoping is enforced where it
+    means something: see tests/test_rest_principals.py."""
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        parked = await client.post(
+            "/api/v1/propose/memory",
+            json={"text": "a draft nobody approved", "tags": [],
+                  "source_session": "session-A", "agent_identity": "claude",
+                  "confidence": 0.4},
+        )
+        pending_id = parked.json()["pending_id"]
+        resp = await client.get(f"/api/v1/pending/{pending_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["in_force"] is False

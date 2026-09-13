@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from data_olympus.format.document import Document
 from data_olympus.format.validate import (
     is_expired,
@@ -52,6 +54,76 @@ def test_missing_recommended_fields_are_warnings(tmp_path: Path):
     )
     warns = {f.field for f in validate_document(doc) if f.severity == "warning"}
     assert {"title", "description", "tags", "timestamp"} <= warns
+
+
+_RECOMMENDED_OK = (
+    "---\nid: X-1\ntype: standard\nstatus: active\ntier: T1\n"
+    "title: t\ndescription: d\ntags: [x]\n"
+)
+
+
+def _warnings_by_field(tmp_path: Path, extra: str) -> dict[str, list[str]]:
+    doc = _doc(tmp_path, "x.md", _RECOMMENDED_OK + extra + "---\nbody\n")
+    found: dict[str, list[str]] = {}
+    for f in validate_document(doc, today="2026-09-11"):
+        if f.severity == "warning":
+            found.setdefault(f.field, []).append(f.message)
+    return found
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        'generated: { by: human:x, at: "2026-06-20T22:53:05Z" }\n',
+        "generated: { by: human:x, at: 2026-06-20T22:53:05Z }\n",
+        'timestamp: "2026-01-01"\n',
+    ],
+    ids=["quoted-generated-at", "unquoted-generated-at", "legacy-timestamp"],
+)
+def test_a_content_change_time_satisfies_the_recommendation(tmp_path: Path, extra: str):
+    found = _warnings_by_field(tmp_path, extra)
+    assert "timestamp" not in found
+    assert "generated" not in found
+
+
+def test_no_content_change_time_warns_on_the_timestamp_field(tmp_path: Path):
+    found = _warnings_by_field(tmp_path, "")
+    assert "timestamp" in found
+    message = found["timestamp"][0]
+    assert "generated.at" in message and "timestamp" in message
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "generated: null\n",
+        "generated: yesterday\n",
+        "generated: { by: x, at: 2026-06-20T22:53:05 }\n",
+        "generated: { by: x, at: 2026-06-20 }\n",
+        "generated: { by: x, at: 5 }\n",
+        'generated: { by: x, at: "" }\n',
+        "generated: { by: x, at: null }\n",
+    ],
+    ids=["null", "scalar", "naive-datetime", "date", "number", "blank-at", "null-at"],
+)
+def test_malformed_generated_warns_and_does_not_satisfy(tmp_path: Path, extra: str):
+    found = _warnings_by_field(tmp_path, extra)
+    assert "generated" in found
+    assert "timestamp" in found
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        'generated: { at: "2026-06-20T22:53:05Z" }\n',
+        'generated: { by: "", at: "2026-06-20T22:53:05Z" }\n',
+    ],
+    ids=["missing-by", "empty-by"],
+)
+def test_a_bad_by_warns_but_a_valid_at_still_satisfies(tmp_path: Path, extra: str):
+    found = _warnings_by_field(tmp_path, extra)
+    assert "generated" in found
+    assert "timestamp" not in found
 
 
 def test_reserved_files_are_exempt(tmp_path: Path):

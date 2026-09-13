@@ -3,12 +3,14 @@
 [![knaisoma/data-olympus MCP server](https://glama.ai/mcp/servers/knaisoma/data-olympus/badges/score.svg)](https://glama.ai/mcp/servers/knaisoma/data-olympus)
 [![MCP Marketplace](https://img.shields.io/badge/MCP%20Marketplace-Indexed-blueviolet)](https://getlulu.dev/mcps)
 
+<!-- mcp-name: io.github.knaisoma/data-olympus -->
+
 **New here? Start with [WHY.md](WHY.md).** It is the story behind the project: the
 problem we kept hitting with coding agents, what data-olympus does differently, how
 it relates to Google's Open Knowledge Format, and where our benchmarks say it is
 strong and where it is not. The rest of this README is the technical reference.
 
-data-olympus is a governance-grade knowledge-base format and server for agent workforces. It is readable by [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) (OKF) consumers: it inherits OKF's directory structure, frontmatter conventions, reserved filenames, and link model, then layers governance extensions on top (stable `id`, controlled `type`/`status`/`tier` fields, `supersedes` chains) plus a single-writer MCP server and a CLI. CI proves two concrete directions against official Google OKF commit `d44368c15e38e7c92481c5992e4f9b5b421a801d`: its reference visualization consumer reads every concept in `example-bundle`, and data-olympus imports, lints, indexes, searches, and retrieves the pinned official Bitcoin sample. This is fixture-scoped interoperability evidence, not a blanket guarantee for every OKF bundle or future upstream revision. The result is a git-native, version-controlled document graph of engineering standards, architectural decisions, and project knowledge that agents and humans can read, search, and extend without any proprietary service.
+data-olympus is a governance-grade knowledge-base format and server for agent workforces. It is readable by [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) (OKF) v0.2 consumers: it inherits OKF's directory structure, frontmatter conventions, reserved filenames, and link model, then layers governance extensions on top (stable `id`, controlled `type`/`status`/`tier` fields, `supersedes` chains) plus a single-writer MCP server and a CLI. CI proves two concrete directions against official Google OKF v0.2 commit `ad30107c31c06aec8a7d5636e0d1058118604e6f`: its reference visualization consumer reads every concept in `example-bundle`, and data-olympus imports, lints, indexes, searches, and retrieves the pinned official Bitcoin sample. This is fixture-scoped interoperability evidence, not a blanket guarantee for every OKF bundle or future upstream revision. The result is a git-native, version-controlled document graph of engineering standards, architectural decisions, and project knowledge that agents and humans can read, search, and extend without any proprietary service.
 
 It governs *decisions*, not code. When an agent is about to make a choice (a library, a pattern, a migration), data-olympus surfaces the established standard or decision that should govern that choice. It is deliberately **not** a code-search, reference-finding, or "where is X used" tool: LSP, grep, and Sourcegraph already do that well. The retrieval task it targets is coding-intent to governing-rule, and it helps where current model interaction during vibe-coding is weakest: keeping the model aligned to patterns the team has already established as correct.
 
@@ -41,14 +43,17 @@ data-olympus init my-kb
 data-olympus-mcp --help
 ```
 
-An announced candidate remains opt in through its exact PyPI version:
+An announced candidate remains opt in through its exact PyPI version. Replace
+`X.Y.ZrcN` with the candidate named on the
+[releases page](https://github.com/knaisoma/data-olympus/releases), if any:
 
 ```bash
-uvx --from 'data-olympus==0.7.1rc1' data-olympus --help
+uvx --from 'data-olympus==X.Y.ZrcN' data-olympus --help
 ```
 
-See the [releases page](https://github.com/knaisoma/data-olympus/releases)
-for the current candidate, if any.
+See [release channels](docs/operations.md#71-release-channels) for what each
+channel means, how to verify a candidate before adopting it, and how to roll
+back.
 
 See `docs/quickstart.md` for bundle initialization, server startup, readiness,
 agent registration, and the contributor source installation.
@@ -61,10 +66,11 @@ See `docs/adoption.md` for the full bundle authoring guide.
 - [`docs/quickstart.md`](docs/quickstart.md): verified local-run procedure.
 - [`docs/adoption.md`](docs/adoption.md): bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - [`docs/serving.md`](docs/serving.md): single-replica serving model, read-only replicas, git pull loop, health/readiness/liveness split, proxy headers, audit-log rotation.
-- [`docs/operations.md`](docs/operations.md): production runbook — backup, upgrade, recovery playbooks (degraded/fetch-failed, history rewrite, frozen/demoted push entries, orphaned locks), and the health/alerting model.
+- [`docs/operations.md`](docs/operations.md): production runbook — backup, upgrade, recovery playbooks (degraded/fetch-failed, history rewrite, frozen/demoted push entries, orphaned locks), the health/alerting model, and release channels (stable and candidate, verification, rollback).
 - [`docs/comparison.md`](docs/comparison.md): how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 - [`docs/okf-profile.md`](docs/okf-profile.md): field-by-field OKF profile — which governance extensions are stable, which are runtime-only serving fields, and which are experimental candidates.
 - [`docs/glama.md`](docs/glama.md): Glama registry claim, release, and score-maintenance notes.
+- [`docs/mcp-registry.md`](docs/mcp-registry.md): official MCP Registry notes, what `server.json` declares, and the checklist for publishing.
 - [`docs/enforcement.md`](docs/enforcement.md): turning the KB into a mandatory consultation gate (hooks, `kb enforce`).
 - [`benchmarks/README.md`](benchmarks/README.md): retrieval benchmark methodology and how to reproduce the numbers in `docs/comparison.md`.
 - [`SECURITY.md`](SECURITY.md): supported versions and how to report a vulnerability.

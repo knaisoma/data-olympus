@@ -167,3 +167,40 @@ async def test_rest_playbook_invalid_kind_returns_400(http_app) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/v1/onboarding/playbook?kind=bogus")
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_does_not_500_on_the_proposer_argument(http_app) -> None:  # noqa: ANN001
+    """A correction for issue #256 added `proposer_principal` to the REST
+    bootstrap call before the helper accepted it, so every bootstrap returned
+    HTTP 500.
+
+    This covers the crash and that an entry is actually parked. It does NOT
+    prove ownership: this fixture is locally trusted and so holds `resolve`,
+    which reads any entry. Ownership is asserted in
+    tests/test_rest_principals.py with a principal that lacks `resolve`.
+    """
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/onboarding/bootstrap",
+            json={
+                "workspace": "demo",
+                "component": None,
+                "workspace_remote_url": None,
+                "component_remote_url": None,
+                "source_session": "s1",
+                "agent_identity": "claude",
+                "confidence": 0.4,
+                "files": [{
+                    "target_path": "projects/demo/README.md",
+                    "postimage": "---\nid: DEMO-1\ntype: standard\nstatus: active\n"
+                                 "tier: T3\n---\n\nbootstrap body\n",
+                }],
+            },
+        )
+
+    body = resp.json()
+    assert resp.status_code < 500, body
+    assert body.get("status") == "pending_confirmation", body
+    assert body.get("pending_id"), body

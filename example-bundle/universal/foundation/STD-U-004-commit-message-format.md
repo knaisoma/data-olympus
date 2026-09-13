@@ -6,7 +6,9 @@ tier: T1
 title: Commit Message Format
 description: Conventional-Commits-style commit message convention for Acme repositories, replacing the free-text convention in STD-U-003.
 tags: [git, commits]
-timestamp: "2026-06-24"
+generated:
+  by: human:data-olympus-maintainers
+  at: "2026-06-24T00:00:00Z"
 supersedes: STD-U-003
 applies_when:
   - "writing a commit message"

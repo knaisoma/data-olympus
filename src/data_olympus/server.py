@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from fastmcp.server.middleware.middleware import CallNext
     from fastmcp.tools.base import ToolResult
 
+    from data_olympus.write_gate import WriteSerializer
+
 from data_olympus.audit_log import AuditLog
 from data_olympus.auth import PathBlocklist
 from data_olympus.config import (
@@ -35,7 +37,11 @@ from data_olympus.cooccurrence import (
     cooccurrence_enabled,
 )
 from data_olympus.embeddings import EmbeddingsConfig, build_embedder
-from data_olympus.enforce_policy import ConsultationLedger, IntentClassifier
+from data_olympus.enforce_policy import (
+    ConsultationLedger,
+    IntentClassifier,
+    classifier_from_config,
+)
 from data_olympus.git_ops import GitOps
 from data_olympus.index import Index, SearchHit, make_status_reranker
 from data_olympus.pending import PendingQueue
@@ -289,6 +295,34 @@ class MCPAuthMiddleware(Middleware):
             _current_principal.reset(token)
 
 
+
+def _claim_commit_finder(
+    state: Any,
+) -> Callable[[dict[str, Any]], bool | None] | None:
+    """Bind the claim-linked commit search to this server's git repository.
+
+    Returns None when there is no git handle, which makes every unrecorded
+    outcome ``uncertain`` rather than guessing. That is the correct default: an
+    absent search is not evidence of a non-commit.
+    """
+    git = getattr(state, "git", None)
+    if git is None:
+        return None
+
+    def find(record: dict[str, Any]) -> bool | None:
+        found: bool | None = git.find_claim_commit(
+            ref=str(record.get("session_ref") or ""),
+            since_sha=str(record.get("pre_write_ref_sha") or ""),
+            pending_id=str(record.get("pending_id") or ""),
+            # Bind the evidence to the claim: a commit for a different path is
+            # not proof that THIS decision was applied.
+            target_path=str(record.get("target_path") or ""),
+        )
+        return found
+
+    return find
+
+
 class ServerState:
     """Mutable runtime state shared across tool calls."""
 
@@ -298,6 +332,7 @@ class ServerState:
         idx: Index,
         git: GitOps,
         config: Config,
+        write_serializer: WriteSerializer | None = None,
         worktrees: WorktreeRegistry | None = None,
         push_queue: PushQueue | None = None,
         pending: PendingQueue | None = None,
@@ -338,7 +373,11 @@ class ServerState:
         # section never interleaves across the REST threadpool and the MCP
         # off-loop tool executor.
         from data_olympus.write_gate import WriteSerializer
-        self.write_serializer = WriteSerializer()
+        # One shared serializer for the whole process: the write path, the
+        # claim lifecycle, git's history-rewriting paths and the worktree GC
+        # all take THIS one, so a guard check and the mutation it authorises
+        # cannot be split by a competing operation (issues #253, #254).
+        self.write_serializer = write_serializer or WriteSerializer()
         self.classifier: IntentClassifier = classifier or IntentClassifier()
         self.ledger: ConsultationLedger = ledger or ConsultationLedger()
         # Set at serve time (main) to observe the live streamable-http session
@@ -410,6 +449,7 @@ class ServerState:
 
 def build_app(
     *,
+    classifier: IntentClassifier | None = None,
     kb_main_path: Path,
     kb_index_path: Path,
     sync_interval_sec: int,
@@ -579,14 +619,52 @@ def build_app(
 
         inner_reranker = _status_then_hybrid
     idx.reranker = make_id_tag_reranker(idx, inner=inner_reranker)
-    git = GitOps(kb_main_path)
+    # The pending queue is created below, so the guard is bound lazily: it
+    # answers "which claims on this ref would lose their commit evidence?" and
+    # is what makes a rebase or a branch deletion defer instead of destroying
+    # the only proof that an interrupted resolve committed (issues #253, #254).
+    # Built before git so every guarded history operation and the whole claim
+    # lifecycle share one lock.
+    from data_olympus.write_gate import WriteSerializer
+
+    write_serializer = WriteSerializer()
+    _pending_holder: dict[str, Any] = {}
+
+    def _claims_at_risk(ref: str) -> list[Any]:
+        pending = _pending_holder.get("pending")
+        if pending is None:
+            return []
+        # RECONCILE before reporting, so a claim whose outcome can now be
+        # established stops blocking the rewrite instead of deferring it
+        # forever.
+        #
+        # It uses the SAME age threshold as the periodic sweep rather than
+        # reconciling from zero age. A successful resolve consumes its own claim
+        # inside the serializer acquisition that made the commit, so there is no
+        # longer a window in which a committed claim is visible and unconsumed;
+        # the threshold is not what protects a live owner. It is here because a
+        # claim young enough to belong to a resolver that is still working
+        # should defer the rewrite rather than be reasoned about, and because
+        # reconciling from zero age on every guard call would search git far
+        # more often than the evidence changes.
+        with contextlib.suppress(Exception):
+            pending.reconcile_claims(
+                min_age_sec=config.pending_claim_ttl_sec,
+                find_commit=_claim_commit_finder(state),
+            )
+        return list(pending.claims_at_risk(ref))
+
+    git = GitOps(kb_main_path, claim_guard=_claims_at_risk,
+                 serializer=write_serializer)
     # retention_sec = the consult TTL: an entry older than that can never be
     # fresh, so it is safe to evict and keeps the ledger bounded (see
     # ConsultationLedger). is_fresh is always called with this same ttl.
     ledger = ConsultationLedger(
         path=ledger_path, retention_sec=float(config.consult_ttl_sec)
     )
-    state = ServerState(idx=idx, git=git, config=config, ledger=ledger)
+    state = ServerState(idx=idx, git=git, config=config, ledger=ledger,
+                        write_serializer=write_serializer,
+                        classifier=classifier)
 
     if config.read_only:
         # Unambiguous startup marker: if a replica is misconfigured (e.g. built
@@ -599,11 +677,22 @@ def build_app(
     # A read-only replica sets kb_remote_url (so the git_pull_loop has a remote
     # to refresh from) but must NOT bring up the write pipeline.
     if config.kb_remote_url and not config.read_only:
-        worktrees = WorktreeRegistry(git=git, worktree_root=config.worktree_root)
+        worktrees = WorktreeRegistry(
+            git=git, worktree_root=config.worktree_root,
+            serializer=state.write_serializer,
+        )
         push_queue = PushQueue(queue_root=config.push_queue_root)
         pending = PendingQueue(
-            pending_root=config.pending_root, cap=config.pending_queue_cap
+            pending_root=config.pending_root, cap=config.pending_queue_cap,
+            # Every claim-lifecycle transition runs inside the SAME serializer
+            # the write path uses, so an ownership check and the mutation it
+            # authorises cannot be split by a concurrent claim (issues #253,
+            # #254).
+            serializer=state.write_serializer,
         )
+        # Close the lazy binding made above, so git's history-rewriting paths
+        # can now see which claims would lose their evidence.
+        _pending_holder["pending"] = pending
         rate_limiter = SlidingWindowLimiter(
             max_per_hour=config.rate_limit_per_hour,
             max_per_ip_per_hour=config.rate_limit_per_ip_per_hour,
@@ -668,6 +757,7 @@ def build_app(
             last_index_error_at=state.last_index_error_at,
             last_index_conflicts=state.last_index_conflicts,
             path_locks_held=state.pending.locks_held() if state.pending else 0,
+            path_locks=state.pending.held_locks() if state.pending else [],
             last_git_fetch_status=state.last_git_fetch_status,
             last_git_fetch_error=state.last_git_fetch_error,
             last_git_fetch_at=state.last_git_fetch_at,
@@ -904,6 +994,7 @@ def build_app(
                 blocklist=state.blocklist, remote_addr="mcp",
                 audit_log=state.audit_log,
                 can_auto_commit=_current_principal.get().can_auto_commit,
+                proposer_principal=_current_principal.get().name,
                 max_text_bytes=state.config.max_text_bytes,
                 serializer=state.write_serializer, idx=state.idx,
                 evidence=evidence,
@@ -945,6 +1036,7 @@ def build_app(
                 blocklist=state.blocklist, remote_addr="mcp",
                 audit_log=state.audit_log,
                 can_auto_commit=_current_principal.get().can_auto_commit,
+                proposer_principal=_current_principal.get().name,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
                 evidence=evidence,
@@ -995,6 +1087,23 @@ def build_app(
             assert state.pending is not None
             from data_olympus.tools_write import kb_list_pending_fn
             resp = kb_list_pending_fn(pending=state.pending)
+            return resp.model_dump()
+
+        @app.tool(title="KB Get Pending", annotations=READ_ONLY_TOOL)
+        def kb_get_pending(pending_id: str) -> dict[str, object]:
+            """Read back a parked proposal's own text. Returns the postimage to
+            the principal that made the proposal, or to one that could resolve
+            it. The content is PENDING: it is not in force and governs nothing
+            until approved."""
+            assert state.pending is not None
+            from data_olympus.principals import CAP_RESOLVE
+            from data_olympus.tools_write import kb_get_pending_fn
+            principal = _current_principal.get()
+            resp = kb_get_pending_fn(
+                pending=state.pending, pending_id=pending_id,
+                principal_name=principal.name,
+                can_resolve=principal.has(CAP_RESOLVE),
+            )
             return resp.model_dump()
 
         @app.tool(title="KB Audit", annotations=READ_ONLY_TOOL)
@@ -1056,6 +1165,7 @@ def build_app(
                 blocklist=state.blocklist, audit_log=state.audit_log,
                 remote_addr="mcp",
                 can_auto_commit=_current_principal.get().can_auto_commit,
+                proposer_principal=_current_principal.get().name,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 max_files=state.config.max_bootstrap_files,
                 serializer=state.write_serializer,
@@ -1205,6 +1315,11 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         if problem is not None:
             raise NotADirectoryError(problem)
     return build_app(
+        # Issue #257: the shipped entry point could not reach the classifier's
+        # own constructor arguments, so an operator had no way to govern an
+        # action class this product has never heard of without embedding the
+        # server in their own Python.
+        classifier=classifier_from_config(config),
         kb_main_path=config.kb_main_path,
         kb_index_path=config.kb_index_path,
         sync_interval_sec=config.sync_interval_sec,
@@ -1541,6 +1656,12 @@ def main() -> None:
                     # reclaimed each pass so a hard kill mid-commit does not wedge
                     # the path with rejected_path_lock_busy forever.
                     auto_commit_lock_ttl_sec=config.auto_commit_lock_ttl_sec,
+                    # Claims left by an interrupted resolve (issues #253, #254).
+                    # The TTL selects what to look at; the outcome comes from
+                    # the claim's own recorded evidence, and failing that from
+                    # searching the session ref for the claim-linked commit.
+                    claim_ttl_sec=config.pending_claim_ttl_sec,
+                    find_claim_commit=_claim_commit_finder(state),
                     # The reclaim runs under the SAME write serializer that
                     # path_lock acquire/release runs under, so a stale holder that
                     # resumes cannot free+let-a-successor-acquire the path mid-scan.

@@ -387,8 +387,128 @@ path is diagnosable:
 - `push_queue_frozen` is the count of entries that hit the retry cap and were
   **frozen**.
 
+- `path_locks_held` is how many paths are locked, and `path_locks` says WHICH,
+  each with `target_path`, `owner_kind`, `pending_id`, `acquired_at` and
+  `age_seconds`. A leaked lock blocks every write to one path, so the count on
+  its own was not diagnosable without reading the state volume by hand.
+
 Both counts are computed at health-report time from the queues themselves, so
 they cannot drift.
+
+### An interrupted resolve, and how it recovers
+
+Approving a pending entry claims it, holds its path lock, commits, and then
+releases both. If the process dies in between, the entry is left in a **claimed**
+state on the state volume, still holding its path lock. Two things follow, and
+both are handled explicitly:
+
+- **The entry is visible.** `kb_list_pending` reports every entry with a `state`
+  of `pending`, `claimed` or `uncertain`. A claimed entry is not awaiting a
+  decision, so it does not count towards `pending_count`, but it is never hidden:
+  an empty queue must mean an empty queue, not a decision stuck halfway.
+- **The outcome is reconciled from evidence, never from age.** A background pass
+  looks at claims older than `KB_PENDING_CLAIM_TTL_SEC` (default 900) and decides
+  from what the write actually recorded:
+
+  | Evidence | Outcome |
+  | --- | --- |
+  | A recorded commit sha | Committed. The entry is consumed and never offered again. |
+  | A recorded failure | Not committed. The entry returns to `pending` for the operator to re-resolve, keeping its path lock. |
+  | Nothing recorded | The commit is searched for by its `KB-Pending-Id` trailer on the recorded session ref. Found means committed. Otherwise `uncertain`. |
+
+An `uncertain` entry keeps its path lock deliberately and is re-checked on every
+later pass, so a transient unreadable repository resolves itself. A negative
+search is **not** treated as proof that nothing committed: a rebase can drop a
+commit that upstream already acquired as an equivalent patch, and a squash can
+rewrite its trailer away, so absence of the commit is not absence of the write.
+Restoring on absence would offer an already-applied decision for approval a
+second time.
+
+For the same reason, operations that rewrite session history reconcile
+outstanding claims first and then defer while a claim on that branch has begun
+its write: the base rebase, the non-fast-forward push recovery that calls it,
+and the worktree GC that removes a session worktree and deletes its branch. The
+GC teardown holds the write serializer across its whole sequence, so it either
+completes or leaves the worktree and the branch both intact. A deferred push is
+not a publication failure and does not consume its retry budget. These guards
+fail closed: an unreadable claim record, or a branch that cannot be identified,
+defers the rewrite rather than permitting it. Each guard holds the write
+serializer across its own check AND the history mutation it authorises, so the
+guard protects the history actually being rewritten rather than an earlier
+snapshot of it. The guard reconciles at the same claim TTL as the periodic
+sweep rather than from zero age, so a claim whose own resolver is still
+finishing is left alone and the rewrite simply defers. A successful resolve also
+consumes its own claim inside the same serializer acquisition that made the
+commit, immediately after recording the outcome, so no reconciliation can ever
+observe a committed-but-unconsumed claim and finish it on the owner's behalf.
+
+If an entry stays `uncertain`, check whether the change is present on
+`origin/main` and then resolve it by hand on the state volume: delete
+`/state/pending/<pending_id>.claimed` and
+`/state/pending/locks/<sha256-of-target-path>.lock` to release the path. Confirm
+the content first; that pair is the only remaining record of the decision.
+
+### Reading back a parked proposal
+
+A session that parks a proposal can read its own draft back:
+
+```text
+GET /api/v1/pending/<pending_id>
+```
+
+and the `kb_get_pending` MCP tool takes the same single `pending_id`. It returns
+the postimage with `in_force: false` and a note saying so, because the content is
+a pending proposal: it governs nothing, and it stays out of `kb_consult` and
+every `in_force` retrieval exactly as before.
+
+Recovery identifies a claim's commit by a `KB-Pending-Id` trailer, and it asks
+`git interpret-trailers` to read that trailer rather than parsing the message
+itself. That parse runs with global, system and environment-injected git
+configuration disabled and repository discovery ceilinged, because git's own
+`trailer.<alias>.key` configuration can RENAME an ordinary key into the claim
+key and turn an unrelated commit into evidence. A duplicated key is treated as
+ambiguous and yields nothing. Commit text is agent-controlled, so a parser that disagreed with git in
+the accepting direction would let an ordinary write close somebody's decision;
+delegating removes that whole class rather than chasing git's message-boundary
+rules one at a time. A commit body that does not end in a newline is treated as
+having no trailers, conservatively, because the CLI would otherwise answer for a
+normalised body rather than the one recovery holds.
+
+Ownership is the **authenticated principal** recorded when the proposal was
+made:
+
+- a principal holding `resolve` may read any entry, since it can already see the
+  content by approving it;
+- otherwise the caller's principal must be the one that made the proposal;
+- an entry with no recorded proposer predates this field, so its ownership
+  cannot be established and it is resolver-only.
+
+`source_session` deliberately plays no part. The listing publishes it for every
+entry to any authenticated caller, so scoping a content read on it would be no
+boundary at all: a reader could list the queue, copy somebody else's id and
+session, and ask for their draft. With no principals configured every caller can
+already resolve any entry, so the readback is open there too and matches the
+posture of every other write surface.
+
+Principal names are ownership identities, so they must be unique. The registry
+refuses a configuration with two credentials of the same name, including two
+unnamed ones, because they would otherwise share ownership of each other's
+drafts.
+
+**What this boundary does not cover.** Only the POSTIMAGE is owner-scoped.
+`GET /api/v1/pending` and `kb_list_pending` remain visible to every
+authenticated principal and carry each entry's `target_path`, `reason`,
+`evidence` and identities. Those are content-derived: a target path can name
+what a draft is about, and an evidence string can quote it. The secret scanner
+redacts credential-shaped values, not ordinary confidential text. So the pending
+queue's metadata is shared within a deployment, deliberately and as it always
+has been, and this change does not narrow it. If that is not the boundary you
+want, do not put confidential material in a proposal's path or evidence.
+
+A postimage the secret scanner flagged is withheld from everyone except a
+`resolve` principal. The proposer already held that content, but handing it back
+would turn the queue into a place to retrieve a credential from. The response
+still names the matched pattern, so the caller learns why.
 
 ### Non-fast-forward push recovery
 
@@ -827,6 +947,75 @@ Tune it with:
   auto-disabled (default `50`).
 - `KB_COOCCURRENCE_MAX_DOC_TOKENS`: per-document unique-token cap on the pair
   counting, bounding the O(n^2) work on large docs (default `400`).
+- `KB_COOCCURRENCE_MAX_PAIRS`: how many distinct pairs the counter may hold in
+  memory before spilling to a temporary SQLite file (default `500000`). `0`
+  disables the spill and keeps everything in memory.
+
+### Build memory
+
+The per-document token cap bounds each document's contribution. It does not
+bound the union of pairs across documents, and that union is what the counter
+holds. On the maintainers' corpus of 536 markdown files (3.6 MiB) the union was
+6.2 million distinct pairs, and the build peaked at 1445 MiB, which is above a
+1 GiB container limit on its own. Since the pair space grows superlinearly with
+corpus size, this is a wall every deployment eventually reaches; where it sits
+depends on the corpus.
+
+`KB_COOCCURRENCE_MAX_PAIRS` bounds it. Once the counter reaches that many
+entries it is flushed into a temporary SQLite database and cleared, and the
+counts are aggregated back out at the end. The table produced is identical
+either way, so no search result moves; only memory and build time change. On
+the same corpus, measured on one laptop:
+
+| `KB_COOCCURRENCE_MAX_PAIRS` | peak RSS | build time |
+| --- | --- | --- |
+| (behaviour before this bound existed) | 1445 MiB | 6.6 s |
+| `0`, no spill | 502 MiB | 3.2 s |
+| `500000`, the default | 105 MiB | 16.3 s |
+
+The default trades build time for a ceiling that does not grow with the corpus.
+Raise it, or set it to `0`, on a host with memory to spare and a corpus that
+fits. The bound is on pair counting specifically: parsed documents, per-document
+token sets and the candidate lists sit outside it, and the counter is checked
+between documents, so it can exceed the cap by at most one document's own pairs.
+
+The spill writes to a temporary file, so it can fail on a full or read-only
+disk. That failure does not fail the index build: the build logs a warning and
+continues with no related-terms table, so the index still serves and only
+co-occurrence expansion is lost until the next successful build.
+
+## Extending the governed action vocabulary
+
+The enforcement gate classifies an action as governed from three shipped lists
+in `enforce_policy.py`: keywords, path globs, and command fragments. A
+deployment can govern an action class this product has never heard of without
+embedding the server in its own Python:
+
+| Setting | Adds to |
+| --- | --- |
+| `KB_GOVERNED_EXTRA_KEYWORDS` | the free-text keyword signals |
+| `KB_GOVERNED_EXTRA_PATH_GLOBS` | the governed path globs |
+| `KB_GOVERNED_EXTRA_COMMAND_PATTERNS` | the governed command fragments |
+
+Each is a comma-separated list, and each **extends** the shipped list. There is
+deliberately no setting that replaces one, because a configuration error would
+then silently remove enforcement the product already provided. Unset means add
+nothing, which is exactly the shipped behaviour.
+
+Entries are trimmed and de-duplicated, and are bounded: at most 500 per list and
+200 characters each. The classifier runs on every classified action and compiles
+a regex per keyword, so an unbounded list is an availability problem rather than
+untidiness. Anything dropped or truncated is logged with a warning naming the
+variable, because an enforcement setting that quietly does less than it says is
+worse than one that refuses.
+
+For example, a deployment that must not run window or input tests against a live
+desktop can add `KB_GOVERNED_EXTRA_KEYWORDS="window test,input test"` and have
+the gate require a fresh explicit consultation before such an action, without
+waiting for that class to appear in a release.
+
+This changes only WHAT is classified as governed. It does not change the rule
+that only a fresh explicit consultation clears the gate.
 
 ## Trigram fuzzy-match fallback
 

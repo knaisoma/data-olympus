@@ -6,7 +6,9 @@ tier: meta
 title: Knowledge Base Review Flow
 description: Step-by-step process for proposing, reviewing, and committing changes to the Acme knowledge bundle.
 tags: [workflow, review, knowledge-base, agents]
-timestamp: 2026-06-24
+generated:
+  by: human:data-olympus-maintainers
+  at: "2026-06-24T00:00:00Z"
 ---
 # Purpose
 

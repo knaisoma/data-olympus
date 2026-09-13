@@ -6,7 +6,9 @@ tier: meta
 title: Use single-writer MCP serving model
 description: Acme runs one write-enabled data-olympus MCP replica to prevent concurrent-write races on the knowledge bundle.
 tags: [architecture, mcp, serving, concurrency]
-timestamp: 2026-06-24
+generated:
+  by: human:data-olympus-maintainers
+  at: "2026-06-24T00:00:00Z"
 supersedes: []
 ---
 # Context
