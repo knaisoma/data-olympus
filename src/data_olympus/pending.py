@@ -105,6 +105,10 @@ class RunningContestReceipt:
     reason: str | None = None
     contradicts: list[str] | None = None
     agent_identity: str | None = None
+    # The entry's lifecycle state, spelled as kb_list_pending spells it:
+    # "pending", "claimed", "uncertain" or "unreadable". None when no entry
+    # holds the path.
+    state: str | None = None
 
 
 def _path_lock_filename(target_path: str) -> str:
@@ -1143,6 +1147,16 @@ class PendingQueue:
             resolution guard against active resolver rename cadences, returning
             `under_review=False` if all attempts encounter files being moved.
 
+        Lifecycle state:
+            `state` names the entry's state the way `list` does. `pending` awaits
+            a decision, `claimed` is being applied, and `uncertain` is a claim
+            whose outcome reconciliation could not prove, which keeps its path
+            lock deliberately. All three hold the path, so all three report
+            `under_review=True`. An entry that exists but cannot be read is
+            `unreadable` and also reports `under_review=True`: the path is still
+            locked, and saying otherwise would tell a caller it is free. Only a
+            missing file is treated as the entry having moved.
+
             Note: Per issue #241 maintainer consensus, `supersedes` represents standard document
             lineage and decision-chain succession, not an active contest, and is deliberately
             excluded from contest derivation.
@@ -1181,10 +1195,11 @@ class PendingQueue:
                 target_path=target_path, under_review=False, contested=False
             )
 
-        # Bounded retry across .json and .claimed to eliminate the rename race
+        # Bounded retry across .json and .claimed to mitigate the rename race
         # where _claim renames .json -> .claimed or restore_resolve renames .claimed -> .json
         # between checking existence and opening the file under a held path lock.
         entry: Mapping[str, Any] | None = None
+        found_ext: str | None = None
         for _ in range(3):
             for ext in (".json", ".claimed"):
                 entry_file = os.path.join(self._root, f"{pending_id}{ext}")
@@ -1193,9 +1208,18 @@ class PendingQueue:
                         data = json.load(f)
                     if isinstance(data, Mapping):
                         entry = data
+                        found_ext = ext
                         break
                 except (FileNotFoundError, ValueError):
                     continue
+                except OSError:
+                    return RunningContestReceipt(
+                        target_path=target_path,
+                        under_review=True,
+                        contested=False,
+                        pending_id=pending_id,
+                        state="unreadable",
+                    )
             if entry is not None:
                 break
 
@@ -1203,6 +1227,13 @@ class PendingQueue:
             return RunningContestReceipt(
                 target_path=target_path, under_review=False, contested=False
             )
+
+        if found_ext == ".json":
+            state = "pending"
+        else:
+            raw_reconcile = entry.get("reconcile")
+            reconcile = raw_reconcile if isinstance(raw_reconcile, Mapping) else {}
+            state = "uncertain" if reconcile.get("state") == "uncertain" else "claimed"
 
         raw_meta = entry.get("meta")
         meta = raw_meta if isinstance(raw_meta, Mapping) else {}
@@ -1227,4 +1258,5 @@ class PendingQueue:
                 if isinstance(meta.get("agent_identity"), str)
                 else None
             ),
+            state=state,
         )
