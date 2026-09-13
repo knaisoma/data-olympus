@@ -240,8 +240,11 @@ section so concurrent writes cannot corrupt each other:
   for the session's next commit to sweep in.
 - A **secret-scanning gate** (issue #71) runs on the postimage BEFORE the
   content-validation gate, on every commit path (auto-commit propose, resolve
-  approve, including a resolved `edited_text`, and onboarding bootstrap). It
-  runs first so that whenever the gate matches, a postimage that is both
+  approve, including a resolved `edited_text`, and onboarding bootstrap). A
+  resolved `edited_text` is additionally scanned before the entry is claimed,
+  because the claim stores the approved content on the state volume: a flagged
+  edit is refused with the entry left untouched, and without the override it
+  is never written anywhere. It runs first so that whenever the gate matches, a postimage that is both
   malformed AND carries a credential-shaped value is rejected via the redacted
   `rejected_secret_detected` path rather than `rejected_invalid_document`
   (which echoes the offending value verbatim in its message). Detection is

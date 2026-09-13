@@ -1672,6 +1672,29 @@ def kb_resolve_pending_fn(
                     **{**audit_base, "status": "rejected_edited_text_too_large"})
         return ResolvePendingResponse(status="rejected_edited_text_too_large")
 
+    # Scan the operator's replacement text BEFORE the claim. The claim persists
+    # ``edited_text`` into the claimed entry as the effective postimage, so that
+    # recovery reasons about the approved bytes. The commit helper's own scan
+    # runs after that write, and the restore that follows its rejection used to
+    # carry the bytes into the live entry: a credential typed into an edit
+    # became durable plaintext state even though the write was refused. Refusing
+    # here leaves the entry exactly as it was. The conscious operator override
+    # keeps its existing meaning: flagged content may be committed, and is then
+    # written to the repository anyway.
+    if edited_text is not None and not override_secret_scan:
+        edited_scan = scan_postimage_for_secrets(postimage=edited_text)
+        if not edited_scan.ok:
+            assert edited_scan.match is not None
+            reason = (
+                f"secret pattern '{edited_scan.match.pattern_name}' "
+                f"detected near line {edited_scan.match.line}"
+            )
+            _emit_audit(audit_log, **{**audit_base,
+                                       "status": "rejected_secret_detected",
+                                       "reason": reason,
+                                       "matching_pattern": edited_scan.match.pattern_name})
+            return ResolvePendingResponse(status="rejected_secret_detected", reason=reason)
+
     # Atomic claim that HOLDS the path lock + the claimed entry through the gates
     # (Codex round-2 Blocker B): a post-claim CAS/validation rejection puts the
     # entry back (restore_resolve) instead of losing the operator's proposal, and

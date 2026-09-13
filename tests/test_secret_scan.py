@@ -462,6 +462,60 @@ def test_resolve_approve_rejects_edited_text_with_secret(tmp_path, monkeypatch) 
     assert pq.size() == 0
 
 
+def _state_files(root: str) -> dict[str, bytes]:
+    out: dict[str, bytes] = {}
+    for name in os.listdir(root):
+        path = os.path.join(root, name)
+        if os.path.isfile(path):
+            with open(path, "rb") as f:
+                out[name] = f.read()
+    return out
+
+
+def test_rejected_edited_text_secret_is_never_persisted_to_state(
+    tmp_path, monkeypatch,
+) -> None:
+    """An operator edit that the scanner rejects must never become durable
+    state. The claim used to persist ``edited_text`` as the effective postimage
+    before the commit helper scanned it, and the restore that followed a
+    rejection kept those bytes in the live entry. The edit is now scanned
+    before the claim, so a rejected edit never claims the entry and never
+    reaches a file."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    m = kb_propose_memory_fn(
+        text="clean body", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.3, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    assert m.status == "pending_confirmation"
+    before = _state_files(pen.root)
+    claims = []
+    real_claim = pen.claim_for_resolve
+
+    def recording_claim(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        claims.append(args)
+        return real_claim(*args, **kwargs)
+
+    monkeypatch.setattr(pen, "claim_for_resolve", recording_claim)
+
+    resp = kb_resolve_pending_fn(
+        pending_id=m.pending_id, decision="approve",
+        edited_text=f"edited body with {SLACK_TOKEN}\n",
+        worktrees=reg, push_queue=pq, pending=pen,
+        source_session="s", agent_identity="operator",
+    )
+
+    assert resp.status == "rejected_secret_detected"
+    assert claims == [], "a rejected edit must not claim the entry"
+    for dirpath, _dirs, files in os.walk(pen.root):
+        for name in files:
+            with open(os.path.join(dirpath, name), "rb") as f:
+                assert SLACK_TOKEN.encode() not in f.read(), name
+    after = _state_files(pen.root)
+    assert after == before, "the pending entry must be left exactly as it was"
+
+
 def test_resolve_approve_operator_override_commits_flagged_content(
     tmp_path, monkeypatch,
 ) -> None:
