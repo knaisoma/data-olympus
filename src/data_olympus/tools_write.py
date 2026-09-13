@@ -1706,15 +1706,13 @@ def kb_resolve_pending_fn(
                     **{**audit_base, "status": "rejected_edited_text_too_large"})
         return ResolvePendingResponse(status="rejected_edited_text_too_large")
 
-    # Scan the operator's replacement text BEFORE the claim. The claim persists
-    # ``edited_text`` into the claimed entry as the effective postimage, so that
-    # recovery reasons about the approved bytes. The commit helper's own scan
-    # runs after that write, and the restore that follows its rejection used to
-    # carry the bytes into the live entry: a credential typed into an edit
-    # became durable plaintext state even though the write was refused. Refusing
-    # here leaves the entry exactly as it was. The conscious operator override
-    # keeps its existing meaning: flagged content may be committed, and is then
-    # written to the repository anyway.
+    # Scan the operator's replacement text BEFORE the claim. The commit
+    # helper's own scan runs only after the entry is claimed, and a refused
+    # write then restores it, so refusing here is what leaves the entry exactly
+    # as it was. The claim itself records only a digest of the approved bytes,
+    # never the text, so the claim record does not retain an edit either way.
+    # The conscious operator override keeps its existing meaning: flagged
+    # content may be committed, and is then written to the repository anyway.
     if edited_text is not None and not override_secret_scan:
         edited_scan = scan_postimage_for_secrets(postimage=edited_text)
         if not edited_scan.ok:
