@@ -356,8 +356,11 @@ class PendingQueue:
                 })
                 continue
             if state == "claimed":
-                reconcile = entry.get("reconcile") or {}
-                if reconcile.get("state") == "uncertain":
+                # A damaged record can carry a non-mapping ``reconcile``. It is
+                # no evidence of uncertainty, and raising here would hide every
+                # other entry in the listing, so it reads as a plain claim.
+                reconcile = entry.get("reconcile")
+                if isinstance(reconcile, Mapping) and reconcile.get("state") == "uncertain":
                     state = "uncertain"
             out.append({
                 "state": state,

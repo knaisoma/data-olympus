@@ -12,6 +12,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* **`kb_list_pending` no longer fails when one claimed entry is damaged.** A
+  claimed record whose `reconcile` value is not an object (for example a string
+  left by a hand edit) raised an error that hid every other entry in the
+  listing. It is now listed as `claimed`, which is how the running-contest check
+  already reads it. (#265)
+
 ## [0.8.0] - 2026-09-14
 
 ### Added

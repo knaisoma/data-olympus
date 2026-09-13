@@ -1195,3 +1195,45 @@ def test_restore_drops_the_effective_postimage_of_the_rejected_edit(tmp_path) ->
         live = json.load(f)
     assert "effective_postimage" not in live
     assert q.get(pending_id)["postimage"] != "# edited\n"
+
+
+@pytest.mark.parametrize("bad_reconcile", ["uncertain", ["uncertain"], 7])
+def test_list_tolerates_a_non_mapping_reconcile(tmp_path, bad_reconcile) -> None:
+    """A damaged claimed record must not take the whole listing down. A
+    non-mapping ``reconcile`` carries no evidence of uncertainty, so the entry
+    is reported as claimed, the same way derive_running_contest reads it."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    other_id = _enqueued(q, "operator/other.md")
+    pending_id, _resolved = _claimed(q, "operator/notes.md")
+    path = os.path.join(q.root, f"{pending_id}.claimed")
+    with open(path) as f:
+        entry = json.load(f)
+    entry["reconcile"] = bad_reconcile
+    with open(path, "w") as f:
+        json.dump(entry, f)
+
+    states = {e["pending_id"]: e["state"] for e in q.list()}
+
+    assert states == {pending_id: "claimed", other_id: "pending"}
+
+
+@pytest.mark.parametrize("value", [None, {}, "", []])
+def test_list_treats_empty_or_null_reconcile_as_claimed(tmp_path, value) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+    path = os.path.join(q.root, f"{pending_id}.claimed")
+    with open(path) as f:
+        entry = json.load(f)
+    entry["reconcile"] = value
+    with open(path, "w") as f:
+        json.dump(entry, f)
+
+    assert [e["state"] for e in q.list()] == ["claimed"]
+
+
+def test_list_still_reports_a_valid_uncertain_record(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    _claimed(q)
+    q.reconcile_claims(min_age_sec=0, find_commit=lambda _r: False)
+
+    assert [e["state"] for e in q.list()] == ["uncertain"]
