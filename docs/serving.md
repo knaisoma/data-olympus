@@ -250,9 +250,11 @@ section so concurrent writes cannot corrupt each other:
   content-validation gate, on every commit path (auto-commit propose, resolve
   approve, including a resolved `edited_text`, and onboarding bootstrap). A
   resolved `edited_text` is additionally scanned before the entry is claimed,
-  because the claim stores the approved content on the state volume: a flagged
-  edit is refused with the entry left untouched, and without the override it
-  is never written anywhere. It runs first so that whenever the gate matches, a postimage that is both
+  so a flagged edit is refused with the entry left untouched. The claim records
+  a sha256 digest of the approved content, never the content itself, so an edit
+  that is refused, or committed under the explicit override, does not remain on
+  the state volume. A claim written by 0.8.0 still holds the text until its next
+  reconciliation pass replaces it with the digest. It runs first so that whenever the gate matches, a postimage that is both
   malformed AND carries a credential-shaped value is rejected via the redacted
   `rejected_secret_detected` path rather than `rejected_invalid_document`
   (which echoes the offending value verbatim in its message). Detection is

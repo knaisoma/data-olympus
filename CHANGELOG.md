@@ -27,6 +27,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is refused as `rejected_invalid_base`, naming the field without echoing it.
   `docs/serving.md` describes how to recover a proposal parked before this
   release. (#263)
+* **An approval's claim record no longer keeps the edited text.** Approving
+  with `edited_text` wrote the full text into the claim on the state volume,
+  where nothing reads it back. After an interrupted approval whose outcome could
+  not be proven, it stayed there indefinitely, including text committed under
+  the explicit secret-scan override. The claim now records only a sha256 digest,
+  and a claim written by 0.8.0 has its text replaced by the digest on its next
+  reconciliation pass. Recovery behaves exactly as before. (#264)
 
 ## [0.8.0] - 2026-09-14
 

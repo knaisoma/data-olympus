@@ -8,6 +8,7 @@ for the caller to commit it cleanly through the audit-trailer pipeline.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -124,6 +125,11 @@ def _as_id_list(value: object) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _text_sha256(text: str) -> str:
+    """sha256 of the exact UTF-8 bytes of ``text``."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class PendingQueue:
@@ -535,12 +541,13 @@ class PendingQueue:
         entry = self._claim(pending_id)
         resolved = self._to_resolved(pending_id, entry, edited_text)
         if edited_text is not None:
-            # Persist the EFFECTIVE approved bytes. ``_to_resolved`` substitutes
-            # ``edited_text`` in memory only, so without this the stored
-            # postimage is not what the operator approved and not what would be
-            # committed. Recovery must reason about the approved operation, not
-            # about the superseded proposal.
-            entry["effective_postimage"] = edited_text
+            # Record WHICH bytes were approved, not the bytes themselves.
+            # ``_to_resolved`` substitutes ``edited_text`` in memory, and that
+            # in-memory copy is what gets committed. Recovery decides from the
+            # recorded outcome and the claim-linked commit, never from this
+            # field, so a digest is enough to identify the approved content
+            # and nothing a scanner flagged is kept on the state volume.
+            entry["effective_postimage_sha256"] = _text_sha256(edited_text)
             atomic_write_json(
                 os.path.join(self._root, f"{pending_id}.claimed"), entry,
             )
@@ -682,8 +689,10 @@ class PendingQueue:
         entry.pop("write_context", None)
         entry.pop("reconcile", None)
         # The edit was not applied, so the live entry returns to the proposal as
-        # enqueued. Keeping the rejected bytes would make them durable state.
+        # enqueued. Drop the digest and any copy of the text an earlier release
+        # stored.
         entry.pop("effective_postimage", None)
+        entry.pop("effective_postimage_sha256", None)
         # Strip the claim fields into a scratch sidecar, then publish with ONE
         # rename. Writing <pid>.json and deleting <pid>.claimed afterwards left
         # a window where a successor could claim the freshly published entry and
@@ -814,6 +823,16 @@ class PendingQueue:
                 claimed_at = 0.0
             if moment - claimed_at < min_age_sec:
                 continue
+            legacy_text = entry.get("effective_postimage")
+            if isinstance(legacy_text, str):
+                # A claim written before claims stored a digest still carries
+                # the approved text. Replace it before any other decision so
+                # the rewrite below, or a restore, never re-persists it.
+                entry.pop("effective_postimage")
+                entry["effective_postimage_sha256"] = _text_sha256(legacy_text)
+                atomic_write_json(
+                    os.path.join(self._root, f"{pending_id}.claimed"), entry,
+                )
             results.append(
                 self._reconcile_one(pending_id, entry, find_commit, moment)
             )

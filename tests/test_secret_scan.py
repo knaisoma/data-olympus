@@ -18,6 +18,7 @@ Covers:
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -25,6 +26,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from data_olympus import pending as pending_module
 from data_olympus.audit_log import AuditLog
 from data_olympus.auth import PathBlocklist
 from data_olympus.git_ops import GitOps
@@ -1108,3 +1110,36 @@ def test_xai_key_body_may_contain_underscores() -> None:
     before "_", so even a long alphanumeric run ahead of it did not match.
     """
     assert _scan("xai-" + "a" * 20 + "_" + "b" * 20)
+
+
+def test_overridden_edit_is_committed_but_never_kept_in_a_claim(tmp_path, monkeypatch) -> None:
+    """Under the explicit override the flagged edit is committed, as before. No
+    claim write carries it at any point."""
+    _set_git_env(monkeypatch)
+    git, reg, pq, pen, rl, bl = _state(tmp_path)
+    m = kb_propose_memory_fn(
+        text="clean body", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.3, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="1.2.3.4",
+    )
+    edited = f"edited body with {GENERIC_CRED}\n"
+    seen_claims: list[bytes] = []
+    real_write = pending_module.atomic_write_json
+
+    def recording_write(path, payload):  # noqa: ANN001, ANN202
+        if str(path).endswith(".claimed"):
+            seen_claims.append(json.dumps(payload).encode("utf-8"))
+        return real_write(path, payload)
+
+    monkeypatch.setattr(pending_module, "atomic_write_json", recording_write)
+
+    resp = kb_resolve_pending_fn(
+        pending_id=m.pending_id, decision="approve", edited_text=edited,
+        worktrees=reg, push_queue=pq, pending=pen,
+        source_session="s", agent_identity="operator", override_secret_scan=True,
+    )
+
+    assert resp.status == "committed"
+    assert seen_claims, "the claim must have been written at least once"
+    secret = GENERIC_CRED.split("=")[1].encode("utf-8")
+    assert all(secret not in raw for raw in seen_claims)
