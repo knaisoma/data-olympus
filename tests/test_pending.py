@@ -1178,3 +1178,20 @@ def test_orphan_gc_rechecks_the_holder_before_unlinking(tmp_path) -> None:
     assert removed == 0, "the collector unlinked a lock it no longer owned"
     assert q.locks_held() == 1
     assert q.held_locks()[0]["pending_id"] == "b" * 32
+
+
+def test_restore_drops_the_effective_postimage_of_the_rejected_edit(tmp_path) -> None:
+    """A restore returns the entry to the proposal as it was enqueued. The
+    edited bytes the operator tried to approve were not applied, and keeping
+    them in the live entry would make a rejected edit durable state."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id = _enqueued(q)
+    resolved = q.claim_for_resolve(pending_id, edited_text="# edited\n")
+    assert q.claim_record(pending_id)["effective_postimage"] == "# edited\n"
+
+    q.restore_resolve(pending_id, claim_token=resolved.claim_token)
+
+    with open(os.path.join(q.root, f"{pending_id}.json")) as f:
+        live = json.load(f)
+    assert "effective_postimage" not in live
+    assert q.get(pending_id)["postimage"] != "# edited\n"

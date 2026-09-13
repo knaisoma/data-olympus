@@ -169,6 +169,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   base rebase, the push recovery that calls it, and the worktree GC) reconcile
   first and defer while a claim on that branch has begun its write.
 
+  Because the claim now stores the approved content, an operator edit
+  (`edited_text`) is scanned for credential-shaped values before the entry is
+  claimed. A flagged edit is refused as `rejected_secret_detected` and the
+  pending entry is left exactly as it was, so the refused text is never written
+  to the state volume. An entry restored after any other rejection returns to
+  the proposal as enqueued, without the edit. The explicit operator override is
+  unchanged.
+
 * **Indexing a modest corpus no longer needs more than a gigabyte of memory.**
   The co-occurrence pass that powers query expansion counted every token pair in
   the corpus in one in-memory table. The per-document token cap bounded each

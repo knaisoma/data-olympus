@@ -678,6 +678,9 @@ class PendingQueue:
         entry.pop("write_outcome", None)
         entry.pop("write_context", None)
         entry.pop("reconcile", None)
+        # The edit was not applied, so the live entry returns to the proposal as
+        # enqueued. Keeping the rejected bytes would make them durable state.
+        entry.pop("effective_postimage", None)
         # Strip the claim fields into a scratch sidecar, then publish with ONE
         # rename. Writing <pid>.json and deleting <pid>.claimed afterwards left
         # a window where a successor could claim the freshly published entry and
