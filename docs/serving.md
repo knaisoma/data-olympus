@@ -246,14 +246,16 @@ section so concurrent writes cannot corrupt each other:
   the edge on A again.
 - **Bootstrap rejection order (issue #259).** After the earlier path, size and
   rate-limit refusals (which are unchanged and carry no `reason`), a bundle's
-  commit-time checks run in a fixed order and refuse at the first failure: every file's path and postimage are
-  secret-scanned first (so no later diagnostic can echo credential-shaped
-  content), then duplicate ids inside the bundle, then each file's containment
-  and content validation in file order. Supersession targets resolve against the
-  committed tree with the whole bundle applied, so a successor and its
-  predecessor created in the same bundle are accepted. A bundle refused by these
-  commit-time checks carries `reason` in its response, redacted wholesale if it would contain
-  credential-shaped content.
+  commit-time checks run in a fixed order and refuse at the first failure:
+  every file's path and postimage are secret-scanned first (so no later
+  diagnostic can echo credential-shaped content), then duplicate ids inside the
+  bundle, then each file's containment and content validation in file order.
+  Supersession targets resolve against the committed tree with the whole bundle
+  applied, so a successor and its predecessor created in the same bundle are
+  accepted. A secret-scan, duplicate-id or content-validation refusal carries
+  `reason` in its response, redacted wholesale if it would contain
+  credential-shaped content. A containment refusal
+  (`rejected_symlink_escape`) carries no `reason`.
 - **Compare-and-swap (optimistic concurrency).** When a caller supplies a base
   marker (`base_commit` naming a specific commit, `base_blob_sha`, or
   `target_file_hash`) on `kb_propose_edit` (or it is carried on the pending entry

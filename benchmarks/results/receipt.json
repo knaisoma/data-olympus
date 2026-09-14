@@ -5,13 +5,13 @@
     "KB_EMBEDDINGS_MODE=on uv run --extra embeddings python -m benchmarks.generate_embeddings_ablation",
     "uv run python -m benchmarks.real_corpus_eval --corpus example-bundle --queries benchmarks/real_corpus/example_bundle_queries.json --lexical-only --out benchmarks/real_corpus/example_bundle_result.json",
     "uv run python -m benchmarks.docs_tables --write",
-    "uv run python -m benchmarks.receipt write --source-commit 75314839b2e9e87368ccf5762ab128da678ac518"
+    "uv run python -m benchmarks.receipt write --source-commit b35ee2f8f3a823e5a8e65dbe5d2e907ff0a0d5f7"
   ],
   "dependency_lock": {
     "packages": [
       {
         "name": "data-olympus",
-        "version": "0.8.0"
+        "version": "0.8.1"
       },
       {
         "name": "fastmcp",
@@ -35,7 +35,7 @@
       }
     ],
     "path": "uv.lock",
-    "sha256": "2da98e4636b90e94e5fc9b8ac67949bbec8fe8d05ba8e691cd99cb81c529cb3a"
+    "sha256": "c083fc1a19d7d33430125aca011170dc4c95b6cab9cf21581c224429680e904f"
   },
   "environment": {
     "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
@@ -1708,7 +1708,7 @@
     "synthetic_corpus": 0,
     "token_curve_corpus": 42
   },
-  "source_commit": "75314839b2e9e87368ccf5762ab128da678ac518",
+  "source_commit": "b35ee2f8f3a823e5a8e65dbe5d2e907ff0a0d5f7",
   "source_tree": {
     "files": [
       {
@@ -1947,9 +1947,9 @@
         "sha256": "4b53aad5e83496aebdeebdfa727b97ebaecf3f1bb2dc0c40f4753e4254c286f1"
       },
       {
-        "bytes": 18086,
+        "bytes": 18519,
         "path": "src/data_olympus/format/lint.py",
-        "sha256": "66ebe86f31c18e34ff2b05a85f4b2a04ddf79dce12817da784f29d4320fd3763"
+        "sha256": "83f931b28e733aee6f0edb97de27fb408a9bc6f04170407fe9837bfa1b808b1e"
       },
       {
         "bytes": 3486,
@@ -2202,12 +2202,12 @@
         "sha256": "8bf0ea9dd570e5db3f38c51a1e4055b8ec848a0d5b41d3020e9d7ca41241bc91"
       },
       {
-        "bytes": 45308,
+        "bytes": 47705,
         "path": "src/data_olympus/write_gate.py",
-        "sha256": "bdf8ca44fd4f6aff11ef6be801bd921ece4ea902e2339038e8b5c51a6fd3c1c6"
+        "sha256": "0e122bc93335ed345f7df0572068a97b39fb6d9e4fa8e20c7295249a011c9bf9"
       }
     ],
-    "sha256": "4ef656e8334b674ce0db9e70c66dbd03431f13319cef5b73bf1437ca6524060a"
+    "sha256": "5402d027edb73d55e9ce100ac6c5d7e363be2d681cd14371e1a836e568a73c4a"
   },
   "summary": {
     "embedding_ablation": {
