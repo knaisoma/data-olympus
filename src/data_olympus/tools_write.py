@@ -39,6 +39,7 @@ from data_olympus.pending import (
     PendingQueueFullError,
 )
 from data_olympus.write_gate import (
+    SNAPSHOT_DEPENDENT_CODES,
     SecretMatch,
     WriteSerializer,
     check_cas,
@@ -304,8 +305,11 @@ def _governed_lane_check(
         vr = validate_postimage(
             target_path=target_path, postimage=postimage, idx=idx,
         )
+        # Snapshot-dependent codes (missing_status and the issue #259
+        # supersession codes) can only be decided against the committed tree,
+        # which this index-only prediction does not read.
         validation_would_reject = (not vr.ok) and any(
-            e.get("code") != "missing_status" for e in vr.errors
+            e.get("code") not in SNAPSHOT_DEPENDENT_CODES for e in vr.errors
         )
         secret_flagged = (
             not scan_postimage_for_secrets(postimage=target_path).ok

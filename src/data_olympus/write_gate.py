@@ -36,7 +36,7 @@ from data_olympus.format.frontmatter import parse_frontmatter
 from data_olympus.format.validate import RESERVED, TIERS, TYPES, is_inbox_path
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from data_olympus.index import Index
 
@@ -379,6 +379,144 @@ class CommitSnapshot:
         return {p: _effective_doc_id(fm, p) for p, fm in self._frontmatter.items()}
 
 
+SNAPSHOT_DEPENDENT_CODES: frozenset[str] = frozenset({
+    "missing_status",
+    "unresolved_supersedes_target",
+    "unresolved_superseded_by_target",
+    "malformed_supersedes",
+    "malformed_superseded_by",
+    "unresolved_target_unverifiable",
+})
+"""Validation codes whose answer depends on the committed tree, so an
+index-only prediction must not treat them as a certain rejection."""
+
+_RELATIONSHIP_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("supersedes", "unresolved_supersedes_target", "malformed_supersedes"),
+    ("superseded_by", "unresolved_superseded_by_target", "malformed_superseded_by"),
+)
+
+
+def _strict_equal(left: object, right: object) -> bool:
+    """Type-exact recursive equality: ``1`` differs from ``True`` and ``1.0``;
+    lists compare in order; mappings compare regardless of key order."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _strict_equal(a, b) for a, b in zip(left, right, strict=True))
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _strict_equal(left[k], right[k]) for k in left)
+    return left == right
+
+
+def _relationship_targets(field: str, value: object) -> tuple[list[str], bool]:
+    """Targets of a relationship field as lint reads them, and whether the
+    authored shape is malformed. Strings are kept exactly as authored."""
+    from data_olympus.format.lint import _normalize_multi_ref, _normalize_single_ref
+
+    if field == "supersedes":
+        return _normalize_multi_ref(value)
+    single, malformed = _normalize_single_ref(value)
+    return ([single] if single else []), malformed
+
+
+def _safe_target(target: str) -> str:
+    scan = scan_postimage_for_secrets(postimage=target)
+    if scan.ok:
+        return f"'{target}'"
+    assert scan.match is not None
+    return f"[redacted: secret pattern '{scan.match.pattern_name}']"
+
+
+def _result_membership(
+    snapshot: CommitSnapshot,
+    target_path: str,
+    postimage_fm: dict[str, object],
+    transaction: Mapping[str, str] | None,
+) -> set[str]:
+    """Effective ids present in the commit being made: the parent's per-path
+    ids with every written path replaced by its postimage's id. Derived by path,
+    so an id another untouched path still carries stays present."""
+    from data_olympus.index import _is_excluded
+
+    owners = dict(snapshot.path_to_effective_id())
+    writes: dict[str, dict[str, object]] = {}
+    for path, text in (transaction or {}).items():
+        try:
+            fm, _body = parse_frontmatter(text)
+        except ValueError:
+            fm = {}
+        writes[path] = fm if isinstance(fm, dict) else {}
+    writes[target_path] = postimage_fm
+    for path, fm in writes.items():
+        if not path.endswith(".md") or _is_excluded(Path(path)):
+            owners.pop(path, None)
+            continue
+        owners[path] = _effective_doc_id(fm, path)
+    return set(owners.values())
+
+
+def _supersession_errors(
+    fm: dict[str, object],
+    target_path: str,
+    snapshot: CommitSnapshot,
+    transaction: Mapping[str, str] | None,
+) -> list[dict[str, str]]:
+    """Issue #259: a write may not newly introduce a ``supersedes`` or
+    ``superseded_by`` target that is absent from the commit being made, nor a
+    newly malformed value. Targets and malformed values carried over unchanged
+    from the committed version of the same path keep passing."""
+    if all(fm.get(field) is None for field, _unresolved, _malformed in _RELATIONSHIP_FIELDS):
+        return []
+    unverifiable = {
+        "field": "supersedes", "code": "unresolved_target_unverifiable",
+        "message": ("unresolved_target_unverifiable: the committed tree could not "
+                    "be read, so supersession targets cannot be verified; retry"),
+    }
+    try:
+        preimage = snapshot.frontmatter(target_path) or {}
+    except SnapshotUnavailable:
+        return [unverifiable]
+    errors: list[dict[str, str]] = []
+    added: list[tuple[str, str, str]] = []
+    for field, unresolved_code, malformed_code in _RELATIONSHIP_FIELDS:
+        post = fm.get(field)
+        if post is None:
+            continue
+        pre = preimage.get(field)
+        post_targets, post_malformed = _relationship_targets(field, post)
+        if post_malformed:
+            if pre is None or not _strict_equal(post, pre):
+                expected = ("a concept id string or a list of concept id strings"
+                            if field == "supersedes" else "a single concept id string")
+                errors.append({
+                    "field": field, "code": malformed_code,
+                    "message": f"{malformed_code}: '{field}' must be {expected}",
+                })
+            continue
+        pre_targets: list[str] = []
+        if pre is not None:
+            candidate, pre_malformed = _relationship_targets(field, pre)
+            pre_targets = [] if pre_malformed else candidate
+        known = set(pre_targets)
+        added.extend((field, unresolved_code, t) for t in post_targets if t not in known)
+    if not added:
+        return errors
+    try:
+        membership = _result_membership(snapshot, target_path, fm, transaction)
+    except SnapshotUnavailable:
+        return [*errors, unverifiable]
+    for field, code, target in added:
+        if target not in membership:
+            errors.append({
+                "field": field, "code": code,
+                "message": (f"{code}: '{field}' references {_safe_target(target)}, which "
+                            "is not a committed document; approve or create it first"),
+            })
+    return errors
+
+
 def _worktree_id_map(worktree_path: str) -> dict[str, str]:
     """``{doc_id: path}`` for every non-excluded ``.md`` file COMMITTED in the
     worktree's current HEAD tree (Codex Blocker 1, concurrent case).
@@ -403,6 +541,7 @@ def validate_postimage(
     idx: Index | None,
     worktree_path: str | None = None,
     snapshot: CommitSnapshot | None = None,
+    transaction: Mapping[str, str] | None = None,
 ) -> ValidationResult:
     """Format-level validation of ``postimage`` before it is committed (item 4).
 
@@ -522,6 +661,10 @@ def validate_postimage(
             "field": "id", "code": "duplicate_id",
             "message": f"id '{effective_id}' already used by '{collision_path}'",
         })
+
+    # 4. Supersession targets (issue #259): only where the committed tree is known.
+    if snapshot is not None and not _is_reserved(target_path):
+        errors.extend(_supersession_errors(fm, target_path, snapshot, transaction))
 
     if errors:
         return ValidationResult(ok=False, errors=tuple(errors))

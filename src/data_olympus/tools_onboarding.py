@@ -399,6 +399,7 @@ def _bootstrap_admitted(
         if bundle_demotion_reason is not None and would_auto_commit:
             from data_olympus.format.frontmatter import parse_frontmatter
             from data_olympus.write_gate import (
+                SNAPSHOT_DEPENDENT_CODES,
                 _effective_doc_id,
                 scan_postimage_for_secrets,
                 validate_postimage,
@@ -409,13 +410,13 @@ def _bootstrap_admitted(
                 tp, pi = f["target_path"], f["postimage"]
                 # The cancel decision must be a sound prediction of the
                 # commit path's own gates (see tools_write._governed_lane_check
-                # for the full rationale): ``missing_status`` is excluded
-                # because its new-vs-existing classification can differ
-                # between this index-only pre-check and the commit path's
-                # worktree-aware check; when in doubt the demotion stands.
+                # for the full rationale): snapshot-dependent codes
+                # (``missing_status`` and the issue #259 supersession codes)
+                # are excluded because only the commit path's worktree-aware
+                # check can decide them; when in doubt the demotion stands.
                 vr = validate_postimage(target_path=tp, postimage=pi, idx=idx)
                 validation_would_reject = (not vr.ok) and any(
-                    e.get("code") != "missing_status" for e in vr.errors
+                    e.get("code") not in SNAPSHOT_DEPENDENT_CODES for e in vr.errors
                 )
                 if (
                     not scan_postimage_for_secrets(postimage=tp).ok

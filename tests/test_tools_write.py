@@ -1385,3 +1385,57 @@ def test_correct_marker_pair_proposes_and_resolves(tmp_path, monkeypatch) -> Non
         source_session="s", agent_identity="operator",
     )
     assert resolved.status == "committed", resolved.reason
+
+
+def test_propose_edit_rejects_a_new_unresolved_supersedes_target(tmp_path, monkeypatch) -> None:
+    """#259 on the auto-commit path: a new document whose supersedes names a
+    missing id is refused with the code in the reason and nothing committed."""
+    _set_git_env(monkeypatch)
+    state = _state(tmp_path)
+    git, reg, pq, pen, rl, bl = state
+    repo = git._repo
+    target = "projects/demo/new-decision.md"
+    postimage = ("---\nid: DEMO-NEW\ntype: decision\nstatus: draft\ntier: T3\n"
+                 "supersedes: GHOST\n---\n# New\n")
+
+    resp = kb_propose_edit_fn(
+        target_path=target, postimage=postimage, base_commit="HEAD",
+        base_blob_sha=None, target_file_hash=None, reason="t", source_session="s",
+        agent_identity="claude", confidence=0.95, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4", idx=_build_index(repo),
+    )
+
+    assert resp.status == "rejected_invalid_document", (resp.status, resp.reason)
+    assert "unresolved_supersedes_target" in (resp.reason or "")
+    assert "GHOST" in (resp.reason or "")
+    assert pq.size() == 0
+
+
+def test_resolve_refuses_a_pending_entry_introducing_a_dangling_target(
+    tmp_path, monkeypatch,
+) -> None:
+    _set_git_env(monkeypatch)
+    state = _state(tmp_path)
+    git, reg, pq, pen, rl, bl = state
+    target, _blob = _seed_t1_file(git._repo)
+    postimage = "---\nid: STD-U-001\ntier: T1\nsupersedes: GHOST\n---\n# T1\nbody\n"
+    parked = kb_propose_edit_fn(
+        target_path=target, postimage=postimage, base_commit="HEAD",
+        base_blob_sha=None, target_file_hash=None, reason="t", source_session="s",
+        agent_identity="claude", confidence=0.3, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="1.2.3.4",
+    )
+    assert parked.status == "pending_confirmation"
+
+    resolved = kb_resolve_pending_fn(
+        pending_id=parked.pending_id, decision="approve", edited_text=None,
+        worktrees=reg, push_queue=pq, pending=pen,
+        source_session="s", agent_identity="operator",
+    )
+
+    assert resolved.status == "rejected_invalid_document"
+    assert "unresolved_supersedes_target" in (resolved.reason or "")
+    assert [e["state"] for e in pen.list()] == ["pending"]
+    assert pen.locks_held() == 1
