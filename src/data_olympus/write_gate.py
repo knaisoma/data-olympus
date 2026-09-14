@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import re
 import subprocess
@@ -410,34 +411,55 @@ _RELATIONSHIP_FIELDS: tuple[tuple[str, str, str], ...] = (
 def _strict_equal(
     left: object, right: object, _seen: set[tuple[int, int]] | None = None,
 ) -> bool:
-    """Type-exact recursive equality: ``1`` differs from ``True`` and ``1.0``,
-    also as mapping keys; lists compare in order; mappings compare regardless of
-    key order. Safe on self-referencing YAML (aliases): a container pair already
-    under comparison is treated as equal."""
+    """Type-exact recursive equality for the unchanged-malformed exemption.
+
+    ``1`` differs from ``True`` and ``1.0`` at every depth, including mapping
+    keys and set members. Lists and tuples (``!!pairs`` / ``!!omap`` load as
+    lists of tuples) compare in order; mappings and sets compare regardless of
+    order. ``NaN`` equals ``NaN`` so an unchanged legacy value keeps passing.
+    Self-referencing YAML (aliases) is safe: a container pair already under
+    comparison is treated as equal."""
     if type(left) is not type(right):
         return False
-    if isinstance(left, (list, dict)):
-        seen = _seen if _seen is not None else set()
-        pair = (id(left), id(right))
-        if pair in seen:
-            return True
-        seen.add(pair)
-        if isinstance(left, list) and isinstance(right, list):
-            return len(left) == len(right) and all(
-                _strict_equal(a, b, seen) for a, b in zip(left, right, strict=True))
-        if isinstance(left, dict) and isinstance(right, dict):
-            if len(left) != len(right):
-                return False
-            unmatched = list(right.items())
-            for lkey, lvalue in left.items():
-                for i, (rkey, rvalue) in enumerate(unmatched):
-                    if _strict_equal(lkey, rkey, seen) and _strict_equal(lvalue, rvalue, seen):
-                        del unmatched[i]
-                        break
-                else:
-                    return False
-            return not unmatched
-    return left == right
+    if isinstance(left, float) and isinstance(right, float):
+        return left == right or (math.isnan(left) and math.isnan(right))
+    if not isinstance(left, (list, tuple, dict, set, frozenset)):
+        return left == right
+    seen = _seen if _seen is not None else set()
+    pair = (id(left), id(right))
+    if pair in seen:
+        return True
+    seen.add(pair)
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        return len(left) == len(right) and all(
+            _strict_equal(a, b, seen) for a, b in zip(left, right, strict=True))
+    if isinstance(left, dict) and isinstance(right, dict):
+        return _match_unordered(
+            list(left.items()), list(right.items()), seen)
+    if isinstance(left, (set, frozenset)) and isinstance(right, (set, frozenset)):
+        return _match_unordered(
+            [(v, None) for v in left], [(v, None) for v in right], seen)
+    return False
+
+
+def _match_unordered(
+    left: list[tuple[object, object]],
+    right: list[tuple[object, object]],
+    seen: set[tuple[int, int]],
+) -> bool:
+    """Pair every (key, value) on the left with a distinct type-exact equal pair
+    on the right."""
+    if len(left) != len(right):
+        return False
+    unmatched = list(right)
+    for lkey, lvalue in left:
+        for i, (rkey, rvalue) in enumerate(unmatched):
+            if _strict_equal(lkey, rkey, seen) and _strict_equal(lvalue, rvalue, seen):
+                del unmatched[i]
+                break
+        else:
+            return False
+    return not unmatched
 
 
 def _relationship_targets(field: str, value: object) -> tuple[list[str], bool]:

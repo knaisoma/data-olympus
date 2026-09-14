@@ -192,3 +192,59 @@ def test_bundle_transaction_reads_the_tree_with_at_most_three_git_calls(state, m
     )
     assert sha
     assert len(calls) <= 3, [c[3:5] for c in calls]
+
+
+def _fake_validation(codes: list[str]):  # noqa: ANN202
+    from data_olympus.write_gate import ValidationResult
+
+    def fake(**_kwargs):  # noqa: ANN003, ANN202
+        return ValidationResult(ok=False, errors=tuple(
+            {"field": "x", "code": c, "message": f"{c}: injected"} for c in codes))
+
+    return fake
+
+
+@pytest.mark.parametrize(("codes", "expected"), [
+    (["invalid_enum", "unresolved_supersedes_target"], "rejected_invalid_document"),
+    (["unresolved_supersedes_target", "missing_status"], "pending_confirmation"),
+])
+def test_single_file_prediction_rejects_only_on_a_deterministic_error(
+    state, monkeypatch, codes, expected,
+) -> None:
+    """The prediction must cancel the demotion when ANY deterministic error is
+    present, and must not when every error is snapshot-dependent."""
+    import data_olympus.tools_write as tools_write
+
+    monkeypatch.setattr(tools_write, "validate_postimage", _fake_validation(codes))
+    text = "---\nid: STD-U-001\ntype: standard\nstatus: active\ntier: T1\n---\n# T1 edited\n"
+    resp = _propose(state, "universal/foundation/STD-U-001.md", text, 0.95)
+    assert resp.status == expected, (resp.status, resp.reason)
+
+
+@pytest.mark.parametrize(("codes", "expected"), [
+    (["invalid_enum", "unresolved_supersedes_target"], "rejected_invalid_document"),
+    (["unresolved_supersedes_target", "missing_status"], "pending_confirmation"),
+])
+def test_bootstrap_prediction_rejects_only_on_a_deterministic_error(
+    state, monkeypatch, codes, expected,
+) -> None:
+    import data_olympus.tools_write as tools_write
+
+    fake = _fake_validation(codes)
+    monkeypatch.setattr(write_gate, "validate_postimage", fake)
+    monkeypatch.setattr(tools_write, "validate_postimage", fake)
+    idx = MagicMock()
+    idx.list_by_prefix.return_value = []
+    idx.list_with_remote_url.return_value = []
+    idx.id_to_path_map.return_value = {}
+    files = [{"target_path": "projects/p/README.md",
+              "postimage": "---\nid: projects-p-README\ntype: project\nstatus: active\n"
+                           "tier: T3\n---\n# P\n"}]
+    resp = kb_bootstrap_project_fn(
+        idx=idx, workspace="p", component=None, workspace_remote_url=None,
+        component_remote_url=None, files=files, source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85, worktrees=state["worktrees"],
+        push_queue=state["push_queue"], pending=state["pending"],
+        rate_limiter=state["rate_limiter"], blocklist=state["blocklist"],
+    )
+    assert resp.status == expected, (resp.status, resp.reason)

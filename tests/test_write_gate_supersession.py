@@ -254,3 +254,26 @@ def test_unchanged_self_referencing_malformed_value_is_accepted(tmp_path) -> Non
 def test_blank_targets_are_malformed_in_both_shapes(tmp_path, line, code) -> None:
     repo = _repo(tmp_path, {"universal/a.md": _doc("A")})
     assert code in _codes(_validate(repo, "universal/b.md", _doc("B", line)))
+
+
+@pytest.mark.parametrize(("before", "after"), [
+    ("supersedes: !!set {1: null}\n", "supersedes: !!set {true: null}\n"),
+    ("supersedes: !!set {1: null}\n", "supersedes: !!set {1.0: null}\n"),
+    ("supersedes: !!pairs [{1: x}]\n", "supersedes: !!pairs [{true: x}]\n"),
+    ("supersedes: !!omap [{1: x}]\n", "supersedes: !!omap [{1.0: x}]\n"),
+])
+def test_sets_pairs_and_omaps_are_compared_type_exactly(tmp_path, before, after) -> None:
+    repo = _repo(tmp_path, {"universal/a.md": _doc("A", before)})
+    assert "malformed_supersedes" in _codes(_validate(repo, "universal/a.md", _doc("A", after)))
+
+
+@pytest.mark.parametrize("value", [
+    "supersedes: .nan\n",
+    "supersedes: [.nan, A]\n",
+    "supersedes: !!set {1: null}\n",
+    "supersedes: !!omap [{1: x}]\n",
+])
+def test_unchanged_unusual_malformed_values_are_accepted(tmp_path, value) -> None:
+    repo = _repo(tmp_path, {"universal/a.md": _doc("A", value)})
+    edited = _doc("A", value).replace("# A\n", "# A\nMore.\n")
+    assert "malformed_supersedes" not in _codes(_validate(repo, "universal/a.md", edited))
