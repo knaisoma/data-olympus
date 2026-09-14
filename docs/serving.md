@@ -228,7 +228,8 @@ section so concurrent writes cannot corrupt each other:
   or `unresolved_superseded_by_target` at the start of the reason, or
   `malformed_supersedes` / `malformed_superseded_by` for a wrong shape. Target
   strings are compared exactly as written, so `" TARGET "` does not resolve to
-  `TARGET`. A target left unchanged from the committed version of the same file,
+  `TARGET`, and a blank or whitespace-only target is refused as malformed (lint
+  ignores such a value rather than reporting it). A target left unchanged from the committed version of the same file,
   and a malformed value left exactly as it was (type-exact: `1` changed to
   `true` is a change), keep passing, so a legacy document can still be edited,
   and removing either field is always accepted. A credential-shaped target is

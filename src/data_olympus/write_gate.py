@@ -266,6 +266,9 @@ def _effective_doc_id(fm: dict[str, object], target_path: str) -> str:
     return _derive_id_from_path(Path(target_path))
 
 
+_OID_RE = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
 class SnapshotUnavailable(Exception):
     """The committed tree the write lands on could not be read completely."""
 
@@ -309,6 +312,9 @@ class CommitSnapshot:
         except SnapshotUnavailable as exc:
             self._failure = exc
             raise
+        except Exception as exc:  # noqa: BLE001 - any parsing surprise is unavailability
+            self._failure = SnapshotUnavailable(f"committed tree unreadable: {exc}")
+            raise self._failure from exc
 
     def _load(self) -> None:
         from data_olympus.index import _is_excluded
@@ -324,6 +330,8 @@ class CommitSnapshot:
             if len(parts) != 3 or not raw_path:
                 raise SnapshotUnavailable("unexpected ls-tree record")
             _mode, obj_type, raw_oid = parts
+            if not _OID_RE.fullmatch(raw_oid):
+                raise SnapshotUnavailable("unexpected ls-tree object id")
             path = raw_path.decode("utf-8", errors="surrogateescape")
             if obj_type != b"blob" or not path.endswith(".md"):
                 continue
@@ -340,18 +348,21 @@ class CommitSnapshot:
                 if header_end < 0:
                     raise SnapshotUnavailable("short cat-file output")
                 header = out[pos:header_end].split(b" ")
-                if len(header) != 3 or header[0].decode() != oid_hex or header[1] != b"blob":
+                if (len(header) != 3 or header[0].decode() != oid_hex
+                        or header[1] != b"blob" or not header[2].isdigit()):
                     raise SnapshotUnavailable("a committed concept file could not be read")
                 start = header_end + 1
                 end = start + int(header[2])
-                if end + 1 > len(out):
-                    raise SnapshotUnavailable("short cat-file output")
+                if end + 1 > len(out) or out[end:end + 1] != b"\n":
+                    raise SnapshotUnavailable("malformed cat-file output")
                 try:
                     fm, _body = parse_frontmatter(out[start:end].decode("utf-8"))
                 except (ValueError, UnicodeDecodeError):
                     fm = {}
                 frontmatter[path] = fm if isinstance(fm, dict) else {}
                 pos = end + 1
+            if pos != len(out):
+                raise SnapshotUnavailable("unexpected trailing cat-file output")
         self._sha = sha
         self._frontmatter = frontmatter
 
@@ -396,29 +407,54 @@ _RELATIONSHIP_FIELDS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _strict_equal(left: object, right: object) -> bool:
-    """Type-exact recursive equality: ``1`` differs from ``True`` and ``1.0``;
-    lists compare in order; mappings compare regardless of key order."""
+def _strict_equal(
+    left: object, right: object, _seen: set[tuple[int, int]] | None = None,
+) -> bool:
+    """Type-exact recursive equality: ``1`` differs from ``True`` and ``1.0``,
+    also as mapping keys; lists compare in order; mappings compare regardless of
+    key order. Safe on self-referencing YAML (aliases): a container pair already
+    under comparison is treated as equal."""
     if type(left) is not type(right):
         return False
-    if isinstance(left, list) and isinstance(right, list):
-        return len(left) == len(right) and all(
-            _strict_equal(a, b) for a, b in zip(left, right, strict=True))
-    if isinstance(left, dict) and isinstance(right, dict):
-        return left.keys() == right.keys() and all(
-            _strict_equal(left[k], right[k]) for k in left)
+    if isinstance(left, (list, dict)):
+        seen = _seen if _seen is not None else set()
+        pair = (id(left), id(right))
+        if pair in seen:
+            return True
+        seen.add(pair)
+        if isinstance(left, list) and isinstance(right, list):
+            return len(left) == len(right) and all(
+                _strict_equal(a, b, seen) for a, b in zip(left, right, strict=True))
+        if isinstance(left, dict) and isinstance(right, dict):
+            if len(left) != len(right):
+                return False
+            unmatched = list(right.items())
+            for lkey, lvalue in left.items():
+                for i, (rkey, rvalue) in enumerate(unmatched):
+                    if _strict_equal(lkey, rkey, seen) and _strict_equal(lvalue, rvalue, seen):
+                        del unmatched[i]
+                        break
+                else:
+                    return False
+            return not unmatched
     return left == right
 
 
 def _relationship_targets(field: str, value: object) -> tuple[list[str], bool]:
-    """Targets of a relationship field as lint reads them, and whether the
-    authored shape is malformed. Strings are kept exactly as authored."""
-    from data_olympus.format.lint import _normalize_multi_ref, _normalize_single_ref
-
+    """Targets of a present, non-null relationship field exactly as authored,
+    and whether the shape is malformed. A blank or whitespace-only string is not
+    a concept id and makes the value malformed in either shape."""
     if field == "supersedes":
-        return _normalize_multi_ref(value)
-    single, malformed = _normalize_single_ref(value)
-    return ([single] if single else []), malformed
+        items = [value] if isinstance(value, str) else value
+        if not isinstance(items, list) or not all(isinstance(v, str) for v in items):
+            return [], True
+    else:
+        if not isinstance(value, str):
+            return [], True
+        items = [value]
+    if any(not v.strip() for v in items):
+        return [], True
+    return list(items), False
 
 
 def _safe_target(target: str) -> str:

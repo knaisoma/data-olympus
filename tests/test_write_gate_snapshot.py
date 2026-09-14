@@ -135,3 +135,43 @@ def test_duplicate_id_check_stays_fail_open_on_snapshot_failure(tmp_path, monkey
         worktree_path=str(repo))
 
     assert result.ok, result.errors
+
+
+def _fake_cat_file(monkeypatch, payload: bytes) -> list[list[str]]:  # noqa: ANN001
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def fake(args, *a, **kw):  # noqa: ANN001, ANN002, ANN003, ANN202
+        calls.append(list(args))
+        if "cat-file" in args:
+            return subprocess.CompletedProcess(args, 0, stdout=payload, stderr=b"")
+        return real_run(args, *a, **kw)
+
+    monkeypatch.setattr(write_gate.subprocess, "run", fake)
+    return calls
+
+
+def _oid(repo, path: str) -> str:  # noqa: ANN001
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", f"HEAD:{path}"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+@pytest.mark.parametrize("shape", ["negative", "nonnumeric", "bad_terminator", "trailing"])
+def test_malformed_batch_framing_is_unavailable_and_cached(tmp_path, monkeypatch, shape) -> None:
+    repo = _repo(tmp_path, {"universal/a.md": _doc("A")})
+    oid = _oid(repo, "universal/a.md")
+    body = _doc("A").encode()
+    payloads = {
+        "negative": f"{oid} blob -1\n".encode(),
+        "nonnumeric": f"{oid} blob many\n".encode() + body + b"\n",
+        "bad_terminator": f"{oid} blob {len(body)}\n".encode() + body + b"X",
+        "trailing": f"{oid} blob {len(body)}\n".encode() + body + b"\nextra",
+    }
+    calls = _fake_cat_file(monkeypatch, payloads[shape])
+    snap = CommitSnapshot(str(repo))
+    with pytest.raises(SnapshotUnavailable):
+        snap.path_to_effective_id()
+    count = len(calls)
+    with pytest.raises(SnapshotUnavailable):
+        snap.paths()
+    assert len(calls) == count, "a failure must be cached"

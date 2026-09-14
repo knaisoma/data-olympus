@@ -89,3 +89,38 @@ def test_boundary_relationships_unchanged_by_resolve_root(tmp_path) -> None:
     plain = lint_files([b], resolve_ids={"O"})
     assert _severities(plain, b, "superseded_by") == _severities(
         lint_files([b], resolve_ids=collect_ids(outside.parent)), b, "superseded_by")
+
+
+def test_resolve_ids_do_not_change_contradicts(tmp_path) -> None:
+    b = _write(tmp_path / "sub" / "b.md", "B", "contradicts: OUTSIDE\n")
+    results = lint_files([b], resolve_ids={"OUTSIDE"})
+    assert _severities(results, b, "contradicts") == ["warning"]
+
+
+def test_collect_ids_skips_malformed_external_documents(tmp_path) -> None:
+    _write(tmp_path / "good.md", "GOOD")
+    bad = tmp_path / "bad.md"
+    bad.write_text("---\nid: [unterminated\n---\n# bad\n", encoding="utf-8")
+    assert "GOOD" in collect_ids(tmp_path)
+
+
+def test_cli_resolve_root_with_malformed_duplicate_and_overlapping_files(tmp_path, capsys) -> None:
+    root = tmp_path / "bundle"
+    _write(root / "outside" / "o1.md", "OUTSIDE")
+    _write(root / "outside" / "o2.md", "OUTSIDE")  # duplicate id outside the linted set
+    (root / "outside" / "broken.md").write_text("---\nid: [bad\n---\n", encoding="utf-8")
+    _write(root / "sub" / "b.md", "B", "supersedes: OUTSIDE\n")
+    sub = str(root / "sub")
+
+    assert main(["lint", sub, "--resolve-root", str(root)]) == 0
+    out = capsys.readouterr().out
+    assert "broken.md" not in out and "o2.md" not in out
+
+
+def test_cli_warn_keeps_cycle_and_malformed_errors(tmp_path) -> None:
+    _write(tmp_path / "a.md", "A", "supersedes: B\n")
+    _write(tmp_path / "b.md", "B", "supersedes: A\n")
+    assert main(["lint", str(tmp_path), "--unresolved-targets", "warn"]) == 1
+    _write(tmp_path / "a.md", "A", "supersedes: 123\n")
+    _write(tmp_path / "b.md", "B")
+    assert main(["lint", str(tmp_path), "--unresolved-targets", "warn"]) == 1

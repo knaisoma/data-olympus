@@ -299,3 +299,24 @@ async def test_rest_propose_edit_rejects_malformed_base_markers(http_app, field,
     assert body["status"] == "rejected_invalid_base"
     assert field in body["reason"]
     assert str(value) not in body["reason"]
+
+
+@pytest.mark.asyncio
+async def test_rest_propose_edit_returns_the_unresolved_target_code(http_app) -> None:
+    """#259 over REST: the commit-path rejection carries the prefixed code."""
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/propose/edit",
+            json={
+                "target_path": "projects/example-project/new-decision.md",
+                "postimage": "---\nid: EXAMPLE-NEW\ntype: decision\nstatus: draft\ntier: T3\n"
+                             "supersedes: GHOST-TARGET\n---\n# New\n",
+                "base_commit": "HEAD", "base_blob_sha": None, "target_file_hash": None,
+                "reason": "test", "source_session": "s",
+                "agent_identity": "claude", "confidence": 0.95,
+            },
+        )
+    body = resp.json()
+    assert body["status"] == "rejected_invalid_document", body
+    assert body["reason"].startswith("unresolved_supersedes_target: ")

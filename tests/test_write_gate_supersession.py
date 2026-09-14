@@ -226,3 +226,31 @@ def test_index_only_calls_skip_the_rule_and_codes_are_prediction_exempt() -> Non
     assert {"missing_status", "unresolved_supersedes_target",
             "unresolved_superseded_by_target", "malformed_supersedes",
             "malformed_superseded_by", "unresolved_target_unverifiable"} <= SNAPSHOT_DEPENDENT_CODES
+
+
+@pytest.mark.parametrize(("before", "after"), [
+    ("supersedes: {1: x}\n", "supersedes: {true: x}\n"),
+    ("supersedes: {1: x}\n", "supersedes: {1.0: x}\n"),
+])
+def test_mapping_keys_are_compared_type_exactly(tmp_path, before, after) -> None:
+    repo = _repo(tmp_path, {"universal/a.md": _doc("A", before)})
+    assert "malformed_supersedes" in _codes(_validate(repo, "universal/a.md", _doc("A", after)))
+
+
+def test_unchanged_self_referencing_malformed_value_is_accepted(tmp_path) -> None:
+    value = "supersedes: &x [*x]\n"
+    repo = _repo(tmp_path, {"universal/a.md": _doc("A", value)})
+    result = _validate(repo, "universal/a.md", _doc("A", value).replace("# A\n", "# A\nMore.\n"))
+    assert "malformed_supersedes" not in _codes(result)
+
+
+@pytest.mark.parametrize(("line", "code"), [
+    ('supersedes: " "\n', "malformed_supersedes"),
+    ('supersedes: ""\n', "malformed_supersedes"),
+    ('supersedes: [" "]\n', "malformed_supersedes"),
+    ('superseded_by: " "\n', "malformed_superseded_by"),
+    ('superseded_by: ""\n', "malformed_superseded_by"),
+])
+def test_blank_targets_are_malformed_in_both_shapes(tmp_path, line, code) -> None:
+    repo = _repo(tmp_path, {"universal/a.md": _doc("A")})
+    assert code in _codes(_validate(repo, "universal/b.md", _doc("B", line)))

@@ -79,3 +79,17 @@ def test_invalid_resolve_root_changes_nothing(tmp_path, capsys) -> None:
             assert code == 1
             assert _tree_digest(out) == before
     assert "resolve-root" in capsys.readouterr().err
+
+
+def test_import_with_malformed_file_under_resolve_root_still_reports(tmp_path, capsys) -> None:
+    src = _adr_set(tmp_path)
+    corpus = tmp_path / "corpus"
+    (corpus / "decisions").mkdir(parents=True)
+    (corpus / "decisions" / "adr-0003.md").write_text(
+        "---\nid: ADR-0003\ntype: decision\nstatus: superseded\ntier: T2\n---\n# ADR-0003\n")
+    (corpus / "decisions" / "broken.md").write_text("---\nid: [bad\n---\n")
+    code = main(["import", str(src), "--kind", "adr", "--tier", "T2",
+                 "-o", str(tmp_path / "out"), "--resolve-root", str(corpus), "--json"])
+    report = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert report["lint_clean"] is True

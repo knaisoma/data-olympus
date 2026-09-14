@@ -177,3 +177,23 @@ async def test_mcp_propose_edit_rejects_blob_sha_as_file_hash(
     assert "rejected_invalid_base" in rendered
     assert "target_file_hash" in rendered
     assert blob_like not in rendered
+
+
+@pytest.mark.asyncio
+async def test_mcp_propose_edit_returns_the_unresolved_target_code(
+    tmp_git_kb: Path, tmp_path: Path,
+) -> None:
+    """#259 over MCP: the commit-path rejection carries the prefixed code."""
+    app = _app_with_pipeline(tmp_git_kb, tmp_path)
+    async with Client(app) as client:
+        res = await client.call_tool("kb_propose_edit", {
+            "target_path": "projects/example-project/new-decision.md",
+            "postimage": "---\nid: EXAMPLE-NEW\ntype: decision\nstatus: draft\ntier: T3\n"
+                         "supersedes: GHOST-TARGET\n---\n# New\n",
+            "base_commit": "HEAD", "base_blob_sha": None, "target_file_hash": None,
+            "reason": "test", "source_session": "s",
+            "agent_identity": "claude", "confidence": 0.95,
+        })
+    rendered = str(res.data if getattr(res, "data", None) is not None else res)
+    assert "rejected_invalid_document" in rendered
+    assert "unresolved_supersedes_target: " in rendered

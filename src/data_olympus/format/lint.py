@@ -220,7 +220,10 @@ def _cross_file_lifecycle_findings(
             ("contradicts", contradicts),
         ):
             for target in targets:
-                resolves = target in id_to_path or target in external
+                # External ids (--resolve-root) count for supersession only;
+                # `contradicts` resolution is unchanged (issue #259 scope).
+                resolves = target in id_to_path or (
+                    field != "contradicts" and target in external)
                 shaped = _path_shaped(target)
                 if resolves:
                     if shaped:
@@ -418,7 +421,12 @@ def collect_ids(root: str | Path) -> set[str]:
     findings and no relationship context to a lint run."""
     ids: set[str] = set()
     for md in discover_bundle_files(root):
-        doc_id = Document.load(md).id
+        try:
+            doc_id = Document.load(md).id
+        except (OSError, ValueError):
+            # An unreadable external document cannot vouch for any id; it is
+            # outside the linted set, so it is skipped rather than reported.
+            continue
         if isinstance(doc_id, str) and doc_id:
             ids.add(doc_id)
     return ids
