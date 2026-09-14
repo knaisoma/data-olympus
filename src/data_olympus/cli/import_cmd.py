@@ -3,8 +3,11 @@
 Wires the CLI flags to ``data_olympus.importer.run_import`` and renders the
 import report either human-readably or as JSON (``--json``). Exit codes:
 - 0: import succeeded and the output is lint-clean.
-- 1: import succeeded but the output has lint errors (should not happen on the
-     happy path; surfaces a stamping regression instead of silently passing).
+- 1: import succeeded but the output has lint errors: a stamping regression, or
+     a ``supersedes``/``superseded_by`` target absent from the output (issue
+     #259; use ``--resolve-root`` or ``--unresolved-targets warn``). Drafts, the
+     report and the marker are still written. Also 1 for an invalid
+     ``--resolve-root``, checked before anything is written.
 - 2: bad input or a refused re-run (ImportError_).
 """
 
@@ -12,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from data_olympus.importer import ImportError_, run_import
@@ -55,6 +59,10 @@ def _render_human(report: ImportReport) -> str:
 
 
 def _cmd_import(args: argparse.Namespace) -> int:
+    # Issue #259: a bad --resolve-root exits 1 before any cleanup or write.
+    if args.resolve_root is not None and not Path(args.resolve_root).is_dir():
+        print(f"error: --resolve-root is not a directory: {args.resolve_root}", file=sys.stderr)
+        return 1
     try:
         report = run_import(
             source=args.source,
@@ -64,6 +72,8 @@ def _cmd_import(args: argparse.Namespace) -> int:
             category=args.category,
             id_prefix=args.id_prefix,
             force=args.force,
+            resolve_root=args.resolve_root,
+            unresolved_targets=args.unresolved_targets,
         )
     except ImportError_ as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -111,5 +121,13 @@ def add_import_subparser(sub: argparse._SubParsersAction[argparse.ArgumentParser
         "--force", action="store_true",
         help="overwrite an output dir that was already used as an import target",
     )
+    p.add_argument(
+        "--resolve-root", default=None,
+        help="also resolve supersedes/superseded_by targets against every concept under "
+             "this directory when linting the output (existence only)")
+    p.add_argument(
+        "--unresolved-targets", choices=["error", "warn"], default="error",
+        help="severity of an unresolved supersedes/superseded_by target in the output lint "
+             "(default: error; warn is transitional)")
     p.add_argument("--json", action="store_true", help="emit the import report as JSON")
     p.set_defaults(func=_cmd_import)
