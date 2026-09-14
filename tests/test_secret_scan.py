@@ -1143,3 +1143,62 @@ def test_overridden_edit_is_committed_but_never_kept_in_a_claim(tmp_path, monkey
     assert seen_claims, "the claim must have been written at least once"
     secret = GENERIC_CRED.split("=")[1].encode("utf-8")
     assert all(secret not in raw for raw in seen_claims)
+
+
+def _bootstrap_idx() -> MagicMock:
+    idx = MagicMock()
+    idx.list_by_prefix.return_value = []
+    idx.list_with_remote_url.return_value = []
+    idx.id_to_path_map.return_value = {}
+    return idx
+
+
+def test_bootstrap_missing_supersession_target_returns_a_reason(tmp_path, monkeypatch) -> None:
+    """#259: a bundle whose file supersedes a missing id is refused, and the
+    response now says why instead of only naming the path. Draft documents
+    keep governed-lane demotion out of the way so the atomic commit path runs."""
+    reg, pq, pen, rl, bl = _bootstrap_pieces(tmp_path, monkeypatch)
+    files = [
+        {"target_path": "projects/p/README.md",
+         "postimage": "---\nid: projects-p-README\ntype: project\nstatus: draft\n"
+                      "tier: T3\n---\n# P\n"},
+        {"target_path": "projects/p/AGENTS.md",
+         "postimage": "---\nid: projects-p-AGENTS\ntype: project\nstatus: draft\n"
+                      "tier: T3\nsupersedes: projects-p-GHOST\n---\n# A\n"},
+    ]
+    resp = kb_bootstrap_project_fn(
+        idx=_bootstrap_idx(), workspace="p", component=None,
+        workspace_remote_url=None, component_remote_url=None,
+        files=files, source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+    )
+    assert resp.status == "rejected_invalid_document"
+    assert resp.rejected_paths == ["projects/p/AGENTS.md"]
+    assert "unresolved_supersedes_target" in (resp.reason or "")
+    assert pq.size() == 0
+
+
+def test_bootstrap_duplicate_credential_shaped_ids_never_leak(tmp_path, monkeypatch) -> None:
+    """Two bundle files sharing a credential-shaped id: the whole-bundle secret
+    scan refuses the bundle before the duplicate-id diagnostic can echo it."""
+    reg, pq, pen, rl, bl = _bootstrap_pieces(tmp_path, monkeypatch)
+    files = [
+        {"target_path": "projects/p/README.md",
+         "postimage": f"---\nid: {GITHUB_TOKEN}\ntype: project\nstatus: active\n"
+                      "tier: T3\n---\n# P\n"},
+        {"target_path": "projects/p/AGENTS.md",
+         "postimage": f"---\nid: {GITHUB_TOKEN}\ntype: project\nstatus: active\n"
+                      "tier: T3\n---\n# A\n"},
+    ]
+    resp = kb_bootstrap_project_fn(
+        idx=_bootstrap_idx(), workspace="p", component=None,
+        workspace_remote_url=None, component_remote_url=None,
+        files=files, source_session="s", agent_identity="claude",
+        confidence=0.95, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+    )
+    assert resp.status == "rejected_secret_detected"
+    assert GITHUB_TOKEN not in (resp.reason or "")
+    assert GITHUB_TOKEN not in " ".join(resp.rejected_paths)
+    assert resp.model_dump_json().find(GITHUB_TOKEN) == -1

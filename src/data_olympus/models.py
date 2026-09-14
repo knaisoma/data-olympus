@@ -693,6 +693,9 @@ class BootstrapResponse(BaseModel):
     commit_sha: str | None = None
     pending_id: str | None = None
     rejected_paths: list[str] = []
+    # Why the bundle was refused (issue #259). Redacted wholesale when it would
+    # carry credential-shaped content.
+    reason: str | None = None
     push_state: str | None = None
     operator_prompt: str | None = None
     # Governed-lane write protection (issue #112): see ProposeResponse.demotion_reason.

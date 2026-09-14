@@ -28,6 +28,19 @@ if TYPE_CHECKING:
     from data_olympus.write_gate import WriteSerializer
 
 
+
+def _redacted_reason(reason: str | None) -> str | None:
+    """Return ``reason`` unless it carries credential-shaped content (#259)."""
+    if reason is None:
+        return None
+    from data_olympus.write_gate import scan_postimage_for_secrets
+
+    scan = scan_postimage_for_secrets(postimage=reason)
+    if scan.ok:
+        return reason
+    assert scan.match is not None
+    return f"[reason redacted: secret pattern '{scan.match.pattern_name}' detected]"
+
 def _pending_root(pending: PendingQueue) -> str:
     """The pending queue's on-disk root, via its public ``root`` property.
 
@@ -596,7 +609,8 @@ def _bootstrap_admitted(
     except _WriteRejected as rej:
         resp = rej.response
         return BootstrapResponse(status=resp.status,
-                                 rejected_paths=[resp.target_path or ""])
+                                 rejected_paths=[resp.target_path or ""],
+                                 reason=_redacted_reason(resp.reason))
     except PathLockBusyError as busy:
         return BootstrapResponse(status="rejected_path_lock_busy",
                                  rejected_paths=[str(busy)])

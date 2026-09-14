@@ -886,7 +886,9 @@ def commit_multifile_in_worktree(
     write serializer, per-path advisory locks on every target (shared with the
     pending queue), the content-validation gate on every postimage, and a hard
     reset on any post-add failure so a partial bundle never leaks into the next
-    commit. CAS is not applied here (bootstrap creates NEW files under a
+    commit. Rejection order: secret scan of the whole bundle, then intra-bundle
+    duplicate ids, then per-file containment and content validation (issue
+    #259). CAS is not applied here (bootstrap creates NEW files under a
     not-yet-onboarded workspace; there is no base to compare). Returns
     ``(commit_sha, push_state)``. Raises :class:`_WriteRejected` on a gate failure
     or :class:`PathLockBusyError` when any target path is already locked.
@@ -910,45 +912,20 @@ def commit_multifile_in_worktree(
             target_tier=target_tier, target_path=target_path_for_msg,
         )
 
-        # Intra-bundle duplicate-id check (Codex round-2 Blocker A): the per-file
-        # validate_postimage below only sees the live index + the committed tree,
-        # neither of which yet contains this bundle. Two bundle files carrying the
-        # SAME effective id at different paths would both pass and then poison the
-        # next index rebuild. Catch it up front by computing each file's effective
-        # id (explicit or path-derived, matching the rebuild) and rejecting any id
-        # claimed by more than one path in the bundle.
-        from data_olympus.write_gate import _effective_doc_id
-        seen_ids: dict[str, str] = {}
+        # Rejection precedence (issue #259, explicit and tested):
+        #   1. batch-wide secret scan of every path and postimage, in file order;
+        #      the first flagged file rejects the whole bundle. Scanning first
+        #      means no later diagnostic can echo credential-shaped content, and
+        #      bootstrap has no operator override (no human in the loop).
+        #   2. intra-bundle duplicate ids (Codex round-2 Blocker A): the committed
+        #      tree does not yet contain this bundle, so two files claiming the
+        #      same effective id would both pass validation and then poison the
+        #      next index rebuild.
+        #   3. per-file containment and content validation, in file order, against
+        #      ONE snapshot of the committed tree with the whole bundle applied, so
+        #      a document created in this bundle resolves as a supersession target.
         for f in files:
             tp, pi = f["target_path"], f["postimage"]
-            try:
-                bfm, _ = parse_frontmatter(pi)
-            except ValueError:
-                bfm = {}
-            eid = _effective_doc_id(bfm, tp)
-            if eid and eid in seen_ids and seen_ids[eid] != tp:
-                raise _WriteRejected(ProposeResponse(
-                    status="rejected_invalid_document", target_path=tp,
-                    reason=(f"id '{eid}' used by two files in the same bundle: "
-                            f"'{seen_ids[eid]}' and '{tp}'")))
-            if eid:
-                seen_ids[eid] = tp
-
-        # Containment + secret-scan + validation for every file BEFORE any
-        # write. The secret scan runs BEFORE content-validation (same
-        # ordering rationale as ``_commit_in_worktree``): ``validate_postimage``
-        # echoes an invalid enum value verbatim, so checking it first could
-        # leak a credential-shaped value through that message instead of the
-        # redacted ``rejected_secret_detected`` path. Bootstrap has no
-        # operator override at all (it always commits atomically with no
-        # human in the loop), so a single flagged file rejects the whole
-        # bundle before any file in it is written.
-        for f in files:
-            tp, pi = f["target_path"], f["postimage"]
-            full = safe_join_under_root(wt.path, tp)
-            if full is None:
-                raise _WriteRejected(ProposeResponse(
-                    status="rejected_symlink_escape", target_path=tp))
             # Path scan first (codex round-3 Blocker 2): a credential-shaped
             # filename would land in the commit and be echoed in
             # responses/audit; the rejection must not echo it either.
@@ -975,8 +952,35 @@ def commit_multifile_in_worktree(
                     ),
                     matching_pattern=secret_result.match.pattern_name,
                 ))
+
+        from data_olympus.write_gate import CommitSnapshot, _effective_doc_id
+        seen_ids: dict[str, str] = {}
+        for f in files:
+            tp, pi = f["target_path"], f["postimage"]
+            try:
+                bfm, _ = parse_frontmatter(pi)
+            except ValueError:
+                bfm = {}
+            eid = _effective_doc_id(bfm, tp)
+            if eid and eid in seen_ids and seen_ids[eid] != tp:
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_invalid_document", target_path=tp,
+                    reason=(f"id '{eid}' used by two files in the same bundle: "
+                            f"'{seen_ids[eid]}' and '{tp}'")))
+            if eid:
+                seen_ids[eid] = tp
+
+        snapshot = CommitSnapshot(wt.path)
+        transaction = {f["target_path"]: f["postimage"] for f in files}
+        for f in files:
+            tp, pi = f["target_path"], f["postimage"]
+            full = safe_join_under_root(wt.path, tp)
+            if full is None:
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_symlink_escape", target_path=tp))
             vr = validate_postimage(
-                target_path=tp, postimage=pi, idx=idx, worktree_path=wt.path)
+                target_path=tp, postimage=pi, idx=idx, worktree_path=wt.path,
+                snapshot=snapshot, transaction=transaction)
             if not vr.ok:
                 raise _WriteRejected(ProposeResponse(
                     status="rejected_invalid_document", target_path=tp,
