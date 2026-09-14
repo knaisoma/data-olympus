@@ -266,6 +266,119 @@ def _effective_doc_id(fm: dict[str, object], target_path: str) -> str:
     return _derive_id_from_path(Path(target_path))
 
 
+class SnapshotUnavailable(Exception):
+    """The committed tree the write lands on could not be read completely."""
+
+
+class CommitSnapshot:
+    """Read-only view of one commit's concept files (issue #259).
+
+    Pinned to the worktree HEAD commit resolved on first use. Every read comes
+    from that commit (never the filesystem, the index or a pending entry), with
+    at most three git subprocesses for the whole transaction: ``rev-parse``,
+    ``ls-tree -r -z`` and one ``cat-file --batch`` fed object ids. Object ids,
+    not paths, cross the batch boundary, so any committed filename is safe. Any
+    failure raises :class:`SnapshotUnavailable` and is cached, so a transaction
+    sees one consistent answer without retrying git."""
+
+    def __init__(self, worktree_path: str) -> None:
+        self._worktree_path = worktree_path
+        self._sha: str | None = None
+        self._frontmatter: dict[str, dict[str, object]] | None = None
+        self._failure: SnapshotUnavailable | None = None
+
+    def _git(self, *args: str, input_bytes: bytes | None = None) -> bytes:
+        try:
+            result = subprocess.run(
+                ["git", "-C", self._worktree_path, *args],
+                input=input_bytes, capture_output=True, check=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - any spawn failure is unavailability
+            raise SnapshotUnavailable(f"git {args[0]} could not run: {exc}") from exc
+        if result.returncode != 0:
+            raise SnapshotUnavailable(f"git {args[0]} exited {result.returncode}")
+        return bytes(result.stdout)
+
+    def _ensure(self) -> None:
+        if self._failure is not None:
+            raise self._failure
+        if self._frontmatter is not None:
+            return
+        try:
+            self._load()
+        except SnapshotUnavailable as exc:
+            self._failure = exc
+            raise
+
+    def _load(self) -> None:
+        from data_olympus.index import _is_excluded
+
+        sha = self._git("rev-parse", "--verify", "HEAD^{commit}").decode().strip()
+        listing = self._git("ls-tree", "-r", "-z", sha)
+        oids: list[tuple[str, str]] = []
+        for record in listing.split(b"\0"):
+            if not record:
+                continue
+            meta, _sep, raw_path = record.partition(b"\t")
+            parts = meta.split(b" ")
+            if len(parts) != 3 or not raw_path:
+                raise SnapshotUnavailable("unexpected ls-tree record")
+            _mode, obj_type, raw_oid = parts
+            path = raw_path.decode("utf-8", errors="surrogateescape")
+            if obj_type != b"blob" or not path.endswith(".md"):
+                continue
+            if _is_excluded(Path(path)):
+                continue
+            oids.append((path, raw_oid.decode()))
+        frontmatter: dict[str, dict[str, object]] = {}
+        if oids:
+            request = "".join(f"{oid_hex}\n" for _path, oid_hex in oids).encode()
+            out = self._git("cat-file", "--batch", input_bytes=request)
+            pos = 0
+            for path, oid_hex in oids:
+                header_end = out.find(b"\n", pos)
+                if header_end < 0:
+                    raise SnapshotUnavailable("short cat-file output")
+                header = out[pos:header_end].split(b" ")
+                if len(header) != 3 or header[0].decode() != oid_hex or header[1] != b"blob":
+                    raise SnapshotUnavailable("a committed concept file could not be read")
+                start = header_end + 1
+                end = start + int(header[2])
+                if end + 1 > len(out):
+                    raise SnapshotUnavailable("short cat-file output")
+                try:
+                    fm, _body = parse_frontmatter(out[start:end].decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    fm = {}
+                frontmatter[path] = fm if isinstance(fm, dict) else {}
+                pos = end + 1
+        self._sha = sha
+        self._frontmatter = frontmatter
+
+    @property
+    def sha(self) -> str:
+        self._ensure()
+        assert self._sha is not None
+        return self._sha
+
+    def paths(self) -> frozenset[str]:
+        self._ensure()
+        assert self._frontmatter is not None
+        return frozenset(self._frontmatter)
+
+    def frontmatter(self, path: str) -> dict[str, object] | None:
+        """Parsed frontmatter at ``path``: None when the path is not a concept
+        file in the commit, ``{}`` when present but unparseable."""
+        self._ensure()
+        assert self._frontmatter is not None
+        return self._frontmatter.get(path)
+
+    def path_to_effective_id(self) -> dict[str, str]:
+        self._ensure()
+        assert self._frontmatter is not None
+        return {p: _effective_doc_id(fm, p) for p, fm in self._frontmatter.items()}
+
+
 def _worktree_id_map(worktree_path: str) -> dict[str, str]:
     """``{doc_id: path}`` for every non-excluded ``.md`` file COMMITTED in the
     worktree's current HEAD tree (Codex Blocker 1, concurrent case).
@@ -276,36 +389,11 @@ def _worktree_id_map(worktree_path: str) -> dict[str, str]:
     worktree tree (which already contains the first commit by the time the second
     validates, because the write lock serializes them) closes that window. Returns
     {} on any git error (fail open on the tree scan; the idx check still applies)."""
-    from data_olympus.index import _derive_id_from_path, _is_excluded
-
-    result = subprocess.run(
-        ["git", "-C", worktree_path, "ls-tree", "-r", "--name-only", "HEAD"],
-        check=False, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
+    try:
+        mapping = CommitSnapshot(worktree_path).path_to_effective_id()
+    except SnapshotUnavailable:
         return {}
-    id_map: dict[str, str] = {}
-    for rel in result.stdout.splitlines():
-        rel = rel.strip()
-        if not rel.endswith(".md"):
-            continue
-        if _is_excluded(Path(rel)):
-            continue
-        blob = subprocess.run(
-            ["git", "-C", worktree_path, "show", f"HEAD:{rel}"],
-            check=False, capture_output=True, text=True,
-        )
-        if blob.returncode != 0:
-            continue
-        try:
-            fm, _body = parse_frontmatter(blob.stdout)
-        except ValueError:
-            fm = {}
-        raw = fm.get("id") if isinstance(fm, dict) else None
-        doc_id = (raw if isinstance(raw, str) and raw and ":" not in raw
-                  else _derive_id_from_path(Path(rel)))
-        id_map[doc_id] = rel
-    return id_map
+    return {doc_id: path for path, doc_id in mapping.items()}
 
 
 def validate_postimage(
@@ -314,6 +402,7 @@ def validate_postimage(
     postimage: str,
     idx: Index | None,
     worktree_path: str | None = None,
+    snapshot: CommitSnapshot | None = None,
 ) -> ValidationResult:
     """Format-level validation of ``postimage`` before it is committed (item 4).
 
@@ -356,6 +445,8 @@ def validate_postimage(
     duplicate-id check.
     """
     errors: list[dict[str, str]] = []
+    if snapshot is None and worktree_path is not None:
+        snapshot = CommitSnapshot(worktree_path)
 
     # 1. Frontmatter must parse. parse_frontmatter raises ValueError on an
     # unterminated block or a non-mapping block; either is a hard reject.
@@ -417,11 +508,15 @@ def validate_postimage(
                 other = index_map.get(effective_id)
                 if other is not None and other != target_path:
                     collision_path = other
-        if collision_path is None and worktree_path is not None:
-            tree_map = _worktree_id_map(worktree_path)
-            other = tree_map.get(effective_id)
-            if other is not None and other != target_path:
-                collision_path = other
+        if collision_path is None and snapshot is not None:
+            try:
+                tree_owners = snapshot.path_to_effective_id()
+            except SnapshotUnavailable:
+                tree_owners = {}  # duplicate detection stays fail-open
+            for other_path, other_id in tree_owners.items():
+                if other_id == effective_id and other_path != target_path:
+                    collision_path = other_path
+                    break
     if collision_path is not None:
         errors.append({
             "field": "id", "code": "duplicate_id",
