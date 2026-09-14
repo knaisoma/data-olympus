@@ -34,8 +34,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   where nothing reads it back. After an interrupted approval whose outcome could
   not be proven, it stayed there indefinitely, including text committed under
   the explicit secret-scan override. The claim now records only a sha256 digest,
-  and a claim written by 0.8.0 has its text replaced by the digest on its next
-  reconciliation pass. Recovery behaves exactly as before. (#264)
+  and a claim written by 0.8.0 has its text replaced by the digest on the first
+  reconciliation pass after it is older than `KB_PENDING_CLAIM_TTL_SEC`. Recovery behaves exactly as before. (#264)
 * **A supersession that names a missing document is refused and fails lint.**
   A `supersedes` value naming an id that does not exist retires nothing, so a
   document it was meant to retire could stay in force, and a `superseded_by`
@@ -49,7 +49,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   passing. `data-olympus lint` and `data-olympus import` report an unresolved
   target as an error (format spec `0.4`); `--resolve-root <dir>` resolves against
   a larger bundle and `--unresolved-targets warn` restores the warning while a
-  backlog is fixed. Bootstrap rejections now carry a `reason`, and among a
+  backlog is fixed. Bootstrap commit-time rejections now carry a `reason`, and among a
   bundle's commit-time checks a credential-shaped file is reported before a
   duplicate id or a content defect. A blank or whitespace-only target is refused
   as malformed. Validating a write also reads the committed tree with three git
