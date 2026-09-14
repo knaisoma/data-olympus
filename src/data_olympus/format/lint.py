@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 from .document import Document
 from .validate import IN_FORCE_STATUSES, RESERVED, Finding, validate_document
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 # Directories whose contents are never KB concepts.  Kept in sync with
 # _EXCLUDED_DIR_NAMES in src/data_olympus/index.py — if you add entries
@@ -70,7 +74,12 @@ def discover_bundle_files(root: str | Path) -> list[Path]:
     return files
 
 
-def lint_files(files: list[Path]) -> dict[Path, list[Finding]]:
+def lint_files(
+    files: list[Path],
+    *,
+    resolve_ids: Collection[str] = (),
+    unresolved_severity: str = "error",
+) -> dict[Path, list[Finding]]:
     """Validate an already-discovered list of concept files. Returns {path:
     findings} for any file that produced at least one finding.
 
@@ -82,6 +91,12 @@ def lint_files(files: list[Path]) -> dict[Path, list[Finding]]:
     (issue #110, slice 1). Cross-file findings only appear here (and via
     `lint_bundle`, which delegates to this function); single-file validation
     via `validate_document` is unaffected.
+
+    ``resolve_ids`` (issue #259) adds ids that count as existing for
+    `supersedes` / `superseded_by` targets without contributing any findings or
+    relationship context (``--resolve-root``). ``unresolved_severity`` is
+    ``"error"`` (format 0.4) or ``"warn"`` (transitional) for an unresolved
+    `supersedes` / `superseded_by` target only.
     """
     results: dict[Path, list[Finding]] = {}
     docs: dict[Path, Document] = {}
@@ -92,7 +107,9 @@ def lint_files(files: list[Path]) -> dict[Path, list[Finding]]:
         if findings:
             results[md] = list(findings)
 
-    for path, findings in _cross_file_lifecycle_findings(docs).items():
+    for path, findings in _cross_file_lifecycle_findings(
+        docs, resolve_ids=resolve_ids, unresolved_severity=unresolved_severity,
+    ).items():
         results.setdefault(path, []).extend(findings)
 
     return results
@@ -142,8 +159,14 @@ def _normalize_single_ref(value: object) -> tuple[str | None, bool]:
     return None, True
 
 
-def _cross_file_lifecycle_findings(docs: dict[Path, Document]) -> dict[Path, list[Finding]]:
+def _cross_file_lifecycle_findings(
+    docs: dict[Path, Document],
+    *,
+    resolve_ids: Collection[str] = (),
+    unresolved_severity: str = "error",
+) -> dict[Path, list[Finding]]:
     findings: dict[Path, list[Finding]] = defaultdict(list)
+    external = set(resolve_ids)
 
     # id -> path, only for docs with a usable (non-empty string) id. Docs
     # without one still get shape/dangling/path-shaped checks on their own
@@ -197,22 +220,37 @@ def _cross_file_lifecycle_findings(docs: dict[Path, Document]) -> dict[Path, lis
             ("contradicts", contradicts),
         ):
             for target in targets:
-                if _path_shaped(target):
-                    findings[path].append(
-                        Finding(
+                resolves = target in id_to_path or target in external
+                shaped = _path_shaped(target)
+                if resolves:
+                    if shaped:
+                        findings[path].append(Finding(
                             "warning", field,
                             f"'{field}' value {target!r} looks like a file path, not a "
                             "stable concept id; use the target document's `id` instead",
-                        )
-                    )
-                elif target not in id_to_path:
-                    findings[path].append(
-                        Finding(
-                            "warning", field,
-                            f"'{field}' references unknown id {target!r} "
-                            "(not found in this bundle)",
-                        )
-                    )
+                        ))
+                    continue
+                if field == "contradicts":
+                    findings[path].append(Finding(
+                        "warning", field,
+                        (f"'{field}' value {target!r} looks like a file path, not a "
+                         "stable concept id; use the target document's `id` instead")
+                        if shaped else
+                        f"'{field}' references unknown id {target!r} (not found in this bundle)",
+                    ))
+                    continue
+                # Issue #259 (format 0.4): an unresolved supersession target
+                # retires nothing, so it is an error unless downgraded.
+                severity: Literal["error", "warning"] = (
+                    "warning" if unresolved_severity == "warn" else "error")
+                hint = ("; it looks like a file path, use the target document's `id`"
+                        if shaped else "")
+                findings[path].append(Finding(
+                    severity, field,
+                    f"'{field}' references unknown id {target!r} (not found in this "
+                    f"bundle{hint}; pass --resolve-root to resolve against a larger "
+                    "bundle, or --unresolved-targets warn while fixing a backlog)",
+                ))
 
         doc_id = doc.id
         if isinstance(doc_id, str) and doc_id:
@@ -357,11 +395,30 @@ def _find_cycles(graph: dict[str, set[str]]) -> list[list[str]]:
     return cycles
 
 
-def lint_bundle(root: str | Path) -> dict[Path, list[Finding]]:
+def lint_bundle(
+    root: str | Path,
+    *,
+    resolve_ids: Collection[str] = (),
+    unresolved_severity: str = "error",
+) -> dict[Path, list[Finding]]:
     """Validate every concept '*.md' under root. Returns {path: findings} for any
     file that produced at least one finding.
 
     File discovery (which files are validated vs skipped) is delegated to
     `discover_bundle_files`.
     """
-    return lint_files(discover_bundle_files(root))
+    return lint_files(discover_bundle_files(root), resolve_ids=resolve_ids,
+                      unresolved_severity=unresolved_severity)
+
+
+def collect_ids(root: str | Path) -> set[str]:
+    """Authored ids of every concept file discovered under ``root`` (issue #259).
+
+    Used for existence-only resolution (``--resolve-root``): these files add no
+    findings and no relationship context to a lint run."""
+    ids: set[str] = set()
+    for md in discover_bundle_files(root):
+        doc_id = Document.load(md).id
+        if isinstance(doc_id, str) and doc_id:
+            ids.add(doc_id)
+    return ids
