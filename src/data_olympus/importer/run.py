@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from data_olympus.format import discover_bundle_files, lint_files
+from data_olympus.format import collect_ids, discover_bundle_files, lint_files
 from data_olympus.format.frontmatter import parse_frontmatter
 
 from . import adr as adr_mod
@@ -319,6 +319,8 @@ def run_import(
     category: str | None = None,
     id_prefix: str | None = None,
     force: bool = False,
+    resolve_root: str | Path | None = None,
+    unresolved_targets: str = "error",
 ) -> ImportReport:
     """Import ``source`` of the given ``kind`` into a governed draft bundle.
 
@@ -326,6 +328,12 @@ def run_import(
     re-run. Never commits to git.
     """
     assert_known_vocab()
+    # Issue #259: validate lint options before anything touches the output dir.
+    if unresolved_targets not in ("error", "warn"):
+        raise ImportError_(
+            f"--unresolved-targets must be error or warn, got {unresolved_targets!r}")
+    if resolve_root is not None and not Path(resolve_root).is_dir():
+        raise ImportError_(f"--resolve-root is not a directory: {resolve_root}")
     if kind not in KINDS:
         raise ImportError_(f"unknown --kind {kind!r} (allowed: {', '.join(KINDS)})")
     try:
@@ -404,7 +412,9 @@ def run_import(
 
     # Lint the output over exactly the files we wrote (plus any pre-existing).
     linted = discover_bundle_files(out_dir)
-    findings = lint_files(linted)
+    resolve_ids = collect_ids(resolve_root) if resolve_root is not None else set()
+    findings = lint_files(linted, resolve_ids=resolve_ids,
+                          unresolved_severity=unresolved_targets)
     for path in sorted(findings):
         rel = path.relative_to(out_dir)
         for f in findings[path]:

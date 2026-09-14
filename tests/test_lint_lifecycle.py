@@ -100,9 +100,19 @@ def test_non_string_entry_in_supersedes_is_error(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_dangling_target_is_warning(tmp_path: Path) -> None:
+def test_dangling_supersedes_target_is_error(tmp_path: Path) -> None:
+    """Format 0.4 (#259): a supersedes target that does not resolve retires
+    nothing, so it is an error rather than a warning."""
     a = tmp_path / "a.md"
     _write(a, "supersedes: GHOST\n", doc_id="A")
+    results = lint_files([a])
+    errors = _findings(results, a, "error")
+    assert any("GHOST" in f.message for f in errors)
+
+
+def test_dangling_contradicts_target_is_warning(tmp_path: Path) -> None:
+    a = tmp_path / "a.md"
+    _write(a, "contradicts: GHOST\n", doc_id="A")
     results = lint_files([a])
     warnings = _findings(results, a, "warning")
     assert any("GHOST" in f.message for f in warnings)
@@ -150,10 +160,18 @@ def test_status_superseded_without_superseded_by(tmp_path: Path) -> None:
 
 def test_path_shaped_target_is_warning(tmp_path: Path) -> None:
     a = tmp_path / "a.md"
-    _write(a, "supersedes: universal/foundation/STD-1.md\n", doc_id="A")
+    _write(a, "contradicts: universal/foundation/STD-1.md\n", doc_id="A")
     results = lint_files([a])
     warnings = _findings(results, a, "warning")
     assert any("path" in f.message.lower() for f in warnings)
+
+
+def test_path_shaped_unresolved_supersedes_is_error(tmp_path: Path) -> None:
+    a = tmp_path / "a.md"
+    _write(a, "supersedes: universal/foundation/STD-1.md\n", doc_id="A")
+    results = lint_files([a])
+    errors = _findings(results, a, "error")
+    assert any("path" in f.message.lower() for f in errors)
 
 
 def test_inforce_contradiction_pair_is_warning(tmp_path: Path) -> None:

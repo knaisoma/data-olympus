@@ -39,6 +39,7 @@ from data_olympus.pending import (
     PendingQueueFullError,
 )
 from data_olympus.write_gate import (
+    SNAPSHOT_DEPENDENT_CODES,
     SecretMatch,
     WriteSerializer,
     check_cas,
@@ -144,6 +145,33 @@ def _validate_evidence(evidence: object) -> str | None:
                 f"evidence item exceeds max {_MAX_EVIDENCE_ITEM_CHARS} chars "
                 f"(got {len(item)})"
             )
+    return None
+
+
+# issue #263: CAS compares ``base_blob_sha`` with the git blob id of the current
+# file (SHA-1, 40 lowercase hex) and ``target_file_hash`` with its sha256 (64
+# lowercase hex), literally. A value in any other form, most often a blob id in
+# the file-hash field, parks a proposal that can never be approved. Reject it
+# up front instead. Absent (None or "") keeps meaning "no marker".
+_BLOB_SHA_RE = re.compile(r"[0-9a-f]{40}")
+_FILE_HASH_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _validate_base_markers(base_blob_sha: object, target_file_hash: object) -> str | None:
+    """Return a rejection reason naming the malformed field, else None.
+
+    The reason never includes the submitted value."""
+    checks = (
+        ("base_blob_sha", base_blob_sha, _BLOB_SHA_RE,
+         "the file's git blob id: 40 lowercase hex characters"),
+        ("target_file_hash", target_file_hash, _FILE_HASH_RE,
+         "the sha256 of the file's current bytes: 64 lowercase hex characters"),
+    )
+    for field, value, pattern, expected in checks:
+        if value is None or value == "":
+            continue
+        if not isinstance(value, str) or not pattern.fullmatch(value):
+            return f"{field} must be {expected}"
     return None
 
 
@@ -277,8 +305,11 @@ def _governed_lane_check(
         vr = validate_postimage(
             target_path=target_path, postimage=postimage, idx=idx,
         )
+        # Snapshot-dependent codes (missing_status and the issue #259
+        # supersession codes) can only be decided against the committed tree,
+        # which this index-only prediction does not read.
         validation_would_reject = (not vr.ok) and any(
-            e.get("code") != "missing_status" for e in vr.errors
+            e.get("code") not in SNAPSHOT_DEPENDENT_CODES for e in vr.errors
         )
         secret_flagged = (
             not scan_postimage_for_secrets(postimage=target_path).ok
@@ -855,7 +886,9 @@ def commit_multifile_in_worktree(
     write serializer, per-path advisory locks on every target (shared with the
     pending queue), the content-validation gate on every postimage, and a hard
     reset on any post-add failure so a partial bundle never leaks into the next
-    commit. CAS is not applied here (bootstrap creates NEW files under a
+    commit. Rejection order: secret scan of the whole bundle, then intra-bundle
+    duplicate ids, then per-file containment and content validation (issue
+    #259). CAS is not applied here (bootstrap creates NEW files under a
     not-yet-onboarded workspace; there is no base to compare). Returns
     ``(commit_sha, push_state)``. Raises :class:`_WriteRejected` on a gate failure
     or :class:`PathLockBusyError` when any target path is already locked.
@@ -879,45 +912,20 @@ def commit_multifile_in_worktree(
             target_tier=target_tier, target_path=target_path_for_msg,
         )
 
-        # Intra-bundle duplicate-id check (Codex round-2 Blocker A): the per-file
-        # validate_postimage below only sees the live index + the committed tree,
-        # neither of which yet contains this bundle. Two bundle files carrying the
-        # SAME effective id at different paths would both pass and then poison the
-        # next index rebuild. Catch it up front by computing each file's effective
-        # id (explicit or path-derived, matching the rebuild) and rejecting any id
-        # claimed by more than one path in the bundle.
-        from data_olympus.write_gate import _effective_doc_id
-        seen_ids: dict[str, str] = {}
+        # Rejection precedence (issue #259, explicit and tested):
+        #   1. batch-wide secret scan of every path and postimage, in file order;
+        #      the first flagged file rejects the whole bundle. Scanning first
+        #      means no later diagnostic can echo credential-shaped content, and
+        #      bootstrap has no operator override (no human in the loop).
+        #   2. intra-bundle duplicate ids (Codex round-2 Blocker A): the committed
+        #      tree does not yet contain this bundle, so two files claiming the
+        #      same effective id would both pass validation and then poison the
+        #      next index rebuild.
+        #   3. per-file containment and content validation, in file order, against
+        #      ONE snapshot of the committed tree with the whole bundle applied, so
+        #      a document created in this bundle resolves as a supersession target.
         for f in files:
             tp, pi = f["target_path"], f["postimage"]
-            try:
-                bfm, _ = parse_frontmatter(pi)
-            except ValueError:
-                bfm = {}
-            eid = _effective_doc_id(bfm, tp)
-            if eid and eid in seen_ids and seen_ids[eid] != tp:
-                raise _WriteRejected(ProposeResponse(
-                    status="rejected_invalid_document", target_path=tp,
-                    reason=(f"id '{eid}' used by two files in the same bundle: "
-                            f"'{seen_ids[eid]}' and '{tp}'")))
-            if eid:
-                seen_ids[eid] = tp
-
-        # Containment + secret-scan + validation for every file BEFORE any
-        # write. The secret scan runs BEFORE content-validation (same
-        # ordering rationale as ``_commit_in_worktree``): ``validate_postimage``
-        # echoes an invalid enum value verbatim, so checking it first could
-        # leak a credential-shaped value through that message instead of the
-        # redacted ``rejected_secret_detected`` path. Bootstrap has no
-        # operator override at all (it always commits atomically with no
-        # human in the loop), so a single flagged file rejects the whole
-        # bundle before any file in it is written.
-        for f in files:
-            tp, pi = f["target_path"], f["postimage"]
-            full = safe_join_under_root(wt.path, tp)
-            if full is None:
-                raise _WriteRejected(ProposeResponse(
-                    status="rejected_symlink_escape", target_path=tp))
             # Path scan first (codex round-3 Blocker 2): a credential-shaped
             # filename would land in the commit and be echoed in
             # responses/audit; the rejection must not echo it either.
@@ -944,8 +952,35 @@ def commit_multifile_in_worktree(
                     ),
                     matching_pattern=secret_result.match.pattern_name,
                 ))
+
+        from data_olympus.write_gate import CommitSnapshot, _effective_doc_id
+        seen_ids: dict[str, str] = {}
+        for f in files:
+            tp, pi = f["target_path"], f["postimage"]
+            try:
+                bfm, _ = parse_frontmatter(pi)
+            except ValueError:
+                bfm = {}
+            eid = _effective_doc_id(bfm, tp)
+            if eid and eid in seen_ids and seen_ids[eid] != tp:
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_invalid_document", target_path=tp,
+                    reason=(f"id '{eid}' used by two files in the same bundle: "
+                            f"'{seen_ids[eid]}' and '{tp}'")))
+            if eid:
+                seen_ids[eid] = tp
+
+        snapshot = CommitSnapshot(wt.path)
+        transaction = {f["target_path"]: f["postimage"] for f in files}
+        for f in files:
+            tp, pi = f["target_path"], f["postimage"]
+            full = safe_join_under_root(wt.path, tp)
+            if full is None:
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_symlink_escape", target_path=tp))
             vr = validate_postimage(
-                target_path=tp, postimage=pi, idx=idx, worktree_path=wt.path)
+                target_path=tp, postimage=pi, idx=idx, worktree_path=wt.path,
+                snapshot=snapshot, transaction=transaction)
             if not vr.ok:
                 raise _WriteRejected(ProposeResponse(
                     status="rejected_invalid_document", target_path=tp,
@@ -1424,6 +1459,13 @@ def kb_propose_edit_fn(
         return ProposeResponse(status="rejected_invalid_evidence",
                                reason=evidence_error, target_path=target_path)
 
+    base_marker_error = _validate_base_markers(base_blob_sha, target_file_hash)
+    if base_marker_error is not None:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_invalid_base",
+                                   "reason": base_marker_error})
+        return ProposeResponse(status="rejected_invalid_base",
+                               reason=base_marker_error, target_path=target_path)
+
     # Redacted copy for pending meta / audit events (never the raw value if a
     # scan flagged an item -- postimage here is caller-supplied verbatim, so
     # unlike kb_propose_memory_fn there is no template to render evidence into).
@@ -1672,15 +1714,13 @@ def kb_resolve_pending_fn(
                     **{**audit_base, "status": "rejected_edited_text_too_large"})
         return ResolvePendingResponse(status="rejected_edited_text_too_large")
 
-    # Scan the operator's replacement text BEFORE the claim. The claim persists
-    # ``edited_text`` into the claimed entry as the effective postimage, so that
-    # recovery reasons about the approved bytes. The commit helper's own scan
-    # runs after that write, and the restore that follows its rejection used to
-    # carry the bytes into the live entry: a credential typed into an edit
-    # became durable plaintext state even though the write was refused. Refusing
-    # here leaves the entry exactly as it was. The conscious operator override
-    # keeps its existing meaning: flagged content may be committed, and is then
-    # written to the repository anyway.
+    # Scan the operator's replacement text BEFORE the claim. The commit
+    # helper's own scan runs only after the entry is claimed, and a refused
+    # write then restores it, so refusing here is what leaves the entry exactly
+    # as it was. The claim itself records only a digest of the approved bytes,
+    # never the text, so the claim record does not retain an edit either way.
+    # The conscious operator override keeps its existing meaning: flagged
+    # content may be committed, and is then written to the repository anyway.
     if edited_text is not None and not override_secret_scan:
         edited_scan = scan_postimage_for_secrets(postimage=edited_text)
         if not edited_scan.ok:

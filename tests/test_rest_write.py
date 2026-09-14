@@ -271,3 +271,52 @@ async def test_rest_pending_readback_is_open_when_auth_is_unconfigured(http_app)
 
     assert resp.status_code == 200
     assert resp.json()["in_force"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("field", "value"), [
+    ("base_blob_sha", "a" * 64),
+    ("target_file_hash", "a" * 40),
+    ("target_file_hash", 12345),
+    ("base_blob_sha", ["a" * 40]),
+])
+async def test_rest_propose_edit_rejects_malformed_base_markers(http_app, field, value) -> None:
+    """#263 over REST: a malformed marker is refused with 400, the field named
+    and the submitted value never echoed."""
+    transport = httpx.ASGITransport(app=http_app)
+    payload = {
+        "target_path": "universal/foundation/STD-U-001.md",
+        "postimage": "x", "base_commit": "HEAD",
+        "base_blob_sha": None, "target_file_hash": None,
+        "reason": "test", "source_session": "s",
+        "agent_identity": "claude", "confidence": 0.5,
+    }
+    payload[field] = value
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/v1/propose/edit", json=payload)
+    body = resp.json()
+    assert resp.status_code == 400
+    assert body["status"] == "rejected_invalid_base"
+    assert field in body["reason"]
+    assert str(value) not in body["reason"]
+
+
+@pytest.mark.asyncio
+async def test_rest_propose_edit_returns_the_unresolved_target_code(http_app) -> None:
+    """#259 over REST: the commit-path rejection carries the prefixed code."""
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/propose/edit",
+            json={
+                "target_path": "projects/example-project/new-decision.md",
+                "postimage": "---\nid: EXAMPLE-NEW\ntype: decision\nstatus: draft\ntier: T3\n"
+                             "supersedes: GHOST-TARGET\n---\n# New\n",
+                "base_commit": "HEAD", "base_blob_sha": None, "target_file_hash": None,
+                "reason": "test", "source_session": "s",
+                "agent_identity": "claude", "confidence": 0.95,
+            },
+        )
+    body = resp.json()
+    assert body["status"] == "rejected_invalid_document", body
+    assert body["reason"].startswith("unresolved_supersedes_target: ")

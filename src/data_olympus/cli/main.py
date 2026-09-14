@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from data_olympus.cli.indexgen import regenerate_indexes
-from data_olympus.format import discover_bundle_files, lint_files
+from data_olympus.format import collect_ids, discover_bundle_files, lint_files
 from data_olympus.viewer.generator import generate_visualization
 
 
@@ -19,6 +19,10 @@ def _require_dir(path: str) -> bool:
 
 
 def _cmd_lint(args: argparse.Namespace) -> int:
+    if args.resolve_root is not None and not Path(args.resolve_root).is_dir():
+        print(f"error: --resolve-root is not a directory: {args.resolve_root}",
+              file=sys.stderr)
+        return 1
     if not _require_dir(args.path):
         return 1
     root = Path(args.path)
@@ -26,7 +30,9 @@ def _cmd_lint(args: argparse.Namespace) -> int:
     if not linted:
         print(f"error: no concept files to lint under {root}", file=sys.stderr)
         return 1
-    results = lint_files(linted)
+    resolve_ids = collect_ids(args.resolve_root) if args.resolve_root is not None else set()
+    results = lint_files(linted, resolve_ids=resolve_ids,
+                         unresolved_severity=args.unresolved_targets)
     error_files = 0
     total_errors = 0
     for path in sorted(results):
@@ -89,6 +95,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     p_lint = sub.add_parser("lint", help="validate a bundle's frontmatter")
     p_lint.add_argument("path", nargs="?", default=".", help="bundle root (default: .)")
+    p_lint.add_argument(
+        "--resolve-root", default=None,
+        help="also resolve supersedes/superseded_by targets against every concept under "
+             "this directory (existence only; findings are reported for PATH only)")
+    p_lint.add_argument(
+        "--unresolved-targets", choices=["error", "warn"], default="error",
+        help="severity of an unresolved supersedes/superseded_by target (default: error; "
+             "warn is transitional, for listing a backlog)")
     p_lint.set_defaults(func=_cmd_lint)
     p_index = sub.add_parser("index", help="regenerate index.md for progressive disclosure")
     p_index.add_argument("path", nargs="?", default=".", help="bundle root (default: .)")

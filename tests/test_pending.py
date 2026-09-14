@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import time
@@ -1181,17 +1182,117 @@ def test_orphan_gc_rechecks_the_holder_before_unlinking(tmp_path) -> None:
 
 
 def test_restore_drops_the_effective_postimage_of_the_rejected_edit(tmp_path) -> None:
-    """A restore returns the entry to the proposal as it was enqueued. The
-    edited bytes the operator tried to approve were not applied, and keeping
-    them in the live entry would make a rejected edit durable state."""
+    """A restore returns the entry to the proposal as it was enqueued. Neither
+    the digest of the refused edit nor any legacy copy of its text survives."""
     q = PendingQueue(pending_root=str(tmp_path / "p"))
     pending_id = _enqueued(q)
     resolved = q.claim_for_resolve(pending_id, edited_text="# edited\n")
-    assert q.claim_record(pending_id)["effective_postimage"] == "# edited\n"
+    record = q.claim_record(pending_id)
+    assert record["effective_postimage_sha256"] == hashlib.sha256(b"# edited\n").hexdigest()
+    assert "effective_postimage" not in record
 
     q.restore_resolve(pending_id, claim_token=resolved.claim_token)
 
     with open(os.path.join(q.root, f"{pending_id}.json")) as f:
         live = json.load(f)
     assert "effective_postimage" not in live
+    assert "effective_postimage_sha256" not in live
     assert q.get(pending_id)["postimage"] != "# edited\n"
+
+
+@pytest.mark.parametrize("bad_reconcile", ["uncertain", ["uncertain"], 7])
+def test_list_tolerates_a_non_mapping_reconcile(tmp_path, bad_reconcile) -> None:
+    """A damaged claimed record must not take the whole listing down. A
+    non-mapping ``reconcile`` carries no evidence of uncertainty, so the entry
+    is reported as claimed, the same way derive_running_contest reads it."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    other_id = _enqueued(q, "operator/other.md")
+    pending_id, _resolved = _claimed(q, "operator/notes.md")
+    path = os.path.join(q.root, f"{pending_id}.claimed")
+    with open(path) as f:
+        entry = json.load(f)
+    entry["reconcile"] = bad_reconcile
+    with open(path, "w") as f:
+        json.dump(entry, f)
+
+    states = {e["pending_id"]: e["state"] for e in q.list()}
+
+    assert states == {pending_id: "claimed", other_id: "pending"}
+
+
+@pytest.mark.parametrize("value", [None, {}, "", []])
+def test_list_treats_empty_or_null_reconcile_as_claimed(tmp_path, value) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+    path = os.path.join(q.root, f"{pending_id}.claimed")
+    with open(path) as f:
+        entry = json.load(f)
+    entry["reconcile"] = value
+    with open(path, "w") as f:
+        json.dump(entry, f)
+
+    assert [e["state"] for e in q.list()] == ["claimed"]
+
+
+def test_list_still_reports_a_valid_uncertain_record(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    _claimed(q)
+    q.reconcile_claims(min_age_sec=0, find_commit=lambda _r: False)
+
+    assert [e["state"] for e in q.list()] == ["uncertain"]
+
+
+def test_claim_never_stores_replacement_text(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id = _enqueued(q)
+    edited = "# édité avec des caractères non ASCII ✓\n"
+
+    resolved = q.claim_for_resolve(pending_id, edited_text=edited)
+
+    with open(os.path.join(q.root, f"{pending_id}.claimed"), "rb") as f:
+        raw = f.read()
+    assert edited.encode("utf-8") not in raw
+    assert "édité".encode() not in raw
+    assert b"\\u00e9dit\\u00e9" not in raw
+    assert json.loads(raw)["effective_postimage_sha256"] == hashlib.sha256(
+        edited.encode("utf-8")).hexdigest()
+    assert resolved.postimage == edited, "the in-memory approved bytes are unchanged"
+
+
+def test_reconciliation_converts_a_legacy_plaintext_claim(tmp_path) -> None:
+    """A claim written by 0.8.0 still carries the text. The next reconciliation
+    pass over it replaces the text with its digest before deciding anything."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+    path = os.path.join(q.root, f"{pending_id}.claimed")
+    with open(path) as f:
+        entry = json.load(f)
+    entry["effective_postimage"] = "# legacy edit\n"
+    with open(path, "w") as f:
+        json.dump(entry, f)
+
+    q.reconcile_claims(min_age_sec=0, find_commit=lambda _r: False)
+
+    with open(path) as f:
+        after = json.load(f)
+    assert "effective_postimage" not in after
+    assert after["effective_postimage_sha256"] == hashlib.sha256(b"# legacy edit\n").hexdigest()
+    assert after["reconcile"]["state"] == "uncertain"
+
+
+def test_reconciliation_leaves_a_fresh_legacy_claim_alone(tmp_path) -> None:
+    """Conversion happens on the reconciliation pass that examines the claim,
+    never on a fresh claim a live resolver still owns."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pending_id, _resolved = _claimed(q)
+    path = os.path.join(q.root, f"{pending_id}.claimed")
+    with open(path) as f:
+        entry = json.load(f)
+    entry["effective_postimage"] = "# live edit\n"
+    with open(path, "w") as f:
+        json.dump(entry, f)
+
+    assert q.reconcile_claims(min_age_sec=3600) == []
+
+    with open(path) as f:
+        assert json.load(f)["effective_postimage"] == "# live edit\n"

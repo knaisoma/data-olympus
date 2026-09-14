@@ -220,6 +220,40 @@ section so concurrent writes cannot corrupt each other:
   forged/duplicate of one already used by a different path (which would break
   every subsequent index rebuild — one bad write, persistent degraded state). The
   response `reason` carries the machine-readable errors.
+- **Supersession targets (issue #259).** On commit, a `supersedes` or
+  `superseded_by` value that the write newly introduces must name a document
+  present in the commit being made (any status; a pending proposal does not
+  count, and an id the same write removes does not either). Otherwise the write
+  is refused as `rejected_invalid_document` with `unresolved_supersedes_target`
+  or `unresolved_superseded_by_target` at the start of the reason, or
+  `malformed_supersedes` / `malformed_superseded_by` for a wrong shape. Target
+  strings are compared exactly as written, so `" TARGET "` does not resolve to
+  `TARGET`, and a blank or whitespace-only target is refused as malformed (lint
+  ignores such a value rather than reporting it). A target left unchanged from the committed version of the same file,
+  and a malformed value left exactly as it was (type-exact: `1` changed to
+  `true` is a change), keep passing, so a legacy document can still be edited,
+  and removing either field is always accepted. A credential-shaped target is
+  redacted in the reason. Validation reads the actual local commit the write
+  lands on, with three git processes for the whole write; if that commit cannot
+  be read the write is refused as `unresolved_target_unverifiable`. Writes
+  without an enforceable base marker, and bootstrap, may proceed after a failed
+  base refresh, so a target deleted upstream in that window is caught by
+  `data-olympus lint`, not by this check. A pending proposal parked by an
+  earlier release that introduces such a target is refused at approval and stays
+  pending with its lock. Two pending proposals that name each other
+  (`A.supersedes: B`, `B.superseded_by: A`) cannot both be approved as written:
+  approve A with `edited_text` that omits the edge to B, approve B, then propose
+  the edge on A again.
+- **Bootstrap rejection order (issue #259).** After the earlier path, size and
+  rate-limit refusals (which are unchanged and carry no `reason`), a bundle's
+  commit-time checks run in a fixed order and refuse at the first failure: every file's path and postimage are
+  secret-scanned first (so no later diagnostic can echo credential-shaped
+  content), then duplicate ids inside the bundle, then each file's containment
+  and content validation in file order. Supersession targets resolve against the
+  committed tree with the whole bundle applied, so a successor and its
+  predecessor created in the same bundle are accepted. A bundle refused by these
+  commit-time checks carries `reason` in its response, redacted wholesale if it would contain
+  credential-shaped content.
 - **Compare-and-swap (optimistic concurrency).** When a caller supplies a base
   marker (`base_commit` naming a specific commit, `base_blob_sha`, or
   `target_file_hash`) on `kb_propose_edit` (or it is carried on the pending entry
@@ -234,6 +268,14 @@ section so concurrent writes cannot corrupt each other:
   A bare `base_commit` of `HEAD` is advisory (no per-file expectation), and when
   no marker is supplied the pre-0.3.0 behavior is preserved (a refresh failure is
   non-fatal; the push path's non-FF recovery publishes the commit).
+  Both hash markers are validated when the proposal is made. `base_blob_sha`
+  must be the file's git blob id (40 lowercase hex characters) and
+  `target_file_hash` the sha256 of its current bytes (64 lowercase hex
+  characters); either may be omitted. Any other form is refused as
+  `rejected_invalid_base`, naming the field. A proposal parked by an earlier
+  release with a malformed marker cannot pass the check, so every approval of it
+  returns `rejected_stale_base` even when the file has not changed. Recover by
+  rejecting it and proposing the same content again with correct markers.
 - Ordering of side effects: the commit message and all gates are evaluated
   BEFORE the file is written and `git add`-ed, and on any failure after the add
   the worktree is hard-reset, so a rejected write never leaves a staged leftover
@@ -242,9 +284,12 @@ section so concurrent writes cannot corrupt each other:
   content-validation gate, on every commit path (auto-commit propose, resolve
   approve, including a resolved `edited_text`, and onboarding bootstrap). A
   resolved `edited_text` is additionally scanned before the entry is claimed,
-  because the claim stores the approved content on the state volume: a flagged
-  edit is refused with the entry left untouched, and without the override it
-  is never written anywhere. It runs first so that whenever the gate matches, a postimage that is both
+  so a flagged edit is refused with the entry left untouched. The claim records
+  a sha256 digest of the approved content, never the content itself, so an edit
+  that is refused, or committed under the explicit override, does not remain on
+  the state volume. A claim written by 0.8.0 still holds the text until the first
+  reconciliation pass after it is older than `KB_PENDING_CLAIM_TTL_SEC`
+  replaces it with the digest. It runs first so that whenever the gate matches, a postimage that is both
   malformed AND carries a credential-shaped value is rejected via the redacted
   `rejected_secret_detected` path rather than `rejected_invalid_document`
   (which echoes the offending value verbatim in its message). Detection is
@@ -359,7 +404,10 @@ semantics an operator needs at serving time.
   would otherwise auto-commit. A postimage that would be rejected outright
   by either of those gates IS rejected (`rejected_secret_detected` /
   `rejected_invalid_document`), never silently demoted -- a demotion cannot
-  be used as a side door around a hard rejection.
+  be used as a side door around a hard rejection. The exceptions are the
+  checks that can only be decided against the committed tree (`missing_status`
+  and the issue #259 supersession codes): the index-only prediction ignores
+  them, so such a write stays demoted and the commit path decides at approval.
 - **Unaffected paths.** The maintenance-ledger system write
   (`maintenance.maybe_update_ledger`, which stamps its own doc
   `status: active`) commits through the shared multi-file write primitive

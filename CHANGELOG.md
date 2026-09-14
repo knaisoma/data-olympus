@@ -12,6 +12,60 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-14
+
+### Fixed
+
+* **`kb_list_pending` no longer fails when one claimed entry is damaged.** A
+  claimed record whose `reconcile` value is not an object (for example a string
+  left by a hand edit) raised an error that hid every other entry in the
+  listing. It is now listed as `claimed`, which is how the running-contest check
+  already reads it. (#265)
+* **A proposal with a malformed base marker is refused when it is made.**
+  `kb_propose_edit` accepted any string as `target_file_hash` or `base_blob_sha`.
+  A git blob id in the sha256 field parked a proposal that could never be
+  approved: every approval came back `rejected_stale_base` although the file had
+  not changed. Both markers are now checked for their exact format and a bad one
+  is refused as `rejected_invalid_base`, naming the field without echoing it.
+  `docs/serving.md` describes how to recover a proposal parked before this
+  release. (#263)
+* **An approval's claim record no longer keeps the edited text.** Approving
+  with `edited_text` wrote the full text into the claim on the state volume,
+  where nothing reads it back. After an interrupted approval whose outcome could
+  not be proven, it stayed there indefinitely, including text committed under
+  the explicit secret-scan override. The claim now records only a sha256 digest,
+  and a claim written by 0.8.0 has its text replaced by the digest on the first
+  reconciliation pass after it is older than `KB_PENDING_CLAIM_TTL_SEC`. Recovery behaves exactly as before. (#264)
+* **A supersession that names a missing document is refused and fails lint.**
+  A `supersedes` value naming an id that does not exist retires nothing, so a
+  document it was meant to retire could stay in force, and a `superseded_by`
+  naming a missing id records a successor that does not exist. Both passed the
+  write gate with only a lint warning. A write that introduces such a target is now
+  refused as `rejected_invalid_document` (`unresolved_supersedes_target` or
+  `unresolved_superseded_by_target` in the reason; a wrong shape is
+  `malformed_supersedes` / `malformed_superseded_by`), checked against the commit
+  being made, so a document created in the same bootstrap bundle resolves.
+  Targets already present in a document, and unchanged malformed values, keep
+  passing. `data-olympus lint` and `data-olympus import` report an unresolved
+  target as an error (format spec `0.4`); `--resolve-root <dir>` resolves against
+  a larger bundle and `--unresolved-targets warn` restores the warning while a
+  backlog is fixed. Bootstrap commit-time rejections now carry a `reason`, and among a
+  bundle's commit-time checks a credential-shaped file is reported before a
+  duplicate id or a content defect. A blank or whitespace-only target is refused
+  as malformed. Validating a write also reads the committed tree with three git
+  processes instead of one per document. (#259)
+
+### Upgrading
+
+* `data-olympus lint` and `data-olympus import` can now exit 1 for a bundle that
+  linted clean before: an unresolved `supersedes` or `superseded_by` target is an
+  error (format spec `0.4`). Run `data-olympus lint --unresolved-targets warn` to
+  list them, fix each, then drop the flag. Lint a subtree with
+  `--resolve-root <bundle root>`.
+* Among a bootstrap bundle's commit-time checks, a credential-shaped file is now
+  reported (`rejected_secret_detected`) before a duplicate id or a content
+  defect in the same bundle. Structural path checks still run first.
+
 ## [0.8.0] - 2026-09-14
 
 ### Added
@@ -2203,7 +2257,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/knaisoma/data-olympus/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/knaisoma/data-olympus/compare/v0.7.3...v0.8.0
 [0.7.3]: https://github.com/knaisoma/data-olympus/compare/v0.7.2...v0.7.3
 [0.6.0]: https://github.com/knaisoma/data-olympus/compare/v0.5.0...v0.6.0

@@ -59,7 +59,7 @@ reference consumer, SPEC, or license is not detected by that workflow.
 
 These fields are shipped, schema-checked by `data-olympus lint`
 (`src/data_olympus/format/lint.py` via `validate_document` and the cross-file
-lifecycle pass), and part of the current `SPEC.md` (version 0.3). "Stable"
+lifecycle pass), and part of the current `SPEC.md` (version 0.4). "Stable"
 here means the field name and semantics are not expected to change shape; it
 does not mean the field is required in every bundle unless stated, and two
 fields (`applies_when`, `owner`) are stable documented conventions with no
@@ -72,8 +72,8 @@ lint coverage; the table's lint column is authoritative per field.
 | `status` | Yes | error (missing or not in `{draft, active, deprecated, superseded, proposed, accepted, rejected}`) | `format.validate.STATUSES`; lint-required since the `0.1` draft. What v0.4.0 added (issue #114) is write-path enforcement for new documents; see the note below. |
 | `tier` | Yes | error (missing or not in `{T1, T2, T3, T4, meta}`) | `format.validate.TIERS`. |
 | `applies_when` | Recommended | none today (see caveat below) | Highest-weight indexed field for `kb_search`; feeds the abstention gate. Not yet in `kb lint`'s checked field set. |
-| `supersedes` | Optional | error on malformed shape/self-reference/cycle; warning on dangling/asymmetric/path-shaped target | Scalar ID or list of IDs, normalized to a list (issue #110). |
-| `superseded_by` | Optional | error on malformed shape/self-reference; warning on dangling/asymmetric/path-shaped target, or set while status is in-force | Scalar ID only (issue #110). |
+| `supersedes` | Optional | error on malformed shape/self-reference/cycle or a target that does not resolve (format 0.4); warning on asymmetric pair or a path-shaped target that resolves | Scalar ID or list of IDs, normalized to a list (issue #110). |
+| `superseded_by` | Optional | error on malformed shape/self-reference or a target that does not resolve (format 0.4); warning on asymmetric pair or a path-shaped target that resolves, or set while status is in-force | Scalar ID only (issue #110). |
 | `contradicts` | Optional | error on malformed shape; warning on dangling/path-shaped target, or an in-force pair | Scalar ID or list of IDs; annotation only, never filters or ranks (issue #110). |
 | `owner` | Optional | none (documented convention only) | Team or individual responsible for the concept. |
 
@@ -137,10 +137,13 @@ across two slices (both merged to `release/0.4.0` as of this document):
   concept IDs, never paths; `_path_shaped` warns on a `/` or `.md`-suffixed
   value. Cross-file checks run over an in-memory ID map built from the
   discovered file list (`_cross_file_lifecycle_findings`): malformed shape,
-  self-supersession, and supersession cycles are errors; dangling targets,
-  asymmetric pairs, `superseded_by` set on an in-force document, `status:
-  superseded` with no `superseded_by`, path-shaped targets, and in-force
-  `contradicts` pairs are warnings.
+  self-supersession, supersession cycles, and (since format `0.4`, issue #259)
+  a `supersedes` or `superseded_by` target that does not resolve are errors;
+  dangling `contradicts` targets, asymmetric pairs, `superseded_by` set on an
+  in-force document, `status: superseded` with no `superseded_by`, path-shaped
+  targets that resolve, and in-force `contradicts` pairs are warnings. The write
+  path refuses a write that introduces an unresolved supersession target (see
+  `docs/serving.md`).
 - **Slice 2** (executable retrieval policy): the indexer materializes both
   fields into an `edges` table. An `in_force=true` query additionally excludes
   any document that is the *target* of a `supersedes` edge whose *source*
@@ -310,8 +313,8 @@ OKF consumer choke on this" and "what does data-olympus tooling do with it".
 | `tags` | partially (OKF recommends the key) | warning if missing; warning if present and not a list | Faceted search; part of the abstention gate's discriminating column set. |
 | `generated` | yes (OKF v0.2 defines it) | warning if neither it nor `timestamp` gives a content-change time; warning if malformed (structural check only) | `{ by, at }`. Synthesized with the tool actor `data-olympus/<version>`, never a principal, by `init`, by the importers when a source records no content-change time, and for server-rendered memories. An imported source's own `generated` is preserved, and a proposed edit carries the frontmatter its author supplies. MUST NOT be read as freshness. |
 | `timestamp` | yes (OKF v0.1; superseded by `generated.at` in v0.2) | satisfies the content-change recommendation; the missing-time warning keeps this field name | Legacy content-change metadata, still accepted. data-olympus no longer synthesizes it; an imported document keeps a `timestamp` it already had, and an edit may still write one. An OKF v0.1-only consumer that requires it will not accept documents that data-olympus 0.8.0 or later writes without one. |
-| `supersedes` | yes (unknown key) | error (shape/self/cycle), warning (dangling/asymmetric/path-shaped) | Extracted into the `edges` table; source of the in-force-source graph-exclusion guard. |
-| `superseded_by` | yes (unknown key) | error (shape/self), warning (dangling/asymmetric/path-shaped/in-force) | Same edges table; surfaced on `kb_get`/compact hits (deviation-only). |
+| `supersedes` | yes (unknown key) | error (shape/self/cycle/unresolved target), warning (asymmetric/path-shaped resolving) | Extracted into the `edges` table; source of the in-force-source graph-exclusion guard. |
+| `superseded_by` | yes (unknown key) | error (shape/self/unresolved target), warning (asymmetric/path-shaped resolving/in-force) | Same edges table; surfaced on `kb_get`/compact hits (deviation-only). |
 | `contradicts` | yes (unknown key) | error (shape), warning (dangling/path-shaped/in-force pair) | Annotation only; never filters or ranks. |
 | `owner` | yes (unknown key) | none | Documented convention; no tooling reads it. |
 | `validity` (and sub-fields) | yes (unknown key) | warning only (malformed value, `recheck_by` past, `valid_until` past while in-force) | Drives `in_force` and default-search exclusion for expiry; `recheck_by` drives `freshness: stale` only. |

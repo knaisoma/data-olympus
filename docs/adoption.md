@@ -117,7 +117,10 @@ not `supersedes: /decisions/ADR-002.md`). Shapes per field: `supersedes` and
 cross-checks these fields across the bundle (malformed shapes, self-references,
 supersession cycles, dangling/asymmetric targets, path-shaped values, and
 in-force `contradicts` pairs are all reported; see `SPEC.md` section 4.2 for
-the exact error/warning list). The reference implementation's indexer also
+the exact error/warning list). Since format `0.4`, a `supersedes` or
+`superseded_by` target that does not resolve to a document is an error, so
+create or import the document being superseded before the one that supersedes
+it. The reference implementation's indexer also
 extracts them into an edges table consumed by later retrieval features.
 
 ### Directory structure
@@ -205,7 +208,12 @@ The evidence is scoped to that revision and those fixtures.
   and one already in the output dir) would share an id, the import aborts rather
   than write a structurally unsafe bundle.
 - The command runs the existing lint machinery over the output; the happy path
-  produces lint-clean drafts. Any finding is included in the report.
+  produces lint-clean drafts. Any finding is included in the report. An ADR that
+  supersedes one that is not part of the imported set produces an unresolved
+  target error and the command exits 1, but the drafts, report and marker are
+  still written. Pass `--resolve-root <your-bundle-dir>` so targets already in
+  your bundle resolve, or `--unresolved-targets warn` to report them as warnings.
+  An invalid `--resolve-root` exits 1 before anything is written.
 - **Re-run behavior:** the importer refuses to write into an output directory it
   already used as an import target (or any directory that already holds governed
   files), so a second run cannot silently duplicate or clobber. Pass `--force` to
@@ -244,6 +252,21 @@ and reserved-file constraints. Fix any reported errors before proceeding.
 `lint` exits non-zero when it finds no concept files to lint (for example, an
 empty or mis-pathed bundle), so a clean pass always means real files were
 checked.
+
+A `supersedes` or `superseded_by` target that does not resolve is an error
+(format `0.4`). When linting a subdirectory of a larger bundle, resolve targets
+against the whole bundle:
+
+```bash
+uv run data-olympus lint <your-bundle-dir>/projects/acme --resolve-root <your-bundle-dir>
+```
+
+Upgrading a bundle that has unresolved targets: list them without failing, fix
+or remove each one, then drop the flag.
+
+```bash
+uv run data-olympus lint <your-bundle-dir> --unresolved-targets warn
+```
 
 ## 5. Generate navigation and graph
 

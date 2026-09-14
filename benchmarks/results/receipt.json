@@ -5,7 +5,7 @@
     "KB_EMBEDDINGS_MODE=on uv run --extra embeddings python -m benchmarks.generate_embeddings_ablation",
     "uv run python -m benchmarks.real_corpus_eval --corpus example-bundle --queries benchmarks/real_corpus/example_bundle_queries.json --lexical-only --out benchmarks/real_corpus/example_bundle_result.json",
     "uv run python -m benchmarks.docs_tables --write",
-    "uv run python -m benchmarks.receipt write --source-commit 5efe1e883514e39d2d25e7a4986b2f0ee5ffad4d"
+    "uv run python -m benchmarks.receipt write --source-commit 75314839b2e9e87368ccf5762ab128da678ac518"
   ],
   "dependency_lock": {
     "packages": [
@@ -1515,7 +1515,7 @@
         {
           "bytes": 2010,
           "path": "example-bundle/index.md",
-          "sha256": "bcff7c6f56fc5a9f5307c3ac6ea46bcc577e26d6729bee9d02c0c201a657e917"
+          "sha256": "3ec020b17559756ea570f3db715e8ce31b70cdb86f3b3ee82e82cb61070b7ece"
         },
         {
           "bytes": 2086,
@@ -1628,7 +1628,7 @@
           "sha256": "1246a1643cf66a1694c34b1a1d43eaa49616833fc16f065bbcf2b9ea12e78975"
         }
       ],
-      "sha256": "7219eb4fa4019fcf2f0a03f78b17f9690ec443d2abbfe4dcd035f0542467c490"
+      "sha256": "756bff70682508dc0092d18c261bd22b38ddc90bc53747377e5d71132f5e09b3"
     },
     "queries": {
       "files": [
@@ -1708,7 +1708,7 @@
     "synthetic_corpus": 0,
     "token_curve_corpus": 42
   },
-  "source_commit": "5efe1e883514e39d2d25e7a4986b2f0ee5ffad4d",
+  "source_commit": "75314839b2e9e87368ccf5762ab128da678ac518",
   "source_tree": {
     "files": [
       {
@@ -1862,9 +1862,9 @@
         "sha256": "32c5502239d1f288887a19746a9cd2539c228071e40d7a2fd5abcce92d26416f"
       },
       {
-        "bytes": 4238,
+        "bytes": 5308,
         "path": "src/data_olympus/cli/import_cmd.py",
-        "sha256": "7ed1c709b9d6fa8452ada2f05b90e3f75ca53c1de28867e4b4bfecebead09efa"
+        "sha256": "456088fcb19a6f1a4be7a9c48c36dba153cf0722b9d8184e70d910c7c3050a40"
       },
       {
         "bytes": 2561,
@@ -1877,9 +1877,9 @@
         "sha256": "23d5627f5cdffef8e124cacfa6a129b1605848c3dcdf00baca3748ee5a05b786"
       },
       {
-        "bytes": 6415,
+        "bytes": 7316,
         "path": "src/data_olympus/cli/main.py",
-        "sha256": "6d8801486d879c0ca1b408449aa49af6012032813846644241ada1a1dade89a3"
+        "sha256": "7266f47f8f0786736c1ed4ab913016f59f3603f8d51f2a41082b873860c2d41b"
       },
       {
         "bytes": 3935,
@@ -1932,9 +1932,9 @@
         "sha256": "5cd265cbb440ff46cf9268e4b23e4c05ea5e677e519e82bc8ab340f0f5a90c23"
       },
       {
-        "bytes": 402,
+        "bytes": 434,
         "path": "src/data_olympus/format/__init__.py",
-        "sha256": "5552a922883900053db4a46c7a1a5c18d13ad975c0d5b57626b2eea464835d1e"
+        "sha256": "aaefed4c5685204d5d19c47b063a2090fb135d8e4addaf4ef79eb670345aa8c6"
       },
       {
         "bytes": 1009,
@@ -1947,9 +1947,9 @@
         "sha256": "4b53aad5e83496aebdeebdfa727b97ebaecf3f1bb2dc0c40f4753e4254c286f1"
       },
       {
-        "bytes": 15645,
+        "bytes": 18086,
         "path": "src/data_olympus/format/lint.py",
-        "sha256": "a6770cd2e6c55423bf47befb7a85b9d49d447c39408284630a9c36ff3397c6cc"
+        "sha256": "66ebe86f31c18e34ff2b05a85f4b2a04ddf79dce12817da784f29d4320fd3763"
       },
       {
         "bytes": 3486,
@@ -2002,9 +2002,9 @@
         "sha256": "cf0f4f8b97ae726bcadc230412abe9ac6beddf195b266251e18a94fd45bf3352"
       },
       {
-        "bytes": 16197,
+        "bytes": 16864,
         "path": "src/data_olympus/importer/run.py",
-        "sha256": "465ca9ab9ae7c8afffd1f6180e14a66e1a4a9eb6f9791804ef8b1e03711089ee"
+        "sha256": "f3c2ca65c67b531f18a8936d177c4dbe2deede590a79d2bee2a81c71e97ece35"
       },
       {
         "bytes": 8097,
@@ -2032,9 +2032,9 @@
         "sha256": "068ad7522ed20aff98e030bc7c55dad270a6a2405b960a5d825f746ba8abda0d"
       },
       {
-        "bytes": 29467,
+        "bytes": 29616,
         "path": "src/data_olympus/models.py",
-        "sha256": "56814b763f95d0eff3fababb16f7f8c20b3aea86af13e759e86c0aca3075a9cc"
+        "sha256": "a8de53d4fb4794b03ae6514753487904e711fb7f3de63ba830af4e417908c5bf"
       },
       {
         "bytes": 4660,
@@ -2052,9 +2052,9 @@
         "sha256": "dd2d1e86cf29a68d975831b4898d354749816271330c2630571b1f1ade7306c7"
       },
       {
-        "bytes": 52044,
+        "bytes": 60703,
         "path": "src/data_olympus/pending.py",
-        "sha256": "a9d94d8b22cd2261ce64b51dbbcec0f8558a333b0d07281fa3c7373c6b55b5b8"
+        "sha256": "9468f84f478f0248424f562539e6acee06ed5fc0d3abfd7e32ef950aa924647e"
       },
       {
         "bytes": 7966,
@@ -2104,7 +2104,7 @@
       {
         "bytes": 15506,
         "path": "src/data_olympus/scaffold.py",
-        "sha256": "5b8627941625910d0bbc800533e5a3d6d931a8a73c52c3d65e91e5b955e3a82f"
+        "sha256": "12ae5fd82d7a9b4c7f54af0e8ee31254c47d37ef3b7201e8aaf8b8f9f37637c9"
       },
       {
         "bytes": 3049,
@@ -2157,9 +2157,9 @@
         "sha256": "c4df4efd6c0296c2663d79e56e1c846dd945459f5238b117b3b025377088ee93"
       },
       {
-        "bytes": 35639,
+        "bytes": 36229,
         "path": "src/data_olympus/tools_onboarding.py",
-        "sha256": "9714a51310a03f3212e016e392d3b2f659b7a4e6a80010fa3090149196e881ad"
+        "sha256": "cf0f015df6640daf6661fe4717e7f66e9cac975a6111bc25b1564785adeff872"
       },
       {
         "bytes": 11629,
@@ -2172,9 +2172,9 @@
         "sha256": "19a81fad106c7b2cbf0f20a96b20c0f3ee60311e4e396476534a6d49beba2606"
       },
       {
-        "bytes": 92498,
+        "bytes": 95812,
         "path": "src/data_olympus/tools_write.py",
-        "sha256": "1e42f4d87a98f610dcb3ed0ebb6ec5b3eb20e6edce335d63ded534dc3c8d7ce2"
+        "sha256": "c1a5565ce45f1e75c84f3804ca920fd5fe770dad6f12a9ec1ab724664be68acd"
       },
       {
         "bytes": 5662,
@@ -2202,12 +2202,12 @@
         "sha256": "8bf0ea9dd570e5db3f38c51a1e4055b8ec848a0d5b41d3020e9d7ca41241bc91"
       },
       {
-        "bytes": 35016,
+        "bytes": 45308,
         "path": "src/data_olympus/write_gate.py",
-        "sha256": "9c0101364a155923b5bddcdb72d7d6636505baeabeef0e361be8a8eda0899979"
+        "sha256": "bdf8ca44fd4f6aff11ef6be801bd921ece4ea902e2339038e8b5c51a6fd3c1c6"
       }
     ],
-    "sha256": "e8cf29cd9ba9f8ff00a24a99bac52b02dae164f787c371ec45db1823a082e069"
+    "sha256": "4ef656e8334b674ce0db9e70c66dbd03431f13319cef5b73bf1437ca6524060a"
   },
   "summary": {
     "embedding_ablation": {

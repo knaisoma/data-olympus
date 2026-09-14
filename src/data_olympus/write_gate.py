@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import re
 import subprocess
@@ -36,7 +37,7 @@ from data_olympus.format.frontmatter import parse_frontmatter
 from data_olympus.format.validate import RESERVED, TIERS, TYPES, is_inbox_path
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from data_olympus.index import Index
 
@@ -266,6 +267,314 @@ def _effective_doc_id(fm: dict[str, object], target_path: str) -> str:
     return _derive_id_from_path(Path(target_path))
 
 
+_OID_RE = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+class SnapshotUnavailable(Exception):
+    """The committed tree the write lands on could not be read completely."""
+
+
+class CommitSnapshot:
+    """Read-only view of one commit's concept files (issue #259).
+
+    Pinned to the worktree HEAD commit resolved on first use. Every read comes
+    from that commit (never the filesystem, the index or a pending entry), with
+    at most three git subprocesses for the whole transaction: ``rev-parse``,
+    ``ls-tree -r -z`` and one ``cat-file --batch`` fed object ids. Object ids,
+    not paths, cross the batch boundary, so any committed filename is safe. Any
+    failure raises :class:`SnapshotUnavailable` and is cached, so a transaction
+    sees one consistent answer without retrying git."""
+
+    def __init__(self, worktree_path: str) -> None:
+        self._worktree_path = worktree_path
+        self._sha: str | None = None
+        self._frontmatter: dict[str, dict[str, object]] | None = None
+        self._failure: SnapshotUnavailable | None = None
+
+    def _git(self, *args: str, input_bytes: bytes | None = None) -> bytes:
+        try:
+            result = subprocess.run(
+                ["git", "-C", self._worktree_path, *args],
+                input=input_bytes, capture_output=True, check=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - any spawn failure is unavailability
+            raise SnapshotUnavailable(f"git {args[0]} could not run: {exc}") from exc
+        if result.returncode != 0:
+            raise SnapshotUnavailable(f"git {args[0]} exited {result.returncode}")
+        return bytes(result.stdout)
+
+    def _ensure(self) -> None:
+        if self._failure is not None:
+            raise self._failure
+        if self._frontmatter is not None:
+            return
+        try:
+            self._load()
+        except SnapshotUnavailable as exc:
+            self._failure = exc
+            raise
+        except Exception as exc:  # noqa: BLE001 - any parsing surprise is unavailability
+            self._failure = SnapshotUnavailable(f"committed tree unreadable: {exc}")
+            raise self._failure from exc
+
+    def _load(self) -> None:
+        from data_olympus.index import _is_excluded
+
+        sha = self._git("rev-parse", "--verify", "HEAD^{commit}").decode().strip()
+        listing = self._git("ls-tree", "-r", "-z", sha)
+        oids: list[tuple[str, str]] = []
+        for record in listing.split(b"\0"):
+            if not record:
+                continue
+            meta, _sep, raw_path = record.partition(b"\t")
+            parts = meta.split(b" ")
+            if len(parts) != 3 or not raw_path:
+                raise SnapshotUnavailable("unexpected ls-tree record")
+            _mode, obj_type, raw_oid = parts
+            if not _OID_RE.fullmatch(raw_oid):
+                raise SnapshotUnavailable("unexpected ls-tree object id")
+            path = raw_path.decode("utf-8", errors="surrogateescape")
+            if obj_type != b"blob" or not path.endswith(".md"):
+                continue
+            if _is_excluded(Path(path)):
+                continue
+            oids.append((path, raw_oid.decode()))
+        frontmatter: dict[str, dict[str, object]] = {}
+        if oids:
+            request = "".join(f"{oid_hex}\n" for _path, oid_hex in oids).encode()
+            out = self._git("cat-file", "--batch", input_bytes=request)
+            pos = 0
+            for path, oid_hex in oids:
+                header_end = out.find(b"\n", pos)
+                if header_end < 0:
+                    raise SnapshotUnavailable("short cat-file output")
+                header = out[pos:header_end].split(b" ")
+                if (len(header) != 3 or header[0].decode() != oid_hex
+                        or header[1] != b"blob" or not header[2].isdigit()):
+                    raise SnapshotUnavailable("a committed concept file could not be read")
+                start = header_end + 1
+                end = start + int(header[2])
+                if end + 1 > len(out) or out[end:end + 1] != b"\n":
+                    raise SnapshotUnavailable("malformed cat-file output")
+                try:
+                    fm, _body = parse_frontmatter(out[start:end].decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    fm = {}
+                frontmatter[path] = fm if isinstance(fm, dict) else {}
+                pos = end + 1
+            if pos != len(out):
+                raise SnapshotUnavailable("unexpected trailing cat-file output")
+        self._sha = sha
+        self._frontmatter = frontmatter
+
+    @property
+    def sha(self) -> str:
+        self._ensure()
+        assert self._sha is not None
+        return self._sha
+
+    def paths(self) -> frozenset[str]:
+        self._ensure()
+        assert self._frontmatter is not None
+        return frozenset(self._frontmatter)
+
+    def frontmatter(self, path: str) -> dict[str, object] | None:
+        """Parsed frontmatter at ``path``: None when the path is not a concept
+        file in the commit, ``{}`` when present but unparseable."""
+        self._ensure()
+        assert self._frontmatter is not None
+        return self._frontmatter.get(path)
+
+    def path_to_effective_id(self) -> dict[str, str]:
+        self._ensure()
+        assert self._frontmatter is not None
+        return {p: _effective_doc_id(fm, p) for p, fm in self._frontmatter.items()}
+
+
+SNAPSHOT_DEPENDENT_CODES: frozenset[str] = frozenset({
+    "missing_status",
+    "unresolved_supersedes_target",
+    "unresolved_superseded_by_target",
+    "malformed_supersedes",
+    "malformed_superseded_by",
+    "unresolved_target_unverifiable",
+})
+"""Validation codes whose answer depends on the committed tree, so an
+index-only prediction must not treat them as a certain rejection."""
+
+_RELATIONSHIP_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("supersedes", "unresolved_supersedes_target", "malformed_supersedes"),
+    ("superseded_by", "unresolved_superseded_by_target", "malformed_superseded_by"),
+)
+
+
+def _strict_equal(
+    left: object, right: object, _seen: set[tuple[int, int]] | None = None,
+) -> bool:
+    """Type-exact recursive equality for the unchanged-malformed exemption.
+
+    ``1`` differs from ``True`` and ``1.0`` at every depth, including mapping
+    keys and set members. Lists and tuples (``!!pairs`` / ``!!omap`` load as
+    lists of tuples) compare in order; mappings and sets compare regardless of
+    order. ``NaN`` equals ``NaN`` so an unchanged legacy value keeps passing.
+    Self-referencing YAML (aliases) is safe: a container pair already under
+    comparison is treated as equal."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, float) and isinstance(right, float):
+        return left == right or (math.isnan(left) and math.isnan(right))
+    if not isinstance(left, (list, tuple, dict, set, frozenset)):
+        return left == right
+    seen = _seen if _seen is not None else set()
+    pair = (id(left), id(right))
+    if pair in seen:
+        return True
+    seen.add(pair)
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        return len(left) == len(right) and all(
+            _strict_equal(a, b, seen) for a, b in zip(left, right, strict=True))
+    if isinstance(left, dict) and isinstance(right, dict):
+        return _match_unordered(
+            list(left.items()), list(right.items()), seen)
+    if isinstance(left, (set, frozenset)) and isinstance(right, (set, frozenset)):
+        return _match_unordered(
+            [(v, None) for v in left], [(v, None) for v in right], seen)
+    return False
+
+
+def _match_unordered(
+    left: list[tuple[object, object]],
+    right: list[tuple[object, object]],
+    seen: set[tuple[int, int]],
+) -> bool:
+    """Pair every (key, value) on the left with a distinct type-exact equal pair
+    on the right."""
+    if len(left) != len(right):
+        return False
+    unmatched = list(right)
+    for lkey, lvalue in left:
+        for i, (rkey, rvalue) in enumerate(unmatched):
+            if _strict_equal(lkey, rkey, seen) and _strict_equal(lvalue, rvalue, seen):
+                del unmatched[i]
+                break
+        else:
+            return False
+    return not unmatched
+
+
+def _relationship_targets(field: str, value: object) -> tuple[list[str], bool]:
+    """Targets of a present, non-null relationship field exactly as authored,
+    and whether the shape is malformed. A blank or whitespace-only string is not
+    a concept id and makes the value malformed in either shape."""
+    if field == "supersedes":
+        items = [value] if isinstance(value, str) else value
+        if not isinstance(items, list) or not all(isinstance(v, str) for v in items):
+            return [], True
+    else:
+        if not isinstance(value, str):
+            return [], True
+        items = [value]
+    if any(not v.strip() for v in items):
+        return [], True
+    return list(items), False
+
+
+def _safe_target(target: str) -> str:
+    scan = scan_postimage_for_secrets(postimage=target)
+    if scan.ok:
+        return f"'{target}'"
+    assert scan.match is not None
+    return f"[redacted: secret pattern '{scan.match.pattern_name}']"
+
+
+def _result_membership(
+    snapshot: CommitSnapshot,
+    target_path: str,
+    postimage_fm: dict[str, object],
+    transaction: Mapping[str, str] | None,
+) -> set[str]:
+    """Effective ids present in the commit being made: the parent's per-path
+    ids with every written path replaced by its postimage's id. Derived by path,
+    so an id another untouched path still carries stays present."""
+    from data_olympus.index import _is_excluded
+
+    owners = dict(snapshot.path_to_effective_id())
+    writes: dict[str, dict[str, object]] = {}
+    for path, text in (transaction or {}).items():
+        try:
+            fm, _body = parse_frontmatter(text)
+        except ValueError:
+            fm = {}
+        writes[path] = fm if isinstance(fm, dict) else {}
+    writes[target_path] = postimage_fm
+    for path, fm in writes.items():
+        if not path.endswith(".md") or _is_excluded(Path(path)):
+            owners.pop(path, None)
+            continue
+        owners[path] = _effective_doc_id(fm, path)
+    return set(owners.values())
+
+
+def _supersession_errors(
+    fm: dict[str, object],
+    target_path: str,
+    snapshot: CommitSnapshot,
+    transaction: Mapping[str, str] | None,
+) -> list[dict[str, str]]:
+    """Issue #259: a write may not newly introduce a ``supersedes`` or
+    ``superseded_by`` target that is absent from the commit being made, nor a
+    newly malformed value. Targets and malformed values carried over unchanged
+    from the committed version of the same path keep passing."""
+    if all(fm.get(field) is None for field, _unresolved, _malformed in _RELATIONSHIP_FIELDS):
+        return []
+    unverifiable = {
+        "field": "supersedes", "code": "unresolved_target_unverifiable",
+        "message": ("unresolved_target_unverifiable: the committed tree could not "
+                    "be read, so supersession targets cannot be verified; retry"),
+    }
+    try:
+        preimage = snapshot.frontmatter(target_path) or {}
+    except SnapshotUnavailable:
+        return [unverifiable]
+    errors: list[dict[str, str]] = []
+    added: list[tuple[str, str, str]] = []
+    for field, unresolved_code, malformed_code in _RELATIONSHIP_FIELDS:
+        post = fm.get(field)
+        if post is None:
+            continue
+        pre = preimage.get(field)
+        post_targets, post_malformed = _relationship_targets(field, post)
+        if post_malformed:
+            if pre is None or not _strict_equal(post, pre):
+                expected = ("a concept id string or a list of concept id strings"
+                            if field == "supersedes" else "a single concept id string")
+                errors.append({
+                    "field": field, "code": malformed_code,
+                    "message": f"{malformed_code}: '{field}' must be {expected}",
+                })
+            continue
+        pre_targets: list[str] = []
+        if pre is not None:
+            candidate, pre_malformed = _relationship_targets(field, pre)
+            pre_targets = [] if pre_malformed else candidate
+        known = set(pre_targets)
+        added.extend((field, unresolved_code, t) for t in post_targets if t not in known)
+    if not added:
+        return errors
+    try:
+        membership = _result_membership(snapshot, target_path, fm, transaction)
+    except SnapshotUnavailable:
+        return [*errors, unverifiable]
+    for field, code, target in added:
+        if target not in membership:
+            errors.append({
+                "field": field, "code": code,
+                "message": (f"{code}: '{field}' references {_safe_target(target)}, which "
+                            "is not a committed document; approve or create it first"),
+            })
+    return errors
+
+
 def _worktree_id_map(worktree_path: str) -> dict[str, str]:
     """``{doc_id: path}`` for every non-excluded ``.md`` file COMMITTED in the
     worktree's current HEAD tree (Codex Blocker 1, concurrent case).
@@ -276,36 +585,11 @@ def _worktree_id_map(worktree_path: str) -> dict[str, str]:
     worktree tree (which already contains the first commit by the time the second
     validates, because the write lock serializes them) closes that window. Returns
     {} on any git error (fail open on the tree scan; the idx check still applies)."""
-    from data_olympus.index import _derive_id_from_path, _is_excluded
-
-    result = subprocess.run(
-        ["git", "-C", worktree_path, "ls-tree", "-r", "--name-only", "HEAD"],
-        check=False, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
+    try:
+        mapping = CommitSnapshot(worktree_path).path_to_effective_id()
+    except SnapshotUnavailable:
         return {}
-    id_map: dict[str, str] = {}
-    for rel in result.stdout.splitlines():
-        rel = rel.strip()
-        if not rel.endswith(".md"):
-            continue
-        if _is_excluded(Path(rel)):
-            continue
-        blob = subprocess.run(
-            ["git", "-C", worktree_path, "show", f"HEAD:{rel}"],
-            check=False, capture_output=True, text=True,
-        )
-        if blob.returncode != 0:
-            continue
-        try:
-            fm, _body = parse_frontmatter(blob.stdout)
-        except ValueError:
-            fm = {}
-        raw = fm.get("id") if isinstance(fm, dict) else None
-        doc_id = (raw if isinstance(raw, str) and raw and ":" not in raw
-                  else _derive_id_from_path(Path(rel)))
-        id_map[doc_id] = rel
-    return id_map
+    return {doc_id: path for path, doc_id in mapping.items()}
 
 
 def validate_postimage(
@@ -314,6 +598,8 @@ def validate_postimage(
     postimage: str,
     idx: Index | None,
     worktree_path: str | None = None,
+    snapshot: CommitSnapshot | None = None,
+    transaction: Mapping[str, str] | None = None,
 ) -> ValidationResult:
     """Format-level validation of ``postimage`` before it is committed (item 4).
 
@@ -356,6 +642,8 @@ def validate_postimage(
     duplicate-id check.
     """
     errors: list[dict[str, str]] = []
+    if snapshot is None and worktree_path is not None:
+        snapshot = CommitSnapshot(worktree_path)
 
     # 1. Frontmatter must parse. parse_frontmatter raises ValueError on an
     # unterminated block or a non-mapping block; either is a hard reject.
@@ -417,16 +705,24 @@ def validate_postimage(
                 other = index_map.get(effective_id)
                 if other is not None and other != target_path:
                     collision_path = other
-        if collision_path is None and worktree_path is not None:
-            tree_map = _worktree_id_map(worktree_path)
-            other = tree_map.get(effective_id)
-            if other is not None and other != target_path:
-                collision_path = other
+        if collision_path is None and snapshot is not None:
+            try:
+                tree_owners = snapshot.path_to_effective_id()
+            except SnapshotUnavailable:
+                tree_owners = {}  # duplicate detection stays fail-open
+            for other_path, other_id in tree_owners.items():
+                if other_id == effective_id and other_path != target_path:
+                    collision_path = other_path
+                    break
     if collision_path is not None:
         errors.append({
             "field": "id", "code": "duplicate_id",
             "message": f"id '{effective_id}' already used by '{collision_path}'",
         })
+
+    # 4. Supersession targets (issue #259): only where the committed tree is known.
+    if snapshot is not None and not _is_reserved(target_path):
+        errors.extend(_supersession_errors(fm, target_path, snapshot, transaction))
 
     if errors:
         return ValidationResult(ok=False, errors=tuple(errors))
