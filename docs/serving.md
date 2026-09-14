@@ -244,14 +244,15 @@ section so concurrent writes cannot corrupt each other:
   (`A.supersedes: B`, `B.superseded_by: A`) cannot both be approved as written:
   approve A with `edited_text` that omits the edge to B, approve B, then propose
   the edge on A again.
-- **Bootstrap rejection order (issue #259).** A bundle is checked in a fixed
-  order and refused at the first failure: every file's path and postimage are
+- **Bootstrap rejection order (issue #259).** After the earlier path, size and
+  rate-limit refusals (which are unchanged and carry no `reason`), a bundle's
+  commit-time checks run in a fixed order and refuse at the first failure: every file's path and postimage are
   secret-scanned first (so no later diagnostic can echo credential-shaped
   content), then duplicate ids inside the bundle, then each file's containment
   and content validation in file order. Supersession targets resolve against the
   committed tree with the whole bundle applied, so a successor and its
-  predecessor created in the same bundle are accepted. A refused bundle's
-  response carries `reason`, redacted wholesale if it would contain
+  predecessor created in the same bundle are accepted. A bundle refused by these
+  commit-time checks carries `reason` in its response, redacted wholesale if it would contain
   credential-shaped content.
 - **Compare-and-swap (optimistic concurrency).** When a caller supplies a base
   marker (`base_commit` naming a specific commit, `base_blob_sha`, or
