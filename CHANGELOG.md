@@ -34,6 +34,33 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the explicit secret-scan override. The claim now records only a sha256 digest,
   and a claim written by 0.8.0 has its text replaced by the digest on its next
   reconciliation pass. Recovery behaves exactly as before. (#264)
+* **A supersession that names a missing document is refused and fails lint.**
+  A `supersedes` or `superseded_by` value naming an id that does not exist
+  retires nothing, so both documents stayed in force, and it passed the write
+  gate with only a lint warning. A write that introduces such a target is now
+  refused as `rejected_invalid_document` (`unresolved_supersedes_target` or
+  `unresolved_superseded_by_target` in the reason; a wrong shape is
+  `malformed_supersedes` / `malformed_superseded_by`), checked against the commit
+  being made, so a document created in the same bootstrap bundle resolves.
+  Targets already present in a document, and unchanged malformed values, keep
+  passing. `data-olympus lint` and `data-olympus import` report an unresolved
+  target as an error (format spec `0.4`); `--resolve-root <dir>` resolves against
+  a larger bundle and `--unresolved-targets warn` restores the warning while a
+  backlog is fixed. Bootstrap rejections now carry a `reason`, and a bundle with
+  a credential-shaped file is refused for that before any other defect is
+  reported. Validating a write also reads the committed tree with three git
+  processes instead of one per document. (#259)
+
+### Upgrading
+
+* `data-olympus lint` and `data-olympus import` can now exit 1 for a bundle that
+  linted clean before: an unresolved `supersedes` or `superseded_by` target is an
+  error (format spec `0.4`). Run `data-olympus lint --unresolved-targets warn` to
+  list them, fix each, then drop the flag. Lint a subtree with
+  `--resolve-root <bundle root>`.
+* A bootstrap bundle that has both a credential-shaped file and another defect,
+  such as a duplicate id, is now refused as `rejected_secret_detected` rather
+  than for the other defect.
 
 ## [0.8.0] - 2026-09-14
 
