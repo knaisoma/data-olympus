@@ -156,18 +156,14 @@ async def test_validation_error_through_call_tool_proxy_does_not_echo_input(
 async def test_unknown_tool_name_is_not_echoed(
     tmp_git_kb: Path, tmp_path: Path, captured_logs: _Capture,
 ) -> None:
-    """A tool name is caller input too when it does not resolve.
-
-    Scoped to responses and INFO-and-above logs: at DEBUG the MCP SDK's tool
-    cache and FastMCP's handler trace record the requested name before any tool
-    is resolved, which this module does not attempt to rewrite.
-    """
+    """A tool name is caller input too when it does not resolve, including in
+    the SDK's DEBUG tool-cache trace and FastMCP's handler trace."""
     app = _app(tmp_git_kb, tmp_path)
     async with Client(app) as client:
         direct_error, direct = await _call(client, FAKE, {})
         proxy_error, proxied = await _call(client, "call_tool", {"name": FAKE, "arguments": {}})
     assert direct_error and proxy_error
-    _assert_clean(direct + proxied, captured_logs.info_and_above)
+    _assert_clean(direct + proxied, captured_logs.messages)
 
 
 @pytest.mark.asyncio
@@ -226,7 +222,9 @@ async def test_malformed_request_envelope_is_not_logged(
     for fragment in FRAGMENTS:
         leaked = [m for m in captured_logs.messages if fragment in m]
         assert not leaked, f"log echoes input: {leaked!r}"
-    assert any("Failed to validate request" in m for m in captured_logs.messages)
+    assert any("mcp/shared/session.py" in m for m in captured_logs.messages), (
+        "the diagnostic should still say where it came from"
+    )
 
 
 @pytest.mark.asyncio
@@ -243,6 +241,38 @@ async def test_unknown_resource_uri_is_not_logged(
 
 
 @pytest.mark.asyncio
+async def test_malformed_notification_is_not_logged(
+    tmp_git_kb: Path, tmp_path: Path, captured_logs: _Capture,
+) -> None:
+    import mcp.types as mt
+
+    app = _app(tmp_git_kb, tmp_path)
+    params = mt.ProgressNotificationParams.model_construct(progressToken="t", progress=FAKE)
+    note = mt.ClientNotification(
+        mt.ProgressNotification.model_construct(method="notifications/progress", params=params),
+    )
+    async with Client(app) as client:
+        await client.session.send_notification(note)
+        await client.ping()
+    for fragment in FRAGMENTS:
+        leaked = [m for m in captured_logs.messages if fragment in m]
+        assert not leaked, f"log echoes input: {leaked!r}"
+
+
+@pytest.mark.asyncio
+async def test_unknown_prompt_name_is_not_logged(
+    tmp_git_kb: Path, tmp_path: Path, captured_logs: _Capture,
+) -> None:
+    app = _app(tmp_git_kb, tmp_path)
+    async with Client(app) as client:
+        with pytest.raises(Exception):  # noqa: B017, PT011
+            await client.get_prompt(FAKE, {})
+    for fragment in FRAGMENTS:
+        leaked = [m for m in captured_logs.messages if fragment in m]
+        assert not leaked, f"log echoes input: {leaked!r}"
+
+
+@pytest.mark.asyncio
 async def test_sanitized_warning_is_still_logged(
     tmp_git_kb: Path, tmp_path: Path, captured_logs: _Capture,
 ) -> None:
@@ -252,7 +282,7 @@ async def test_sanitized_warning_is_still_logged(
         await _call(client, "kb_propose_memory", _memory_args(confidence=FAKE))
     relevant = [m for m in captured_logs.messages if "Invalid arguments for tool" in m]
     assert relevant, captured_logs.messages
-    assert any("kb_propose_memory" in m and "confidence" in m for m in relevant)
+    assert any("kb_propose_memory" in m and "float_parsing" in m for m in relevant)
 
 
 @pytest.mark.asyncio

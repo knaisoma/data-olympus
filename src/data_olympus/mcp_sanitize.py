@@ -4,31 +4,42 @@ What FastMCP 3.4.x and the MCP SDK did with caller input:
 
 - A tool call whose arguments fail validation returned pydantic's error text,
   input values and unexpected argument names included, and logged it at WARNING.
-- FastMCP's DEBUG trace recorded every call's arguments and every resource URI.
-- A tool that raises logs ``Error calling tool`` with a traceback, and the
-  exception messages in that traceback can quote the input (``kb_search``'s
-  ``validity_state`` parser does).
-- The SDK logs a malformed request envelope, and at DEBUG the raw message,
-  through the root logger before any tool runs.
-- An unknown tool name was echoed back, and an unknown resource URI logged.
+- Their DEBUG traces record call arguments, tool and prompt names, and resource
+  URIs as the caller sent them.
+- A failing tool, prompt or resource logs a traceback whose exception messages
+  can quote the input.
+- The SDK logs malformed requests, notifications and unsolicited responses,
+  often with the raw message, before any tool runs.
+- An unknown tool name was echoed back to the caller.
 
-The guarantee this module gives is about logs: no record it filters carries
-caller input, and tracebacks keep their frames and exception types while
-dropping exception messages, so a failure stays diagnosable. On the response
-side, argument-validation and unknown-tool errors are rebuilt from fixed
-vocabulary. A tool's own error message still reaches the caller that sent the
-request, because it is guidance for correcting the call and goes nowhere else.
+Log records are handled by where they come from, not by what they say. Every
+record emitted from the MCP SDK or from FastMCP's server code is rewritten by
+default: a message template keeps its fixed text and every argument becomes
+``<redacted>``; a message that was already formatted becomes a marker naming its
+source file and line, which is enough to find the diagnostic that fired; any
+traceback keeps its frames and exception types, exception groups included, but
+not exception messages. Records from this application are never touched, even
+when they reach the same logger. Matching on message text was tried first and
+each review found a message shape it missed; an origin rule cannot miss one.
 
-Everything is behaviour-tested through a real MCP client with formatted records
+On the response side, argument-validation and unknown-tool errors are rebuilt
+from fixed vocabulary. A tool's own error message still reaches the caller that
+sent the request, because it tells them how to correct the call and goes
+nowhere else.
+
+Behaviour is tested through a real MCP client with fully formatted records
 (``tests/test_mcp_validation_sanitization.py``), so a dependency upgrade that
-changes a message or an exception type fails CI instead of leaking again.
+changes an exception type or a module layout fails CI instead of leaking again.
 """
 from __future__ import annotations
 
 import logging
+import os
 import traceback
 from typing import TYPE_CHECKING, Any
 
+import fastmcp
+import mcp
 from fastmcp.exceptions import NotFoundError, ToolError, ValidationError
 from fastmcp.server.middleware import Middleware
 from pydantic import ValidationError as PydanticValidationError
@@ -43,6 +54,13 @@ PARAMETER_PLACEHOLDER = "<parameter>"
 KEY_PLACEHOLDER = "<key>"
 REDACTED = "<redacted>"
 MESSAGE_REDACTED = "<message redacted>"
+
+
+class _SignatureParameters:
+    """Marker: location heads come from a tool's own call signature."""
+
+
+SIGNATURE_PARAMETERS = _SignatureParameters()
 
 _RULES: dict[str, str] = {
     "missing": "is required",
@@ -77,12 +95,16 @@ _RULES: dict[str, str] = {
 }
 _UNEXPECTED_TYPES = frozenset({"unexpected_keyword_argument", "unexpected_positional_argument"})
 
-# Declared parameters of tools that have been called, by tool name. Filled only
-# for names that resolved to a real tool, so caller-chosen names never grow it.
-_TOOL_PARAMETERS: dict[str, frozenset[str]] = {}
+
+def _trusted_head(first: object, params: object) -> bool:
+    if not isinstance(first, str):
+        return False
+    if params is SIGNATURE_PARAMETERS:
+        return True
+    return isinstance(params, frozenset) and first in params
 
 
-def _location(error: dict[str, Any], params: frozenset[str] | None) -> str:
+def _location(error: dict[str, Any], params: object) -> str:
     loc = error.get("loc")
     loc = tuple(loc) if isinstance(loc, (list, tuple)) else ()
     if not loc:
@@ -90,8 +112,8 @@ def _location(error: dict[str, Any], params: frozenset[str] | None) -> str:
     first = loc[0]
     if error.get("type") in _UNEXPECTED_TYPES:
         head = UNEXPECTED_ARGUMENT
-    elif isinstance(first, str) and params is not None and first in params:
-        head = first
+    elif _trusted_head(first, params):
+        head = str(first)
     elif isinstance(first, int):
         head = f"argument {first}"
     else:
@@ -112,10 +134,13 @@ def _rule(error: dict[str, Any]) -> str:
     return "is invalid"
 
 
-def summarize_errors(
-    errors: object, params: frozenset[str] | None = None,
-) -> str:
-    """One clause per distinct problem, from trusted names and allowlisted codes."""
+def summarize_errors(errors: object, params: object = None) -> str:
+    """One clause per distinct problem, from trusted names and allowlisted codes.
+
+    ``params`` is a frozenset of declared parameter names, ``SIGNATURE_PARAMETERS``
+    when the errors come from validating a call against the tool's signature,
+    or ``None`` when no location head can be trusted.
+    """
     if not isinstance(errors, list):
         return "arguments are invalid"
     seen: list[str] = []
@@ -128,35 +153,20 @@ def summarize_errors(
     return "; ".join(seen) if seen else "arguments are invalid"
 
 
-def summarize_validation_error(exc: BaseException, params: frozenset[str] | None) -> str:
-    cause = exc.__cause__ if isinstance(exc, ValidationError) else exc
+def summarize_validation_error(exc: BaseException) -> str:
+    if isinstance(exc, ValidationError):
+        # FastMCP raises this only for a call that failed its signature check;
+        # the pydantic error it wraps locates problems by parameter name.
+        cause, params = exc.__cause__, SIGNATURE_PARAMETERS
+    else:
+        # A bare pydantic error comes from a tool body validating its own data,
+        # whose locations can be caller-chosen keys.
+        cause, params = exc, None
     if isinstance(cause, PydanticValidationError):
         return summarize_errors(
             [dict(e) for e in cause.errors(include_url=False, include_input=False)], params,
         )
     return "arguments are invalid"
-
-
-def _sanitized_traceback(exc_info: Any) -> str:
-    """Frames and exception types, for every exception in the chain, no messages."""
-    _type, value, tb = exc_info
-    if value is None:
-        return ""
-    lines: list[str] = []
-    te: traceback.TracebackException | None = traceback.TracebackException(
-        type(value), value, tb, capture_locals=False,
-    )
-    chain: list[traceback.TracebackException] = []
-    while te is not None and len(chain) < 16:
-        chain.append(te)
-        te = te.__cause__ or (None if te.__suppress_context__ else te.__context__)
-    for index, item in enumerate(reversed(chain)):
-        if index:
-            lines.append("\nThe above exception led to the following exception:\n")
-        lines.append("Traceback (most recent call last):")
-        lines.extend(line.rstrip("\n") for line in item.stack.format())
-        lines.append(f"{item.exc_type_str}: {MESSAGE_REDACTED}")
-    return "\n".join(lines)
 
 
 class ArgumentSanitizingMiddleware(Middleware):
@@ -171,111 +181,153 @@ class ArgumentSanitizingMiddleware(Middleware):
         context: MiddlewareContext[mt.CallToolRequestParams],
         call_next: CallNext[mt.CallToolRequestParams, ToolResult],
     ) -> ToolResult:
-        name = context.message.name
-        params = await self._parameters(context, name)
         try:
             return await call_next(context)
         except (ValidationError, PydanticValidationError) as exc:
+            name = context.message.name
             raise ToolError(
-                f"Invalid arguments for tool {name!r}: {summarize_validation_error(exc, params)}"
+                f"Invalid arguments for tool {name!r}: {summarize_validation_error(exc)}"
             ) from None
         except NotFoundError:
             raise ToolError("Unknown tool") from None
 
-    @staticmethod
-    async def _parameters(
-        context: MiddlewareContext[mt.CallToolRequestParams], name: str,
-    ) -> frozenset[str] | None:
-        if name in _TOOL_PARAMETERS:
-            return _TOOL_PARAMETERS[name]
-        server = getattr(context.fastmcp_context, "fastmcp", None)
-        if server is None:
-            return None
-        try:
-            tool = await server.get_tool(name)
-        except Exception:
-            return None
-        if tool is None:
-            return None
-        properties = (tool.parameters or {}).get("properties") or {}
-        params = frozenset(k for k in properties if isinstance(k, str))
-        _TOOL_PARAMETERS[name] = params
-        return params
+
+def _package_root(module: Any, subdir: str = "") -> str:
+    root = os.path.dirname(os.path.abspath(module.__file__))
+    return os.path.join(root, subdir) if subdir else root
 
 
+_SDK_ROOTS = (_package_root(mcp), _package_root(fastmcp, "server"))
+_SITE_ROOTS = tuple(os.path.dirname(_package_root(m)) for m in (mcp, fastmcp))
 _INVALID_ARGUMENTS = "Invalid arguments for tool %r: %s"
-_PREFORMATTED_PREFIXES = (
-    "Failed to validate request:",
-    "Message that failed validation:",
-    "Unhandled exception in receive loop:",
-    "Error reading resource ",
-)
+_SAFE_TYPE_NAME_TEMPLATES = frozenset({
+    "Processing request of type %s", "Dispatching request of type %s",
+})
+
+
+def _from_sdk(record: logging.LogRecord) -> bool:
+    path = os.path.abspath(record.pathname or "")
+    return any(path.startswith(root + os.sep) for root in _SDK_ROOTS)
+
+
+def _source(record: logging.LogRecord) -> str:
+    path = os.path.abspath(record.pathname or "")
+    for root in _SITE_ROOTS:
+        if path.startswith(root + os.sep):
+            path = os.path.relpath(path, root)
+            break
+    return f"{path.replace(os.sep, '/')}:{record.lineno}"
+
+
+def _format_exception(te: traceback.TracebackException, lines: list[str], depth: int) -> None:
+    if depth > 8:
+        lines.append("<nested exceptions omitted>")
+        return
+    cause = te.__cause__ or (None if te.__suppress_context__ else te.__context__)
+    if cause is not None:
+        _format_exception(cause, lines, depth + 1)
+        lines.append("\nThe above exception led to the following exception:\n")
+    lines.append("Traceback (most recent call last):")
+    lines.extend(line.rstrip("\n") for line in te.stack.format())
+    lines.append(f"{te.exc_type_str}: {MESSAGE_REDACTED}")
+    for index, child in enumerate(getattr(te, "exceptions", None) or (), start=1):
+        lines.append(f"  +---------------- {index} ----------------")
+        child_lines: list[str] = []
+        _format_exception(child, child_lines, depth + 1)
+        lines.extend("  | " + line for line in child_lines)
+
+
+def _sanitized_traceback(exc_info: Any) -> str:
+    value = exc_info[1] if isinstance(exc_info, tuple) and len(exc_info) == 3 else None
+    if not isinstance(value, BaseException):
+        return ""
+    te = traceback.TracebackException(
+        type(value), value, value.__traceback__, capture_locals=False,
+    )
+    lines: list[str] = []
+    _format_exception(te, lines, 0)
+    return "\n".join(lines)
+
+
+def _redacted_args(args: object) -> tuple[object, ...] | dict[str, object]:
+    if isinstance(args, dict):
+        return dict.fromkeys(args, REDACTED)
+    if isinstance(args, tuple):
+        return tuple(REDACTED for _ in args)
+    return ()
 
 
 class ArgumentSanitizingLogFilter(logging.Filter):
-    """Rewrite log records that would carry MCP input; never drop or raise.
-
-    Records are rewritten rather than dropped, so an operator still sees which
-    tool or request failed and why, just not what the caller submitted.
-    """
+    """Rewrite records emitted by the MCP SDK or FastMCP's server; never raise."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        # The same record can pass this filter on a logger and again on a
+        # handler; rewriting twice would redact the sanitized result.
+        if getattr(record, "_mcp_input_sanitized", False):
+            return True
         try:
-            self._rewrite(record)
+            if _from_sdk(record):
+                self._rewrite(record)
+                record._mcp_input_sanitized = True
         except Exception:
-            record.msg = "log record redacted: MCP input sanitizer could not parse it"
+            record.msg = "MCP diagnostic redacted: the input sanitizer could not parse it"
             record.args = ()
             record.exc_info = None
             record.exc_text = None
+            record.stack_info = None
         return True
 
-    def _rewrite(self, record: logging.LogRecord) -> None:
-        msg = record.msg
-        args = record.args
-        if isinstance(msg, str):
-            if msg == _INVALID_ARGUMENTS:
-                if isinstance(args, tuple) and len(args) == 2:
-                    name = args[0]
-                    params = _TOOL_PARAMETERS.get(name) if isinstance(name, str) else None
-                    tool = name if params is not None else "<tool>"
-                    record.args = (tool, summarize_errors(args[1], params))
-                else:
-                    record.msg = "Invalid arguments for tool: %s"
-                    record.args = (REDACTED,)
-            elif msg.endswith(("Handler called: call_tool %s with %s",
-                               "Handler called: get_prompt %s with %s")):
-                if isinstance(args, tuple) and len(args) == 2:
-                    record.args = (args[0], REDACTED)
-                else:
-                    record.msg, record.args = "Handler called", ()
-            elif msg.endswith("Handler called: read_resource %s"):
-                record.args = (REDACTED,)
-            else:
-                for prefix in _PREFORMATTED_PREFIXES:
-                    if msg.startswith(prefix):
-                        record.msg = f"{prefix.rstrip()} {REDACTED}"
-                        record.args = ()
-                        break
+    @staticmethod
+    def _rewrite(record: logging.LogRecord) -> None:
+        msg, args = record.msg, record.args
+        if msg == _INVALID_ARGUMENTS and isinstance(args, tuple) and len(args) == 2:
+            name = args[0] if isinstance(args[0], str) else REDACTED
+            # The tool resolved before its arguments were validated, so the name
+            # is a registered one; the locations are not trusted in the log.
+            record.args = (name, summarize_errors(args[1], None))
+        elif msg in _SAFE_TYPE_NAME_TEMPLATES and isinstance(args, tuple) and all(
+            isinstance(a, str) and a.isidentifier() for a in args
+        ):
+            pass
+        elif isinstance(msg, str) and args:
+            record.args = _redacted_args(args)
+        else:
+            record.msg = f"MCP diagnostic from {_source(record)} (content redacted)"
+            record.args = ()
+        try:
+            record.getMessage()
+        except Exception:
+            record.msg = f"MCP diagnostic from {_source(record)} (content redacted)"
+            record.args = ()
         if record.exc_info:
             record.exc_text = _sanitized_traceback(record.exc_info)
             record.exc_info = None
+        elif record.exc_text:
+            record.exc_text = f"<exception text redacted from {_source(record)}>"
+        record.stack_info = None
 
 
-# Loggers whose records can carry MCP input. The SDK's session logs through the
-# root logger directly, and a logger's own filters do not see records that
-# propagate up from children, so each emitting logger is named.
-_FILTERED_LOGGERS = (
-    "",
-    "fastmcp.server.server",
-    "fastmcp.server.mixins.mcp_operations",
-    "mcp.server.lowlevel.server",
-    "mcp.server.streamable_http",
-)
+_FILTER = ArgumentSanitizingLogFilter()
 
 
 def install_log_filter() -> None:
-    """Attach the filter once per logger; safe to call for every app built."""
-    for name in _FILTERED_LOGGERS:
-        logger = logging.getLogger(name)
-        if not any(isinstance(f, ArgumentSanitizingLogFilter) for f in logger.filters):
-            logger.addFilter(ArgumentSanitizingLogFilter())
+    """Attach the filter to every logger and handler MCP records can pass through.
+
+    A logger's own filters see only records logged on that logger, so the root
+    logger (the SDK session logs through it directly) and every existing ``mcp``
+    and ``fastmcp`` logger get the filter. The handlers on the root and
+    ``fastmcp`` loggers get it too, which covers SDK modules imported later.
+    The filter ignores records from anywhere else, so attaching it broadly
+    changes nothing for this application's own logging. Safe to call repeatedly.
+    """
+    loggers = [logging.getLogger(), logging.getLogger("fastmcp")]
+    for name in list(logging.Logger.manager.loggerDict):
+        if name == "mcp" or name.startswith(("mcp.", "fastmcp")):
+            loggers.append(logging.getLogger(name))
+    for logger in loggers:
+        if _FILTER not in logger.filters:
+            logger.addFilter(_FILTER)
+    for logger in (logging.getLogger(), logging.getLogger("fastmcp")):
+        for handler in logger.handlers:
+            if _FILTER not in handler.filters:
+                handler.addFilter(_FILTER)

@@ -17,12 +17,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * **Hardened MCP argument-validation errors and diagnostic logging.** Tool
   argument-validation failures and unknown tool names now return concise
   messages that name the parameter and the rule without repeating the submitted
-  value, including through the search-mode `call_tool` proxy. Server log records
-  from the MCP layer no longer include submitted request content, and logged
-  tracebacks keep their frames and exception types without exception messages.
-  An error raised by a tool itself is still returned to the caller unchanged. A
-  client that parsed pydantic's raw validation text will see the shorter
-  message instead.
+  value, including through the search-mode `call_tool` proxy. Log records
+  emitted by the MCP SDK and FastMCP's server code are rewritten before they
+  are written: message arguments are replaced with `<redacted>`, a message that
+  arrives already formatted is replaced with a marker naming its source file and
+  line, and tracebacks keep their frames and exception types without exception
+  messages. This application's own log records are unchanged. An error raised
+  by a tool itself is still returned to the caller unchanged. A client that
+  parsed pydantic's raw validation text will see the shorter message instead.
 
 ### Fixed
 
