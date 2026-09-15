@@ -12,6 +12,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-09-15
+
 ### Security
 
 * **Hardened MCP argument-validation errors and diagnostic logging.** A tool
@@ -21,12 +23,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   errors raised while a tool runs are returned as before, except that pydantic
   validation errors from inside a tool are summarized the same way.
 
-  Log records emitted by the MCP SDK, FastMCP and `sse_starlette` are rewritten
+  Log records emitted by the MCP SDK, FastMCP (excluding its client modules) and
+  `sse_starlette` are rewritten
   before they are written. Message arguments become `<redacted>`, except the
   request type in the SDK's request trace and the tool name in the
   invalid-arguments warning. A message that arrives already formatted is
   replaced by a marker naming its source file and line, and tracebacks keep
-  frames and exception types but not exception messages. Uvicorn access lines
+  frames and exception types, up to a nesting limit, but not exception messages. Uvicorn access lines
   keep the method, path and status and drop the query string. This
   application's own log records are unchanged. A client that parsed pydantic's
   raw validation text will see the shorter message instead.
