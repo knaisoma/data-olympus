@@ -141,3 +141,48 @@ def test_application_records_are_untouched_even_on_root() -> None:
     formatted = _format(record)
     assert "startup database unavailable: detail" in formatted
     assert "validity_state 'detail'" in formatted
+
+
+def test_sse_chunk_record_is_redacted() -> None:
+    import sse_starlette
+
+    path = os.path.join(os.path.dirname(sse_starlette.__file__), "sse.py")
+    record = _record("chunk: %s", (f'data: {{"id": "{FAKE}"}}'.encode(),),
+                     pathname=path, name="sse_starlette.sse")
+    ArgumentSanitizingLogFilter().filter(record)
+    assert FAKE not in _format(record)
+
+
+def test_prompt_module_records_are_redacted() -> None:
+    import fastmcp
+
+    path = os.path.join(os.path.dirname(fastmcp.__file__), "prompts", "function_prompt.py")
+    record = _record("Error rendering prompt %s", ("echo",), _exc_info(FAKE),
+                     pathname=path, name="fastmcp.prompts.function_prompt")
+    ArgumentSanitizingLogFilter().filter(record)
+    assert FAKE not in _format(record)
+
+
+def test_access_log_query_string_is_redacted_after_uvicorn_configures_logging() -> None:
+    import uvicorn
+
+    mcp_sanitize.install_log_filter()
+    uvicorn.Config(app="data_olympus.server:app", log_level="info")  # runs uvicorn's dictConfig
+
+    captured: list[str] = []
+
+    class _Handler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(_format(record))
+
+    access = logging.getLogger("uvicorn.access")
+    handler = _Handler()
+    access.addHandler(handler)
+    try:
+        access.info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:1", "GET",
+                    f"/mcp?token={FAKE}", "1.1", 406)
+    finally:
+        access.removeHandler(handler)
+    assert captured
+    assert FAKE not in captured[0]
+    assert '"GET /mcp?<redacted> HTTP/1.1" 406' in captured[0]

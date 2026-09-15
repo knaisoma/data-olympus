@@ -14,17 +14,22 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
-* **Hardened MCP argument-validation errors and diagnostic logging.** Tool
-  argument-validation failures and unknown tool names now return concise
-  messages that name the parameter and the rule without repeating the submitted
-  value, including through the search-mode `call_tool` proxy. Log records
-  emitted by the MCP SDK and FastMCP's server code are rewritten before they
-  are written: message arguments are replaced with `<redacted>`, a message that
-  arrives already formatted is replaced with a marker naming its source file and
-  line, and tracebacks keep their frames and exception types without exception
-  messages. This application's own log records are unchanged. An error raised
-  by a tool itself is still returned to the caller unchanged. A client that
-  parsed pydantic's raw validation text will see the shorter message instead.
+* **Hardened MCP argument-validation errors and diagnostic logging.** A tool
+  call whose arguments fail validation, or that names an unknown tool, now gets
+  a concise message naming the parameter and the rule without repeating the
+  submitted value, including through the search-mode `call_tool` proxy. Other
+  errors raised while a tool runs are returned as before, except that pydantic
+  validation errors from inside a tool are summarized the same way.
+
+  Log records emitted by the MCP SDK, FastMCP and `sse_starlette` are rewritten
+  before they are written. Message arguments become `<redacted>`, except the
+  request type in the SDK's request trace and the tool name in the
+  invalid-arguments warning. A message that arrives already formatted is
+  replaced by a marker naming its source file and line, and tracebacks keep
+  frames and exception types but not exception messages. Uvicorn access lines
+  keep the method, path and status and drop the query string. This
+  application's own log records are unchanged. A client that parsed pydantic's
+  raw validation text will see the shorter message instead.
 
 ### Fixed
 

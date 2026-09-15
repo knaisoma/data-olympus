@@ -27,6 +27,13 @@ from fixed vocabulary. A tool's own error message still reaches the caller that
 sent the request, because it tells them how to correct the call and goes
 nowhere else.
 
+Known limits. The ``Invalid arguments`` warning keeps the tool name FastMCP was
+asked for; with the shipped catalog that is always a registered name, but a
+custom provider that resolves aliases would log the alias. Origin is decided
+from source paths, so a deployment that loads these packages from a zip archive
+with relocated bytecode is not covered. Uvicorn access lines keep the request
+path and lose only the query string.
+
 Behaviour is tested through a real MCP client with fully formatted records
 (``tests/test_mcp_validation_sanitization.py``), so a dependency upgrade that
 changes an exception type or a module layout fails CI instead of leaking again.
@@ -40,6 +47,7 @@ from typing import TYPE_CHECKING, Any
 
 import fastmcp
 import mcp
+import sse_starlette
 from fastmcp.exceptions import NotFoundError, ToolError, ValidationError
 from fastmcp.server.middleware import Middleware
 from pydantic import ValidationError as PydanticValidationError
@@ -197,17 +205,35 @@ def _package_root(module: Any, subdir: str = "") -> str:
     return os.path.join(root, subdir) if subdir else root
 
 
-_SDK_ROOTS = (_package_root(mcp), _package_root(fastmcp, "server"))
-_SITE_ROOTS = tuple(os.path.dirname(_package_root(m)) for m in (mcp, fastmcp))
+# The MCP SDK, FastMCP (whose server dispatch also runs code in its tools,
+# prompts and resources modules), and sse_starlette, which writes the production
+# response stream and logs each chunk at DEBUG. FastMCP's client is excluded.
+_SDK_ROOTS = (_package_root(mcp), _package_root(fastmcp), _package_root(sse_starlette))
+_EXCLUDED_ROOTS = (_package_root(fastmcp, "client"),)
+_SITE_ROOTS = tuple(os.path.dirname(_package_root(m)) for m in (mcp, fastmcp, sse_starlette))
+_ACCESS_LOG = '%s - "%s %s HTTP/%s" %d'
 _INVALID_ARGUMENTS = "Invalid arguments for tool %r: %s"
 _SAFE_TYPE_NAME_TEMPLATES = frozenset({
     "Processing request of type %s", "Dispatching request of type %s",
 })
 
 
+def _under(path: str, roots: tuple[str, ...]) -> bool:
+    return any(path.startswith(root + os.sep) for root in roots)
+
+
 def _from_sdk(record: logging.LogRecord) -> bool:
     path = os.path.abspath(record.pathname or "")
-    return any(path.startswith(root + os.sep) for root in _SDK_ROOTS)
+    return _under(path, _SDK_ROOTS) and not _under(path, _EXCLUDED_ROOTS)
+
+
+def _redact_access_log(record: logging.LogRecord) -> None:
+    """Keep uvicorn's access line, minus a query string the caller chose."""
+    args = record.args
+    if record.msg == _ACCESS_LOG and isinstance(args, tuple) and len(args) == 5:
+        target = args[2]
+        if isinstance(target, str) and "?" in target:
+            record.args = (*args[:2], target.split("?", 1)[0] + "?" + REDACTED, *args[3:])
 
 
 def _source(record: logging.LogRecord) -> str:
@@ -266,7 +292,10 @@ class ArgumentSanitizingLogFilter(logging.Filter):
         if getattr(record, "_mcp_input_sanitized", False):
             return True
         try:
-            if _from_sdk(record):
+            if record.name == "uvicorn.access":
+                _redact_access_log(record)
+                record._mcp_input_sanitized = True
+            elif _from_sdk(record):
                 self._rewrite(record)
                 record._mcp_input_sanitized = True
         except Exception:
@@ -320,9 +349,10 @@ def install_log_filter() -> None:
     The filter ignores records from anywhere else, so attaching it broadly
     changes nothing for this application's own logging. Safe to call repeatedly.
     """
-    loggers = [logging.getLogger(), logging.getLogger("fastmcp")]
+    loggers = [logging.getLogger(), logging.getLogger("fastmcp"),
+               logging.getLogger("uvicorn.access"), logging.getLogger("sse_starlette.sse")]
     for name in list(logging.Logger.manager.loggerDict):
-        if name == "mcp" or name.startswith(("mcp.", "fastmcp")):
+        if name == "mcp" or name.startswith(("mcp.", "fastmcp", "sse_starlette")):
             loggers.append(logging.getLogger(name))
     for logger in loggers:
         if _FILTER not in logger.filters:
