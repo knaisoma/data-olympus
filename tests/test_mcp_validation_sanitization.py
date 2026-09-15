@@ -29,16 +29,26 @@ FAKE = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
 FRAGMENTS = (FAKE, FAKE[:8], FAKE[-16:])
 
 
+_FORMATTER = logging.Formatter("%(levelname)s %(name)s %(message)s")
+
+
 class _Capture(logging.Handler):
+    """Keeps each record fully formatted, traceback included: a leak can sit in
+    ``exc_info`` where ``getMessage()`` never looks."""
+
     def __init__(self) -> None:
         super().__init__(level=logging.DEBUG)
         self.messages: list[str] = []
         self.info_and_above: list[str] = []
 
     def emit(self, record: logging.LogRecord) -> None:
-        self.messages.append(record.getMessage())
+        if record.name.startswith("fastmcp.client"):
+            # The in-process test client's own trace, not the server's log.
+            return
+        formatted = _FORMATTER.format(record)
+        self.messages.append(formatted)
         if record.levelno >= logging.INFO:
-            self.info_and_above.append(record.getMessage())
+            self.info_and_above.append(formatted)
 
 
 @pytest.fixture
@@ -171,6 +181,65 @@ async def test_debug_call_log_does_not_record_arguments(
     assert not is_error
     assert not [m for m in captured_logs.messages if FAKE in m], captured_logs.messages
     assert any("Handler called: call_tool" in m for m in captured_logs.messages)
+
+
+@pytest.mark.asyncio
+async def test_tool_body_error_traceback_does_not_log_input(
+    tmp_git_kb: Path, tmp_path: Path, captured_logs: _Capture,
+) -> None:
+    """A tool's own error can quote its input; FastMCP logs it with a traceback.
+
+    The response keeps the tool's guidance, which goes only to the caller that
+    sent the value. The log keeps frames and exception types, not messages.
+    """
+    app = _app(tmp_git_kb, tmp_path)
+    async with Client(app) as client:
+        is_error, text = await _call(
+            client, "kb_search", {"query": "x", "validity_state": f"expiring_within:{FAKE}"},
+        )
+    assert is_error
+    assert "validity_state" in text
+    for fragment in FRAGMENTS:
+        leaked = [m for m in captured_logs.messages if fragment in m]
+        assert not leaked, f"log echoes input: {leaked!r}"
+    tracebacks = [m for m in captured_logs.messages if "Traceback" in m]
+    assert tracebacks, "the traceback itself should still be logged for diagnosis"
+    assert any("ValueError" in m for m in tracebacks)
+
+
+@pytest.mark.asyncio
+async def test_malformed_request_envelope_is_not_logged(
+    tmp_git_kb: Path, tmp_path: Path, captured_logs: _Capture,
+) -> None:
+    """The MCP SDK validates the request envelope before any tool runs and logs
+    the failure, and the raw message, through the root logger."""
+    import mcp.types as mt
+
+    app = _app(tmp_git_kb, tmp_path)
+    params = mt.CallToolRequestParams.model_construct(name="kb_search", arguments=[FAKE])
+    request = mt.ClientRequest(
+        mt.CallToolRequest.model_construct(method="tools/call", params=params),
+    )
+    async with Client(app) as client:
+        with pytest.raises(Exception):  # noqa: B017, PT011 - any protocol error is fine
+            await client.session.send_request(request, mt.CallToolResult)
+    for fragment in FRAGMENTS:
+        leaked = [m for m in captured_logs.messages if fragment in m]
+        assert not leaked, f"log echoes input: {leaked!r}"
+    assert any("Failed to validate request" in m for m in captured_logs.messages)
+
+
+@pytest.mark.asyncio
+async def test_unknown_resource_uri_is_not_logged(
+    tmp_git_kb: Path, tmp_path: Path, captured_logs: _Capture,
+) -> None:
+    app = _app(tmp_git_kb, tmp_path)
+    async with Client(app) as client:
+        with pytest.raises(Exception):  # noqa: B017, PT011
+            await client.read_resource(f"data://{FAKE}")
+    for fragment in FRAGMENTS:
+        leaked = [m for m in captured_logs.messages if fragment in m]
+        assert not leaked, f"log echoes input: {leaked!r}"
 
 
 @pytest.mark.asyncio

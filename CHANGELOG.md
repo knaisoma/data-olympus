@@ -14,15 +14,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
-* **MCP errors and logs no longer carry submitted tool input.** When a tool
-  call's arguments failed validation, the error returned to the caller and the
-  server's WARNING log line included the submitted value, and for an unexpected
-  argument its name, so a credential sent in the wrong field was written to the
-  server log. FastMCP's DEBUG trace also recorded every call's arguments, and an
-  unknown tool name was echoed back. Errors and those log lines are now rebuilt
-  from the parameter name and a fixed rule description only, for direct calls
-  and for calls made through the search-mode `call_tool` proxy. A client that
-  parsed pydantic's raw error text will see the shorter message instead.
+* **Hardened MCP argument-validation errors and diagnostic logging.** Tool
+  argument-validation failures and unknown tool names now return concise
+  messages that name the parameter and the rule without repeating the submitted
+  value, including through the search-mode `call_tool` proxy. Server log records
+  from the MCP layer no longer include submitted request content, and logged
+  tracebacks keep their frames and exception types without exception messages.
+  An error raised by a tool itself is still returned to the caller unchanged. A
+  client that parsed pydantic's raw validation text will see the shorter
+  message instead.
 
 ### Fixed
 
