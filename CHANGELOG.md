@@ -16,21 +16,22 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
-* **Hardened MCP argument-validation errors and diagnostic logging.** A tool
-  call whose arguments fail validation, or that names an unknown tool, now gets
-  a concise message naming the parameter and the rule without repeating the
-  submitted value, including through the search-mode `call_tool` proxy. Other
-  errors raised while a tool runs are returned as before, except that pydantic
-  validation errors from inside a tool are summarized the same way.
+* **Hardened MCP argument-validation errors and diagnostic logging.**
+  Argument-validation failures now return concise rule summaries without
+  submitted values. Trusted parameter names are retained; untrusted names use
+  placeholders. Unknown tools return `Unknown tool`. This applies to direct calls
+  and the search-mode `call_tool` proxy. Other errors raised while a tool runs
+  are returned as before, except that pydantic validation errors raised inside a
+  tool are summarized.
 
   Log records emitted by the MCP SDK, FastMCP (excluding its client modules) and
-  `sse_starlette` are rewritten
-  before they are written. Message arguments become `<redacted>`, except the
-  request type in the SDK's request trace and the tool name in the
-  invalid-arguments warning. A message that arrives already formatted is
-  replaced by a marker naming its source file and line, and tracebacks keep
-  frames and exception types, up to a nesting limit, but not exception messages. Uvicorn access lines
-  keep the method, path and status and drop the query string. This
+  `sse_starlette` are rewritten before they are written. Message arguments
+  become `<redacted>`, except the request type in the SDK's request trace and
+  the tool name in the invalid-arguments warning. A message that arrives already
+  formatted is replaced by a marker naming its source file and line, and
+  tracebacks keep frames and exception types, up to a nesting limit, but not
+  exception messages. Uvicorn access lines keep the method, path and status and
+  drop the query string. This
   application's own log records are unchanged. A client that parsed pydantic's
   raw validation text will see the shorter message instead.
 
@@ -39,8 +40,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * **A malformed lock file no longer takes down health, readiness and REST
   reads.** A lock whose content was valid JSON but not an object made the lock
   listing raise, which failed `/api/v1/health`, `/readyz`, `/metrics`, MCP
-  `kb_health` and every REST read route, since they all build health first. It
-  is now listed as `owner_kind: "unreadable"`, and the ownership and cleanup
+  `kb_health` and the REST outline, search, get and list routes, since they all
+  build health first. It is now listed as `owner_kind: "unreadable"`, and the ownership and cleanup
   helpers treat it as a lock whose owner cannot be established and leave it in
   place. (#269)
 
