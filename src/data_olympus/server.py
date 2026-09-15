@@ -1282,6 +1282,11 @@ def build_app(
             return resp.model_dump()
 
     registry = PrincipalRegistry(auth_token=auth_token, principals=auth_principals)
+    # Outermost: keep submitted tool input out of validation and unknown-tool
+    # errors and out of FastMCP's logs (see mcp_sanitize).
+    from data_olympus.mcp_sanitize import ArgumentSanitizingMiddleware, install_log_filter
+    install_log_filter()
+    app.add_middleware(ArgumentSanitizingMiddleware())
     # MCP-transport auth: enforce write-tool capabilities (REST is enforced in
     # rest_api.py against the same registry).
     app.add_middleware(MCPAuthMiddleware(registry))
