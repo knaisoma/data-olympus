@@ -233,7 +233,7 @@ class PendingQueue:
                 info = json.load(os.fdopen(os.dup(fd), "r"))
             except ValueError:
                 return False
-            if info.get("acquired_at") != expected_acquired_at:
+            if not isinstance(info, dict) or info.get("acquired_at") != expected_acquired_at:
                 return False
             # Confirm the path still resolves to the inode we verified (a successor
             # would have a different, freshly-created inode) right before unlinking.
@@ -487,7 +487,7 @@ class PendingQueue:
             # An unreadable lock is not provably ours, so leave it: the orphan
             # collector reclaims one whose holder no longer exists.
             return
-        if info.get("pending_id") != pending_id:
+        if not isinstance(info, dict) or info.get("pending_id") != pending_id:
             return
         self._release_lock(target_path)
 
@@ -944,6 +944,9 @@ class PendingQueue:
                     info = json.load(f)
             except (FileNotFoundError, ValueError):
                 continue
+            if not isinstance(info, dict):
+                # Valid JSON but not a lock record (#269): not provably orphaned.
+                continue
             holder = info.get("pending_id", "")
             # Only reclaim locks held by a pending entry (uuid holder). A
             # non-uuid holder is the transient auto-commit owner; skip it.
@@ -982,7 +985,7 @@ class PendingQueue:
             # Not provably orphaned, so leave it rather than free a lock that
             # may be protecting somebody.
             return False
-        return bool(info.get("pending_id") == expected_holder)
+        return isinstance(info, dict) and info.get("pending_id") == expected_holder
 
     def reclaim_stale_auto_commit_locks(
         self,
@@ -1050,7 +1053,7 @@ class PendingQueue:
                     info = json.load(f)
             except (FileNotFoundError, ValueError):
                 continue
-            if not self._is_auto_commit_lock(info):
+            if not isinstance(info, dict) or not self._is_auto_commit_lock(info):
                 continue
             target_path = info.get("target_path")
             if not isinstance(target_path, str):
@@ -1126,6 +1129,11 @@ class PendingQueue:
         to tell WHICH path was wedged: that had to be found by exec-ing into the
         pod and reading the state volume. Each record carries the target path,
         the owner kind, the acquiring pending id and the lock's age.
+
+        A lock file that exists but cannot be read or is not a JSON object is
+        reported with ``owner_kind: "unreadable"`` and null fields rather than
+        skipped or allowed to raise (#269): it still holds its path, and one bad
+        file must not fail health, readiness and every REST read built on this.
         """
         if not os.path.isdir(self._locks_dir):
             return []
@@ -1137,7 +1145,15 @@ class PendingQueue:
             try:
                 with open(os.path.join(self._locks_dir, name)) as f:
                     info = json.load(f)
-            except (OSError, json.JSONDecodeError):
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError):
+                info = None
+            if not isinstance(info, dict):
+                out.append({
+                    "target_path": None, "owner_kind": "unreadable",
+                    "pending_id": None, "acquired_at": None, "age_seconds": None,
+                })
                 continue
             acquired_at = info.get("acquired_at")
             out.append({

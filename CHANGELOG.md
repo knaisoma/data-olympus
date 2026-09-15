@@ -12,6 +12,28 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+* **MCP errors and logs no longer carry submitted tool input.** When a tool
+  call's arguments failed validation, the error returned to the caller and the
+  server's WARNING log line included the submitted value, and for an unexpected
+  argument its name, so a credential sent in the wrong field was written to the
+  server log. FastMCP's DEBUG trace also recorded every call's arguments, and an
+  unknown tool name was echoed back. Errors and those log lines are now rebuilt
+  from the parameter name and a fixed rule description only, for direct calls
+  and for calls made through the search-mode `call_tool` proxy. A client that
+  parsed pydantic's raw error text will see the shorter message instead.
+
+### Fixed
+
+* **A malformed lock file no longer takes down health, readiness and REST
+  reads.** A lock whose content was valid JSON but not an object made the lock
+  listing raise, which failed `/api/v1/health`, `/readyz`, `/metrics`, MCP
+  `kb_health` and every REST read route, since they all build health first. It
+  is now listed as `owner_kind: "unreadable"`, and the ownership and cleanup
+  helpers treat it as a lock whose owner cannot be established and leave it in
+  place. (#269)
+
 ## [0.8.1] - 2026-09-14
 
 ### Fixed

@@ -443,7 +443,13 @@ path is diagnosable:
 - `path_locks_held` is how many paths are locked, and `path_locks` says WHICH,
   each with `target_path`, `owner_kind`, `pending_id`, `acquired_at` and
   `age_seconds`. A leaked lock blocks every write to one path, so the count on
-  its own was not diagnosable without reading the state volume by hand.
+  its own was not diagnosable without reading the state volume by hand. A lock
+  file that exists but cannot be read, or is not a JSON object, is listed with
+  `owner_kind: "unreadable"` and null fields: it still holds a path, and it is
+  never allowed to fail health, readiness or the REST reads that build on it.
+  The orphan collector and the stale auto-commit reclaim leave such a file in
+  place, since its owner cannot be established; remove it by hand once no write
+  to that path is in flight.
 
 Both counts are computed at health-report time from the queues themselves, so
 they cannot drift.
