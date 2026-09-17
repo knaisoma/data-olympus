@@ -12,6 +12,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+* **Write-side contest validation and lock persistence for collaborative proposals (#241).**
+  `kb_propose_edit` accepts an optional `contest` mapping declaring `contradicts` document IDs
+  and an optional dispute `reason`. Enforces a two-phase validation gate: Stage 1 validates
+  structural bounds and scans for credentials before rate limiting, and Stage 2 validates
+  contradiction IDs against the document index snapshot to prevent target self-contradiction
+  without leaking private path details. `PendingQueue` persists `intent: "contest"` and
+  `contradicts` in the path lock across `_claim` and `restore_resolve` transitions, and
+  `kb_list_pending` projects the proposal reason and dispute rationale as separate fields.
+  Contributed by @RemanenetSpy in #278.
+
 ### Security
 
 * **Caller-supplied text that cannot be encoded as UTF-8 no longer suppresses an
