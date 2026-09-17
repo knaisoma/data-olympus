@@ -37,7 +37,43 @@ class HealthResponse(BaseModel):
     # which: it had to be found by exec-ing into the pod and reading the state
     # volume. Each record carries target_path, owner_kind, pending_id,
     # acquired_at and age_seconds.
+    #
+    # An unauthenticated caller must not see pending_id when auth is configured
+    # (issue #270): every other pending-queue surface (kb_list_pending,
+    # kb_get_pending, GET /api/v1/pending) already requires a token, and a
+    # leaked id undermined that even though it exposed nothing else (resolving
+    # still needs the resolve capability). This is an ALLOW-LIST over record
+    # fields, not a pending_id special case, so a field a later slice adds to
+    # the lock (e.g. #241's contest fields) does not appear to an
+    # unauthenticated caller unless this rule is extended to it explicitly.
     path_locks: list[dict[str, object]] = []
+
+    # Fields visible in every path_locks record regardless of authentication.
+    _PATH_LOCK_FIELDS_PUBLIC = frozenset(
+        {"target_path", "owner_kind", "acquired_at", "age_seconds"}
+    )
+    # Fields additionally visible to an authenticated caller (or when auth is
+    # not configured at all).
+    _PATH_LOCK_FIELDS_AUTHENTICATED = _PATH_LOCK_FIELDS_PUBLIC | {"pending_id"}
+
+    def redact_path_locks(self, *, authorized: bool) -> HealthResponse:
+        """Return a copy with each ``path_locks`` record narrowed to the
+        caller's allow-list. ``authorized`` is true when auth is not
+        configured, or the caller carries a valid authenticated token; false
+        for a missing/invalid token when auth IS configured. A no-op when
+        ``path_locks`` is empty."""
+        if not self.path_locks:
+            return self
+        allow = (
+            self._PATH_LOCK_FIELDS_AUTHENTICATED
+            if authorized
+            else self._PATH_LOCK_FIELDS_PUBLIC
+        )
+        redacted = [
+            {k: v for k, v in record.items() if k in allow}
+            for record in self.path_locks
+        ]
+        return self.model_copy(update={"path_locks": redacted})
     last_index_build_status: str = "ok"
     last_index_error: str | None = None
     last_index_error_at: float | None = None

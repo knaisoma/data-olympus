@@ -79,13 +79,22 @@ def _build_health(state: ServerState) -> HealthResponse:
     )
 
 
-def _degraded_response(health: HealthResponse) -> JSONResponse:
+def _degraded_response(
+    health: HealthResponse, *, authorized: bool, auth_configured: bool,
+) -> JSONResponse:
     """503 + degraded:true body. Used on all read endpoints when the index is
-    not healthy, so bin/kb --no-stale rejects stale reads across all subcommands."""
-    body = health.model_dump()
+    not healthy, so bin/kb --no-stale rejects stale reads across all subcommands.
+
+    Redacts ``path_locks`` the same way ``/api/v1/health`` does (issue #270):
+    this body carries the full health model, so an unauthenticated caller
+    reaching it through a degraded read route is exactly as exposed as one
+    calling ``/health`` directly."""
+    redacted = health.redact_path_locks(authorized=authorized)
+    body = redacted.model_dump()
     body["degraded"] = True
     body["error"] = "degraded_index"
-    return JSONResponse(body, status_code=503)
+    headers = {"Cache-Control": "private", "Vary": "Authorization"} if auth_configured else None
+    return JSONResponse(body, status_code=503, headers=headers)
 
 
 def _query_bool(raw: str | None) -> bool:
@@ -128,6 +137,18 @@ def _authorize(
                     f"'{capability}'"},
         status_code=403,
     )
+
+
+def _health_authorized(request: Request, registry: PrincipalRegistry) -> bool:
+    """Whether this caller may see pending ids in a health-derived response
+    (issue #270).
+
+    Mirrors the "no auth configured OR authenticated" rule ``_authorize`` uses
+    for ``capability=None`` routes, without its 401/403 branching: health and
+    read routes stay open to every caller regardless of auth. Only the
+    ``path_locks`` payload differs by caller."""
+    principal = registry.resolve(request.headers.get("Authorization"))
+    return (not registry.auth_configured) or principal.authenticated
 
 
 def _missing_fields_response(body: object, required: list[str]) -> JSONResponse | None:
@@ -367,7 +388,15 @@ def register_routes(
         # 503-on-degraded behaviour, so it stays here.
         status = 503 if resp.degraded else 200
         verbose = _query_bool(request.query_params.get("verbose"))
-        return JSONResponse(shape_response(resp, verbose=verbose), status_code=status)
+        authorized = _health_authorized(request, registry)
+        resp = resp.redact_path_locks(authorized=authorized)
+        headers = (
+            {"Cache-Control": "private", "Vary": "Authorization"}
+            if registry.auth_configured else None
+        )
+        return JSONResponse(
+            shape_response(resp, verbose=verbose), status_code=status, headers=headers,
+        )
 
     @app.custom_route("/readyz", methods=["GET"])
     async def readyz(_request: Request) -> JSONResponse:
@@ -437,7 +466,10 @@ def register_routes(
     async def outline(request: Request) -> JSONResponse:
         h = await _offload(_build_health, state)
         if h.degraded:
-            return _degraded_response(h)
+            return _degraded_response(
+                h, authorized=_health_authorized(request, registry),
+                auth_configured=registry.auth_configured,
+            )
         verbose = _query_bool(request.query_params.get("verbose"))
         resp = await _offload(kb_outline_fn, idx=state.idx)
         return JSONResponse(shape_response(resp, verbose=verbose))
@@ -446,7 +478,10 @@ def register_routes(
     async def search(request: Request) -> JSONResponse:
         h = await _offload(_build_health, state)
         if h.degraded:
-            return _degraded_response(h)
+            return _degraded_response(
+                h, authorized=_health_authorized(request, registry),
+                auth_configured=registry.auth_configured,
+            )
         q = request.query_params.get("q", "")
         if not q:
             return JSONResponse({"error": "missing_q"}, status_code=400)
@@ -480,7 +515,10 @@ def register_routes(
     async def get(request: Request) -> JSONResponse:
         h = await _offload(_build_health, state)
         if h.degraded:
-            return _degraded_response(h)
+            return _degraded_response(
+                h, authorized=_health_authorized(request, registry),
+                auth_configured=registry.auth_configured,
+            )
         id_ = request.path_params["id"]
         verbose = _query_bool(request.query_params.get("verbose"))
         try:
@@ -493,7 +531,10 @@ def register_routes(
     async def list_(request: Request) -> JSONResponse:
         h = await _offload(_build_health, state)
         if h.degraded:
-            return _degraded_response(h)
+            return _degraded_response(
+                h, authorized=_health_authorized(request, registry),
+                auth_configured=registry.auth_configured,
+            )
         tier = request.query_params.get("tier")
         if not tier:
             return JSONResponse({"error": "missing_tier"}, status_code=400)

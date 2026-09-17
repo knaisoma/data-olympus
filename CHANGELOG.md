@@ -12,6 +12,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+* **Health no longer hands pending ids to unauthenticated callers.** When auth
+  is configured, `GET /api/v1/health`, the degraded 503 body every read route
+  can return, and MCP `kb_health` now omit each `path_locks` record's
+  `pending_id` for a missing or invalid token; a valid token still sees it.
+  Behaviour is unchanged when auth is not configured. Responses served with
+  auth configured now carry `Cache-Control: private` and `Vary: Authorization`.
+  (#270)
+
 ### Changed
 
 * **The benchmark receipt is now checked for a reachable `source_commit` before

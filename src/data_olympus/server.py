@@ -767,6 +767,11 @@ def build_app(
             latest_version=state.latest_version,
             update_available=state.update_available,
         )
+        # Path-lock pending ids must not reach an unauthenticated caller when
+        # auth is configured (issue #270), matching the REST /health redaction.
+        principal = _current_principal.get()
+        authorized = (not registry.auth_configured) or principal.authenticated
+        resp = resp.redact_path_locks(authorized=authorized)
         return shape_response(resp, verbose=verbose)
 
     @app.tool(title="KB Outline", annotations=READ_ONLY_TOOL)
