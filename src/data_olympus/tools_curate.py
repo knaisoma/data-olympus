@@ -54,14 +54,26 @@ def _overdue_days(
     the most urgent case (nobody has ever checked it), so it sorts as
     infinitely overdue -- ahead of any doc that was at least verified once,
     however long ago.
+
+    ``compute_freshness``'s own ``recheck_by < today`` check is a lexical
+    string comparison (unchanged since before issue #142), so a malformed
+    but lexically-earlier value (a truncated ``"2026"``, say) can already be
+    classified ``stale`` upstream without ever having been a parseable date.
+    This function must not crash on that: it cannot compute a real day
+    count, so -- like the no-``last_verified`` case above -- it sorts as
+    infinitely overdue rather than raising, surfacing the malformed value
+    prominently instead of hiding it behind a 500.
     """
     import datetime
 
     if recheck_by and recheck_by < today:
-        return float(
-            (datetime.date.fromisoformat(today)
-             - datetime.date.fromisoformat(recheck_by)).days
-        )
+        try:
+            return float(
+                (datetime.date.fromisoformat(today)
+                 - datetime.date.fromisoformat(recheck_by)).days
+            )
+        except ValueError:
+            return float("inf")
     if not last_verified:
         return float("inf")
     try:

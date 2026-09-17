@@ -283,3 +283,44 @@ async def test_mcp_kb_curate_tool_is_registered(tmp_path: Path) -> None:
     async with Client(app) as client:
         result = await client.call_tool("kb_curate", {})
     assert result.data["entries"][0]["id"] == "DOC-OLD"
+
+
+# ---------------------------------------------------------------------------
+# Malformed recheck_by must not crash kb_curate for the whole corpus
+# (found in implementation review): compute_freshness's recheck_by<today
+# check is a lexical string comparison, unchanged since before #142, so a
+# malformed-but-lexically-earlier recheck_by (e.g. a truncated "2026") is
+# already classified "stale" upstream. _overdue_days must not crash on it.
+# ---------------------------------------------------------------------------
+
+def test_malformed_recheck_by_does_not_crash_curate(tmp_path, tmp_index_path) -> None:
+    """A value this malformed cannot reach the index through normal ingestion
+    (normalize_validity_date rejects it at parse time and drops the whole
+    validity block, confirmed by building a real corpus with this exact
+    frontmatter first). It CAN reach the docs table through a source that
+    writes SQLite directly and skips that normalization -- an older schema
+    version, or tooling other than this build path -- which is the scenario
+    this test constructs, matching the precedent in test_index.py for
+    exercising columns through the schema rather than through ingestion."""
+    import sqlite3
+
+    idx = _idx(tmp_path, tmp_index_path, lambda kb: _write(kb, "a.md", id_="DOC-A"))
+    conn = sqlite3.connect(tmp_index_path)
+    conn.execute(
+        "UPDATE docs SET recheck_by = ? WHERE id = 'DOC-A'", ("2026",),
+    )
+    conn.commit()
+    conn.close()
+
+    resp = kb_curate_fn(idx=idx, today=TODAY, review_due_after_days=None)
+
+    assert [e.id for e in resp.entries] == ["DOC-A"]
+
+
+def test_overdue_days_malformed_recheck_by_does_not_raise() -> None:
+    from data_olympus.tools_curate import _overdue_days
+
+    result = _overdue_days(
+        recheck_by="2026", last_verified="", today=TODAY, review_due_after_days=None,
+    )
+    assert result == float("inf")
