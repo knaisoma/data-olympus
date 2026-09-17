@@ -1937,7 +1937,7 @@ class Index:
                     valid_from=r["valid_from"],
                     valid_until=r["valid_until"],
                     recheck_by=r["recheck_by"],
-                last_verified=r["last_verified"],
+                    last_verified=r["last_verified"],
                     is_inbox=bool(r["is_inbox"]),
                 )
             )
@@ -2140,7 +2140,7 @@ class Index:
                         valid_from=r["valid_from"],
                         valid_until=r["valid_until"],
                         recheck_by=r["recheck_by"],
-                last_verified=r["last_verified"],
+                        last_verified=r["last_verified"],
                         is_inbox=bool(r["is_inbox"]),
                     ),
                 )
