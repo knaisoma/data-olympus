@@ -1324,10 +1324,6 @@ class PendingQueue:
                     else None
                 ),
             }
-            if "intent" in info:
-                rec["intent"] = info["intent"]
-            if "contradicts" in info:
-                rec["contradicts"] = info["contradicts"]
             out.append(rec)
         return out
 
