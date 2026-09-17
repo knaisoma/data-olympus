@@ -24,6 +24,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+* **Healthy REST reads no longer enumerate or read every path lock.** The
+  degraded-precheck every read route runs first listed the lock directory and
+  opened/parsed each `*.lock` file even though it only needed `degraded`, so
+  cost scaled with the pending queue on the overwhelming-common healthy path.
+  `get`, `search`, `outline`, `list`, `/readyz` and `/metrics` now skip the
+  enumeration entirely when the index is healthy; a degraded response still
+  carries the full `path_locks` list in its 503 body. (#271)
+
 * **The benchmark receipt is now checked for a reachable `source_commit` before
   merge.** A receipt refreshed on a pull request branch named a commit that the
   squash merge then removed from `main`, so the benchmark-docs guard passed on
