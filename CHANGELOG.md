@@ -14,6 +14,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+* **New `kb_curate` tool: which in-force documents are due for review, most
+  overdue first.** Aggregates the `freshness`/`freshness_reason` signal
+  `kb_search` and `kb_get` already expose per-document into one list, so
+  finding what needs a look no longer requires already knowing to filter for
+  `validity_state:stale`. Advisory and read-only, with no write-pipeline
+  dependency; registered in read-only replicas alongside `kb_search`/
+  `kb_get`. Candidates are exactly the `kb_search(in_force=true)` set, and an
+  empty or nothing-review-due result is a valid empty list, never an error.
+  Pattern promotion (issue #31's other half: detecting repeated patterns and
+  proposing to hoist them up the tier chain) is not part of this tool; only
+  the review-recommendation surface ships here. (#31)
 * **Review-due can now be derived from how long a document has actually gone
   unverified, not only from a hand-set deadline.** `last_verified` used to be
   advisory and evaluated by nothing, so a document nobody ever re-verified

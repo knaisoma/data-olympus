@@ -121,7 +121,7 @@ cannot make a write tool available when the replica did not register it.
 
 Set `KB_READ_ONLY=true` to run an instance as a read-only replica. In this mode
 the server registers only the read tools (`kb_search`, `kb_get`, `kb_list`,
-`kb_outline`, `kb_health`) and the read REST routes; the write and
+`kb_outline`, `kb_curate`, `kb_health`) and the read REST routes; the write and
 enforcement-write tools and routes (`propose`, `resolve`, `bootstrap`,
 `consult`, `gate`, `record-event`, and their observability mirrors) are not
 registered at all and return 404. The write pipeline (worktrees, push queue,
@@ -872,6 +872,45 @@ graph-excluded) doc, via its unconditional `in_force=true` retrieval (see the
 reusing the default search path's own expired-exclusion.
 The `data-olympus validity-report` CLI subcommand lists expired and
 soon-to-expire docs from a bundle directory.
+
+## `kb_curate`: which in-force documents are review-due (issue #31, first slice)
+
+`kb_curate` (MCP tool, `GET /api/v1/curate`) aggregates the same
+`freshness`/`freshness_reason` signal `kb_search` and `kb_get` already expose
+per-document into one list: every in-force document currently reported
+`stale`, most-overdue first, each with `id`, `path`, `title`, and `reason`.
+It is the answer to "what should I look at", where the search/get fields are
+the answer to "is this one doc stale" -- both come from the SAME
+`compute_freshness` call, so they cannot disagree.
+
+Advisory and read-only, with no write-pipeline dependency at all: `kb_curate`
+recommends, it never proposes, edits, promotes, or demotes anything.
+Registered in read-only replicas (issue #44) alongside `kb_search`/`kb_get`/
+`kb_list`/`kb_outline`, and reachable without a token the same way those are
+-- it is not gated like `kb_list_pending`, since it surfaces document
+metadata already retrievable through ordinary reads, not pending-queue state.
+
+Candidates come from the exact same in-force predicate `kb_search(in_force=
+true)` uses (status class AND validity window AND not-inbox AND
+not-graph-excluded), so an expired, upcoming, draft, retired, or
+memory-inbox document never appears regardless of how overdue its
+`last_verified` looks. An empty corpus or a corpus with nothing review-due
+returns a valid empty list, never an error. With `KB_REVIEW_DUE_AFTER_DAYS`
+unset (the default), only `recheck_by`-based staleness is ever reported,
+matching every other read tool's pre-#142 behaviour.
+
+Ordering: a document with NO `last_verified` at all sorts first (nobody has
+ever checked it, the most urgent case), ahead of one that was at least
+verified once however long ago; a `recheck_by`-driven entry orders by days
+past that date, and a verification-age entry by days past the
+`KB_REVIEW_DUE_AFTER_DAYS` threshold. `limit` clamps to 1..100 like
+`kb_search`'s, defaulting to 50.
+
+`kb_curate` is the review-recommendation half of issue #31. Pattern
+promotion -- detecting repeated patterns across the corpus and proposing to
+hoist them up the tier chain via `kb_propose_edit` -- is the other, larger
+half and is not implemented by this tool; it needs its own detection design
+first.
 
 ## `abstain`: signal-gated abstention
 

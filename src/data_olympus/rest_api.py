@@ -497,6 +497,29 @@ def register_routes(
         resp = await _offload(kb_outline_fn, idx=state.idx)
         return JSONResponse(shape_response(resp, verbose=verbose))
 
+    @app.custom_route("/api/v1/curate", methods=["GET"])
+    async def curate(request: Request) -> JSONResponse:
+        h = await _offload(_build_health, state, include_path_locks=False)
+        if h.degraded:
+            # Rare path: rebuild WITH the lock list for the full 503 envelope.
+            h = await _offload(_build_health, state)
+            return _degraded_response(
+                h, authorized=_health_authorized(request, registry),
+                auth_configured=registry.auth_configured,
+            )
+        verbose = _query_bool(request.query_params.get("verbose"))
+        try:
+            limit = int(request.query_params.get("limit", "50"))
+        except ValueError:
+            return JSONResponse({"error": "bad_limit"}, status_code=400)
+        from data_olympus.tools_curate import kb_curate_fn
+        resp = await _offload(
+            kb_curate_fn, idx=state.idx,
+            review_due_after_days=state.config.review_due_after_days,
+            limit=limit,
+        )
+        return JSONResponse(shape_response(resp, verbose=verbose))
+
     @app.custom_route("/api/v1/search", methods=["GET"])
     async def search(request: Request) -> JSONResponse:
         h = await _offload(_build_health, state, include_path_locks=False)

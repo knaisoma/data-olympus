@@ -788,6 +788,50 @@ def build_app(
         resp = kb_outline_fn(idx=state.idx)
         return shape_response(resp, verbose=verbose)
 
+    @app.tool(title="KB Curate", annotations=READ_ONLY_TOOL)
+    def kb_curate(limit: LimitParam = 50, verbose: VerboseParam = False) -> dict[str, object]:
+        """List in-force governed documents that are due for review, most
+        overdue first. Advisory only: this tool RECOMMENDS -- it never
+        proposes, edits, promotes, or demotes anything, and takes no
+        confirmation or approval action of its own. Use it to find what to
+        look at next, then act through `kb_get` (to read the document) and
+        `kb_propose_edit` (to actually update it) as separate, deliberate
+        steps.
+
+        A document is review-due when its `recheck_by` date has passed, or
+        (when the operator has set `KB_REVIEW_DUE_AFTER_DAYS` and no
+        `recheck_by` overrides it) when its `last_verified` is older than
+        that many days, or was never set at all -- a document nobody has
+        ever verified is the most urgent case and sorts first. This is the
+        SAME `freshness`/`freshness_reason` signal `kb_search` and `kb_get`
+        already expose per-document; this tool aggregates it across the
+        corpus instead of requiring a caller to already know to filter for
+        `validity_state:stale`. Never returns an expired, upcoming, draft,
+        retired, or memory-inbox document: only documents that currently
+        GOVERN can be review-due here.
+
+        Returns a valid empty list, never an error, when nothing is
+        review-due or when `KB_REVIEW_DUE_AFTER_DAYS` is unset (the
+        derivation is off by default; only `recheck_by`-based staleness is
+        ever reported then, matching `kb_search`'s own default). Each entry
+        carries `id`, `path`, `title`, and `reason` (which field, and the
+        date or day count behind it).
+
+        This is the review-recommendation half of issue #31. Pattern
+        promotion (detecting repeated patterns across the corpus and
+        proposing to hoist them up the tier chain) is a separate, larger
+        capability and is not part of this tool.
+
+        limit: maximum entries returned, clamped to 1..100 (default 50).
+        verbose: kb_curate is already lean, so compact and full modes return
+        the same shape; the parameter exists for interface consistency."""
+        from data_olympus.tools_curate import kb_curate_fn
+        resp = kb_curate_fn(
+            idx=state.idx, review_due_after_days=state.config.review_due_after_days,
+            limit=limit,
+        )
+        return shape_response(resp, verbose=verbose)
+
     @app.tool(title="KB Search", annotations=READ_ONLY_TOOL)
     def kb_search(
         query: QueryParam,

@@ -639,6 +639,37 @@ class AuditResponse(BaseModel):
     limit_hit: bool = False
 
 
+class CurateEntry(BaseModel):
+    """One in-force document reported review-due by kb_curate (issue #31)."""
+
+    id: str
+    path: str
+    title: str
+    # From the SAME compute_freshness call that decided this entry belongs
+    # in the list -- names the field and the date/day count, exactly like
+    # SearchHitModel.freshness_reason and GetResponse.freshness_reason.
+    reason: str
+
+
+class CurateResponse(BaseModel):
+    """kb_curate response (issue #31): in-force documents reported review-due
+    by compute_freshness, most-overdue first. Advisory and read-only: this
+    tool recommends, it never proposes, edits, promotes or demotes anything.
+    Pattern promotion (surfacing repeated patterns for tier hoisting) is a
+    SEPARATE, larger capability tracked on issue #31 itself and is not part
+    of this response."""
+
+    entries: list[CurateEntry] = []
+    total: int = Field(description="Number of entries actually returned (after limit).")
+
+    def compact_dump(self) -> dict[str, object]:
+        """Already lean: three short fields per entry, no redundant envelope.
+        ``verbose=True`` returns the identical shape; the parameter exists
+        for interface consistency with the other read tools (see
+        OutlineResponse.compact_dump)."""
+        return self.model_dump()
+
+
 class SessionRecapResponse(BaseModel):
     """kb_session_recap response (issue #112): a per-session write summary
     over the audit log -- N committed, M demoted-to-pending

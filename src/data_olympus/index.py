@@ -2293,6 +2293,49 @@ class Index:
             conn.close()
         return [{"id": r["id"], "title": r["title"], "path": r["path"]} for r in rows]
 
+    def curate_candidates(self, *, today: str) -> builtins.list[dict[str, object]]:
+        """id/path/title/validity columns for every IN-FORCE document
+        (issue #31, kb_curate's candidate set).
+
+        Reuses :meth:`_facet_filters` with ``in_force=True`` -- the SAME
+        single-sourced predicate (status class AND validity window AND
+        not-inbox AND not-graph-excluded) that ``search(in_force=True)``
+        applies -- so "review-due" is computed over exactly the documents
+        that currently govern, not a second definition of in-force. No MATCH
+        clause: this is a plain scan, not a search. The caller (kb_curate_fn)
+        runs :func:`format.validate.compute_freshness` per row to decide
+        which are actually review-due; this method only narrows the
+        candidate SET, keeping that single-sourced definition out of SQL.
+        Returns ``[]`` when the index file or a needed column/table does not
+        exist (an index predating this column, or never built)."""
+        if not self._db_path.exists():
+            return []
+        conn = self._connect()
+        try:
+            where, params = self._facet_filters(
+                tier=None, category=None, status=None, in_force=True,
+                doc_type=None, today=today,
+            )
+            sql = f"""
+                SELECT
+                    docs.id AS id,
+                    docs.path AS path,
+                    COALESCE(docs.title, '') AS title,
+                    COALESCE(docs.valid_from, '') AS valid_from,
+                    COALESCE(docs.valid_until, '') AS valid_until,
+                    COALESCE(docs.recheck_by, '') AS recheck_by,
+                    COALESCE(docs.last_verified, '') AS last_verified
+                FROM docs
+                WHERE {' AND '.join(where)}
+                ORDER BY docs.id ASC
+            """
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.Error:
+            return []
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
+
     def outline(self) -> builtins.list[dict[str, object]]:
         """Return list of {name, categories: [{name, count}]} for tiers present."""
         conn = self._connect()
