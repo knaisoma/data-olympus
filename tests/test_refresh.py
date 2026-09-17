@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import subprocess
 import time
 from typing import TYPE_CHECKING
@@ -314,3 +315,37 @@ def test_pending_gc_loop_emits_expiry_audit_and_reclaims_locks(tmp_path) -> None
     assert expired
     assert expired[0]["status"] == "auto_rejected"
     assert expired[0]["target_path"] == "decisions/expired.md"
+
+
+def test_pending_gc_loop_reaps_stale_lock_tmpfiles(tmp_path) -> None:
+    """A crash-leftover lock-publish temp file (issue #272) is reaped by the
+    same periodic sweep that reclaims orphaned locks and stale auto-commit
+    locks, past the auto-commit lock TTL age bound."""
+    from data_olympus.pending import PendingQueue, _path_lock_filename
+    from data_olympus.refresh import pending_gc_loop
+
+    pen = PendingQueue(pending_root=str(tmp_path / "p"))
+    locks_dir = os.path.join(pen.root, "locks")
+    stray = os.path.join(
+        locks_dir, _path_lock_filename("decisions/crashed.md") + ".tmp.leftover",
+    )
+    with open(stray, "w") as f:
+        f.write("{}")
+    old = time.time() - 700
+    os.utime(stray, (old, old))
+
+    async def runner():
+        task = asyncio.create_task(
+            pending_gc_loop(
+                pending=pen, timeout_sec=3600, interval_sec=0.01,
+                auto_commit_lock_ttl_sec=600,
+            )
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(runner())
+
+    assert not os.path.exists(stray)

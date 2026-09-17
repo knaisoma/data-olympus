@@ -445,6 +445,19 @@ async def pending_gc_loop(
                         "pending_gc reclaimed %d stale auto-commit path lock(s) "
                         "(older than %ss)", stale_ac, auto_commit_lock_ttl_sec,
                     )
+                # A crash-leftover lock-publish temp file (#272) has no live
+                # pending entry or auto-commit semantics to key an unambiguous
+                # orphan signal off of, so it reuses the same age bound rather
+                # than a dedicated setting.
+                stale_tmp = pending.reclaim_stale_lock_tmpfiles(
+                    max_age_sec=auto_commit_lock_ttl_sec,
+                )
+                if stale_tmp:
+                    log.warning(
+                        "pending_gc reclaimed %d stale lock-publish temp "
+                        "file(s) (older than %ss)", stale_tmp,
+                        auto_commit_lock_ttl_sec,
+                    )
         except Exception:
             log.exception("pending_gc_loop iteration failed")
         await asyncio.sleep(interval_sec)

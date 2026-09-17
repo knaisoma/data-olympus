@@ -400,6 +400,19 @@ cannot wait, remove the stale lock file under `KB_PENDING_ROOT/locks` (default
 `/state/pending/locks`) for the affected path, then retry the write. Only do this
 after confirming no operator is mid-resolve on that path.
 
+**Temp files in `locks/`.** A lock is published atomically: its complete
+record is written to a private temp file named `<lock filename>.tmp.<random>`
+in the same directory, then linked onto the real lock path in one step, so a
+reader never observes an existing-but-empty lock file. A crash between those
+two steps, or a cleanup that itself failed after a publish failure, can leave
+one of these temp files behind. They carry no lock semantics (they are
+invisible to `path_locks_held` and to every lock-enumerating scan) and are
+reaped by the same periodic GC pass past the auto-commit lock TTL
+(`KB_AUTO_COMMIT_LOCK_TTL_SEC`, default 600s), logging `pending_gc reclaimed N
+stale lock-publish temp file(s)`. If a temp file needs removing by hand, delete
+it directly; do not rename or repurpose it, since a file ending in `.lock` in
+this directory IS a lock to every reader.
+
 ---
 
 ## 5. Maintenance ledger

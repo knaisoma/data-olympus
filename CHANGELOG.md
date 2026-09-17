@@ -12,6 +12,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* **A path lock is now published atomically, and a failure after a proposal
+  is published no longer strands it unlocked.** The lock file used to be
+  created empty and then written into, so a reader (health, GC, the #241
+  contest projection) could observe an existing-but-empty or truncated lock
+  for the whole write. It is now written complete to a private temp file and
+  published in a single `os.link`, which still fails if the path is already
+  locked, so exclusive-create semantics are unchanged. Separately,
+  `atomic_write_json` publishes a pending entry before its trailing
+  parent-directory fsync; a failure in that fsync used to release the entry's
+  lock unconditionally even though the entry was already live on disk,
+  letting a second proposal take the same path. The lock is now released only
+  when the entry never actually landed. A crash-leftover publish temp file is
+  reaped by the existing periodic GC pass, past the auto-commit lock TTL; see
+  `docs/operations.md` §4.6. (#272)
+
 ### Security
 
 * **Health no longer hands pending ids to unauthenticated callers.** When auth
