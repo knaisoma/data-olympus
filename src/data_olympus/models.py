@@ -497,6 +497,11 @@ class PendingDetailResponse(BaseModel):
     matching_pattern: str | None = None
 
 
+class ContestDetail(BaseModel):
+    contradicts: list[str]
+    contest_reason: str | None = None
+
+
 class PendingEntry(BaseModel):
     pending_id: str
     # Which state the entry is in (issue #254). "pending" is awaiting an
@@ -542,6 +547,10 @@ class PendingEntry(BaseModel):
     # issue #71 secret-scan redaction discipline.
     injection_suspect: bool = False
     injection_patterns: list[str] | None = None
+    # Contest disposition (issue #241): intent ("contest") and contradiction
+    # metadata distinct from the proposal's original operational reason.
+    intent: str | None = None
+    contest: ContestDetail | None = None
 
 
 class PendingListResponse(BaseModel):

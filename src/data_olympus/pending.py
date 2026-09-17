@@ -166,6 +166,8 @@ class PendingQueue:
         pending_id: str,
         *,
         owner_kind: str = "pending",
+        intent: str | None = None,
+        contradicts: list[str] | None = None,
     ) -> float:
         """Create the exclusive lock file for ``target_path``. Returns the
         ``acquired_at`` timestamp stamped into the file so the caller can hand it
@@ -176,10 +178,19 @@ class PendingQueue:
         except FileExistsError:
             raise PathLockBusyError(target_path) from None
         acquired_at = time.time()
+        lock_payload: dict[str, Any] = {
+            "pending_id": pending_id,
+            "target_path": target_path,
+            "owner_kind": owner_kind,
+            "acquired_at": acquired_at,
+        }
+        if intent is not None:
+            lock_payload["intent"] = intent
+        if contradicts is not None:
+            lock_payload["contradicts"] = list(contradicts)
         try:
             with os.fdopen(fd, "w") as f:
-                json.dump({"pending_id": pending_id, "target_path": target_path,
-                           "owner_kind": owner_kind, "acquired_at": acquired_at}, f)
+                json.dump(lock_payload, f)
         except Exception:
             os.unlink(lock_path)
             raise
@@ -299,7 +310,17 @@ class PendingQueue:
         # saw it in that window used to unlink it, leaving this entry pending
         # with no lock at all.
         with self._serializer:
-            self._acquire_lock(target_path, pending_id)
+            raw_intent = meta.get("intent")
+            intent = str(raw_intent) if raw_intent is not None else None
+            raw_contradicts = meta.get("contradicts")
+            contradicts = (
+                list(raw_contradicts)
+                if isinstance(raw_contradicts, (list, tuple))
+                else None
+            )
+            self._acquire_lock(
+                target_path, pending_id, intent=intent, contradicts=contradicts,
+            )
             try:
                 entry = {
                     "pending_id": pending_id,
@@ -397,6 +418,16 @@ class PendingQueue:
                 "demotion_reason": entry["meta"].get("demotion_reason"),
                 "injection_suspect": bool(entry["meta"].get("injection_suspect", False)),
                 "injection_patterns": entry["meta"].get("injection_patterns"),
+                # Contest disposition (issue #241): dual rationale separation.
+                "intent": entry["meta"].get("intent"),
+                "contest": (
+                    {
+                        "contradicts": list(entry["meta"].get("contradicts") or []),
+                        "contest_reason": entry["meta"].get("contest_reason"),
+                    }
+                    if entry["meta"].get("intent") == "contest" or entry["meta"].get("contradicts")
+                    else None
+                ),
             })
         return out
 
@@ -1156,7 +1187,7 @@ class PendingQueue:
                 })
                 continue
             acquired_at = info.get("acquired_at")
-            out.append({
+            rec: dict[str, Any] = {
                 "target_path": info.get("target_path"),
                 "owner_kind": info.get("owner_kind", "pending"),
                 "pending_id": info.get("pending_id"),
@@ -1166,7 +1197,12 @@ class PendingQueue:
                     if isinstance(acquired_at, (int, float))
                     else None
                 ),
-            })
+            }
+            if "intent" in info:
+                rec["intent"] = info["intent"]
+            if "contradicts" in info:
+                rec["contradicts"] = info["contradicts"]
+            out.append(rec)
         return out
 
     def derive_running_contest(self, target_path: str) -> RunningContestReceipt:
