@@ -12,6 +12,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+* **The benchmark receipt is now checked for a reachable `source_commit` before
+  merge.** A receipt refreshed on a pull request branch named a commit that the
+  squash merge then removed from `main`, so the benchmark-docs guard passed on
+  the pull request and failed afterwards, and a reproduction could not check out
+  the revision the numbers were measured at. CI now fails the pull request that
+  introduces such a receipt, with a message explaining how to re-measure.
+  `benchmarks/README.md` documents the resulting workflow. (#268)
+
+
 ## [0.8.2] - 2026-09-15
 
 ### Security
