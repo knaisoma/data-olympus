@@ -273,6 +273,24 @@ def ancestry_problems(document: object, repo_root: Path, base_ref: str) -> list[
     ]
 
 
+def base_ref_problems() -> list[str]:
+    """A pull request must supply the base branch it is proposed against.
+
+    The reachability check below is gated on a base ref so that pushes to
+    ``main`` and local runs are unaffected. That gate is also the only way the
+    check could silently fail to run on the very event it exists for, so the
+    gate itself is checked rather than trusted.
+    """
+    if os.environ.get("GITHUB_EVENT_NAME", "").strip() != "pull_request":
+        return []
+    if os.environ.get("GITHUB_BASE_REF", "").strip():
+        return []
+    return [
+        "GITHUB_BASE_REF is empty on a pull_request event, so the "
+        "source_commit reachability check cannot run"
+    ]
+
+
 def base_ref_for(repo_root: Path) -> str | None:
     """The base branch to test reachability against, or None when there is none.
 
@@ -353,7 +371,9 @@ def comparability_problems(document: object) -> list[str]:
 def main() -> int:
     from benchmarks.docs_tables import check_or_write
 
-    problems = receipt_problems(_ROOT, base_ref=base_ref_for(_ROOT))
+    problems = base_ref_problems() + receipt_problems(
+        _ROOT, base_ref=base_ref_for(_ROOT)
+    )
     if not problems:
         problems = check_or_write(write=False)
     if problems:

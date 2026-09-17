@@ -896,3 +896,31 @@ def test_base_ref_is_absent_outside_a_pull_request(
     monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
 
     assert check_benchmark_docs.base_ref_for(root) is None
+
+
+def test_pull_request_without_a_base_ref_is_an_error(monkeypatch) -> None:
+    """A pull request that supplies no base branch must fail, not skip.
+
+    The reachability check is gated on a base ref so pushes to main and local
+    runs are unaffected. That gate is also the one way the check could silently
+    not run on the event it exists for, so the gate itself is checked.
+    """
+    from scripts import check_benchmark_docs
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_BASE_REF", "")
+
+    assert check_benchmark_docs.base_ref_problems() == [
+        "GITHUB_BASE_REF is empty on a pull_request event, so the "
+        "source_commit reachability check cannot run"
+    ]
+
+
+def test_push_without_a_base_ref_is_not_an_error(monkeypatch) -> None:
+    """A push to main legitimately has no base branch to compare against."""
+    from scripts import check_benchmark_docs
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+
+    assert check_benchmark_docs.base_ref_problems() == []
