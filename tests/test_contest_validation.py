@@ -328,8 +328,14 @@ def test_kb_propose_edit_contest_parks_and_persists_lock(tmp_path, monkeypatch):
     assert len(locks) == 1
     assert locks[0]["target_path"] == target
     assert locks[0]["pending_id"] == pid
-    assert locks[0]["intent"] == "contest"
-    assert locks[0]["contradicts"] == ["STD-100"]
+
+    lock_file = os.path.join(pen._locks_dir, pending_mod._path_lock_filename(target))
+    with open(lock_file) as f:
+        lock_data = json.load(f)
+    assert lock_data["target_path"] == target
+    assert lock_data["pending_id"] == pid
+    assert lock_data["intent"] == "contest"
+    assert lock_data["contradicts"] == ["STD-100"]
 
     # Verify pending entry meta on disk
     entry = pen.get(pid)
@@ -375,8 +381,12 @@ def test_contest_lock_persistence_across_claim_and_restore(tmp_path, monkeypatch
 
     # Verify lock before claim
     locks_pre = pen.held_locks()
-    assert locks_pre[0]["intent"] == "contest"
-    assert locks_pre[0]["contradicts"] == ["STD-100"]
+    assert len(locks_pre) == 1
+    lock_file = os.path.join(pen._locks_dir, pending_mod._path_lock_filename(target))
+    with open(lock_file) as f:
+        lock_data_pre = json.load(f)
+    assert lock_data_pre["intent"] == "contest"
+    assert lock_data_pre["contradicts"] == ["STD-100"]
 
     # 1. Claim for resolve (holding lock)
     resolved = pen.claim_for_resolve(pid)
@@ -386,8 +396,10 @@ def test_contest_lock_persistence_across_claim_and_restore(tmp_path, monkeypatch
     # Lock must remain held and keep metadata during claim
     locks_during = pen.held_locks()
     assert len(locks_during) == 1
-    assert locks_during[0]["intent"] == "contest"
-    assert locks_during[0]["contradicts"] == ["STD-100"]
+    with open(lock_file) as f:
+        lock_data_during = json.load(f)
+    assert lock_data_during["intent"] == "contest"
+    assert lock_data_during["contradicts"] == ["STD-100"]
 
     # 2. Gate rejects -> restore_resolve
     pen.restore_resolve(pid, claim_token=resolved.claim_token)
@@ -395,8 +407,10 @@ def test_contest_lock_persistence_across_claim_and_restore(tmp_path, monkeypatch
     # Lock must STILL be held and keep metadata after restore
     locks_post = pen.held_locks()
     assert len(locks_post) == 1
-    assert locks_post[0]["intent"] == "contest"
-    assert locks_post[0]["contradicts"] == ["STD-100"]
+    with open(lock_file) as f:
+        lock_data_post = json.load(f)
+    assert lock_data_post["intent"] == "contest"
+    assert lock_data_post["contradicts"] == ["STD-100"]
 
 
 # =============================================================================
