@@ -853,7 +853,10 @@ and `GET /api/v1/search`):
 - `validity_state` is an audit facet: `"expired"`, `"stale"` (past
   `recheck_by`), or `"expiring_within:N"` (docs whose `valid_until` falls
   within N days). Filtering for `"expired"` implies including expired docs. A
-  malformed value is rejected (HTTP 400 on REST).
+  malformed value is rejected (HTTP 400 on REST). `"stale"` here is
+  recheck_by-only, narrower than the per-hit `freshness: "stale"` a hit can
+  also carry from verification age (issue #142); `kb_curate` lists every
+  document currently showing `freshness: "stale"` for either reason.
 - Compact hits carry a deviation-only `freshness` field
   (`stale`/`expired`/`upcoming`), omitted when fresh or when the doc has no
   `validity` block, plus a `freshness_reason` naming the field and date/day

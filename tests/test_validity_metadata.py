@@ -655,3 +655,42 @@ async def test_rest_search_carries_freshness_reason_when_stale(tmp_path: Path) -
     hits = {h["id"]: h for h in resp.json()["hits"]}
     assert hits["DOC-NEVER-VERIFIED"]["freshness"] == "stale"
     assert "not set" in hits["DOC-NEVER-VERIFIED"]["freshness_reason"]
+
+
+# ---------------------------------------------------------------------------
+# validity_state="stale" scope boundary (found in implementation review):
+# the SQL facet was NOT extended by #142 and still matches recheck_by only.
+# kb_curate is the tool that reflects the full derivation; this facet's own
+# narrower, pre-#142 meaning is intentional and pinned here so a future
+# change cannot silently widen or narrow it without a test noticing.
+# ---------------------------------------------------------------------------
+
+def test_validity_state_stale_facet_does_not_include_verification_age_staleness(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    """kb_search(validity_state="stale") matches only recheck_by-past-today
+    (its original #107 meaning). A document that compute_freshness now also
+    calls "stale" via the #142 last_verified-age derivation, with no
+    recheck_by set, is NOT matched by this facet -- kb_curate is the tool
+    that reflects the fuller definition."""
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    old = _shift(TODAY, -400)
+    _write(
+        kb, "universal/foundation/never-verified.md", id_="DOC-AGE-STALE",
+        body="widget content age stale",
+        validity=f"validity:\n  last_verified: {old}\n",
+    )
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="test")
+
+    facet_ids = {
+        h.id for h in idx.search(
+            "widget", limit=20, today=TODAY, validity_state="stale",
+        )
+    }
+    assert "DOC-AGE-STALE" not in facet_ids
+
+    resp = kb_search_fn(idx=idx, query="widget", today=TODAY, review_due_after_days=30)
+    hit = next(h for h in resp.hits if h.id == "DOC-AGE-STALE")
+    assert hit.freshness == "stale"

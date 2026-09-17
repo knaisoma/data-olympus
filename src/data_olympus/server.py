@@ -805,10 +805,12 @@ def build_app(
         ever verified is the most urgent case and sorts first. This is the
         SAME `freshness`/`freshness_reason` signal `kb_search` and `kb_get`
         already expose per-document; this tool aggregates it across the
-        corpus instead of requiring a caller to already know to filter for
-        `validity_state:stale`. Never returns an expired, upcoming, draft,
-        retired, or memory-inbox document: only documents that currently
-        GOVERN can be review-due here.
+        corpus. It is NOT the same set `kb_search(validity_state="stale")`
+        returns: that facet still matches only `recheck_by` in the past (its
+        original, narrower meaning), so a document reported stale here purely
+        from verification age does not appear there. Never returns an
+        expired, upcoming, draft, retired, or memory-inbox document: only
+        documents that currently GOVERN can be review-due here.
 
         Returns a valid empty list, never an error, when nothing is
         review-due or when `KB_REVIEW_DUE_AFTER_DAYS` is unset (the
@@ -867,7 +869,11 @@ def build_app(
         `in_force=true` excludes it. `validity_state` is an audit-query facet:
         one of `"expired"`, `"stale"`, or `"expiring_within:N"` (N days) to list
         docs by validity condition; filtering for `"expired"` implies including
-        them regardless of `include_expired`.
+        them regardless of `include_expired`. `"stale"` here matches only
+        `recheck_by` in the past -- narrower than the per-hit `freshness:
+        "stale"` a hit can otherwise carry from verification age (see
+        `KB_REVIEW_DUE_AFTER_DAYS`); use `kb_curate` to list every document
+        currently showing `freshness: "stale"` for either reason.
 
         abstain: when true, apply the signal gate. If the query matches no
         discriminating column (title/tags/applies_when) it is treated as
