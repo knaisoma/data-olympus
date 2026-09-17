@@ -267,10 +267,14 @@ def _propose_status(status: str) -> int:
         # The target path is held by an advisory lock; retry after it clears.
         # 423 Locked.
         return 423
+    if status == "rejected_contest_index_unavailable":
+        return 503
     if status in ("rejected_invalid_document", "rejected_secret_detected"):
         # The postimage failed the content-validation or secret-scanning gate
         # (issue #71). 422 Unprocessable.
         return 422
+    if status == "rejected_invalid_contest":
+        return 400
     return 400
 
 
@@ -619,6 +623,14 @@ def register_routes(
             confidence, bad = _parse_confidence(body)
             if bad is not None:
                 return bad
+            if "contest" in body:
+                return JSONResponse(
+                    {
+                        "status": "rejected_invalid_contest",
+                        "reason": "contest is not supported for memory proposals",
+                    },
+                    status_code=400,
+                )
             assert state.worktrees is not None
             assert state.push_queue is not None
             assert state.pending is not None
@@ -692,6 +704,7 @@ def register_routes(
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
                 evidence=body.get("evidence", []),
+                contest=body.get("contest"),
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)

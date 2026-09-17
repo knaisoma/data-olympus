@@ -199,6 +199,8 @@ class PendingQueue:
         pending_id: str,
         *,
         owner_kind: str = "pending",
+        intent: str | None = None,
+        contradicts: list[str] | None = None,
     ) -> float:
         """Create the exclusive lock file for ``target_path``. Returns the
         ``acquired_at`` timestamp stamped into the file so the caller can hand it
@@ -226,8 +228,19 @@ class PendingQueue:
         reclaim so a live (if narrow) in-flight window is never touched."""
         lock_path = os.path.join(self._locks_dir, _path_lock_filename(target_path))
         acquired_at = time.time()
-        record = {"pending_id": pending_id, "target_path": target_path,
-                  "owner_kind": owner_kind, "acquired_at": acquired_at}
+        record: dict[str, Any] = {
+            "pending_id": pending_id,
+            "target_path": target_path,
+            "owner_kind": owner_kind,
+            "acquired_at": acquired_at,
+        }
+        # Contest disposition (issue #241). Added to the record BEFORE it is
+        # serialized, so the atomicity property above is unchanged: the temp
+        # file still holds the complete record before it gets its second name.
+        if intent is not None:
+            record["intent"] = intent
+        if contradicts is not None:
+            record["contradicts"] = list(contradicts)
         fd, tmp_path = tempfile.mkstemp(
             dir=self._locks_dir,
             prefix=_path_lock_filename(target_path) + ".tmp.",
@@ -403,7 +416,17 @@ class PendingQueue:
         # saw it in that window used to unlink it, leaving this entry pending
         # with no lock at all.
         with self._serializer:
-            self._acquire_lock(target_path, pending_id)
+            raw_intent = meta.get("intent")
+            intent = str(raw_intent) if raw_intent is not None else None
+            raw_contradicts = meta.get("contradicts")
+            contradicts = (
+                list(raw_contradicts)
+                if isinstance(raw_contradicts, (list, tuple))
+                else None
+            )
+            self._acquire_lock(
+                target_path, pending_id, intent=intent, contradicts=contradicts,
+            )
             try:
                 entry = {
                     "pending_id": pending_id,
@@ -516,6 +539,16 @@ class PendingQueue:
                 "demotion_reason": entry["meta"].get("demotion_reason"),
                 "injection_suspect": bool(entry["meta"].get("injection_suspect", False)),
                 "injection_patterns": entry["meta"].get("injection_patterns"),
+                # Contest disposition (issue #241): dual rationale separation.
+                "intent": entry["meta"].get("intent"),
+                "contest": (
+                    {
+                        "contradicts": list(entry["meta"].get("contradicts") or []),
+                        "contest_reason": entry["meta"].get("contest_reason"),
+                    }
+                    if entry["meta"].get("intent") == "contest" or entry["meta"].get("contradicts")
+                    else None
+                ),
             }))
         return out
 
@@ -1280,7 +1313,7 @@ class PendingQueue:
             # so caller text reaches health through this projection, and one
             # unrenderable lock would fail health, readiness and every REST
             # read built on it rather than just its own record.
-            out.append({
+            rec: dict[str, Any] = {
                 "target_path": _render_safe(info.get("target_path")),
                 "owner_kind": _render_safe(info.get("owner_kind", "pending")),
                 "pending_id": _render_safe(info.get("pending_id")),
@@ -1290,7 +1323,12 @@ class PendingQueue:
                     if isinstance(acquired_at, (int, float))
                     else None
                 ),
-            })
+            }
+            if "intent" in info:
+                rec["intent"] = info["intent"]
+            if "contradicts" in info:
+                rec["contradicts"] = info["contradicts"]
+            out.append(rec)
         return out
 
     def derive_running_contest(self, target_path: str) -> RunningContestReceipt:
