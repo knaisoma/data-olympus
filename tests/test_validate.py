@@ -4,6 +4,7 @@ import pytest
 
 from data_olympus.format.document import Document
 from data_olympus.format.validate import (
+    compute_freshness,
     is_expired,
     is_in_force,
     is_upcoming,
@@ -409,3 +410,155 @@ def test_is_inbox_path_respects_prefix_override(monkeypatch):
 def test_not_inbox_sql_fragment_is_a_static_no_param_condition():
     from data_olympus.format.validate import not_inbox_sql_fragment
     assert not_inbox_sql_fragment() == "docs.is_inbox = 0"
+
+
+# ---------------------------------------------------------------------------
+# compute_freshness (issue #142): review-due derived from verification age,
+# recheck_by as an override, an explicit no-last_verified rule.
+# ---------------------------------------------------------------------------
+
+def test_compute_freshness_fresh_returns_none_state_and_reason():
+    state, reason = compute_freshness(
+        valid_from=None, valid_until=None, recheck_by=None,
+        last_verified="2026-01-01", today="2026-01-15",
+        review_due_after_days=90,
+    )
+    assert state is None
+    assert reason is None
+
+
+def test_compute_freshness_expired_beats_recheck_by_and_verification_age():
+    state, reason = compute_freshness(
+        valid_from=None, valid_until="2026-01-01", recheck_by="2026-01-01",
+        last_verified="2020-01-01", today="2026-02-01",
+        review_due_after_days=90,
+    )
+    assert state == "expired"
+    assert "valid_until" in reason
+    assert "2026-01-01" in reason
+
+
+def test_compute_freshness_upcoming_beats_stale():
+    state, reason = compute_freshness(
+        valid_from="2026-03-01", valid_until=None, recheck_by="2026-01-01",
+        last_verified=None, today="2026-02-01",
+        review_due_after_days=90,
+    )
+    assert state == "upcoming"
+    assert "valid_from" in reason
+
+
+def test_compute_freshness_recheck_by_in_past_is_stale_with_reason():
+    state, reason = compute_freshness(
+        valid_from=None, valid_until=None, recheck_by="2026-01-01",
+        last_verified="2026-01-10", today="2026-02-01",
+        review_due_after_days=90,
+    )
+    assert state == "stale"
+    assert "recheck_by" in reason
+    assert "2026-01-01" in reason
+
+
+def test_compute_freshness_explicit_future_recheck_by_overrides_age_derivation():
+    """An operator-set recheck_by, even far in the future, is an explicit
+    decision that overrides the automatic verification-age check -- a
+    long-unverified doc with a deliberately deferred recheck_by is NOT
+    reported stale before that date."""
+    state, reason = compute_freshness(
+        valid_from=None, valid_until=None, recheck_by="2027-01-01",
+        last_verified="2020-01-01", today="2026-02-01",
+        review_due_after_days=30,
+    )
+    assert state is None
+    assert reason is None
+
+
+def test_compute_freshness_no_recheck_by_derives_stale_from_verification_age():
+    state, reason = compute_freshness(
+        valid_from=None, valid_until=None, recheck_by=None,
+        last_verified="2025-01-01", today="2026-01-01",
+        review_due_after_days=90,
+    )
+    assert state == "stale"
+    assert "last_verified" in reason
+    assert "2025-01-01" in reason
+    assert "365" in reason  # exact day count, not just a boolean
+
+
+def test_compute_freshness_no_recheck_by_recent_verification_is_fresh():
+    state, reason = compute_freshness(
+        valid_from=None, valid_until=None, recheck_by=None,
+        last_verified="2026-01-10", today="2026-02-01",
+        review_due_after_days=90,
+    )
+    assert state is None
+    assert reason is None
+
+
+def test_compute_freshness_no_last_verified_at_all_is_stale_not_fresh():
+    """The explicit no-last_verified rule (#142): a document nobody has ever
+    verified must NOT default to fresh -- that would hide exactly the
+    documents most worth looking at."""
+    state, reason = compute_freshness(
+        valid_from=None, valid_until=None, recheck_by=None,
+        last_verified=None, today="2026-02-01",
+        review_due_after_days=90,
+    )
+    assert state == "stale"
+    assert "last_verified" in reason
+    assert "not set" in reason
+
+
+def test_compute_freshness_review_due_after_days_none_disables_age_derivation():
+    """review_due_after_days=None is the feature-off state (matches the
+    pre-#142 default exactly): no last_verified age check runs at all, and a
+    document with no last_verified is fresh, as it always was."""
+    state, reason = compute_freshness(
+        valid_from=None, valid_until=None, recheck_by=None,
+        last_verified=None, today="2026-02-01",
+        review_due_after_days=None,
+    )
+    assert state is None
+    assert reason is None
+
+
+def test_compute_freshness_review_due_after_days_zero_also_disables_derivation():
+    state, reason = compute_freshness(
+        valid_from=None, valid_until=None, recheck_by=None,
+        last_verified=None, today="2026-02-01",
+        review_due_after_days=0,
+    )
+    assert state is None
+    assert reason is None
+
+
+def test_compute_freshness_verification_age_exactly_at_threshold_is_fresh():
+    """The boundary day is inclusive-fresh, matching is_expired/is_upcoming's
+    existing boundary convention elsewhere in this module."""
+    state, reason = compute_freshness(
+        valid_from=None, valid_until=None, recheck_by=None,
+        last_verified="2026-01-01", today="2026-04-01",  # exactly 90 days
+        review_due_after_days=90,
+    )
+    assert state is None
+    assert reason is None
+
+
+def test_compute_freshness_verification_age_one_day_past_threshold_is_stale():
+    state, reason = compute_freshness(
+        valid_from=None, valid_until=None, recheck_by=None,
+        last_verified="2025-12-31", today="2026-04-01",  # 91 days
+        review_due_after_days=90,
+    )
+    assert state == "stale"
+
+
+def test_compute_freshness_malformed_last_verified_does_not_crash():
+    """A malformed date must not raise -- the corpus can carry hand-authored
+    dates, and a search request must not 500 on one bad value."""
+    state, reason = compute_freshness(
+        valid_from=None, valid_until=None, recheck_by=None,
+        last_verified="not-a-date", today="2026-02-01",
+        review_due_after_days=90,
+    )
+    assert state in (None, "stale")  # either is defensible; must not raise

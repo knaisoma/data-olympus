@@ -93,6 +93,14 @@ class Config:
     # Window sizes (days) for the "recently expired" / "expiring soon" buckets.
     maintenance_recently_expired_days: int = 30
     maintenance_expiring_soon_days: int = 30
+    # Review-due verification-age threshold, days (issue #142). None (default,
+    # unset env var) disables the derivation entirely: compute_freshness's
+    # verification-age check does not run, matching the pre-#142 default
+    # exactly, so an existing deployment is unaffected until an operator opts
+    # in. When set, a document with no explicit recheck_by is reported
+    # "stale" once its last_verified is older than this many days, or has no
+    # last_verified at all.
+    review_due_after_days: int | None = None
     # Virtual status autofill for legacy (pre-0.4.0) corpora (issue #147 / KNA-69).
     # Default ON. When on, the index build treats a doc missing `status` as
     # `active` IN MEMORY only (the SQLite `docs.status` column and the in-force
@@ -405,6 +413,8 @@ def load_config() -> Config:
     maintenance_expiring_soon_days = int(
         os.getenv("KB_MAINTENANCE_EXPIRING_SOON_DAYS", "30")
     )
+    _review_due_raw = os.getenv("KB_REVIEW_DUE_AFTER_DAYS", "").strip()
+    review_due_after_days = int(_review_due_raw) if _review_due_raw else None
     # KB_STATUS_AUTOFILL defaults to on (issue #147 / KNA-69): a legacy corpus
     # missing `status` keeps its in-force docs after upgrade. Any explicit
     # non-truthy value (off/0/false/no) restores the conservative behavior.
@@ -492,6 +502,7 @@ def load_config() -> Config:
         maintenance_ledger_path=maintenance_ledger_path,
         maintenance_recently_expired_days=maintenance_recently_expired_days,
         maintenance_expiring_soon_days=maintenance_expiring_soon_days,
+        review_due_after_days=review_due_after_days,
         status_autofill=status_autofill,
         session_idle_timeout_sec=session_idle_timeout_sec,
         session_reap_interval_sec=session_reap_interval_sec,

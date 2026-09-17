@@ -491,6 +491,7 @@ def build_app(
     maintenance_ledger_path: str = "tooling/maintenance-ledger.md",
     maintenance_recently_expired_days: int = 30,
     maintenance_expiring_soon_days: int = 30,
+    review_due_after_days: int | None = None,
     status_autofill: bool = True,
     kb_main_path_source: str = PATH_SOURCE_DEFAULT,
     kb_index_path_source: str = PATH_SOURCE_DEFAULT,
@@ -546,6 +547,7 @@ def build_app(
         maintenance_ledger_path=maintenance_ledger_path,
         maintenance_recently_expired_days=maintenance_recently_expired_days,
         maintenance_expiring_soon_days=maintenance_expiring_soon_days,
+        review_due_after_days=review_due_after_days,
         status_autofill=status_autofill,
         kb_main_path_source=kb_main_path_source,
         kb_index_path_source=kb_index_path_source,
@@ -849,6 +851,7 @@ def build_app(
             idx=state.idx, query=query, limit=limit, tier=tier, category=category,
             status=status, in_force=in_force, doc_type=doc_type, abstain=abstain,
             include_expired=include_expired, validity_state=validity_state,
+            review_due_after_days=state.config.review_due_after_days,
         )
         return shape_response(resp, verbose=verbose)
 
@@ -876,7 +879,10 @@ def build_app(
         frontmatter)."""
         from data_olympus.tools_read import KbNotFoundError, kb_get_fn
         try:
-            resp = kb_get_fn(idx=state.idx, id=id)
+            resp = kb_get_fn(
+                idx=state.idx, id=id,
+                review_due_after_days=state.config.review_due_after_days,
+            )
         except KbNotFoundError as e:
             return {"error": "not_found", "message": str(e)}
         return shape_response(resp, verbose=verbose)
@@ -1371,6 +1377,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         maintenance_ledger_path=config.maintenance_ledger_path,
         maintenance_recently_expired_days=config.maintenance_recently_expired_days,
         maintenance_expiring_soon_days=config.maintenance_expiring_soon_days,
+        review_due_after_days=config.review_due_after_days,
         status_autofill=config.status_autofill,
         kb_main_path_source=config.kb_main_path_source,
         kb_index_path_source=config.kb_index_path_source,

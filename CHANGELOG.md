@@ -12,6 +12,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+* **Review-due can now be derived from how long a document has actually gone
+  unverified, not only from a hand-set deadline.** `last_verified` used to be
+  advisory and evaluated by nothing, so a document nobody ever re-verified
+  looked exactly as fresh as one checked yesterday. With the new
+  `KB_REVIEW_DUE_AFTER_DAYS` setting, a document with no explicit
+  `recheck_by` is reported `freshness: "stale"` once its `last_verified` is
+  older than that many days, or has no `last_verified` at all -- a document
+  never verified does not default to fresh, since that would hide exactly
+  the documents most worth looking at. An explicit `recheck_by` remains an
+  override in either direction: past, it is `stale` regardless of
+  verification age; future, it suppresses the automatic check entirely. A
+  new `freshness_reason` field on `kb_search` hits and `kb_get` names the
+  field and the date or day count behind a non-empty `freshness`. Unset
+  (the default): behaviour is unchanged from before this release. This is
+  advisory only and never affects `in_force` or default search. (#142)
+
 ### Fixed
 
 * **A path lock is now published atomically, and a failure after a proposal

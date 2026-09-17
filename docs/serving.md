@@ -856,9 +856,13 @@ and `GET /api/v1/search`):
   malformed value is rejected (HTTP 400 on REST).
 - Compact hits carry a deviation-only `freshness` field
   (`stale`/`expired`/`upcoming`), omitted when fresh or when the doc has no
-  `validity` block. A doc with a future `valid_from` stays in default results
-  flagged `upcoming`; only `in_force=true` excludes it. A stale doc (past
-  `recheck_by`) stays in force and visible.
+  `validity` block, plus a `freshness_reason` naming the field and date/day
+  count behind it (omitted exactly when `freshness` is). A doc with a future
+  `valid_from` stays in default results flagged `upcoming`; only
+  `in_force=true` excludes it. A stale doc (past `recheck_by`, or -- with
+  `KB_REVIEW_DUE_AFTER_DAYS` set -- an old or absent `last_verified` and no
+  `recheck_by` override, issue #142) stays in force and visible: review-due is
+  always advisory, never a filter.
 
 `kb_get` by id always resolves regardless of expiry, returning the full
 `validity` object plus the computed `freshness` indicator. `kb_consult` never

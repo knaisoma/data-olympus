@@ -199,6 +199,11 @@ class SearchHitModel(BaseModel):
     # or the validity_state facet); default kb_search never returns an
     # expired doc at all.
     freshness: str = ""
+    # Why freshness is non-empty (issue #142): names the field and the
+    # date/day-count behind the state, from the SAME compute_freshness call
+    # that set ``freshness`` -- the two cannot disagree because neither is
+    # computed separately. "" exactly when freshness is "" (fresh/absent).
+    freshness_reason: str = ""
     # Computed in-force boolean (issue #109): the single-sourced predicate
     # (status class AND validity window AND not-inbox AND not-graph-excluded,
     # composing issue #110 slice 2), NEVER stored in frontmatter. Always
@@ -250,6 +255,8 @@ class SearchHitModel(BaseModel):
             d["type"] = self.type
         if self.freshness:
             d["freshness"] = self.freshness
+            if self.freshness_reason:
+                d["freshness_reason"] = self.freshness_reason
         if self.superseded_by:
             d["superseded_by"] = list(self.superseded_by)
         if not self.in_force:
@@ -326,6 +333,8 @@ class GetResponse(BaseModel):
     # shows when explicitly included.
     validity: dict[str, str] | None = None
     freshness: str = ""
+    # Why freshness is non-empty (issue #142): see SearchHitModel.freshness_reason.
+    freshness_reason: str = ""
     # Computed in-force boolean (issue #109): see SearchHitModel.in_force for
     # the rationale (full predicate: status class AND validity window AND
     # not-inbox AND not-graph-excluded). Always present verbose; compact emits
@@ -392,6 +401,8 @@ class GetResponse(BaseModel):
             d["validity"] = dict(self.validity)
         if self.freshness:
             d["freshness"] = self.freshness
+            if self.freshness_reason:
+                d["freshness_reason"] = self.freshness_reason
         if self.superseded_by:
             d["superseded_by"] = list(self.superseded_by)
         if self.contradicts:

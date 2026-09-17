@@ -471,6 +471,7 @@ Relevant environment variables:
 | `KB_MAINTENANCE_LEDGER_PATH` | `tooling/maintenance-ledger.md` | Committed ledger doc path (must resolve inside an indexed prefix) |
 | `KB_MAINTENANCE_RECENTLY_EXPIRED_DAYS` | `30` | Window (days) for the "recently expired" bucket |
 | `KB_MAINTENANCE_EXPIRING_SOON_DAYS` | `30` | Window (days) for the "expiring soon" bucket |
+| `KB_REVIEW_DUE_AFTER_DAYS` | unset (off) | Derives `freshness: "stale"` from `last_verified` age when no `recheck_by` override is set; a document with no `last_verified` at all is also `stale` (issue #142). Advisory only, on `kb_search`/`kb_get` responses -- never `in_force` or default search. Unset: unchanged pre-#142 behaviour. |
 
 ### 5.1 Migrating a corpus to mandatory `status` (issue #114)
 

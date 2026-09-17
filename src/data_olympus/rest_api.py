@@ -526,6 +526,7 @@ def register_routes(
                 kb_search_fn, idx=state.idx, query=q, limit=limit, tier=tier,
                 category=category, in_force=in_force, abstain=abstain,
                 include_expired=include_expired, validity_state=validity_state,
+                review_due_after_days=state.config.review_due_after_days,
             )
         except ValueError as e:
             # A malformed validity_state (e.g. 'bogus' or 'expiring_within:abc')
@@ -549,7 +550,10 @@ def register_routes(
         id_ = request.path_params["id"]
         verbose = _query_bool(request.query_params.get("verbose"))
         try:
-            resp = await _offload(kb_get_fn, idx=state.idx, id=id_)
+            resp = await _offload(
+                kb_get_fn, idx=state.idx, id=id_,
+                review_due_after_days=state.config.review_due_after_days,
+            )
         except KbNotFoundError as e:
             return JSONResponse({"error": "not_found", "message": str(e)}, status_code=404)
         return JSONResponse(shape_response(resp, verbose=verbose))
