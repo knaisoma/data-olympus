@@ -368,7 +368,10 @@ class GetResponse(BaseModel):
         provenance *label* like ``git``/``mtime-fallback``, not the timestamp).
         Omits empty ``status`` / ``type`` / ``applies_when`` / ``description`` /
         ``validity`` / ``freshness`` (issue #107: a doc with no validity
-        metadata omits both entirely) and ``superseded_by`` / ``contradicts`` /
+        metadata omits both entirely -- but only while
+        ``KB_REVIEW_DUE_AFTER_DAYS`` is unset; with the threshold enabled such
+        a doc has no ``last_verified`` either and reports ``freshness:
+        "stale"``, issue #142) and ``superseded_by`` / ``contradicts`` /
         ``contradicted_by`` (issue #110 slice 2: omitted when empty, same
         deviation-only pattern). ``verbose=True`` restores the full shape.
 
@@ -640,7 +643,7 @@ class AuditResponse(BaseModel):
 
 
 class CurateEntry(BaseModel):
-    """One in-force document reported review-due by kb_curate (issue #31)."""
+    """One in-force document reported review-due by kb_curate (issue #142)."""
 
     id: str
     path: str
@@ -652,12 +655,12 @@ class CurateEntry(BaseModel):
 
 
 class CurateResponse(BaseModel):
-    """kb_curate response (issue #31): in-force documents reported review-due
+    """kb_curate response (issue #142): in-force documents reported review-due
     by compute_freshness, most-overdue first. Advisory and read-only: this
     tool recommends, it never proposes, edits, promotes or demotes anything.
-    Pattern promotion (surfacing repeated patterns for tier hoisting) is a
-    SEPARATE, larger capability tracked on issue #31 itself and is not part
-    of this response."""
+    Pattern promotion (surfacing repeated patterns for tier hoisting) is the
+    SEPARATE, larger capability issue #31 asks for; it is not implemented
+    anywhere in this release and #31 stays open."""
 
     entries: list[CurateEntry] = []
     total: int = Field(description="Number of entries actually returned (after limit).")

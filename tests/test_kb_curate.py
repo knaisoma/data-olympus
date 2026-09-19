@@ -1,7 +1,8 @@
-"""Tests for kb_curate (issue #31, first slice): lists in-force documents
+"""Tests for kb_curate (issue #142): lists in-force documents
 that are review-due, most-overdue first. Advisory and human-gated -- this
 tool recommends, it never proposes, edits, promotes or demotes anything.
-Pattern promotion (issue #31's other half) is explicitly NOT in scope here.
+Pattern promotion is what issue #31 asks for; it is NOT implemented anywhere
+in this release and #31 stays open. Only the tool NAME comes from #31.
 
 Reuses compute_freshness (issue #142) for the reason, so the two surfaces
 cannot disagree about what "review-due" means.

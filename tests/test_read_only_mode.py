@@ -100,7 +100,7 @@ async def test_read_only_read_tool_round_trips(tmp_kb: Path, tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_read_only_kb_curate_round_trips(tmp_kb: Path, tmp_path: Path) -> None:
-    """kb_curate (issue #31) has no write-pipeline dependency and must be
+    """kb_curate (issue #142) has no write-pipeline dependency and must be
     reachable in a read-only replica the same as the other read tools. A
     superset check on READ_TOOLS alone would not catch a registration
     mistake that placed it inside the write-only block; call it for real."""

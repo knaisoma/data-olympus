@@ -801,8 +801,11 @@ def build_app(
         A document is review-due when its `recheck_by` date has passed, or
         (when the operator has set `KB_REVIEW_DUE_AFTER_DAYS` and no
         `recheck_by` overrides it) when its `last_verified` is older than
-        that many days, or was never set at all -- a document nobody has
-        ever verified is the most urgent case and sorts first. This is the
+        that many days, or was never set at all -- among verification-age
+        entries, a document nobody has ever verified is the most urgent case
+        and sorts first. An explicit past `recheck_by` is classified and
+        ordered first, so a document carrying one is a `recheck_by` entry
+        even if it was never verified. This is the
         SAME `freshness`/`freshness_reason` signal `kb_search` and `kb_get`
         already expose per-document; this tool aggregates it across the
         corpus. It is NOT the same set `kb_search(validity_state="stale")`
@@ -813,16 +816,18 @@ def build_app(
         documents that currently GOVERN can be review-due here.
 
         Returns a valid empty list, never an error, when nothing is
-        review-due or when `KB_REVIEW_DUE_AFTER_DAYS` is unset (the
-        derivation is off by default; only `recheck_by`-based staleness is
-        ever reported then, matching `kb_search`'s own default). Each entry
+        review-due. With `KB_REVIEW_DUE_AFTER_DAYS` unset the verification-age
+        derivation is off, but the list is NOT necessarily empty: documents
+        with a `recheck_by` in the past are still reported, matching
+        `kb_search`'s own default. Each entry
         carries `id`, `path`, `title`, and `reason` (which field, and the
         date or day count behind it).
 
-        This is the review-recommendation half of issue #31. Pattern
-        promotion (detecting repeated patterns across the corpus and
-        proposing to hoist them up the tier chain) is a separate, larger
-        capability and is not part of this tool.
+        This serves issue #142's operator-visibility criterion. The tool NAME
+        is reserved on issue #31 (avoiding a collision with the existing
+        kb_audit event-log tool), but #31's own request -- pattern promotion:
+        detecting repeated patterns across the corpus and proposing to hoist
+        them up the tier chain -- is NOT implemented here and #31 stays open.
 
         limit: maximum entries returned, clamped to 1..100 (default 50).
         verbose: kb_curate is already lean, so compact and full modes return

@@ -102,9 +102,14 @@ def kb_curate_fn(
 ) -> CurateResponse:
     """Which in-force documents are due for review, and why, most-overdue
     first. Returns a valid empty result (never an error) for an empty corpus
-    or when nothing is review-due -- including when ``review_due_after_days``
-    is unset, which disables the derivation entirely (matches
-    compute_freshness's own feature-off default)."""
+    or when nothing is review-due.
+
+    ``review_due_after_days`` unset disables the VERIFICATION-AGE derivation
+    only (matching compute_freshness's own feature-off default); it does not
+    empty the list. A document whose ``recheck_by`` is in the past is still
+    reported, because compute_freshness classifies that before it ever looks
+    at ``last_verified``. That same precedence drives the ordering: see
+    :func:`_overdue_days`."""
     from data_olympus.format.validate import compute_freshness, today_iso
 
     today = today if today is not None else today_iso()

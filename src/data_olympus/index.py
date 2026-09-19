@@ -541,7 +541,7 @@ def _derive_id_from_path(rel: Path) -> str:
 # when there is no recheck_by, but this SQL facet was not extended to match --
 # doing so would duplicate compute_freshness's derivation in SQL, exactly the
 # two-definitions-that-can-drift problem this codebase avoids everywhere else.
-# kb_curate (issue #31) is the single-sourced way to list every document
+# kb_curate (issue #142) is the single-sourced way to list every document
 # compute_freshness currently calls stale; this facet stays recheck_by-only.
 _VALIDITY_STATE_KINDS = frozenset({"expired", "stale", "expiring_within"})
 
@@ -2303,7 +2303,7 @@ class Index:
 
     def curate_candidates(self, *, today: str) -> builtins.list[dict[str, object]]:
         """id/path/title/validity columns for every IN-FORCE document
-        (issue #31, kb_curate's candidate set).
+        (issue #142, kb_curate's candidate set).
 
         Reuses :meth:`_facet_filters` with ``in_force=True`` -- the SAME
         single-sourced predicate (status class AND validity window AND

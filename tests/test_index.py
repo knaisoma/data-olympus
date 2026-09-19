@@ -718,7 +718,7 @@ def test_search_rejects_unknown_column(tmp_path: Path, tmp_index_path: Path) -> 
 
 
 # ---------------------------------------------------------------------------
-# curate_candidates (issue #31): the in-force candidate set for kb_curate,
+# curate_candidates (issue #142): the in-force candidate set for kb_curate,
 # reusing the SAME single-sourced in-force predicate _facet_filters(in_force=
 # True) already gives kb_search -- not a second definition.
 # ---------------------------------------------------------------------------
