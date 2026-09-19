@@ -24,9 +24,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   dependency; registered in read-only replicas alongside `kb_search`/
   `kb_get`. Candidates are exactly the `kb_search(in_force=true)` set, and an
   empty or nothing-review-due result is a valid empty list, never an error.
-  Pattern promotion (issue #31's other half: detecting repeated patterns and
-  proposing to hoist them up the tier chain) is not part of this tool; only
-  the review-recommendation surface ships here. (#31)
+  The tool name is reserved on issue #31 (avoiding a collision with the
+  existing `kb_audit` event-log tool), but #31's request -- pattern promotion:
+  detecting repeated patterns and proposing to hoist them up the tier chain --
+  is not implemented here and #31 stays open. (#142)
 * **Review-due can now be derived from how long a document has actually gone
   unverified, not only from a hand-set deadline.** `last_verified` used to be
   advisory and evaluated by nothing, so a document nobody ever re-verified

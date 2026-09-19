@@ -1,4 +1,4 @@
-"""kb_curate (issue #31, first slice): lists in-force documents that are
+"""kb_curate (issue #142): lists in-force documents that are
 review-due, most-overdue first.
 
 Advisory and human-gated: this tool RECOMMENDS, it never proposes, edits,
@@ -13,13 +13,19 @@ count) comes from Index.curate_candidates, which reuses the SAME in-force
 predicate kb_search(in_force=True) uses, so this list is exactly "governed
 documents review-due", never a second notion of "in force".
 
-Name reserved on issue #31 to avoid colliding with the existing kb_audit
-event-log tool.
+This tool serves issue #142's "operators can see why a document is
+review-due" criterion. The NAME is reserved on issue #31, to avoid colliding
+with the existing kb_audit event-log tool.
 
-Pattern promotion -- surfacing repeated patterns across the corpus and
-proposing to hoist them up the tier chain via kb_propose_edit -- is the OTHER
-half of issue #31 and is explicitly NOT in scope here. It needs its own
-detection design and is not a bounded slice.
+Issue #31 itself asks for pattern promotion -- surfacing repeated patterns
+across the corpus and proposing to hoist them up the tier chain via
+kb_propose_edit -- and that is NOT implemented here. #31 stays open: it needs
+its own detection design and is not a bounded slice. Do not read this module
+as closing it.
+
+Retention, freshness and authority stay separate (see docs/serving.md): this
+tool reports on the in-force set, it never deletes a document and never
+changes what governs.
 """
 from __future__ import annotations
 

@@ -858,9 +858,12 @@ and `GET /api/v1/search`):
   also carry from verification age (issue #142); `kb_curate` lists every
   document currently showing `freshness: "stale"` for either reason.
 - Compact hits carry a deviation-only `freshness` field
-  (`stale`/`expired`/`upcoming`), omitted when fresh or when the doc has no
-  `validity` block, plus a `freshness_reason` naming the field and date/day
-  count behind it (omitted exactly when `freshness` is). A doc with a future
+  (`stale`/`expired`/`upcoming`), omitted when fresh, plus a
+  `freshness_reason` naming the field and date/day
+  count behind it (omitted exactly when `freshness` is). A doc with no
+  `validity` block is omitted only while `KB_REVIEW_DUE_AFTER_DAYS` is unset;
+  with the threshold enabled such a doc has no `last_verified` either, so it
+  reports `stale` with reason `last_verified is not set`. A doc with a future
   `valid_from` stays in default results flagged `upcoming`; only
   `in_force=true` excludes it. A stale doc (past `recheck_by`, or -- with
   `KB_REVIEW_DUE_AFTER_DAYS` set -- an old or absent `last_verified` and no
@@ -876,7 +879,7 @@ reusing the default search path's own expired-exclusion.
 The `data-olympus validity-report` CLI subcommand lists expired and
 soon-to-expire docs from a bundle directory.
 
-## `kb_curate`: which in-force documents are review-due (issue #31, first slice)
+## `kb_curate`: which in-force documents are review-due (issue #142)
 
 `kb_curate` (MCP tool, `GET /api/v1/curate`) aggregates the same
 `freshness`/`freshness_reason` signal `kb_search` and `kb_get` already expose
@@ -902,18 +905,48 @@ returns a valid empty list, never an error. With `KB_REVIEW_DUE_AFTER_DAYS`
 unset (the default), only `recheck_by`-based staleness is ever reported,
 matching every other read tool's pre-#142 behaviour.
 
-Ordering: a document with NO `last_verified` at all sorts first (nobody has
-ever checked it, the most urgent case), ahead of one that was at least
-verified once however long ago; a `recheck_by`-driven entry orders by days
-past that date, and a verification-age entry by days past the
-`KB_REVIEW_DUE_AFTER_DAYS` threshold. `limit` clamps to 1..100 like
-`kb_search`'s, defaulting to 50.
+Ordering: among verification-age entries, a document with NO `last_verified`
+at all sorts first (nobody has ever checked it, the most urgent case), ahead
+of one that was at least verified once however long ago. `recheck_by` is
+classified first, so a document carrying an explicit past `recheck_by` is a
+`recheck_by`-driven entry even when it has never been verified, and orders by
+days past that date rather than sorting into the never-verified group; a
+verification-age entry orders by days past the `KB_REVIEW_DUE_AFTER_DAYS`
+threshold. `limit` clamps to 1..100 like `kb_search`'s, defaulting to 50.
 
-`kb_curate` is the review-recommendation half of issue #31. Pattern
-promotion -- detecting repeated patterns across the corpus and proposing to
-hoist them up the tier chain via `kb_propose_edit` -- is the other, larger
-half and is not implemented by this tool; it needs its own detection design
-first.
+`kb_curate` serves issue #142's operator-visibility criterion: it makes the
+review-due signal answerable in one call instead of requiring the operator to
+know to filter for it. The tool NAME is reserved on issue #31, which avoids a
+collision with the existing `kb_audit` event-log tool, but #31's requested
+capability -- detecting repeated patterns across the corpus and proposing to
+hoist them up the tier chain via `kb_propose_edit` -- is not implemented here
+and #31 stays open. That work needs its own detection design.
+
+### Retention, freshness, and authority are three separate things
+
+Issue #142 adds a freshness signal and nothing else. The three concepts are
+deliberately independent, and no tool in this release couples them:
+
+- **Retention** is whether a document still exists. Nothing in the freshness
+  path deletes, archives, or prunes anything. A document that has gone
+  unverified for a decade is still served, still retrievable by `kb_get`, and
+  still a `kb_search` candidate. There is no automatic deletion for long-term
+  governed knowledge, by design.
+- **Freshness** is how long it has been since somebody checked the document,
+  derived from `recheck_by` or from `last_verified` age against
+  `KB_REVIEW_DUE_AFTER_DAYS`. It is advisory: a report about the review
+  process, not a claim about the content.
+- **Authority** is whether the document governs, and it is `status` plus the
+  validity window plus the inbox/graph exclusions, single-sourced through
+  `is_in_force`. Only those inputs decide it.
+
+Concretely: a `stale` document with `status: approved` inside its validity
+window is still `in_force: true`, still ranks normally, and is still returned
+by default. `freshness` never feeds `in_force`, never reorders default
+retrieval, and never changes a `status`. `kb_curate` reports on the in-force
+set; it does not shrink it. There is no `authority_state` enum parallel to
+`status`, and an operator acting on a `kb_curate` entry is re-verifying a
+document, not demoting it.
 
 ## `abstain`: signal-gated abstention
 
