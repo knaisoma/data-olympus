@@ -114,6 +114,40 @@ _MAX_EVIDENCE_ITEMS = 10
 _MAX_EVIDENCE_ITEM_CHARS = 500
 
 
+def _is_json_renderable(value: str) -> bool:
+    """Whether ``value`` survives the response encoder.
+
+    The propose path persists with ``ensure_ascii=True`` (see
+    ``durable.atomic_write_json``), which escapes anything, but the REST layer
+    renders with ``ensure_ascii=False`` and then encodes strictly as UTF-8. A
+    string holding an unpaired surrogate therefore stores fine and only fails
+    much later, on a read by an unrelated caller. Test ENCODABILITY rather than
+    the surrogate code-point range, so a correctly-paired astral character
+    (stored by Python as one code point) is untouched.
+    """
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+_UNENCODABLE_NOTE = "[reason omitted: not encodable as UTF-8]"
+
+
+def _safe_advisory_text(value: str) -> str:
+    """Replace advisory text that the response encoder cannot render.
+
+    Mirrors the existing secret-scan treatment of ``reason`` rather than
+    inventing a second policy for the same field: advisory metadata is not
+    committed content, so it is REPLACED and the operation proceeds, instead
+    of failing a write whose actual payload is fine. Replacement is wholesale,
+    so no caller-controlled fragment is carried forward.
+
+    """
+    return value if _is_json_renderable(value) else _UNENCODABLE_NOTE
+
+
 def _validate_evidence(evidence: object) -> str | None:
     """Return a rejection reason string if ``evidence`` is invalid, else None.
 
@@ -140,6 +174,12 @@ def _validate_evidence(evidence: object) -> str | None:
     for item in evidence:
         if not isinstance(item, str):
             return "evidence items must be strings"
+        if not _is_json_renderable(item):
+            # Rejected rather than replaced, unlike ``reason``: this validator's
+            # contract is to reject and tell the caller exactly what was wrong.
+            # The message deliberately carries no fragment of the bad item, or
+            # the error response becomes the next poisoned payload.
+            return "evidence items must be encodable as UTF-8"
         if len(item) > _MAX_EVIDENCE_ITEM_CHARS:
             return (
                 f"evidence item exceeds max {_MAX_EVIDENCE_ITEM_CHARS} chars "
@@ -1440,6 +1480,12 @@ def kb_propose_edit_fn(
         assert reason_scan.match is not None
         reason = (f"[reason redacted: secret pattern "
                   f"'{reason_scan.match.pattern_name}' detected]")
+    # Same treatment, second hazard: a reason the RESPONSE encoder cannot
+    # render. Applied after the secret scan so redaction keeps precedence (a
+    # redaction note is always encodable, so this is then a no-op). Without
+    # it an unpaired surrogate persists silently here and later fails the
+    # whole pending listing for every reader, not just this caller.
+    reason = _safe_advisory_text(reason)
 
     audit_base: dict[str, Any] = {
         "event_type": "propose_edit",
