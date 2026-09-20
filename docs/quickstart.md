@@ -137,14 +137,14 @@ curl -fsS "http://localhost:8080/api/v1/search?q=example%20standard&limit=5"
 ```
 
 The top two hits are `STD-INIT-002` (currently in force) ranked ahead of
-`STD-INIT-001` (`status: superseded`) — both present, active first. In the compact
+`STD-INIT-001` (`status: superseded`), both present, active first. In the compact
 default the in-force hit carries no `status` field while the superseded hit shows
 `"status": "superseded"` (the deviation an agent must act on); add `verbose=true`
 to see `"status": "active"` spelled out on every hit.
 
 **`in_force=true`** is a hard filter, not a rerank: it excludes every
 not-currently-governing status (`superseded`, `deprecated`, `draft`,
-`proposed`, `rejected`) from the result set entirely, before ranking — and,
+`proposed`, `rejected`) from the result set entirely, before ranking, and,
 for docs carrying a `validity` frontmatter block, any doc outside its
 validity window (past `valid_until`, or before a future `valid_from`).
 

@@ -1,0 +1,22 @@
+# Paths excluded from scripts/prose_lint.py, one path prefix per line.
+# Exclusions are for text this project does not author, for machine output, or
+# for bytes that something else binds. Never for authored prose that happens to
+# be inconvenient to fix.
+
+# Not this project's text.
+.venv/
+.git/
+node_modules/
+example-bundle/
+to-delete/
+
+# Fixtures and pinned upstream conformance data.
+tests/
+
+# Receipted measurement apparatus. A benchmark receipt binds `source_tree` and
+# the generated outputs by sha256 to the commit the measurement ran at, so that
+# a published number stays tamper-evident. Editing this tree's prose, even only
+# its punctuation, invalidates that binding and `scripts/check_benchmark_docs.py`
+# fails. Fixing it means re-running the benchmark, which would change what the
+# numbers mean, so the prose here is left as measured.
+benchmarks/

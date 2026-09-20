@@ -2382,7 +2382,7 @@ class Index:
             if cached is not None and (now - cached[0]) < self._health_ttl:
                 return dict(cached[1])
         # Cache miss: read the DB outside the lock (the connection is per-call,
-        # so a concurrent miss is harmless — both compute the same snapshot).
+        # so a concurrent miss is harmless: both compute the same snapshot).
         snapshot = self._health_uncached()
         with self._health_lock:
             self._health_cache = (now, dict(snapshot))

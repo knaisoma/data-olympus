@@ -33,7 +33,7 @@ This creates the tier directories (`--tiers`, default `universal,tech-stacks,
 projects,decisions,workflows,tooling`), a root `index.md` carrying the
 `spec_version`/`okf_version` frontmatter, a `template.md` authoring scaffold,
 and one example document per supported `type` (`standard`, `decision`,
-`workflow`, `project`, `memory`, `reference`) — including a real
+`workflow`, `project`, `memory`, `reference`), including a real
 `superseded`/`superseded_by`/`supersedes` pair and `applies_when` trigger
 metadata, so `data-olympus lint`, `data-olympus index`, and `kb search` all
 have something to demo against immediately. The command refuses to write into

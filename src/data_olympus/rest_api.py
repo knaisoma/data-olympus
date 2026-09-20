@@ -132,7 +132,7 @@ def _authorize(
     Returns ``(principal, None)`` when allowed, or ``(principal, denial)`` where
     ``denial`` is a 401 (unauthenticated) or 403 (authenticated but missing the
     capability) JSONResponse. ``capability=None`` means "any authenticated
-    principal" — used for the enforcement-plane routes (consult / gate) which do
+    principal", used for the enforcement-plane routes (consult / gate) which do
     not map to a KB write capability but must still be closed to anonymous
     callers when auth is configured.
 

@@ -67,7 +67,7 @@ class SlidingWindowLimiter:
     def _store(buckets: dict[Any, list[float]], key: Any, values: list[float]) -> None:
         """Write ``values`` back under ``key``, deleting the key entirely when the
         list is empty. Evicting empty keys bounds memory: without it, every unique
-        (remote_addr, agent_identity) pair — which a caller can vary freely — left a
+        (remote_addr, agent_identity) pair, which a caller can vary freely, left a
         permanent empty-list entry, an unbounded leak (item 10)."""
         if values:
             buckets[key] = values

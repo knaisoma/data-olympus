@@ -12,6 +12,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+* **Writing rules are enforced in CI.** `scripts/prose_lint.py` runs over the
+  repository's Markdown on every pull request and fails on an em-dash, a spaced
+  en-dash used as a sentence dash, agent authorship credit, and a short list of
+  LLM diction. It is a vendored copy of the operator's canonical linter;
+  changes belong upstream first. `.prose-lintignore` lists what is out of
+  scope, notably `benchmarks/`, whose bytes a measurement receipt binds by
+  sha256 so its prose cannot be edited without invalidating published
+  provenance.
+* **Documentation prose backfilled to match.** 118 em-dashes across README,
+  SPEC, WHY, CHANGELOG, `docs/` and `deploy/` are replaced with a colon, a
+  comma or two sentences, chosen per sentence rather than mechanically. Prose
+  only: no behaviour, no interface, no documented enum or value changed, and
+  the SPEC edits are punctuation inside existing paragraphs. (No issue; raised
+  by the operator after banned patterns reached public output.)
+
 ## [0.9.0] - 2026-09-21
 
 ### Added
@@ -942,7 +959,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Write-path enforcement of mandatory `status` (issue #114).** `status`
   has been a required frontmatter field (SPEC.md 4.2) and a `kb lint` error
-  since the format's `0.1` draft — this was already true of the lint layer
+  since the format's `0.1` draft: this was already true of the lint layer
   and is not a change of required-field semantics. The gap this closes is at
   the write path: `kb_propose_edit` now rejects a postimage that creates a
   **NEW** document without `status` (`rejected_invalid_document`, reason
@@ -1039,7 +1056,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     operator review time, not here.
   - **Memory-inbox in-force floor.** A document under the memory-inbox prefix
     (`KB_MEMORY_INBOX_PREFIX`, default `memory/inbox/`) is now NEVER in force,
-    regardless of claimed status — covers both a legacy inbox file and forged
+    regardless of claimed status: it covers both a legacy inbox file and forged
     frontmatter on an agent-written memory. Implemented as a new `is_inbox`
     column derived once at index-build time
     (`format.validate.is_inbox_path`/`memory_inbox_prefix`, the single source
@@ -1049,7 +1066,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - **Computed `in_force: bool`** on verbose `kb_get` and verbose `kb_search`
     hits, derived from the single-sourced predicate (status class AND
     validity window AND not-inbox AND, composing the issue #110 slice-2 graph
-    rule, not-graph-excluded). Never stored in frontmatter — it is a
+    rule, not-graph-excluded). Never stored in frontmatter: it is a
     serving-layer-only derivation (see SPEC.md's new "runtime envelope"
     note). Compact responses emit it deviation-only (`in_force: false` only
     when the doc is NOT in force; an in-force doc's compact shape is
@@ -1062,7 +1079,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `kb_propose_edit` (max 10 items, 500 chars each). For a memory proposal it
     is rendered into frontmatter via the same `yaml.safe_dump` path as `tags`
     (so a secret-shaped evidence item is caught by the existing
-    full-postimage secret scan — no separate scan needed); for an edit
+    full-postimage secret scan, no separate scan needed); for an edit
     proposal (whose postimage is caller-supplied verbatim, with no template)
     it is validated and redacted the same way `reason` already is. In both
     cases it is persisted in pending meta, echoed on the propose/commit audit
@@ -1078,8 +1095,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `tooling/maintenance-ledger.md`, `KB_MAINTENANCE_LEDGER_PATH`) is now
   computed at every index build: whether `status` is present on every
   indexed document (except reserved filenames), plus a capped list (50 paths
-  + a total count) of the ones missing it — the migration vehicle for making
-  `status` mandatory — and, consuming issue #107 validity data, documents
+  + a total count) of the ones missing it: the migration vehicle for making
+  `status` mandatory, and, consuming issue #107 validity data, documents
   that recently expired or are expiring soon within configurable windows
   (`KB_MAINTENANCE_RECENTLY_EXPIRED_DAYS` / `KB_MAINTENANCE_EXPIRING_SOON_DAYS`,
   both default 30 days), each capped the same way. When the computed state
@@ -1091,8 +1108,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   carries valid concept frontmatter, so it lints clean on its own merits
   rather than relying on reserved-filename semantics. The same computed state
   drives a new `pending_actions` field (a list of `{kind, message, count}`
-  items) on `kb_consult` and `kb_health` responses — deliberately never
-  `kb_search` — present only while the corpus is dirty; both tool
+  items) on `kb_consult` and `kb_health` responses, deliberately never
+  `kb_search`, present only while the corpus is dirty; both tool
   descriptions now instruct the model to surface open items to the operator
   and act on them only with operator confirmation. `kb health`'s plain-text
   CLI summary displays any open items. Silencing is automatic: remediate,
@@ -1248,7 +1265,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   an unreviewed agent-written memory, a superseded/deprecated/rejected
   decision, a draft/proposed document, an expired or upcoming doc, or a
   memory-inbox file could all be handed back as "the" governing rule for an
-  intent — the single highest-value gap this change closes. `kb_consult` now
+  intent, the single highest-value gap this change closes. `kb_consult` now
   passes `in_force=true` internally, so only `active`/`accepted`/`approved`
   documents within their validity window and NOT under the memory inbox are
   ever returned as rules. **Operational caveat:** a document with no
@@ -1467,8 +1484,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ships with regression tests, including two integration tests that drive a real
   second clone against a shared bare remote:
   - **Write serialization.** A process-wide write serializer wraps the write →
-    `git add` → commit → enqueue critical section, and a per-path advisory lock —
-    now SHARED between the auto-commit path and the pending queue — prevents an
+    `git add` → commit → enqueue critical section, and a per-path advisory lock,
+    now SHARED between the auto-commit path and the pending queue: it prevents an
     auto-commit from racing a concurrent write or landing on a path with a pending
     proposal in flight (whose later approval would clobber it). The auto-commit
     path previously took no lock, so concurrent `kb_propose_*` calls in one session
@@ -1494,11 +1511,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `rejected_stale_base` without committing. No marker → behavior unchanged.
   - **Content-validation gate.** No validation ran on the write path, so malformed
     YAML, a forged/duplicate `id`, or an invalid enum value committed and pushed to
-    `origin/main` — and a duplicate `id` broke every subsequent index rebuild (one
+    `origin/main`, and a duplicate `id` broke every subsequent index rebuild (one
     bad write, persistent degraded state). Every postimage is now format-validated
-    plus checked for a duplicate `id` — using the EFFECTIVE id the rebuild assigns
+    plus checked for a duplicate `id`, using the EFFECTIVE id the rebuild assigns
     (explicit frontmatter `id` OR the path-derived id) against BOTH the live index
-    and the session worktree's committed tree, and including reserved files —
+    and the session worktree's committed tree, and including reserved files,
     before commit; failures are rejected `rejected_invalid_document` with
     machine-readable errors. Rendered memories pass the gate as a cheap self-check.
     The **bootstrap** path now commits its whole file bundle through the same

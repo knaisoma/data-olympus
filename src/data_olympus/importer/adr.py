@@ -137,7 +137,7 @@ def _parse_status(status_text: str, *, this_num: int) -> StatusInfo:
         if not line:
             continue
         low = line.lower()
-        # "supersedes X" (this ADR replaces X) — check before the keyword map so
+        # "supersedes X" (this ADR replaces X): check before the keyword map so
         # "Superseded by" (passive) is not confused with "Supersedes" (active).
         if low.startswith("supersedes") or low.startswith("supercedes"):
             for ref in _extract_refs(line, exclude=this_num):

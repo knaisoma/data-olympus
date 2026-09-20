@@ -7,12 +7,12 @@ full-capability principal named ``operator``) plus an optional
 
 This unifies three review findings into one mechanism:
 
-- **MCP write-tool auth** — the MCP middleware enforces capabilities for write
+- **MCP write-tool auth**: the MCP middleware enforces capabilities for write
   tools exactly as the REST layer does, closing the gap where MCP tools bypassed
   ``KB_AUTH_TOKEN``.
-- **Per-agent identity & capability policy** — different tokens map to principals
+- **Per-agent identity & capability policy**: different tokens map to principals
   with different capability sets.
-- **Confidence clamp** — a principal that lacks the ``auto_commit`` capability
+- **Confidence clamp**: a principal that lacks the ``auto_commit`` capability
   has its proposals parked as *pending* regardless of the client-asserted
   confidence, so a caller cannot self-assert ``confidence: 1.0`` to skip review.
 
@@ -22,7 +22,7 @@ Posture summary:
   fully-trusted ``LOCAL_TRUSTED`` principal. This preserves the pre-auth
   trusted-local behavior and is documented as the trusted-agent assumption.
 - **Auth configured**: an unknown/missing token is the read-only ``anonymous``
-  principal — denied on every write route. A valid token is its mapped
+  principal, denied on every write route. A valid token is its mapped
   principal, with writes gated and possibly confidence-clamped by its capabilities.
 """
 from __future__ import annotations
@@ -49,7 +49,7 @@ ALL_CAPABILITIES: frozenset[str] = frozenset({
 
 # Least-privilege default for a KB_AUTH_PRINCIPALS entry that omits an explicit
 # ``capabilities`` list (item 5). Previously the default was ALL_CAPABILITIES,
-# which handed every per-agent token ``resolve`` and ``auto_commit`` — letting an
+# which handed every per-agent token ``resolve`` and ``auto_commit``: letting an
 # agent approve its own proposals (self-approval) and skip operator review. The
 # safe default grants only read + propose; an operator who genuinely wants a
 # higher-privileged agent must opt in by listing capabilities explicitly.

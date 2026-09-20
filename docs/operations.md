@@ -15,14 +15,14 @@ Throughout, the Kubernetes examples target a single-writer StatefulSet pod
 Three endpoints answer three different questions (full table in
 `docs/serving.md`):
 
-- **`GET /readyz`** — *Can this pod serve reads now?* 200 when the process is up
+- **`GET /readyz`**: *Can this pod serve reads now?* 200 when the process is up
   and the index is loaded and the last build succeeded; 503 otherwise.
   **Independent of data staleness.** This is the Kubernetes readiness-probe
   target.
-- **`GET /livez`** — *Is the process responsive?* Always 200 if it answers at all.
+- **`GET /livez`**: *Is the process responsive?* Always 200 if it answers at all.
   (The default liveness probe is a `tcpSocket` check; `/livez` is the HTTP
   equivalent.)
-- **`GET /api/v1/health`** — *Is the data fresh and the write path healthy?*
+- **`GET /api/v1/health`**: *Is the data fresh and the write path healthy?*
   Returns 503 with `degraded: true` when stale, when no pull has succeeded, when
   the index is empty, or when the last build failed. **This is the alerting
   surface, not a probe target.**
@@ -81,12 +81,12 @@ pod's PVCs and are **not** covered by the git remote. Back these up separately.
 
 ### 2.1 What the git remote does NOT cover
 
-1. **The audit chain** (`/state/audit/`) — the tamper-evident JSONL log and its
+1. **The audit chain** (`/state/audit/`): the tamper-evident JSONL log and its
    rotated segments. Lost audit history cannot be reconstructed from git.
-2. **Pending proposals** (`/state/pending/`) — low-confidence writes awaiting
+2. **Pending proposals** (`/state/pending/`): low-confidence writes awaiting
    operator approval. These have not been committed, so they are not on the
    remote; losing the volume drops them.
-3. **Unpushed worktree commits** (`/kb-worktrees/`, `/state/push-queue/`) —
+3. **Unpushed worktree commits** (`/kb-worktrees/`, `/state/push-queue/`):
    commits that were made on a session branch but not yet pushed (including frozen
    or demoted push-queue entries). Until they reach `origin/main` they exist only
    on the pod.
@@ -104,7 +104,7 @@ curl -s http://<host>/api/v1/audit/verify
 
 Because rotation carries the hash chain across files (see `docs/serving.md`), a
 backup that includes **all** `events*.log` files verifies end-to-end. Do not back
-up only the live `events.log` if rotation is enabled — the chain would be
+up only the live `events.log` if rotation is enabled, the chain would be
 incomplete.
 
 If you rotate manually instead of via `KB_AUDIT_MAX_BYTES`, do it while the
@@ -162,7 +162,7 @@ not be backed up (see §3.3).
 ### 3.1 Bump the image tag
 
 Edit the image reference in `deploy/k8s/statefulset.yaml` (BOTH the `prepare-git`
-initContainer and the main container — keep them on the same tag) and re-apply:
+initContainer and the main container, keep them on the same tag) and re-apply:
 
 ```bash
 kubectl apply -k deploy/k8s/
@@ -179,11 +179,11 @@ The taxonomy and the set of writable prefixes are configurable at deploy time wi
 no code change. If you set any of these, they must stay **consistent across an
 upgrade** or the index will classify/accept documents differently:
 
-- `KB_TAXONOMY_PATH` — JSON file of the tier/category taxonomy.
-- `KB_INDEXED_PREFIXES` — comma-separated writable top-level prefixes that
+- `KB_TAXONOMY_PATH`: JSON file of the tier/category taxonomy.
+- `KB_INDEXED_PREFIXES`: comma-separated writable top-level prefixes that
   **replace** the default set. A prefix removed here makes previously-indexed docs
   under it invisible after the next rebuild.
-- `KB_MEMORY_INBOX_PREFIX` — directory new memory proposals are written under.
+- `KB_MEMORY_INBOX_PREFIX`: directory new memory proposals are written under.
 
 Before upgrading, diff the new release's default taxonomy against yours; if the
 release changes defaults and you rely on them (rather than setting the env vars
@@ -294,7 +294,7 @@ failure.
 
 **Recovery:** fix the offending documents on the remote (the conflict list names
 the ids and paths), let the pull loop pick up the fix, and the next rebuild
-succeeds. Do not delete the index to "retry" — that would drop the last-good index
+succeeds. Do not delete the index to "retry": that would drop the last-good index
 and leave nothing to serve until the source is fixed.
 
 ### 4.3 Force-push / history rewrite on `origin/main`
@@ -306,7 +306,7 @@ the old history.
 **Recovery (destructive; do it deliberately):**
 
 1. Quiesce writes: `kubectl -n data-olympus scale statefulset/data-olympus-mcp --replicas=0`.
-   (Confirm the push queue is empty first, or you will lose unpushed commits — see
+   (Confirm the push queue is empty first, or you will lose unpushed commits, see
    §2.3. If you need to preserve them, `git format-patch`/`bundle` them out of the
    worktrees before proceeding.)
 2. Scale back up. On boot, hard-reset `/kb-main` to the rewritten remote and clear
@@ -333,7 +333,7 @@ history rewrite an explicit reset is the safe, fast path.
 ### 4.4 Frozen push-queue entries
 
 **Symptom:** `push_queue_frozen > 0`. An entry hit the retry cap (a persistent
-push failure the non-FF rebase recovery could not handle — typically auth,
+push failure the non-FF rebase recovery could not handle, typically auth,
 network, or a remote-side rejection) and the retry loop stopped retrying it.
 
 **Recovery (file-level; there is no unfreeze API):** fix the underlying push
@@ -361,9 +361,9 @@ and recorded a `push_conflict_demoted` audit event (status `demoted_to_pending`)
 Two situations reach this same demotion path and emit the same audit
 event_type/status:
 
-- **Rebase conflict** — the automatic fetch+rebase could not re-apply the commit
+- **Rebase conflict**: the automatic fetch+rebase could not re-apply the commit
   because both sessions edited the same lines.
-- **Persistent contention** — a non-conflicting non-FF that kept losing the race
+- **Persistent contention**: a non-conflicting non-FF that kept losing the race
   is retried in-line for a bounded number of passes, then demoted the same way
   instead of counting toward the freeze cap.
 
@@ -421,11 +421,11 @@ A committed, frontmatter-only markdown doc (default path
 `tooling/maintenance-ledger.md`, `KB_MAINTENANCE_LEDGER_PATH`) records a
 corpus-state audit computed at every index build:
 
-- `status_present_in_all_kb_entries` — whether every indexed document (except
-  reserved filenames — `index.md`/`log.md`/`template.md`) carries a `status`
+- `status_present_in_all_kb_entries`: whether every indexed document (except
+  reserved filenames, `index.md`/`log.md`/`template.md`) carries a `status`
   field, plus a capped list (50 paths + a total count) of the ones that don't.
   This is the migration vehicle for making `status` mandatory.
-- `recently_expired` / `expiring_soon` — documents whose `valid_until`
+- `recently_expired` / `expiring_soon`: documents whose `valid_until`
   (issue #107 validity metadata) fell in the last `KB_MAINTENANCE_RECENTLY_EXPIRED_DAYS`
   days (default 30), or falls within the next `KB_MAINTENANCE_EXPIRING_SOON_DAYS`
   days (default 30), each capped at 50 items + a total count.
@@ -448,12 +448,12 @@ refused with a `skipped_bad_path` audit event instead of committing a doc the
 index would never serve.
 
 The same computed state also drives a `pending_actions` field on `kb_consult`
-and `kb_health` responses (never `kb_search` — per-hit noise trains agents to
+and `kb_health` responses (never `kb_search`, per-hit noise trains agents to
 ignore it): a list of `{kind, message, count}` items, present only while the
 corpus is dirty. An agent seeing `pending_actions` should surface it to the
 operator and act on it only with operator confirmation. Silencing is
 automatic: fix the underlying doc(s), the next index build flips the flag, the
-next ledger commit records it, and `pending_actions` disappears — no manual
+next ledger commit records it, and `pending_actions` disappears, no manual
 acking.
 
 A private deployment using a custom `KB_TAXONOMY_PATH` (rather than the
@@ -475,12 +475,12 @@ Relevant environment variables:
 
 ### 5.1 Migrating a corpus to mandatory `status` (issue #114)
 
-`status` has always been a required frontmatter field (SPEC.md section 4.2) and a `kb lint` error when absent. Issue #114 closed the one gap left open: the write path previously let a brand-new status-less document through even though `kb lint` would already flag it. As of this change, `kb_propose_edit` rejects a postimage that creates a **new** file without `status` (`rejected_invalid_document`, reason `missing_status`); editing an **existing** status-less document is still allowed with no `status` required, so a legacy corpus is never locked out of incremental fixes. `kb_propose_memory` is unaffected — every server-rendered memory already stamps `status: proposed` (issue #109).
+`status` has always been a required frontmatter field (SPEC.md section 4.2) and a `kb lint` error when absent. Issue #114 closed the one gap left open: the write path previously let a brand-new status-less document through even though `kb lint` would already flag it. As of this change, `kb_propose_edit` rejects a postimage that creates a **new** file without `status` (`rejected_invalid_document`, reason `missing_status`); editing an **existing** status-less document is still allowed with no `status` required, so a legacy corpus is never locked out of incremental fixes. `kb_propose_memory` is unaffected, every server-rendered memory already stamps `status: proposed` (issue #109).
 
 This is a migration, not a hard break: a legacy corpus with status-less documents keeps working exactly as before.
 
 - **Nothing stops serving.** A status-less document is still indexed and still returned by a default `kb_search` / `kb_get`. It is simply never in force (`IN_FORCE_STATUSES` membership already excludes an absent status), so it can never be surfaced by `kb_consult` and never outranks or governs anything.
-- **The migration vehicle is the maintenance ledger** (section 5 above): `status_present_in_all_kb_entries` goes `false` and `missing_status.paths` lists up to 50 offending files (plus a total count) the moment any document lacks `status`. The `pending_actions` CTA on `kb_consult`/`kb_health` nags with a `missing_status` item until the corpus is clean, then disappears automatically — no manual acking.
+- **The migration vehicle is the maintenance ledger** (section 5 above): `status_present_in_all_kb_entries` goes `false` and `missing_status.paths` lists up to 50 offending files (plus a total count) the moment any document lacks `status`. The `pending_actions` CTA on `kb_consult`/`kb_health` nags with a `missing_status` item until the corpus is clean, then disappears automatically: no manual acking.
 
 **Runbook:**
 
@@ -494,7 +494,7 @@ This is a migration, not a hard break: a legacy corpus with status-less document
 
 Issue #114 (section 5.1) left one sharp edge on the read side: a pre-0.4.0 corpus that upgrades to a `status`-mandatory build has its status-less documents served but NO LONGER treated as in-force, so guidance that used to govern silently stops governing until an operator adds `status` to every file. Issue #147 removes that edge with a safe default: a legacy document missing `status` is treated as `active` (the in-force default that preserves pre-0.4.0 behavior).
 
-This INTENTIONALLY reverses the conservative "never guess status" stance issue #114 took, but only for the narrow legacy-upgrade case. The rationale: a seamless upgrade that keeps a legacy corpus governing exactly as it did before beats conservatively flagging every legacy document as not-in-force and demanding a manual fix before any of it counts. The old conservative behavior is preserved behind a knob (`KB_STATUS_AUTOFILL=off`) for a deployment that prefers explicit flagging.
+This INTENTIONALLY reverses the conservative "never guess status" stance issue #114 took, but only for the narrow legacy-upgrade case. The rationale: an upgrade that keeps a legacy corpus governing exactly as it did before beats conservatively flagging every legacy document as not-in-force and demanding a manual fix before any of it counts. The old conservative behavior is preserved behind a knob (`KB_STATUS_AUTOFILL=off`) for a deployment that prefers explicit flagging.
 
 The autofill runs in TWO lanes, kept deliberately separate so indexing stays side-effect-free:
 
