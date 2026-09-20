@@ -24,10 +24,13 @@ tests/
 # well-meant prose fix from silently invalidating the receipt.
 #
 # The REST of benchmarks/ stays linted, including README.md and
-# real_corpus_eval.md. Its Python sources are bound only through
-# `SOURCE_PATTERNS`, which check_benchmark_docs.py verifies against the bytes
-# committed at the receipt's own source_commit, read from git history, so
-# editing a comment or a docstring today invalidates nothing.
+# real_corpus_eval.md. Its Python sources are reached through `SOURCE_PATTERNS`,
+# which the benchmark-docs CI guard verifies against the bytes committed at the
+# receipt's own source_commit, read from git history, so under that guard
+# editing a comment or a docstring today invalidates nothing. Note that
+# receipt.verify_receipt() called directly compares SOURCE_PATTERNS and uv.lock
+# against the CURRENT tree instead; the CI guard is what runs here, and it is
+# what this exclusion set is written against.
 benchmarks/corpus/
 benchmarks/governance/
 benchmarks/governance_results/ablation.md

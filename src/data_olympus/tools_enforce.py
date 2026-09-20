@@ -2,7 +2,7 @@
 """Enforcement tool function implementations: consult, gate-check, compliance.
 
 Decoupled from FastMCP registration, deps passed as kwargs, return pydantic
-models, mirrors tools_read.py / tools_write.py."""
+models. This module mirrors tools_read.py / tools_write.py."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

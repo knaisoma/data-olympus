@@ -162,7 +162,7 @@ not be backed up (see §3.3).
 ### 3.1 Bump the image tag
 
 Edit the image reference in `deploy/k8s/statefulset.yaml` (BOTH the `prepare-git`
-initContainer and the main container, keep them on the same tag) and re-apply:
+initContainer and the main container; keep them on the same tag) and re-apply:
 
 ```bash
 kubectl apply -k deploy/k8s/
@@ -306,7 +306,7 @@ the old history.
 **Recovery (destructive; do it deliberately):**
 
 1. Quiesce writes: `kubectl -n data-olympus scale statefulset/data-olympus-mcp --replicas=0`.
-   (Confirm the push queue is empty first, or you will lose unpushed commits, see
+   (Confirm the push queue is empty first, or you will lose unpushed commits; see
    §2.3. If you need to preserve them, `git format-patch`/`bundle` them out of the
    worktrees before proceeding.)
 2. Scale back up. On boot, hard-reset `/kb-main` to the rewritten remote and clear
