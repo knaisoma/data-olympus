@@ -12,6 +12,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+* **Caller-supplied text that cannot be encoded as UTF-8 no longer suppresses an
+  audit event, and no longer breaks reads for everyone else.** An unpaired
+  surrogate passed every write-path gate: `json.loads` accepts the escape, the
+  secret scanner is a regex match, and the entry is persisted with
+  `ensure_ascii=True`. Two consequences, both fixed. Identity and routing fields
+  (`agent_identity`, `source_session`, `target_path`, `pending_id`, `edited_text`)
+  are now REJECTED with `rejected_invalid_encoding` before any side effect: an
+  unencodable one used to raise inside the suppressed block in `_emit_audit`, so
+  the write proceeded and no audit record was written for it. Advisory text
+  (`reason`) is replaced with a placeholder, matching the existing secret-scan
+  treatment of that field, and `evidence` items are rejected, matching theirs.
+  Separately, the pending listing, the pending detail response and the health
+  `path_locks` projection now degrade an unrenderable value to a placeholder
+  instead of failing the whole response, which covers records written before this
+  release. Encodability is tested rather than the surrogate code-point range, so
+  correctly-paired astral characters are unaffected. (#280)
+
 ## [0.9.0] - 2026-09-21
 
 ### Added

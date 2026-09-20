@@ -24,12 +24,18 @@ insufficient:
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 
 import pytest
 
 from data_olympus.pending import PendingQueue
-from data_olympus.tools_write import _safe_advisory_text, _validate_evidence
+from data_olympus.tools_write import (
+    _reject_unencodable_identity,
+    _safe_advisory_text,
+    _validate_evidence,
+)
 
 LONE_SURROGATE = "\ud800"
 
@@ -136,3 +142,75 @@ class TestListingSurvivesAPoisonedRecordAlreadyOnDisk:
         by_path = {e["target_path"]: e for e in listed}
         assert by_path["a.md"]["reason"] == "ordinary", "untouched neighbour"
         assert by_path["b.md"]["reason"] != LONE_SURROGATE
+
+
+class TestIdentityFieldsAreRejectedNotSanitized:
+    """The audit-suppression hole, which is the serious one.
+
+    _emit_audit wraps its append in contextlib.suppress(Exception) so audit
+    trouble never fails a write, and AuditLog._canonical serializes with
+    ensure_ascii=False before _digest encodes strictly. An unpaired surrogate
+    in agent_identity therefore raised INSIDE the suppressed block: the write
+    went through and no audit record was written for it. That is audit
+    evasion by a caller who merely controls their own identity string, so
+    these fields are rejected outright rather than replaced.
+    """
+
+    def test_the_audit_digest_really_does_raise_on_a_surrogate(self):
+        """Pin the mechanism, so the rejection below is not cargo-culted."""
+        body = {"agent_identity": LONE_SURROGATE, "event_type": "propose_edit"}
+        canonical = json.dumps(body, sort_keys=True, ensure_ascii=False)
+        with pytest.raises(UnicodeEncodeError):
+            hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def test_unencodable_agent_identity_is_named_but_not_echoed(self):
+        err = _reject_unencodable_identity(agent_identity=LONE_SURROGATE)
+        assert err is not None
+        assert "agent_identity" in err
+        assert LONE_SURROGATE not in err
+        _renders_like_starlette({"reason": err})
+
+    def test_each_identity_field_is_checked(self):
+        for field in ("agent_identity", "source_session", "target_path", "pending_id"):
+            err = _reject_unencodable_identity(**{field: LONE_SURROGATE})
+            assert err is not None and field in err, field
+
+    def test_ordinary_and_astral_identities_pass(self):
+        assert _reject_unencodable_identity(
+            agent_identity="agent-1", source_session="sess-1",
+            target_path="decisions/D-1.md", edited_text="fine \U0001F600",
+        ) is None
+
+    def test_none_fields_pass(self):
+        assert _reject_unencodable_identity(agent_identity=None, edited_text=None) is None
+
+
+class TestDetailResponseSurvivesALegacyPoisonedRecord:
+    def test_reason_is_placeheld_rather_than_breaking_the_route(self):
+        """GET /api/v1/pending/{id} reads meta["reason"] directly, so the
+        listing fix alone did not cover it."""
+        from data_olympus.pending import _render_safe
+        assert _render_safe({"reason": LONE_SURROGATE})["reason"] != LONE_SURROGATE
+        _renders_like_starlette(_render_safe({"reason": LONE_SURROGATE}))
+
+
+class TestHealthLockProjectionSurvivesAPoisonedLock:
+    def test_auto_commit_owner_does_not_break_health(self, tmp_path):
+        """An auto-commit lock records "auto-commit:<source_session>" as its
+        pending_id, so caller text reaches health through held_locks()."""
+        root = tmp_path / "pending"
+        root.mkdir()
+        q = PendingQueue(pending_root=str(root))
+        locks = os.path.join(str(root), "locks")
+        os.makedirs(locks, exist_ok=True)
+        with open(os.path.join(locks, "deadbeef.lock"), "w", encoding="utf-8") as f:
+            json.dump({
+                "pending_id": "auto-commit:" + LONE_SURROGATE,
+                "target_path": "a.md", "owner_kind": "auto_commit",
+                "acquired_at": 1.0,
+            }, f)
+
+        records = q.held_locks()
+        assert len(records) == 1
+        _renders_like_starlette(records)
+        assert LONE_SURROGATE not in records[0]["pending_id"]

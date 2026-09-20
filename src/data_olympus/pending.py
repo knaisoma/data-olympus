@@ -1275,10 +1275,15 @@ class PendingQueue:
                 })
                 continue
             acquired_at = info.get("acquired_at")
+            # _render_safe for the same reason as the listing: an auto-commit
+            # lock records "auto-commit:<source_session>" as its pending_id,
+            # so caller text reaches health through this projection, and one
+            # unrenderable lock would fail health, readiness and every REST
+            # read built on it rather than just its own record.
             out.append({
-                "target_path": info.get("target_path"),
-                "owner_kind": info.get("owner_kind", "pending"),
-                "pending_id": info.get("pending_id"),
+                "target_path": _render_safe(info.get("target_path")),
+                "owner_kind": _render_safe(info.get("owner_kind", "pending")),
+                "pending_id": _render_safe(info.get("pending_id")),
                 "acquired_at": acquired_at,
                 "age_seconds": (
                     max(0.0, now - acquired_at)

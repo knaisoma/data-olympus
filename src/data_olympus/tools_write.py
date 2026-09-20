@@ -37,6 +37,7 @@ from data_olympus.pending import (
     PendingNotFoundError,
     PendingQueue,
     PendingQueueFullError,
+    _render_safe,
 )
 from data_olympus.write_gate import (
     SNAPSHOT_DEPENDENT_CODES,
@@ -133,6 +134,30 @@ def _is_json_renderable(value: str) -> bool:
 
 
 _UNENCODABLE_NOTE = "[reason omitted: not encodable as UTF-8]"
+
+
+def _reject_unencodable_identity(**fields: str | None) -> str | None:
+    """Rejection reason if any IDENTITY or ROUTING field cannot be encoded.
+
+    These are rejected outright rather than replaced, unlike ``reason``,
+    because they are not advisory: they name the principal, the session and
+    the target, they are hashed into the audit chain, and they are echoed in
+    error responses. An unencodable one is not a cosmetic problem.
+
+    It silently SUPPRESSED THE AUDIT EVENT. ``_emit_audit`` wraps the append
+    in ``contextlib.suppress(Exception)`` so that audit trouble never fails a
+    write, and ``AuditLog._canonical`` serializes with ``ensure_ascii=False``
+    before ``_digest`` encodes strictly. An unpaired surrogate in
+    ``agent_identity`` therefore raised inside the suppressed block: the write
+    proceeded and no audit record was written for it. Rejecting here, BEFORE
+    the first side effect and before any audit emission, closes that.
+
+    The message names the field but never echoes its value.
+    """
+    for name, value in fields.items():
+        if isinstance(value, str) and not _is_json_renderable(value):
+            return f"{name} is not encodable as UTF-8"
+    return None
 
 
 def _safe_advisory_text(value: str) -> str:
@@ -1093,6 +1118,13 @@ def kb_propose_memory_fn(
     # accepting them instead of rejecting rejected_invalid_evidence.
     if evidence is None:
         evidence = []
+    # See the edit path: identity encodability is checked before any audit
+    # emission, because an unencodable value suppressed the audit event.
+    encoding_error = _reject_unencodable_identity(
+        agent_identity=agent_identity, source_session=source_session,
+    )
+    if encoding_error is not None:
+        return ProposeResponse(status="rejected_invalid_encoding", reason=encoding_error)
     evidence_error = _validate_evidence(evidence)
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     # issue #71: the slug is derived VERBATIM from the caller's free text (no
@@ -1469,6 +1501,17 @@ def kb_propose_edit_fn(
             matching_pattern=path_scan.match.pattern_name,
         )
 
+    # Encodability of the identity/routing fields, checked FIRST: before the
+    # first audit emission, because an unencodable one silently suppressed the
+    # audit event itself (see _reject_unencodable_identity), and before
+    # target_path is echoed back in any rejection response.
+    encoding_error = _reject_unencodable_identity(
+        agent_identity=agent_identity, source_session=source_session,
+        target_path=target_path,
+    )
+    if encoding_error is not None:
+        return ProposeResponse(status="rejected_invalid_encoding", reason=encoding_error)
+
     # issue #71 (codex round-3 Blocker 1): ``reason`` is persisted into
     # pending meta, push metadata, and audit events, none of which may carry
     # a raw credential value. A flagged reason is REPLACED with a redacted
@@ -1727,6 +1770,18 @@ def kb_resolve_pending_fn(
         PendingAlreadyResolvedError,
     )
 
+    # Before ANY side effect and before the first audit emission: an
+    # unencodable identity suppressed the audit event for a resolve, which is
+    # the decision surface that most needs a record of who acted.
+    encoding_error = _reject_unencodable_identity(
+        agent_identity=agent_identity, source_session=source_session,
+        pending_id=pending_id, edited_text=edited_text,
+    )
+    if encoding_error is not None:
+        return ResolvePendingResponse(
+            status="rejected_invalid_encoding", reason=encoding_error,
+        )
+
     audit_base: dict[str, Any] = {
         "event_type": "resolve",
         "agent_identity": agent_identity,
@@ -1958,17 +2013,20 @@ def kb_get_pending_fn(
             note="the secret scanner flagged this postimage, so it is readable "
                  "only by a principal that could resolve it",
         )
+    # Same read-side guard the listing applies, for the same reason: a record
+    # written BEFORE the write-side fix, or by anything else, must not make
+    # this route unrenderable. The stored proposal is not modified.
     return PendingDetailResponse(
         status="ok",
         pending_id=pending_id,
         in_force=False,
         note=_PENDING_NOTE,
-        target_path=entry.get("target_path"),
+        target_path=_render_safe(entry.get("target_path")),
         proposal_type=entry.get("proposal_type"),
-        postimage=entry.get("postimage"),
+        postimage=_render_safe(entry.get("postimage")),
         created_at=entry.get("enqueued_at"),
-        reason=meta.get("reason"),
-        matching_pattern=meta.get("matching_pattern"),
+        reason=_render_safe(meta.get("reason")),
+        matching_pattern=_render_safe(meta.get("matching_pattern")),
     )
 
 
