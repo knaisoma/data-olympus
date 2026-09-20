@@ -12,7 +12,7 @@ Covers:
    - Non-indexed doc in contradicts -> rejected_invalid_contest.
    - Target document self-contradiction -> rejected_invalid_contest.
 3. Propose edit flow with valid contest:
-   - High confidence demoted to pending_confirmation with demotion_reason="contest_declared".
+   - High confidence parks to pending_confirmation without auto-committing.
    - Lock file carries pending_id, intent="contest", contradicts.
    - Pending entry meta carries intent, contradicts, contest_reason.
 4. Lock persistence across claim and restore:
@@ -42,6 +42,7 @@ import data_olympus.durable as durable
 import data_olympus.pending as pending_mod
 from data_olympus.auth import PathBlocklist
 from data_olympus.git_ops import GitOps
+from data_olympus.index import Index
 from data_olympus.pending import PendingQueue
 from data_olympus.push_queue import PushQueue
 from data_olympus.rate_limit import SlidingWindowLimiter
@@ -265,6 +266,59 @@ def test_check_contest_index_unavailable():
     assert err_empty is not None
     assert err_empty.status == "rejected_invalid_contest"
     assert "not found in index" in err_empty.reason
+
+
+def test_check_contest_index_real_sqlite_contract(tmp_path: Path):
+    """Pin the real Index.id_to_path_map SQLite contract (issue #241 review).
+
+    Guarantees:
+    1. A query execution failure on a real Index instance propagates sqlite3.Error,
+       causing _check_contest_index to return rejected_contest_index_unavailable (503).
+       If the sqlite3.Error swallow were restored in index.py, this assertion fails.
+    2. A healthy but empty docs table successfully executes, returns an empty mapping,
+       and produces rejected_invalid_contest (400), distinguishing zero rows from failure.
+    3. A populated docs table resolves valid targets and enforces self-contradiction.
+    """
+    # 1. Real Index with connection succeeding but execute failing (missing docs table)
+    bad_db = tmp_path / "corrupt_idx.db"
+    conn = sqlite3.connect(bad_db)
+    conn.execute("CREATE TABLE wrong_table (id TEXT)")
+    conn.close()
+
+    real_bad_idx = Index(bad_db)
+    err = _check_contest_index(["STD-001"], "decisions/D-001.md", real_bad_idx)
+    assert err is not None
+    assert err.status == "rejected_contest_index_unavailable"
+    assert "contest index resolution unavailable" in err.reason
+
+    # 2. Real Index with healthy, valid, but empty docs table
+    empty_db = tmp_path / "empty_idx.db"
+    conn = sqlite3.connect(empty_db)
+    conn.execute("CREATE TABLE docs (id TEXT PRIMARY KEY, path TEXT)")
+    conn.close()
+
+    real_empty_idx = Index(empty_db)
+    err_empty = _check_contest_index(["STD-001"], "decisions/D-001.md", real_empty_idx)
+    assert err_empty is not None
+    assert err_empty.status == "rejected_invalid_contest"
+    assert "contradicted document not found in index" in err_empty.reason
+
+    # 3. Real Index with populated docs table
+    seeded_db = tmp_path / "seeded_idx.db"
+    conn = sqlite3.connect(seeded_db)
+    conn.execute("CREATE TABLE docs (id TEXT PRIMARY KEY, path TEXT)")
+    conn.execute("INSERT INTO docs (id, path) VALUES ('STD-001', 'universal/STD-001.md')")
+    conn.commit()
+    conn.close()
+
+    real_seeded_idx = Index(seeded_db)
+    # Valid target returns None (no rejection)
+    assert _check_contest_index(["STD-001"], "decisions/D-001.md", real_seeded_idx) is None
+    # Target document self-contradiction returns 400
+    err_self = _check_contest_index(["STD-001"], "universal/STD-001.md", real_seeded_idx)
+    assert err_self is not None
+    assert err_self.status == "rejected_invalid_contest"
+    assert "target document cannot contradict itself" in err_self.reason
 
 
 def test_check_contest_index_doc_not_found():

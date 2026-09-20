@@ -2221,7 +2221,12 @@ class Index:
         (an id already used by a DIFFERENT path corrupts the next rebuild). This
         includes reserved files (index.md/log.md), which the indexer still assigns
         an id (explicit or path-derived), so a reserved file carrying a colliding
-        id is caught too."""
+        id is caught too.
+
+        Note: Database operational errors (``sqlite3.Error``) propagate to callers.
+        Callers must classify exceptions (e.g. mapping to service unavailable) rather
+        than assuming an empty dictionary represents zero indexed documents.
+        """
         conn = self._connect()
         try:
             rows = conn.execute("SELECT id, path FROM docs").fetchall()
