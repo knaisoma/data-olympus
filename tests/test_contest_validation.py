@@ -615,3 +615,204 @@ def test_rest_propose_edit_contest_rejected_for_absent_doc(http_app) -> None:
         assert "STD-NONEXISTENT" not in json.dumps(body)  # zero-leak invariant
 
     asyncio.run(_run())
+
+
+# =============================================================================
+# 7. Maintainer additions (review follow-up, not part of the original slice)
+# =============================================================================
+
+class _RecordingIndex:
+    """An index that appends to a shared ordering log when consulted.
+
+    The ordering tests below are about what did NOT happen, and about the
+    SEQUENCE of what did, so both fakes write into one log rather than
+    keeping private counters. Note the index is legitimately read more than
+    once on the success path (the contest check is not its only caller), so
+    assertions are on order and on absence, never on an exact count.
+    """
+
+    def __init__(self, log: list[str], id_map: dict[str, str] | None = None) -> None:
+        self._log = log
+        self._id_map = id_map or {}
+
+    def id_to_path_map(self) -> dict[str, str]:
+        self._log.append("index")
+        return dict(self._id_map)
+
+
+class _RecordingLimiter:
+    """A limiter that appends to the same ordering log and can refuse."""
+
+    def __init__(self, log: list[str], *, allow: bool = True) -> None:
+        self._log = log
+        self._allow = allow
+
+    def allow(self, *, remote_addr: str, agent_identity: str) -> bool:  # noqa: ARG002
+        # Signature must match SlidingWindowLimiter.allow exactly; the
+        # arguments are irrelevant to what this fake records.
+        self._log.append("limiter")
+        return self._allow
+
+
+def _propose(tmp_path, monkeypatch, *, limiter, idx, contest, confidence=0.5):
+    _apply_git_env(monkeypatch)
+    repo, head_sha, reg, pq, pen, _rl, bl = _setup_harness(tmp_path)
+    return kb_propose_edit_fn(
+        target_path="decisions/D-900.md",
+        postimage="# D-900\nbody\n",
+        base_commit=head_sha,
+        base_blob_sha=None,
+        target_file_hash=None,
+        reason="ordering probe",
+        source_session="sess-order",
+        agent_identity="agent-order",
+        confidence=confidence,
+        confidence_threshold=0.85,
+        worktrees=reg,
+        push_queue=pq,
+        pending=pen,
+        rate_limiter=limiter,  # type: ignore[arg-type]
+        blocklist=bl,
+        remote_addr="127.0.0.1",
+        idx=idx,  # type: ignore[arg-type]
+        contest=contest,
+    )
+
+
+def test_stage1_runs_before_the_rate_limiter(tmp_path, monkeypatch):
+    """A structurally invalid contest must be rejected without spending a
+    rate-limit token or touching the index.
+
+    This is the property the module docstring advertises. Asserting it through
+    kb_propose_edit_fn rather than on _validate_contest directly is the whole
+    point: calling the helper in isolation cannot tell you WHERE in the
+    pipeline it runs, so moving stage 1 after the limiter would leave a
+    helper-level test green.
+    """
+    log: list[str] = []
+    resp = _propose(
+        tmp_path, monkeypatch,
+        limiter=_RecordingLimiter(log), idx=_RecordingIndex(log, {"STD-100": "u/S.md"}),
+        contest={"contradicts": "not-a-list"},
+    )
+    assert resp.status == "rejected_invalid_contest"
+    assert log == [], "stage 1 must reject before the limiter or the index is consulted"
+
+
+def test_stage2_runs_after_the_rate_limiter(tmp_path, monkeypatch):
+    """A rate-limited request must never reach the index check.
+
+    Guards the converse mistake: hoisting stage 2 above the limiter would let
+    an unthrottled caller drive index reads with arbitrary ids.
+    """
+    log: list[str] = []
+    resp = _propose(
+        tmp_path, monkeypatch,
+        limiter=_RecordingLimiter(log, allow=False),
+        idx=_RecordingIndex(log, {"STD-100": "u/S.md"}),
+        contest={"contradicts": ["STD-100"]},
+    )
+    assert resp.status == "rejected_rate_limited"
+    assert "limiter" in log
+    assert "index" not in log, "stage 2 must not run once the limiter has refused"
+
+
+def test_valid_contest_consults_limiter_then_index(tmp_path, monkeypatch):
+    """The ordering on the success path, so both sides are pinned."""
+    log: list[str] = []
+    resp = _propose(
+        tmp_path, monkeypatch,
+        limiter=_RecordingLimiter(log), idx=_RecordingIndex(log, {"STD-100": "u/S.md"}),
+        contest={"contradicts": ["STD-100"], "reason": "disputed"},
+    )
+    assert resp.status == "pending_confirmation"
+    assert log.count("limiter") == 1
+    assert "index" in log
+    assert log.index("limiter") < log.index("index"), "limiter must precede the index read"
+
+
+def test_scalar_contradicts_is_normalized_not_split_into_characters(tmp_path):
+    """A record carrying the scalar form must list as one id, not N characters.
+
+    derive_running_contest documents contradicts as a scalar id OR a list and
+    normalizes both. Before this fix the listing used list(x or []), so a
+    scalar "STD-001" projected as ["S","T","D","-","0","0","1"], and the two
+    readers of the same field disagreed.
+    """
+    root = tmp_path / "pending"
+    root.mkdir()
+    q = PendingQueue(pending_root=str(root))
+    entry = {
+        "pending_id": "20260920T120000Z-cccccccc",
+        "proposal_type": "edit", "target_path": "decisions/D-001.md",
+        "postimage": "x", "enqueued_at": 1.0,
+        "meta": {"intent": "contest", "contradicts": "STD-001"},
+    }
+    (root / f"{entry['pending_id']}.json").write_text(json.dumps(entry), encoding="utf-8")
+
+    listed = q.list()
+    assert len(listed) == 1
+    assert listed[0]["contest"]["contradicts"] == ["STD-001"]
+
+
+def test_non_iterable_contradicts_does_not_break_the_listing(tmp_path):
+    """A truthy non-iterable used to raise out of list(), which would hide
+    every other entry in the queue rather than just this one."""
+    root = tmp_path / "pending"
+    root.mkdir()
+    q = PendingQueue(pending_root=str(root))
+    entries = [
+        {
+            "pending_id": "20260920T120000Z-dddddddd",
+            "proposal_type": "edit", "target_path": "ok.md", "postimage": "x",
+            "enqueued_at": 1.0, "meta": {"reason": "ordinary"},
+        },
+        {
+            "pending_id": "20260920T120001Z-eeeeeeee",
+            "proposal_type": "edit", "target_path": "bad.md", "postimage": "x",
+            "enqueued_at": 2.0, "meta": {"intent": "contest", "contradicts": 42},
+        },
+    ]
+    for e in entries:
+        (root / f"{e['pending_id']}.json").write_text(json.dumps(e), encoding="utf-8")
+
+    listed = q.list()
+    assert len(listed) == 2, "the malformed record must not hide its neighbour"
+    bad = next(e for e in listed if e["target_path"] == "bad.md")
+    assert bad["contest"]["contradicts"] == []
+
+
+def test_scalar_contradicts_survives_into_the_lock_file(tmp_path, monkeypatch):
+    """enqueue used to require list/tuple and silently drop a scalar, so the
+    lock lost metadata the entry still carried."""
+    _apply_git_env(monkeypatch)
+    _repo, _head, _reg, _pq, pen, _rl, _bl = _setup_harness(tmp_path)
+    target = "decisions/D-800.md"
+    pid = pen.enqueue(
+        proposal_type="edit", target_path=target, postimage="x",
+        base_commit=None, base_blob_sha=None, target_file_hash=None,
+        meta={"intent": "contest", "contradicts": "STD-777"},
+    )
+    lock_file = os.path.join(pen._locks_dir, pending_mod._path_lock_filename(target))
+    with open(lock_file) as f:
+        lock_data = json.load(f)
+    assert lock_data["pending_id"] == pid
+    assert lock_data["intent"] == "contest"
+    assert lock_data["contradicts"] == ["STD-777"]
+
+
+def test_tuple_contradicts_is_accepted_like_a_list(tmp_path, monkeypatch):
+    """enqueue accepted a tuple before the normalization change, and a public
+    method must not silently narrow. JSON never yields a tuple, so this only
+    concerns an in-process caller passing meta directly."""
+    _apply_git_env(monkeypatch)
+    _repo, _head, _reg, _pq, pen, _rl, _bl = _setup_harness(tmp_path)
+    target = "decisions/D-801.md"
+    pen.enqueue(
+        proposal_type="edit", target_path=target, postimage="x",
+        base_commit=None, base_blob_sha=None, target_file_hash=None,
+        meta={"intent": "contest", "contradicts": ("STD-1", "STD-2")},
+    )
+    lock_file = os.path.join(pen._locks_dir, pending_mod._path_lock_filename(target))
+    with open(lock_file) as f:
+        assert json.load(f)["contradicts"] == ["STD-1", "STD-2"]

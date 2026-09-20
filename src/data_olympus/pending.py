@@ -120,8 +120,14 @@ def _path_lock_filename(target_path: str) -> str:
 
 def _as_id_list(value: object) -> list[str]:
     """Normalize a decision-chain reference authored as either a scalar ID
-    or a list of IDs into a list of strings."""
-    if isinstance(value, list):
+    or a list of IDs into a list of strings.
+
+    A tuple is accepted alongside a list. JSON never produces one, so this
+    only matters for an in-process caller passing metadata directly, but
+    ``PendingQueue.enqueue`` is public and previously accepted a tuple here;
+    dropping it would have silently narrowed that (issue #241 review).
+    """
+    if isinstance(value, (list, tuple)):
         return [str(v).strip() for v in value if str(v).strip()]
     if isinstance(value, str) and value.strip():
         return [value.strip()]
@@ -419,10 +425,11 @@ class PendingQueue:
             raw_intent = meta.get("intent")
             intent = str(raw_intent) if raw_intent is not None else None
             raw_contradicts = meta.get("contradicts")
+            # Normalized through the same helper derive_running_contest uses,
+            # so the scalar form its Dispute Metadata Contract documents is
+            # persisted as a one-element list rather than silently dropped.
             contradicts = (
-                list(raw_contradicts)
-                if isinstance(raw_contradicts, (list, tuple))
-                else None
+                _as_id_list(raw_contradicts) if raw_contradicts is not None else None
             )
             self._acquire_lock(
                 target_path, pending_id, intent=intent, contradicts=contradicts,
@@ -543,7 +550,12 @@ class PendingQueue:
                 "intent": entry["meta"].get("intent"),
                 "contest": (
                     {
-                        "contradicts": list(entry["meta"].get("contradicts") or []),
+                        # Same normalization as derive_running_contest, whose
+                        # contract documents contradicts as a scalar id OR a
+                        # list. list() on a scalar would project it as one
+                        # entry per character, and would raise outright on a
+                        # truthy non-iterable, taking the whole listing down.
+                        "contradicts": _as_id_list(entry["meta"].get("contradicts")),
                         "contest_reason": entry["meta"].get("contest_reason"),
                     }
                     if entry["meta"].get("intent") == "contest"

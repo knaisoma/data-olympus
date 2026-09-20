@@ -14,19 +14,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-* **Write-side contest validation and lock persistence for collaborative proposals (#241).**
-  `kb_propose_edit` accepts an optional `contest` mapping declaring `contradicts` document IDs
-  and an optional dispute `reason`. Enforces a two-phase validation gate: Stage 1 validates
-  structural bounds and scans for credentials before rate limiting, and Stage 2 validates
-  contradiction IDs against the document index snapshot to prevent target self-contradiction
-  without leaking private path details. `PendingQueue` persists `intent: "contest"` and
-  `contradicts` in the path lock across `_claim` and `restore_resolve` transitions, and
-  `kb_list_pending` projects the proposal reason and dispute rationale as separate fields.
-  Duplicate `contradicts` items are rejected with `rejected_invalid_contest`. `Index.id_to_path_map`
-  now propagates database operational errors (`sqlite3.Error`) so failed index reads fail closed
-  as unknown/unavailable rather than silently misclassifying as target not in force. Read-side
-  projection in `held_locks()` is deliberately deferred pending #270 allow-list integration.
-  Contributed by @RemanenetSpy in #278.
+* **A proposal can now declare that it contests existing indexed knowledge (#241).**
+  `kb_propose_edit` accepts an optional `contest` mapping carrying `contradicts` document IDs
+  and an optional dispute `reason`, so a resolved contradiction becomes distinguishable from an
+  ordinary edit. **A valid contest always parks for confirmation**, even at high confidence with
+  auto-commit otherwise permitted: disputing in-force knowledge is a human decision, never an
+  automatic one. Validation runs in two stages: structural bounds and a credential scan before
+  the rate limiter, then contradiction IDs are resolved against the index after it, rejecting a
+  target that contradicts itself and never echoing a submitted ID or a resolved path back to the
+  caller. Duplicate `contradicts` items are rejected with `rejected_invalid_contest`.
+  `PendingQueue` persists `intent: "contest"` and `contradicts` in the path lock, which the
+  claim and restore transitions preserve, and `kb_list_pending` projects the proposal's
+  operational reason and its dispute rationale as separate fields. `Index.id_to_path_map` now
+  propagates database operational errors (`sqlite3.Error`) instead of returning an empty map, so
+  contest validation and governed-target classification can tell a failed index read from an
+  empty index and fail closed on it; the duplicate-id checks in `write_gate` keep their
+  deliberate fail-open behaviour. Read-side projection in `held_locks()` is deliberately left to
+  a later slice; it is not blocked, since #270's health allow-list already covers these fields by
+  construction. Contributed by @RemanenetSpy in #278.
 
 ### Security
 

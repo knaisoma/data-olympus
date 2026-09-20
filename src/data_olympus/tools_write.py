@@ -308,7 +308,14 @@ def _validate_contest(contest: object) -> tuple[dict[str, Any] | None, ProposeRe
     raw_contradicts = contest.get("contradicts")
     raw_reason = contest.get("reason")
 
-    # Secret scanning check runs FIRST across all string inputs before structural validation
+    # Secret scanning runs FIRST, before structural validation, so a credential
+    # sent in the wrong field is reported as a secret rather than as a shape
+    # error that echoes nothing about why. It covers the two fields this
+    # function accepts, in the shapes it accepts them: `contradicts` items when
+    # it is a list of strings, and `reason` when it is a string. A string under
+    # an UNKNOWN key, or a scalar `contradicts`, is not scanned -- it is
+    # rejected below without being echoed, persisted or logged, so nothing
+    # reaches a downstream surface either way.
     if isinstance(raw_contradicts, list):
         for item in raw_contradicts:
             if isinstance(item, str):
