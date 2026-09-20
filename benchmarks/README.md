@@ -67,7 +67,7 @@ identical across the old/new pair, and every body mixes in a pool of shared
 distractor vocabulary so a query term is not a near-unique fingerprint of its gold
 doc. **Known remaining leak (documented on purpose):** the `exact` category still
 echoes the topic word, which also appears in the doc title and body. That is
-intentional, `exact` is the literal-lookup category and is not claimed to measure
+intentional: `exact` is the literal-lookup category and is not claimed to measure
 anything harder than keyword matching. No other category shares answer vocabulary
 with its gold doc.
 

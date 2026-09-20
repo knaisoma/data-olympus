@@ -20,11 +20,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   LLM diction. It is a vendored copy of the operator's canonical linter;
   changes belong upstream first, and the header records the upstream commit and
   sha256 so the copy is verifiable. `.prose-lintignore` lists what is out of
-  scope, notably the three benchmark output documents in `_OUTPUT_PATHS` whose
-  CURRENT bytes a measurement receipt hashes. The rest of `benchmarks/` is
-  linted: its Python sources are verified against the bytes committed at the
-  receipt's own `source_commit`, so editing a comment today does not invalidate
-  a past measurement.
+  scope, notably the benchmark material whose CURRENT bytes a measurement
+  receipt hashes: the generated result documents in `_OUTPUT_PATHS` and the
+  measured corpus under `benchmarks/corpus/` and `benchmarks/governance/`. The
+  rest of `benchmarks/` is linted, README included: its Python sources are
+  verified against the bytes committed at the receipt's own `source_commit`, so
+  editing a comment today does not invalidate a past measurement.
 * **Documentation prose backfilled to match.** 118 em-dashes across README,
   SPEC, WHY, CHANGELOG, `docs/` and `deploy/` are replaced with a colon, a
   comma or two sentences, chosen per sentence rather than mechanically. Prose
@@ -1098,8 +1099,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `tooling/maintenance-ledger.md`, `KB_MAINTENANCE_LEDGER_PATH`) is now
   computed at every index build: whether `status` is present on every
   indexed document (except reserved filenames), plus a capped list (50 paths
-  + a total count) of the ones missing it: the migration vehicle for making
-  `status` mandatory, and, consuming issue #107 validity data, documents
+  + a total count) of the ones missing it (the migration vehicle for making
+  `status` mandatory), and, consuming issue #107 validity data, documents
   that recently expired or are expiring soon within configurable windows
   (`KB_MAINTENANCE_RECENTLY_EXPIRED_DAYS` / `KB_MAINTENANCE_EXPIRING_SOON_DAYS`,
   both default 30 days), each capped the same way. When the computed state

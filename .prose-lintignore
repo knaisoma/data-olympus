@@ -13,14 +13,23 @@ to-delete/
 # Fixtures and pinned upstream conformance data.
 tests/
 
-# Benchmark artifacts whose CURRENT bytes a measurement receipt hashes.
-# `_OUTPUT_PATHS` in benchmarks/receipt.py lists them, and
-# scripts/check_benchmark_docs.py fails when they change, so that a published
-# number stays tamper-evident. Editing their prose would mean re-running the
-# benchmark, which changes what the numbers mean. The rest of benchmarks/ is
-# NOT excluded: its Python sources are verified against the bytes committed at
-# the receipt's own source_commit, read from git history, so editing a comment
-# or a docstring today does not invalidate a past measurement.
+# Benchmark material whose CURRENT bytes a measurement receipt hashes, so that
+# a published number stays tamper-evident. Editing any of it means re-running
+# the benchmark, which changes what the numbers mean.
+#
+# Two groups in benchmarks/receipt.py, not one. `_OUTPUT_PATHS` lists the
+# generated result documents. `_corpus_group` additionally hashes the measured
+# corpus, `benchmarks/corpus/**/*.md` and `benchmarks/governance/**/*.md`, which
+# is 290 files; they carry no findings today, and excluding them keeps a later
+# well-meant prose fix from silently invalidating the receipt.
+#
+# The REST of benchmarks/ stays linted, including README.md and
+# real_corpus_eval.md. Its Python sources are bound only through
+# `SOURCE_PATTERNS`, which check_benchmark_docs.py verifies against the bytes
+# committed at the receipt's own source_commit, read from git history, so
+# editing a comment or a docstring today invalidates nothing.
+benchmarks/corpus/
+benchmarks/governance/
 benchmarks/governance_results/ablation.md
 benchmarks/governance_results/embeddings/ablation.md
 benchmarks/results/report.md

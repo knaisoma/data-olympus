@@ -54,7 +54,7 @@ surface via plain `kb_search`/`kb_get`.
   - `source_session`
   - `agent_identity`
   - `trigger` (optional; `"explicit"` default, or `"prompt_hook"` for an
-    installer auto-consult, see the gate policy above). Omitting it is treated as
+    installer auto-consult; see the gate policy above). Omitting it is treated as
     `"explicit"` for backward compatibility.
 - `POST /api/v1/gate/check`: verdict (`allow` | `consult_required`) for a pending
   code action. Body:
