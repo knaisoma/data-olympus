@@ -40,7 +40,7 @@ class Section:
 
         The boundary heading is kept inside ``body`` so the concept text is
         complete, but the too-short skip test must measure content, not the
-        heading, otherwise a long heading over an empty body would spuriously
+        heading; otherwise a long heading over an empty body would spuriously
         clear the threshold."""
         text = self.body
         lines = text.splitlines()

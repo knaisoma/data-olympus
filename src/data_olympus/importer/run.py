@@ -80,7 +80,7 @@ def _clear_prior_import(out_dir: Path) -> None:
 
     Called only on a forced re-run of an importer-owned dir. Deleting exactly the
     files listed in the marker (not the whole directory) makes forced re-runs
-    deterministic, generated ids restart from 1 in source order instead of
+    deterministic: generated ids restart from 1 in source order instead of
     drifting past the prior run's ids, without touching any file the importer
     did not create (so a hand-added file next to the drafts is preserved).
 

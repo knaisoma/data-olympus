@@ -18,10 +18,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   repository's Markdown on every pull request and fails on an em-dash, a spaced
   en-dash used as a sentence dash, agent authorship credit, and a short list of
   LLM diction. It is a vendored copy of the operator's canonical linter;
-  changes belong upstream first. `.prose-lintignore` lists what is out of
-  scope, notably `benchmarks/`, whose bytes a measurement receipt binds by
-  sha256 so its prose cannot be edited without invalidating published
-  provenance.
+  changes belong upstream first, and the header records the upstream commit and
+  sha256 so the copy is verifiable. `.prose-lintignore` lists what is out of
+  scope, notably the three benchmark output documents in `_OUTPUT_PATHS` whose
+  CURRENT bytes a measurement receipt hashes. The rest of `benchmarks/` is
+  linted: its Python sources are verified against the bytes committed at the
+  receipt's own `source_commit`, so editing a comment today does not invalidate
+  a past measurement.
 * **Documentation prose backfilled to match.** 118 em-dashes across README,
   SPEC, WHY, CHANGELOG, `docs/` and `deploy/` are replaced with a colon, a
   comma or two sentences, chosen per sentence rather than mechanically. Prose
@@ -1056,7 +1059,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     operator review time, not here.
   - **Memory-inbox in-force floor.** A document under the memory-inbox prefix
     (`KB_MEMORY_INBOX_PREFIX`, default `memory/inbox/`) is now NEVER in force,
-    regardless of claimed status: it covers both a legacy inbox file and forged
+    regardless of claimed status. It covers both a legacy inbox file and forged
     frontmatter on an agent-written memory. Implemented as a new `is_inbox`
     column derived once at index-build time
     (`format.validate.is_inbox_path`/`memory_inbox_prefix`, the single source
@@ -1484,8 +1487,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ships with regression tests, including two integration tests that drive a real
   second clone against a shared bare remote:
   - **Write serialization.** A process-wide write serializer wraps the write →
-    `git add` → commit → enqueue critical section, and a per-path advisory lock,
-    now SHARED between the auto-commit path and the pending queue: it prevents an
+    `git add` → commit → enqueue critical section, and a per-path advisory lock (now shared
+    between the auto-commit path and the pending queue) prevents an
     auto-commit from racing a concurrent write or landing on a path with a pending
     proposal in flight (whose later approval would clobber it). The auto-commit
     path previously took no lock, so concurrent `kb_propose_*` calls in one session

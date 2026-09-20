@@ -1,9 +1,18 @@
 """Mechanical gate for the project's writing rules.
 
 Vendored copy. The canonical source is `tooling/prose_lint.py` in the operator's
-company-knowledge repository, where the rules and this file are maintained;
-changes belong there first and are copied here, so the two cannot drift by
-someone editing only the downstream copy.
+company-knowledge repository, which is private, so this file is the public
+artifact and CI here never depends on that repository being reachable.
+
+Imported from:
+    upstream commit  5ad8df74cbd8c87849697d863258971f29ea8277
+    upstream sha256  d24ea433309b888a26797bb87e9232b5e2f9cf918905f0e46639f603610a476f
+
+The only intended difference from upstream is this docstring. To verify, fetch
+the upstream file at that commit, replace its module docstring with this one,
+and diff; to update, change upstream first, copy the file here, and refresh the
+two lines above in the same commit. A change made only here will be silently
+reverted by the next sync, so do not make one.
 
 Usage:
     python3 scripts/prose_lint.py <path> [<path> ...]

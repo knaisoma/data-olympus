@@ -104,7 +104,7 @@ curl -s http://<host>/api/v1/audit/verify
 
 Because rotation carries the hash chain across files (see `docs/serving.md`), a
 backup that includes **all** `events*.log` files verifies end-to-end. Do not back
-up only the live `events.log` if rotation is enabled, the chain would be
+up only the live `events.log` if rotation is enabled; the chain would be
 incomplete.
 
 If you rotate manually instead of via `KB_AUDIT_MAX_BYTES`, do it while the
@@ -475,7 +475,7 @@ Relevant environment variables:
 
 ### 5.1 Migrating a corpus to mandatory `status` (issue #114)
 
-`status` has always been a required frontmatter field (SPEC.md section 4.2) and a `kb lint` error when absent. Issue #114 closed the one gap left open: the write path previously let a brand-new status-less document through even though `kb lint` would already flag it. As of this change, `kb_propose_edit` rejects a postimage that creates a **new** file without `status` (`rejected_invalid_document`, reason `missing_status`); editing an **existing** status-less document is still allowed with no `status` required, so a legacy corpus is never locked out of incremental fixes. `kb_propose_memory` is unaffected, every server-rendered memory already stamps `status: proposed` (issue #109).
+`status` has always been a required frontmatter field (SPEC.md section 4.2) and a `kb lint` error when absent. Issue #114 closed the one gap left open: the write path previously let a brand-new status-less document through even though `kb lint` would already flag it. As of this change, `kb_propose_edit` rejects a postimage that creates a **new** file without `status` (`rejected_invalid_document`, reason `missing_status`); editing an **existing** status-less document is still allowed with no `status` required, so a legacy corpus is never locked out of incremental fixes. `kb_propose_memory` is unaffected: every server-rendered memory already stamps `status: proposed` (issue #109).
 
 This is a migration, not a hard break: a legacy corpus with status-less documents keeps working exactly as before.
 

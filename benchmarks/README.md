@@ -14,7 +14,7 @@ verification.
 For each (method, query) pair the harness records:
 
 - **Mean tokens:** as-shipped payload size sent to the agent (lower is cheaper).
-- **Norm tokens:** token cost under a NORMALIZED payload policy — every method is
+- **Norm tokens:** token cost under a NORMALIZED payload policy: every method is
   charged the cost of its top-1 full document body only. This removes the
   per-method response-shaping convention (bm25 returns 5 chunks, data-olympus
   returns outline+snippets+1 doc, whole-dump dumps everything) so token cost can
@@ -22,7 +22,7 @@ For each (method, query) pair the harness records:
   never instead of it.
 - **Recall@k:** fraction of gold concepts in the top-k ranked results. Reported
   ONLY for methods that produce a query-dependent ranking (see below).
-- **Contains-Gold:** order-free — is a gold concept present ANYWHERE in the
+- **Contains-Gold:** order-free: is a gold concept present ANYWHERE in the
   payload? This is the only recall-like axis fair to a non-ranking method.
 - **Precision:** share of the payload that is the relevant concept.
 - **NDCG@k and MRR:** ranking quality metrics (ranking methods only).
@@ -34,8 +34,8 @@ For each (method, query) pair the harness records:
   new doc are lexically identical, so a status-blind ranker ties them and this
   number depends on an arbitrary tiebreak; **Serves-Stale is the honest signal.**
 
-The headline means — **recall@k** (per-category run) and every governance
-ablation recall — carry a **95% bootstrap confidence interval** (percentile
+The headline means, **recall@k** (per-category run) and every governance
+ablation recall, carry a **95% bootstrap confidence interval** (percentile
 bootstrap, deterministic and seeded via `metrics.bootstrap_mean_ci`), so a reader
 can tell a real gap from sampling noise at each stratum size. The CI is computed
 for token, normalized-token, contains-gold, and recall means; NDCG/MRR/precision/
@@ -44,10 +44,10 @@ is reusable if those need intervals later.
 
 Queries are grouped into four categories:
 
-- `exact` — literal topic term (e.g. "caching")
-- `semantic` — paraphrase with low literal overlap (e.g. "storing computed results to avoid recomputation")
-- `status` — "current rule for \<topic\>" for topics that have a superseded predecessor
-- `graph` — "what replaced the previous \<topic\> guidance"
+- `exact`: literal topic term (e.g. "caching")
+- `semantic`: paraphrase with low literal overlap (e.g. "storing computed results to avoid recomputation")
+- `status`: "current rule for \<topic\>" for topics that have a superseded predecessor
+- `graph`: "what replaced the previous \<topic\> guidance"
 
 ## Honesty caveats
 
@@ -59,7 +59,7 @@ conditions. For one number that is NOT templated, see "Real-corpus example" belo
 **De-leaking (0.3.0).** The earlier corpus wrote the lifecycle words a query
 searched for straight into the doc it was meant to retrieve: stale docs said
 "previous", current docs said "current", and titles carried "(old)"/"(current)"
-qualifiers — the exact words the `status`/`graph` queries used. A keyword method
+qualifiers, the exact words the `status`/`graph` queries used. A keyword method
 could then "win" those categories by echoing a string. That leak is removed: the
 lifecycle signal now lives ONLY in the `status` frontmatter and the
 `supersedes`/`superseded_by` chain, the body prose is lifecycle-neutral and
@@ -67,12 +67,12 @@ identical across the old/new pair, and every body mixes in a pool of shared
 distractor vocabulary so a query term is not a near-unique fingerprint of its gold
 doc. **Known remaining leak (documented on purpose):** the `exact` category still
 echoes the topic word, which also appears in the doc title and body. That is
-intentional — `exact` is the literal-lookup category and is not claimed to measure
+intentional, `exact` is the literal-lookup category and is not claimed to measure
 anything harder than keyword matching. No other category shares answer vocabulary
 with its gold doc.
 
 **Non-ranking methods are not scored on ranking metrics.** `whole-dump` returns
-every doc in fixed file-walk order for every query — it does not rank — so scoring
+every doc in fixed file-walk order for every query; it does not rank, so scoring
 it on recall@k/NDCG/MRR is meaningless. It carries `ranks = False` and its ranking
 cells read `n/a`; it is reported only on token cost, precision, and Contains-Gold.
 `grep-read` now ranks by descending query-term match count (a real, if crude,

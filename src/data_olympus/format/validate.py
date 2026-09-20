@@ -245,7 +245,7 @@ def not_expired_sql_fragment(param: str = "?") -> str:
     This is the DEFAULT ``kb_search`` exclusion (issue #107): a document past
     its ``valid_until`` is dropped from every default search result, not just
     from an ``in_force=True`` query, because an expired doc has no named
-    successor to outrank it, if it stayed visible it could be the top hit and
+    successor to outrank it; if it stayed visible it could be the top hit and
     would govern. Takes exactly one bind parameter: ``today`` (ISO date).
     """
     return f"(docs.valid_until IS NULL OR docs.valid_until >= {param})"

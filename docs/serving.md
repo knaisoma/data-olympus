@@ -264,7 +264,7 @@ section so concurrent writes cannot corrupt each other:
   mismatch returns `rejected_stale_base` and nothing is committed. If the base
   cannot be refreshed at all (the remote is unreachable, or the rebase conflicts)
   while an enforceable marker was supplied, the write is also rejected
-  `rejected_stale_base` rather than committed against a possibly-stale base, the
+  `rejected_stale_base` rather than committed against a possibly-stale base; the
   marker cannot be verified, and the push-path rebase recovery is not an
   equivalent safety net (a compatible rebase would still publish the stale write).
   A bare `base_commit` of `HEAD` is advisory (no per-file expectation), and when

@@ -1,7 +1,7 @@
 """Frontmatter stamping helpers for the importer.
 
 The governance vocabulary (types, statuses, tiers) is single-sourced from
-``data_olympus.format.validate``, the importer never hardcodes a second copy.
+``data_olympus.format.validate``, so the importer never hardcodes a second copy.
 Everything stamped here lands as ``status: draft`` by default; the ADR path may
 carry a derived status, but the orchestrator flags any non-draft.
 """

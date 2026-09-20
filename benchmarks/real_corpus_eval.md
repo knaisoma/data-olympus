@@ -48,7 +48,7 @@ that reflects your content.
 
 Hybrid **recovered 4 / 215** queries at k=5 and **regressed 0 / 215**. Three of
 the four recoveries were token-disjoint queries (zero title-token overlap with
-their gold doc) — the case dense retrieval is meant to help.
+their gold doc), the case dense retrieval is meant to help.
 
 ## Honest reading
 
@@ -61,8 +61,8 @@ their gold doc) — the case dense retrieval is meant to help.
 - **So it ships as an opt-in, not a default.** On a corpus like this, the model
   dependency, build-time embedding, and reduced interpretability are not worth a
   ~2-point lift. Enable it (`KB_EMBEDDINGS_MODE`) when your corpus has genuine
-  semantic gaps — short, jargon-light, or heavily-paraphrased queries where the
-  target words rarely appear in the docs — and measure with this harness first.
+  semantic gaps (short, jargon-light, or heavily-paraphrased queries where the
+  target words rarely appear in the docs) and measure with this harness first.
 
 Caveats: n and the number of recoveries are small (4 events); the queries are
 LLM-authored paraphrases, not real user traffic; a larger local model or tuned
