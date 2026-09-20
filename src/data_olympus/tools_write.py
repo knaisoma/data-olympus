@@ -332,23 +332,23 @@ def _check_contest_index(
         )
     try:
         id_path_map = idx.id_to_path_map()
-        target_ids = {doc_id for doc_id, path in id_path_map.items() if path == target_path}
-        for cid in contradicts:
-            if cid not in id_path_map:
-                return ProposeResponse(
-                    status="rejected_invalid_contest",
-                    reason="contradicted document not found in index",
-                )
-            if id_path_map[cid] == target_path or cid in target_ids:
-                return ProposeResponse(
-                    status="rejected_invalid_contest",
-                    reason="target document cannot contradict itself",
-                )
     except Exception:
         return ProposeResponse(
             status="rejected_contest_index_unavailable",
             reason="contest index resolution unavailable",
         )
+
+    for cid in contradicts:
+        if cid not in id_path_map:
+            return ProposeResponse(
+                status="rejected_invalid_contest",
+                reason="contradicted document not found in index",
+            )
+        if id_path_map[cid] == target_path:
+            return ProposeResponse(
+                status="rejected_invalid_contest",
+                reason="target document cannot contradict itself",
+            )
     return None
 
 
@@ -1817,7 +1817,7 @@ def kb_propose_edit_fn(
         or demotion_reason is not None
         or clean_contest is not None
     ):
-        return _park(demotion_reason or ("contest_declared" if clean_contest is not None else None))
+        return _park(demotion_reason)
 
     # Serialized commit + CAS + validation + enqueue (items 1, 3, 4, 8).
     # governed_target_check (issue #112, codex round-2 blocker): the

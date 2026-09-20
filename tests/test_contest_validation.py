@@ -25,14 +25,17 @@ Covers:
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
 from typing import TYPE_CHECKING, Any
 
+import httpx
 import pytest
 
 import data_olympus.durable as durable
@@ -43,6 +46,7 @@ from data_olympus.pending import PendingQueue
 from data_olympus.push_queue import PushQueue
 from data_olympus.rate_limit import SlidingWindowLimiter
 from data_olympus.rest_api import _propose_status
+from data_olympus.server import build_app
 from data_olympus.tools_write import (
     _check_contest_index,
     _validate_contest,
@@ -119,12 +123,14 @@ def _setup_harness(tmp_path: Path):
 
 
 class _MockIndex:
-    def __init__(self, id_map: dict[str, str] | None = None, raise_exc: bool = False):
-        self._id_map = id_map or {}
+    def __init__(self, id_map: dict[str, str] | None = None, raise_exc: bool | Exception = False):
+        self._id_map = id_map if id_map is not None else {}
         self._raise_exc = raise_exc
 
     def id_to_path_map(self) -> dict[str, str]:
         if self._raise_exc:
+            if isinstance(self._raise_exc, Exception):
+                raise self._raise_exc
             raise RuntimeError("Database connection pool exhausted")
         return dict(self._id_map)
 
@@ -246,11 +252,19 @@ def test_check_contest_index_unavailable():
     assert err is not None
     assert err.status == "rejected_contest_index_unavailable"
 
-    # Exception during id_to_path_map
-    mock_idx = _MockIndex(raise_exc=True)
+    # sqlite3.Error during query execution propagates to 503 unavailable
+    mock_idx = _MockIndex(raise_exc=sqlite3.OperationalError("database disk image is malformed"))
     err = _check_contest_index(["STD-001"], "decisions/D-001.md", mock_idx)  # type: ignore[arg-type]
     assert err is not None
     assert err.status == "rejected_contest_index_unavailable"
+
+    # Genuinely empty index (fresh KB, zero rows) successfully read:
+    # returns 400 invalid contest, NOT 503
+    mock_empty = _MockIndex({})
+    err_empty = _check_contest_index(["STD-001"], "decisions/D-001.md", mock_empty)  # type: ignore[arg-type]
+    assert err_empty is not None
+    assert err_empty.status == "rejected_invalid_contest"
+    assert "not found in index" in err_empty.reason
 
 
 def test_check_contest_index_doc_not_found():
@@ -260,6 +274,7 @@ def test_check_contest_index_doc_not_found():
     assert err.status == "rejected_invalid_contest"
     assert "not found in index" in err.reason
     assert "STD-999" not in err.reason  # Zero-leak invariant
+    assert "STD-999" not in err.model_dump_json()  # Pinned across full serialized model payload
 
 
 def test_check_contest_index_self_contradiction():
@@ -319,7 +334,9 @@ def test_kb_propose_edit_contest_parks_and_persists_lock(tmp_path, monkeypatch):
     )
 
     assert resp.status == "pending_confirmation"
-    assert resp.demotion_reason == "contest_declared"
+    assert resp.demotion_reason is None
+    assert resp.proposal_text == "# D-001\nNew contested decision\n"
+    assert "Accept (y), edit, or reject (n)?" in resp.operator_prompt
     assert resp.pending_id is not None
     pid = resp.pending_id
 
@@ -329,6 +346,7 @@ def test_kb_propose_edit_contest_parks_and_persists_lock(tmp_path, monkeypatch):
     assert locks[0]["target_path"] == target
     assert locks[0]["pending_id"] == pid
 
+    # Coupling to private lock filename helpers is deliberate to verify raw JSON payload on disk
     lock_file = os.path.join(pen._locks_dir, pending_mod._path_lock_filename(target))
     with open(lock_file) as f:
         lock_data = json.load(f)
@@ -461,7 +479,7 @@ def test_kb_list_pending_surfaces_dual_rationale(tmp_path, monkeypatch):
 
 
 # =============================================================================
-# 6. REST API Status Mapping
+# 6. REST API Status Mapping & Route Tests
 # =============================================================================
 
 def test_rest_api_propose_status_mappings():
@@ -469,3 +487,77 @@ def test_rest_api_propose_status_mappings():
     assert _propose_status("rejected_invalid_contest") == 400
     assert _propose_status("rejected_secret_detected") == 422
     assert _propose_status("pending_confirmation") == 202
+
+
+@pytest.fixture
+def http_app(tmp_kb, tmp_index_path, tmp_path):
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.com"}
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=tmp_kb, check=True, env=env)
+    subprocess.run(["git", "-C", str(tmp_kb), "add", "-A"], check=True, env=env)
+    subprocess.run(["git", "-C", str(tmp_kb), "commit", "-m", "init"], check=True, env=env)
+
+    app = build_app(
+        kb_main_path=tmp_kb,
+        kb_index_path=tmp_index_path,
+        sync_interval_sec=60,
+        staleness_degraded_sec=600,
+        bootstrap_now=True,
+        kb_remote_url="dummy",  # enables write-side wiring
+        worktree_root=str(tmp_path / "wts"),
+        pending_root=str(tmp_path / "pending"),
+        push_queue_root=str(tmp_path / "pq"),
+        write_block_tiers=[],
+        write_block_paths=[],
+    )
+    return app.http_app()
+
+
+def test_rest_propose_memory_rejects_contest(http_app) -> None:
+    async def _run() -> None:
+        transport = httpx.ASGITransport(app=http_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/propose/memory",
+                json={
+                    "text": "test",
+                    "tags": [],
+                    "source_session": "s",
+                    "agent_identity": "claude",
+                    "confidence": 0.9,
+                    "contest": {"contradicts": ["STD-100"]},
+                },
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["status"] == "rejected_invalid_contest"
+        assert "contest is not supported for memory proposals" in body["reason"]
+
+    asyncio.run(_run())
+
+
+def test_rest_propose_edit_contest_rejected_for_absent_doc(http_app) -> None:
+    async def _run() -> None:
+        transport = httpx.ASGITransport(app=http_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/propose/edit",
+                json={
+                    "target_path": "decisions/D-001.md",
+                    "postimage": "# D-001\nNew edit\n",
+                    "base_commit": "HEAD",
+                    "source_session": "sess-rest-1",
+                    "agent_identity": "claude",
+                    "confidence": 0.9,
+                    "contest": {
+                        "contradicts": ["STD-NONEXISTENT"],
+                        "reason": "Dispute absent doc",
+                    },
+                },
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["status"] == "rejected_invalid_contest"
+        assert "STD-NONEXISTENT" not in json.dumps(body)  # zero-leak invariant
+
+    asyncio.run(_run())

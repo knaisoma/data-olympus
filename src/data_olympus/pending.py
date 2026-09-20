@@ -425,7 +425,7 @@ class PendingQueue:
                         "contradicts": list(entry["meta"].get("contradicts") or []),
                         "contest_reason": entry["meta"].get("contest_reason"),
                     }
-                    if entry["meta"].get("intent") == "contest" or entry["meta"].get("contradicts")
+                    if entry["meta"].get("intent") == "contest"
                     else None
                 ),
             })
@@ -1187,7 +1187,7 @@ class PendingQueue:
                 })
                 continue
             acquired_at = info.get("acquired_at")
-            rec: dict[str, Any] = {
+            out.append({
                 "target_path": info.get("target_path"),
                 "owner_kind": info.get("owner_kind", "pending"),
                 "pending_id": info.get("pending_id"),
@@ -1197,8 +1197,7 @@ class PendingQueue:
                     if isinstance(acquired_at, (int, float))
                     else None
                 ),
-            }
-            out.append(rec)
+            })
         return out
 
     def derive_running_contest(self, target_path: str) -> RunningContestReceipt:
