@@ -136,7 +136,20 @@ def _is_json_renderable(value: str) -> bool:
 _UNENCODABLE_NOTE = "[reason omitted: not encodable as UTF-8]"
 
 
-def _reject_unencodable_identity(**fields: str | None) -> str | None:
+def _reject_unencodable_text(**fields: object) -> str | None:
+    """Rejection reason if a field is a string the encoder cannot render.
+
+    Lenient about TYPE: a non-string is somebody else's error to report, with
+    the status that fits it. Use this for a field that already has its own
+    type validator, so this one does not steal its rejection status.
+    """
+    for name, value in fields.items():
+        if isinstance(value, str) and not _is_json_renderable(value):
+            return f"{name} is not encodable as UTF-8"
+    return None
+
+
+def _reject_unencodable_identity(**fields: object) -> str | None:
     """Rejection reason if any IDENTITY or ROUTING field cannot be encoded.
 
     These are rejected outright rather than replaced, unlike ``reason``,
@@ -155,7 +168,16 @@ def _reject_unencodable_identity(**fields: str | None) -> str | None:
     The message names the field but never echoes its value.
     """
     for name, value in fields.items():
-        if isinstance(value, str) and not _is_json_renderable(value):
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            # A non-string is not merely the wrong type here, it is a BYPASS:
+            # the REST routes check presence rather than type, so a nested
+            # object such as {"nested": "\ud800"} would skip an isinstance-
+            # guarded encodability check entirely and still reach the audit
+            # digest, which is the sink that fails silently.
+            return f"{name} must be a string"
+        if not _is_json_renderable(value):
             return f"{name} is not encodable as UTF-8"
     return None
 
@@ -1116,15 +1138,16 @@ def kb_propose_memory_fn(
     # blocker): `evidence or []` also coerced falsy non-lists ('' / {} /
     # False / 0) from raw REST JSON to [] BEFORE validation, silently
     # accepting them instead of rejecting rejected_invalid_evidence.
-    if evidence is None:
-        evidence = []
-    # See the edit path: identity encodability is checked before any audit
-    # emission, because an unencodable value suppressed the audit event.
+    # See the edit path: FIRST statement, before any gate that can emit an
+    # audit event, because that emission fails silently on an unencodable
+    # identity.
     encoding_error = _reject_unencodable_identity(
         agent_identity=agent_identity, source_session=source_session,
     )
     if encoding_error is not None:
         return ProposeResponse(status="rejected_invalid_encoding", reason=encoding_error)
+    if evidence is None:
+        evidence = []
     evidence_error = _validate_evidence(evidence)
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     # issue #71: the slug is derived VERBATIM from the caller's free text (no
@@ -1472,6 +1495,28 @@ def kb_propose_edit_fn(
     content -- it is redacted (same treatment as ``reason``) and persisted only
     in pending meta / audit events / ``kb_pending``.
     """
+    # FIRST statement of the function body, deliberately. Every other gate
+    # below can emit an audit event, and an unencodable identity makes that
+    # emission fail silently inside _emit_audit's suppressed block, so any
+    # check placed after one of them leaves a rejection path that produces no
+    # audit record at all. base_commit is included because write_gate embeds
+    # it verbatim in the CAS rejection reason, which is audited.
+    encoding_error = _reject_unencodable_identity(
+        agent_identity=agent_identity, source_session=source_session,
+        target_path=target_path,
+    ) or _reject_unencodable_text(
+        # Lenient about type on purpose: the base markers have their own
+        # validator, which reports a non-string as rejected_invalid_base, and
+        # a strict check here would steal that status. Only an unencodable
+        # STRING is this function's business, because only that reaches the
+        # audit digest (write_gate embeds base_commit verbatim in the CAS
+        # rejection reason, which is audited).
+        base_commit=base_commit, base_blob_sha=base_blob_sha,
+        target_file_hash=target_file_hash,
+    )
+    if encoding_error is not None:
+        return ProposeResponse(status="rejected_invalid_encoding", reason=encoding_error)
+
     # Normalize ONLY the None sentinel; see the matching comment in
     # kb_propose_memory_fn (codex re-review blocker: falsy non-lists must
     # reject, not silently coerce to []).
@@ -1500,17 +1545,6 @@ def kb_propose_edit_fn(
             reason=path_reason,
             matching_pattern=path_scan.match.pattern_name,
         )
-
-    # Encodability of the identity/routing fields, checked FIRST: before the
-    # first audit emission, because an unencodable one silently suppressed the
-    # audit event itself (see _reject_unencodable_identity), and before
-    # target_path is echoed back in any rejection response.
-    encoding_error = _reject_unencodable_identity(
-        agent_identity=agent_identity, source_session=source_session,
-        target_path=target_path,
-    )
-    if encoding_error is not None:
-        return ProposeResponse(status="rejected_invalid_encoding", reason=encoding_error)
 
     # issue #71 (codex round-3 Blocker 1): ``reason`` is persisted into
     # pending meta, push metadata, and audit events, none of which may carry

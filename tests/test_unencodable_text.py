@@ -214,3 +214,130 @@ class TestHealthLockProjectionSurvivesAPoisonedLock:
         assert len(records) == 1
         _renders_like_starlette(records)
         assert LONE_SURROGATE not in records[0]["pending_id"]
+
+
+class TestGuardPlacementThroughTheRealEntryPoints:
+    """Regression cover for WHERE the guard sits, not just that it exists.
+
+    The previous version of these tests called the helper directly, so
+    deleting every production call site left them green. These drive the real
+    functions with recording collaborators and assert that a rejection touches
+    NOTHING: no audit attempt, no queue write, no lock, no worktree.
+    """
+
+    def _recorders(self):
+        calls: list[str] = []
+
+        class _Audit:
+            def append(self, event):  # noqa: ARG002
+                calls.append("audit")
+
+        class _Pending:
+            def enqueue(self, **kw):  # noqa: ARG002
+                calls.append("enqueue")
+                raise AssertionError("must not be reached")
+
+            def size(self):
+                return 0
+
+        return calls, _Audit(), _Pending()
+
+    def test_edit_rejects_before_touching_anything(self):
+        from data_olympus.tools_write import kb_propose_edit_fn
+        calls, audit, pending = self._recorders()
+        resp = kb_propose_edit_fn(
+            target_path="decisions/D-1.md", postimage="x",
+            base_commit="abc", base_blob_sha=None, target_file_hash=None,
+            reason="r", source_session=LONE_SURROGATE, agent_identity="a",
+            confidence=0.1, confidence_threshold=0.85,
+            worktrees=None, push_queue=None, pending=pending,  # type: ignore[arg-type]
+            rate_limiter=None, blocklist=None, remote_addr="127.0.0.1",  # type: ignore[arg-type]
+            audit_log=audit,  # type: ignore[arg-type]
+        )
+        assert resp.status == "rejected_invalid_encoding"
+        assert calls == [], f"rejection must touch nothing, saw {calls}"
+        _renders_like_starlette({"reason": resp.reason})
+
+    def test_edit_rejects_a_nested_non_string_identity(self):
+        """The bypass: REST checks presence, not type, so a nested object
+        would skip an isinstance-guarded check and still reach the digest."""
+        from data_olympus.tools_write import kb_propose_edit_fn
+        calls, audit, pending = self._recorders()
+        resp = kb_propose_edit_fn(
+            target_path="decisions/D-1.md", postimage="x",
+            base_commit="abc", base_blob_sha=None, target_file_hash=None,
+            reason="r", source_session={"nested": LONE_SURROGATE},  # type: ignore[arg-type]
+            agent_identity="a", confidence=0.1, confidence_threshold=0.85,
+            worktrees=None, push_queue=None, pending=pending,  # type: ignore[arg-type]
+            rate_limiter=None, blocklist=None, remote_addr="127.0.0.1",  # type: ignore[arg-type]
+            audit_log=audit,  # type: ignore[arg-type]
+        )
+        assert resp.status == "rejected_invalid_encoding"
+        assert "must be a string" in (resp.reason or "")
+        assert calls == []
+
+    def test_edit_rejects_an_unencodable_base_commit(self):
+        """write_gate embeds base_commit verbatim in the CAS rejection reason,
+        which is audited."""
+        from data_olympus.tools_write import kb_propose_edit_fn
+        calls, audit, pending = self._recorders()
+        resp = kb_propose_edit_fn(
+            target_path="decisions/D-1.md", postimage="x",
+            base_commit=LONE_SURROGATE, base_blob_sha=None, target_file_hash=None,
+            reason="r", source_session="s", agent_identity="a",
+            confidence=0.1, confidence_threshold=0.85,
+            worktrees=None, push_queue=None, pending=pending,  # type: ignore[arg-type]
+            rate_limiter=None, blocklist=None, remote_addr="127.0.0.1",  # type: ignore[arg-type]
+            audit_log=audit,  # type: ignore[arg-type]
+        )
+        assert resp.status == "rejected_invalid_encoding"
+        assert calls == []
+
+    def test_memory_rejects_before_touching_anything(self):
+        from data_olympus.tools_write import kb_propose_memory_fn
+        calls, audit, pending = self._recorders()
+        resp = kb_propose_memory_fn(
+            text="hello", tags=["t"], source_session="s",
+            agent_identity=LONE_SURROGATE, confidence=0.1,
+            confidence_threshold=0.85,
+            worktrees=None, push_queue=None, pending=pending,  # type: ignore[arg-type]
+            rate_limiter=None, blocklist=None, remote_addr="127.0.0.1",  # type: ignore[arg-type]
+            audit_log=audit,  # type: ignore[arg-type]
+        )
+        assert resp.status == "rejected_invalid_encoding"
+        assert calls == []
+
+    def test_resolve_rejects_before_touching_anything(self):
+        from data_olympus.tools_write import kb_resolve_pending_fn
+        calls, audit, pending = self._recorders()
+        resp = kb_resolve_pending_fn(
+            pending_id="0123456789abcdef0123456789abcdef", decision="reject",
+            edited_text=None,
+            source_session="s", agent_identity=LONE_SURROGATE,
+            worktrees=None, push_queue=None, pending=pending,  # type: ignore[arg-type]
+            audit_log=audit,  # type: ignore[arg-type]
+        )
+        assert resp.status == "rejected_invalid_encoding"
+        assert calls == []
+
+
+class TestDetailRouteThroughTheRealFunction:
+    def test_kb_get_pending_fn_renders_a_legacy_poisoned_record(self, tmp_path):
+        from data_olympus.tools_write import kb_get_pending_fn
+        root = tmp_path / "pending"
+        root.mkdir()
+        q = PendingQueue(pending_root=str(root))
+        pid = "0123456789abcdef0123456789abcdef"
+        (root / f"{pid}.json").write_text(json.dumps({
+            "pending_id": pid, "proposal_type": "edit",
+            "target_path": "a.md", "postimage": "body",
+            "enqueued_at": 1.0,
+            "meta": {"reason": LONE_SURROGATE, "proposer_principal": "p"},
+        }), encoding="utf-8")
+
+        resp = kb_get_pending_fn(
+            pending_id=pid, pending=q, principal_name="p", can_resolve=True,
+        )
+        assert resp.status == "ok"
+        assert resp.reason != LONE_SURROGATE
+        _renders_like_starlette(resp.model_dump())
