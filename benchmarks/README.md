@@ -194,6 +194,27 @@ uv run python -m benchmarks.docs_tables --write
 The committed `benchmarks/results/report.md` contains the actual numbers cited
 in `docs/comparison.md § Quantified comparison`.
 
+## Refreshing the receipt
+
+`source_commit` must name a commit that is already on `main`. CI enforces this
+on every pull request: a receipt naming a commit that the base branch cannot
+reach fails the benchmark-docs guard.
+
+The reason is that this repository squash-merges. A squash merge replaces a
+branch's commits with a single new one, so a receipt measured at a commit on
+the pull request branch names a revision that leaves `main`'s history at merge
+time, and becomes unresolvable entirely once the branch is deleted. The guard
+would then pass on the pull request and fail on `main`, and the reproduction
+recipe below could not check out the measured revision.
+
+So refresh a receipt one of two ways:
+
+* **The measured inputs are unchanged.** Measure at the pull request's base
+  commit, which is already on `main`.
+* **The change alters measured inputs** (benchmark code, the product source it
+  measures, or the dependency lock). Land that change first, then re-measure in
+  a follow-up pull request at its merge commit.
+
 ## Publishing a reproduction, and reporting a discrepancy
 
 The committed [`results/receipt.json`](results/receipt.json) is the **reference

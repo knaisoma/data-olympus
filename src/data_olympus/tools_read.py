@@ -163,6 +163,7 @@ def kb_search_fn(
     include_expired: bool = False,
     validity_state: str | None = None,
     today: str | None = None,
+    review_due_after_days: int | None = None,
 ) -> SearchResponse:
     from data_olympus.format.validate import compute_freshness, is_in_force, today_iso
     from data_olympus.search_gate import abstain_gate
@@ -206,32 +207,35 @@ def kb_search_fn(
     # AND not-inbox AND not-graph-excluded, matching the in_force=True SQL
     # filter exactly. Fetched ONCE per search (not per hit).
     graph_excluded = _graph_excluded_ids(idx, today) if hits else set()
+    hit_models = []
+    for h in hits:
+        freshness, freshness_reason = compute_freshness(
+            valid_from=h.valid_from, valid_until=h.valid_until,
+            recheck_by=h.recheck_by, last_verified=h.last_verified,
+            today=today, review_due_after_days=review_due_after_days,
+        )
+        hit_models.append(SearchHitModel(
+            id=h.id,
+            path=h.path,
+            title=h.title,
+            snippet=h.snippet,
+            score=h.score,
+            status=h.status,
+            type=h.doc_type,
+            freshness=freshness or "",
+            freshness_reason=freshness_reason or "",
+            in_force=(
+                h.id not in graph_excluded
+                and is_in_force(
+                    h.status, h.valid_from, h.valid_until, today,
+                    is_inbox=h.is_inbox,
+                )
+            ),
+            superseded_by=list(h.superseded_by),
+        ))
     return SearchResponse(
         query=query,
-        hits=[
-            SearchHitModel(
-                id=h.id,
-                path=h.path,
-                title=h.title,
-                snippet=h.snippet,
-                score=h.score,
-                status=h.status,
-                type=h.doc_type,
-                freshness=compute_freshness(
-                    valid_from=h.valid_from, valid_until=h.valid_until,
-                    recheck_by=h.recheck_by, today=today,
-                ) or "",
-                in_force=(
-                    h.id not in graph_excluded
-                    and is_in_force(
-                        h.status, h.valid_from, h.valid_until, today,
-                        is_inbox=h.is_inbox,
-                    )
-                ),
-                superseded_by=list(h.superseded_by),
-            )
-            for h in hits
-        ],
+        hits=hit_models,
         source_commit=str(health["source_commit"]),
         total_returned=len(hits),
         abstained=abstained,
@@ -243,7 +247,10 @@ class KbNotFoundError(Exception):
     """Raised when kb_get_fn is asked for an id that does not exist."""
 
 
-def kb_get_fn(*, idx: Index, id: str, today: str | None = None) -> GetResponse:
+def kb_get_fn(
+    *, idx: Index, id: str, today: str | None = None,
+    review_due_after_days: int | None = None,
+) -> GetResponse:
     from data_olympus.format.validate import compute_freshness, is_in_force, today_iso
 
     doc = idx.get(id)
@@ -263,10 +270,13 @@ def kb_get_fn(*, idx: Index, id: str, today: str | None = None) -> GetResponse:
             "recheck_by": doc.recheck_by,
             "verification_source": doc.verification_source,
         }
-    freshness = compute_freshness(
+    freshness, freshness_reason = compute_freshness(
         valid_from=doc.valid_from, valid_until=doc.valid_until,
-        recheck_by=doc.recheck_by, today=today,
-    ) or ""
+        recheck_by=doc.recheck_by, last_verified=doc.last_verified,
+        today=today, review_due_after_days=review_due_after_days,
+    )
+    freshness = freshness or ""
+    freshness_reason = freshness_reason or ""
     # Full computed in-force predicate (issues #109 + #110 slice 2): status
     # class AND validity window AND not-inbox AND not-graph-excluded, matching
     # the in_force=True retrieval filter exactly.
@@ -291,6 +301,7 @@ def kb_get_fn(*, idx: Index, id: str, today: str | None = None) -> GetResponse:
         git_remote_url=doc.git_remote_url,
         validity=validity,
         freshness=freshness,
+        freshness_reason=freshness_reason,
         in_force=in_force,
         superseded_by=list(doc.superseded_by),
         contradicts=list(doc.contradicts),

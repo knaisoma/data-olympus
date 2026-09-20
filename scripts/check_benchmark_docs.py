@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -222,8 +223,104 @@ def historical_source_tree_problems(
     return []
 
 
-def receipt_problems(repo_root: Path) -> list[str]:
-    """Verify committed benchmark evidence before checking rendered claims."""
+def ancestry_problems(document: object, repo_root: Path, base_ref: str) -> list[str]:
+    """The measured commit must already be reachable from the base branch.
+
+    A receipt refreshed inside a pull request naturally names a commit on the PR
+    branch. A squash merge replaces those commits with one new commit, so the
+    named revision leaves ``main``'s history, and once the branch is deleted a
+    fresh clone cannot resolve it at all. The historical lock and source-tree
+    checks above then fail on ``main`` although they passed on the pull request,
+    and a reproduction following ``benchmarks/README.md`` cannot check out the
+    revision the numbers were measured at (issue #268).
+
+    Only runs when a base ref is supplied, which is the pull-request case. On
+    ``main`` there is nothing to compare against: the commit is on the branch
+    being checked by definition.
+    """
+    if not isinstance(document, Mapping):
+        return []
+    source_commit = document.get("source_commit")
+    if not isinstance(source_commit, str) or not _SHA_PATTERN.fullmatch(source_commit):
+        # Malformed or missing: already reported by the receipt checks, and
+        # repeating it here would only duplicate the failure.
+        return []
+
+    probe = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", source_commit, base_ref],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode == 0:
+        return []
+    if probe.returncode != 1:
+        # Neither reachable nor unreachable: one of the two revisions does not
+        # resolve. Report that distinctly so a shallow clone or a missing base
+        # ref is not misread as a stranded receipt.
+        detail = probe.stderr.strip() or f"git exited {probe.returncode}"
+        return [
+            f"could not test whether source_commit {source_commit} is reachable "
+            f"from {base_ref}: {detail}"
+        ]
+    return [
+        f"source_commit {source_commit} is not reachable from {base_ref}. "
+        "A squash merge removes branch commits from the base branch, so this "
+        "receipt would become unresolvable once merged. Measure the receipt at "
+        "a commit that is already on the base branch: land a change that alters "
+        "measured inputs first and re-measure in a follow-up, or measure at the "
+        "pull request's base when the measured inputs are unchanged."
+    ]
+
+
+def base_ref_problems() -> list[str]:
+    """A pull request must supply the base branch it is proposed against.
+
+    The reachability check below is gated on a base ref so that pushes to
+    ``main`` and local runs are unaffected. That gate is also the only way the
+    check could silently fail to run on the very event it exists for, so the
+    gate itself is checked rather than trusted.
+    """
+    if os.environ.get("GITHUB_EVENT_NAME", "").strip() != "pull_request":
+        return []
+    if os.environ.get("GITHUB_BASE_REF", "").strip():
+        return []
+    return [
+        "GITHUB_BASE_REF is empty on a pull_request event, so the "
+        "source_commit reachability check cannot run"
+    ]
+
+
+def base_ref_for(repo_root: Path) -> str | None:
+    """The base branch to test reachability against, or None when there is none.
+
+    ``GITHUB_BASE_REF`` is set only on a pull request and holds a bare branch
+    name. The checkout has that branch as a remote-tracking ref; the local name
+    often does not exist, so ``origin/`` is preferred and the bare name is only
+    a fallback for a checkout that has it locally.
+    """
+    name = os.environ.get("GITHUB_BASE_REF", "").strip()
+    if not name:
+        return None
+    for candidate in (f"origin/{name}", name):
+        probe = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"],
+            cwd=repo_root,
+            capture_output=True,
+        )
+        if probe.returncode == 0:
+            return candidate
+    # Neither resolves. Return the remote form so the reachability check reports
+    # an actionable "could not test" rather than silently skipping.
+    return f"origin/{name}"
+
+
+def receipt_problems(repo_root: Path, base_ref: str | None = None) -> list[str]:
+    """Verify committed benchmark evidence before checking rendered claims.
+
+    ``base_ref`` is the pull request's base branch when there is one. It adds
+    the reachability check and is absent on ``main`` and in a local run.
+    """
     from benchmarks.receipt import RECEIPT_PATH, verify_receipt
 
     path = repo_root / RECEIPT_PATH
@@ -240,12 +337,15 @@ def receipt_problems(repo_root: Path) -> list[str]:
     # the measurement commit can never be hidden by dropping one.
     replaced = {_DEPENDENCY_LOCK_MISMATCH, _SOURCE_TREE_MISMATCH}
     problems = [p for p in verify_receipt(document, repo_root) if p not in replaced]
-    return (
+    problems = (
         problems
         + comparability_problems(document)
         + historical_lock_problems(document, repo_root)
         + historical_source_tree_problems(document, repo_root)
     )
+    if base_ref is not None:
+        problems += ancestry_problems(document, repo_root, base_ref)
+    return problems
 
 
 def comparability_problems(document: object) -> list[str]:
@@ -271,7 +371,9 @@ def comparability_problems(document: object) -> list[str]:
 def main() -> int:
     from benchmarks.docs_tables import check_or_write
 
-    problems = receipt_problems(_ROOT)
+    problems = base_ref_problems() + receipt_problems(
+        _ROOT, base_ref=base_ref_for(_ROOT)
+    )
     if not problems:
         problems = check_or_write(write=False)
     if problems:

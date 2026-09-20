@@ -486,3 +486,211 @@ def test_index_schema_stores_validity_columns(tmp_path: Path, tmp_index_path: Pa
     conn.close()
     assert row is not None
     assert row[1] == YESTERDAY
+
+
+# ---------------------------------------------------------------------------
+# Review-due verification age (issue #142): kb_search_fn/kb_get_fn thread
+# review_due_after_days through to compute_freshness, and last_verified is
+# carried on SearchHit so the search path can derive it without a second
+# lookup.
+# ---------------------------------------------------------------------------
+
+
+def _build_review_due_kb(tmp_path: Path, *, today: str = TODAY) -> Path:
+    """A KB isolated from the fixed 5-scenario one above, whose docs exercise
+    the last_verified-age derivation specifically (no recheck_by anywhere,
+    since recheck_by presence is exactly what must NOT trigger here)."""
+    long_ago = _shift(today, -400)
+    recent = _shift(today, -5)
+    kb = tmp_path / "kb_review_due"
+    kb.mkdir()
+    _write(
+        kb, "universal/foundation/never-verified.md", id_="DOC-NEVER-VERIFIED",
+        body="widget content never verified",
+    )
+    _write(
+        kb, "universal/foundation/long-ago.md", id_="DOC-LONG-AGO",
+        body="widget content long ago",
+        validity=f"validity:\n  last_verified: {long_ago}\n",
+    )
+    _write(
+        kb, "universal/foundation/recent.md", id_="DOC-RECENT",
+        body="widget content recent",
+        validity=f"validity:\n  last_verified: {recent}\n",
+    )
+    return kb
+
+
+def _review_due_idx(tmp_path: Path, tmp_index_path: Path) -> Index:
+    kb = _build_review_due_kb(tmp_path)
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="test")
+    return idx
+
+
+def test_kb_search_fn_no_derivation_when_review_due_after_days_unset(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    """The default (None): unchanged pre-#142 behaviour, even for a doc that
+    has never been verified."""
+    idx = _review_due_idx(tmp_path, tmp_index_path)
+    resp = kb_search_fn(idx=idx, query="widget", today=TODAY, review_due_after_days=None)
+    hits = {h.id: h for h in resp.hits}
+    assert hits["DOC-NEVER-VERIFIED"].freshness == ""
+    assert hits["DOC-LONG-AGO"].freshness == ""
+
+
+def test_kb_search_fn_derives_stale_from_old_last_verified(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    idx = _review_due_idx(tmp_path, tmp_index_path)
+    resp = kb_search_fn(idx=idx, query="widget", today=TODAY, review_due_after_days=90)
+    hits = {h.id: h for h in resp.hits}
+    assert hits["DOC-LONG-AGO"].freshness == "stale"
+    assert "last_verified" in hits["DOC-LONG-AGO"].freshness_reason
+    assert hits["DOC-RECENT"].freshness == ""
+
+
+def test_kb_search_fn_derives_stale_when_never_verified(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    idx = _review_due_idx(tmp_path, tmp_index_path)
+    resp = kb_search_fn(idx=idx, query="widget", today=TODAY, review_due_after_days=90)
+    hits = {h.id: h for h in resp.hits}
+    assert hits["DOC-NEVER-VERIFIED"].freshness == "stale"
+    assert "not set" in hits["DOC-NEVER-VERIFIED"].freshness_reason
+
+
+def test_kb_search_fn_in_force_unaffected_by_review_due_derivation(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    """The whole point of #142: review-due is advisory. A doc reported stale
+    by the age derivation still governs -- default search still returns it,
+    and in_force is untouched."""
+    idx = _review_due_idx(tmp_path, tmp_index_path)
+    resp = kb_search_fn(
+        idx=idx, query="widget", today=TODAY, in_force=True,
+        review_due_after_days=90,
+    )
+    ids = {h.id for h in resp.hits}
+    assert "DOC-NEVER-VERIFIED" in ids
+    assert "DOC-LONG-AGO" in ids
+    hit = next(h for h in resp.hits if h.id == "DOC-LONG-AGO")
+    assert hit.in_force is True
+    assert hit.freshness == "stale"
+
+
+def test_kb_get_fn_derives_stale_from_verification_age(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    idx = _review_due_idx(tmp_path, tmp_index_path)
+    resp = kb_get_fn(
+        idx=idx, id="DOC-LONG-AGO", today=TODAY, review_due_after_days=90,
+    )
+    assert resp.freshness == "stale"
+    assert "last_verified" in resp.freshness_reason
+    assert resp.in_force is True  # advisory only
+
+
+def test_kb_get_fn_no_derivation_when_unset(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    idx = _review_due_idx(tmp_path, tmp_index_path)
+    resp = kb_get_fn(idx=idx, id="DOC-NEVER-VERIFIED", today=TODAY)
+    assert resp.freshness == ""
+    assert resp.freshness_reason == ""
+
+
+def test_freshness_reason_empty_when_freshness_empty(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    idx = _review_due_idx(tmp_path, tmp_index_path)
+    resp = kb_search_fn(idx=idx, query="widget", today=TODAY, review_due_after_days=90)
+    fresh_hit = next(h for h in resp.hits if h.id == "DOC-RECENT")
+    assert fresh_hit.freshness == ""
+    assert fresh_hit.freshness_reason == ""
+
+
+def test_compact_dump_omits_freshness_reason_when_fresh() -> None:
+    from data_olympus.models import SearchHitModel
+
+    hit = SearchHitModel(id="x", path="p", title="t", snippet="s", score=1.0)
+    d = hit.compact_dump()
+    assert "freshness" not in d
+    assert "freshness_reason" not in d
+
+
+def test_compact_dump_includes_freshness_reason_when_stale() -> None:
+    from data_olympus.models import SearchHitModel
+
+    hit = SearchHitModel(
+        id="x", path="p", title="t", snippet="s", score=1.0,
+        freshness="stale", freshness_reason="last_verified is not set",
+    )
+    d = hit.compact_dump()
+    assert d["freshness"] == "stale"
+    assert d["freshness_reason"] == "last_verified is not set"
+
+
+@pytest.mark.asyncio
+async def test_rest_search_carries_freshness_reason_when_stale(tmp_path: Path) -> None:
+    """End-to-end through the real REST app, wired via Config.review_due_after_days."""
+    from data_olympus.format.validate import today_iso
+
+    # The REST path reads the REAL clock (codex review blocker 1, see
+    # _validity_http_app above), so build the fixture relative to it.
+    kb = _build_review_due_kb(tmp_path, today=today_iso())
+    app = build_app(
+        kb_main_path=kb,
+        kb_index_path=tmp_path / "idx.db",
+        sync_interval_sec=60,
+        staleness_degraded_sec=600,
+        bootstrap_now=True,
+        review_due_after_days=1,
+    )
+    transport = httpx.ASGITransport(app=app.http_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/search?q=widget&verbose=true")
+    assert resp.status_code == 200
+    hits = {h["id"]: h for h in resp.json()["hits"]}
+    assert hits["DOC-NEVER-VERIFIED"]["freshness"] == "stale"
+    assert "not set" in hits["DOC-NEVER-VERIFIED"]["freshness_reason"]
+
+
+# ---------------------------------------------------------------------------
+# validity_state="stale" scope boundary (found in implementation review):
+# the SQL facet was NOT extended by #142 and still matches recheck_by only.
+# kb_curate is the tool that reflects the full derivation; this facet's own
+# narrower, pre-#142 meaning is intentional and pinned here so a future
+# change cannot silently widen or narrow it without a test noticing.
+# ---------------------------------------------------------------------------
+
+def test_validity_state_stale_facet_does_not_include_verification_age_staleness(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    """kb_search(validity_state="stale") matches only recheck_by-past-today
+    (its original #107 meaning). A document that compute_freshness now also
+    calls "stale" via the #142 last_verified-age derivation, with no
+    recheck_by set, is NOT matched by this facet -- kb_curate is the tool
+    that reflects the fuller definition."""
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    old = _shift(TODAY, -400)
+    _write(
+        kb, "universal/foundation/never-verified.md", id_="DOC-AGE-STALE",
+        body="widget content age stale",
+        validity=f"validity:\n  last_verified: {old}\n",
+    )
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="test")
+
+    facet_ids = {
+        h.id for h in idx.search(
+            "widget", limit=20, today=TODAY, validity_state="stale",
+        )
+    }
+    assert "DOC-AGE-STALE" not in facet_ids
+
+    resp = kb_search_fn(idx=idx, query="widget", today=TODAY, review_due_after_days=30)
+    hit = next(h for h in resp.hits if h.id == "DOC-AGE-STALE")
+    assert hit.freshness == "stale"

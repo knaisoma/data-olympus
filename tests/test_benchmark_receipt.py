@@ -782,3 +782,145 @@ def build_committed_receipt_fixture(tmp_path: Path) -> dict:
     from benchmarks.receipt import build_receipt
 
     return build_receipt(_benchmark_repo(tmp_path / "fixture"), _SOURCE_COMMIT)
+
+
+def _git(root: Path, *args: str) -> str:
+    """Run git in the fixture repo and return its stdout, stripped."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _commit_all(root: Path, message: str) -> str:
+    """Commit the current working tree in an already-initialised fixture repo."""
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Benchmark Test",
+            "-c",
+            "user.email=benchmark@example.invalid",
+            "commit",
+            "-qm",
+            message,
+        ],
+        cwd=root,
+        check=True,
+    )
+    return _git(root, "rev-parse", "HEAD")
+
+
+def _rebind_receipt_on_branch(root: Path, branch: str) -> str:
+    """Re-measure the receipt on a side branch, as refreshing it inside a PR does.
+
+    Returns the base branch name the side branch was cut from. The resulting
+    ``source_commit`` exists only on ``branch``, which is exactly what a squash
+    merge later removes.
+    """
+    from benchmarks.receipt import build_receipt
+
+    base = _git(root, "rev-parse", "--abbrev-ref", "HEAD")
+    subprocess.run(["git", "checkout", "-q", "-b", branch], cwd=root, check=True)
+    _write(root / "benchmarks" / "extra_input.py", "# measured on the branch\n")
+    head = _commit_all(root, "refresh the receipt on the branch")
+    _write(
+        root / "benchmarks" / "results" / "receipt.json",
+        json.dumps(build_receipt(root, head)) + "\n",
+    )
+    return base
+
+
+def test_docs_guard_rejects_receipt_commit_unreachable_from_base(
+    tmp_path: Path,
+) -> None:
+    """A receipt measured at a branch commit fails on the PR that introduces it.
+
+    The branch commit is reachable from the PR head and disappears from main on
+    a squash merge, so the guard previously passed on the PR and failed on main
+    (issue #268). Catch it while the branch still exists.
+    """
+    from scripts import check_benchmark_docs
+
+    root, _ = _committed_benchmark_repo(tmp_path)
+    base = _rebind_receipt_on_branch(root, "pr-branch")
+
+    problems = check_benchmark_docs.receipt_problems(root, base_ref=base)
+
+    assert problems, "a branch-only source_commit must be rejected"
+    assert any("reachable" in p for p in problems), problems
+
+
+def test_docs_guard_accepts_receipt_commit_reachable_from_base(
+    tmp_path: Path,
+) -> None:
+    """A receipt measured at a commit already on the base branch is accepted."""
+    from scripts import check_benchmark_docs
+
+    root, _ = _committed_benchmark_repo(tmp_path)
+    base = _git(root, "rev-parse", "--abbrev-ref", "HEAD")
+
+    assert check_benchmark_docs.receipt_problems(root, base_ref=base) == []
+
+
+def test_base_ref_prefers_the_remote_tracking_branch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """On a pull request the base branch is resolved through ``origin``.
+
+    ``GITHUB_BASE_REF`` carries a bare branch name. The checkout has it as a
+    remote-tracking ref, and the local name may not exist at all, so the remote
+    one is what the reachability test must use.
+    """
+    from scripts import check_benchmark_docs
+
+    root, _ = _committed_benchmark_repo(tmp_path)
+    base = _git(root, "rev-parse", "--abbrev-ref", "HEAD")
+    _git(root, "update-ref", f"refs/remotes/origin/{base}", "HEAD")
+    monkeypatch.setenv("GITHUB_BASE_REF", base)
+
+    assert check_benchmark_docs.base_ref_for(root) == f"origin/{base}"
+
+
+def test_base_ref_is_absent_outside_a_pull_request(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A push to main sets no base ref, so the reachability check does not run."""
+    from scripts import check_benchmark_docs
+
+    root, _ = _committed_benchmark_repo(tmp_path)
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+
+    assert check_benchmark_docs.base_ref_for(root) is None
+
+
+def test_pull_request_without_a_base_ref_is_an_error(monkeypatch) -> None:
+    """A pull request that supplies no base branch must fail, not skip.
+
+    The reachability check is gated on a base ref so pushes to main and local
+    runs are unaffected. That gate is also the one way the check could silently
+    not run on the event it exists for, so the gate itself is checked.
+    """
+    from scripts import check_benchmark_docs
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_BASE_REF", "")
+
+    assert check_benchmark_docs.base_ref_problems() == [
+        "GITHUB_BASE_REF is empty on a pull_request event, so the "
+        "source_commit reachability check cannot run"
+    ]
+
+
+def test_push_without_a_base_ref_is_not_an_error(monkeypatch) -> None:
+    """A push to main legitimately has no base branch to compare against."""
+    from scripts import check_benchmark_docs
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+
+    assert check_benchmark_docs.base_ref_problems() == []

@@ -491,6 +491,7 @@ def build_app(
     maintenance_ledger_path: str = "tooling/maintenance-ledger.md",
     maintenance_recently_expired_days: int = 30,
     maintenance_expiring_soon_days: int = 30,
+    review_due_after_days: int | None = None,
     status_autofill: bool = True,
     kb_main_path_source: str = PATH_SOURCE_DEFAULT,
     kb_index_path_source: str = PATH_SOURCE_DEFAULT,
@@ -546,6 +547,7 @@ def build_app(
         maintenance_ledger_path=maintenance_ledger_path,
         maintenance_recently_expired_days=maintenance_recently_expired_days,
         maintenance_expiring_soon_days=maintenance_expiring_soon_days,
+        review_due_after_days=review_due_after_days,
         status_autofill=status_autofill,
         kb_main_path_source=kb_main_path_source,
         kb_index_path_source=kb_index_path_source,
@@ -767,6 +769,11 @@ def build_app(
             latest_version=state.latest_version,
             update_available=state.update_available,
         )
+        # Path-lock pending ids must not reach an unauthenticated caller when
+        # auth is configured (issue #270), matching the REST /health redaction.
+        principal = _current_principal.get()
+        authorized = (not registry.auth_configured) or principal.authenticated
+        resp = resp.redact_path_locks(authorized=authorized)
         return shape_response(resp, verbose=verbose)
 
     @app.tool(title="KB Outline", annotations=READ_ONLY_TOOL)
@@ -779,6 +786,57 @@ def build_app(
         verbose: kb_outline is already lean, so compact and full modes return the
         same shape; the parameter exists for interface consistency."""
         resp = kb_outline_fn(idx=state.idx)
+        return shape_response(resp, verbose=verbose)
+
+    @app.tool(title="KB Curate", annotations=READ_ONLY_TOOL)
+    def kb_curate(limit: LimitParam = 50, verbose: VerboseParam = False) -> dict[str, object]:
+        """List in-force governed documents that are due for review, most
+        overdue first. Advisory only: this tool RECOMMENDS -- it never
+        proposes, edits, promotes, or demotes anything, and takes no
+        confirmation or approval action of its own. Use it to find what to
+        look at next, then act through `kb_get` (to read the document) and
+        `kb_propose_edit` (to actually update it) as separate, deliberate
+        steps.
+
+        A document is review-due when its `recheck_by` date has passed, or
+        (when the operator has set `KB_REVIEW_DUE_AFTER_DAYS` and no
+        `recheck_by` overrides it) when its `last_verified` is older than
+        that many days, or was never set at all -- among verification-age
+        entries, a document nobody has ever verified is the most urgent case
+        and sorts first. An explicit past `recheck_by` is classified and
+        ordered first, so a document carrying one is a `recheck_by` entry
+        even if it was never verified. This is the
+        SAME `freshness`/`freshness_reason` signal `kb_search` and `kb_get`
+        already expose per-document; this tool aggregates it across the
+        corpus. It is NOT the same set `kb_search(validity_state="stale")`
+        returns: that facet still matches only `recheck_by` in the past (its
+        original, narrower meaning), so a document reported stale here purely
+        from verification age does not appear there. Never returns an
+        expired, upcoming, draft, retired, or memory-inbox document: only
+        documents that currently GOVERN can be review-due here.
+
+        Returns a valid empty list, never an error, when nothing is
+        review-due. With `KB_REVIEW_DUE_AFTER_DAYS` unset the verification-age
+        derivation is off, but the list is NOT necessarily empty: documents
+        with a `recheck_by` in the past are still reported, matching
+        `kb_search`'s own default. Each entry
+        carries `id`, `path`, `title`, and `reason` (which field, and the
+        date or day count behind it).
+
+        This serves issue #142's operator-visibility criterion. The tool NAME
+        is reserved on issue #31 (avoiding a collision with the existing
+        kb_audit event-log tool), but #31's own request -- pattern promotion:
+        detecting repeated patterns across the corpus and proposing to hoist
+        them up the tier chain -- is NOT implemented here and #31 stays open.
+
+        limit: maximum entries returned, clamped to 1..100 (default 50).
+        verbose: kb_curate is already lean, so compact and full modes return
+        the same shape; the parameter exists for interface consistency."""
+        from data_olympus.tools_curate import kb_curate_fn
+        resp = kb_curate_fn(
+            idx=state.idx, review_due_after_days=state.config.review_due_after_days,
+            limit=limit,
+        )
         return shape_response(resp, verbose=verbose)
 
     @app.tool(title="KB Search", annotations=READ_ONLY_TOOL)
@@ -816,7 +874,11 @@ def build_app(
         `in_force=true` excludes it. `validity_state` is an audit-query facet:
         one of `"expired"`, `"stale"`, or `"expiring_within:N"` (N days) to list
         docs by validity condition; filtering for `"expired"` implies including
-        them regardless of `include_expired`.
+        them regardless of `include_expired`. `"stale"` here matches only
+        `recheck_by` in the past -- narrower than the per-hit `freshness:
+        "stale"` a hit can otherwise carry from verification age (see
+        `KB_REVIEW_DUE_AFTER_DAYS`); use `kb_curate` to list every document
+        currently showing `freshness: "stale"` for either reason.
 
         abstain: when true, apply the signal gate. If the query matches no
         discriminating column (title/tags/applies_when) it is treated as
@@ -844,6 +906,7 @@ def build_app(
             idx=state.idx, query=query, limit=limit, tier=tier, category=category,
             status=status, in_force=in_force, doc_type=doc_type, abstain=abstain,
             include_expired=include_expired, validity_state=validity_state,
+            review_due_after_days=state.config.review_due_after_days,
         )
         return shape_response(resp, verbose=verbose)
 
@@ -871,7 +934,10 @@ def build_app(
         frontmatter)."""
         from data_olympus.tools_read import KbNotFoundError, kb_get_fn
         try:
-            resp = kb_get_fn(idx=state.idx, id=id)
+            resp = kb_get_fn(
+                idx=state.idx, id=id,
+                review_due_after_days=state.config.review_due_after_days,
+            )
         except KbNotFoundError as e:
             return {"error": "not_found", "message": str(e)}
         return shape_response(resp, verbose=verbose)
@@ -1366,6 +1432,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         maintenance_ledger_path=config.maintenance_ledger_path,
         maintenance_recently_expired_days=config.maintenance_recently_expired_days,
         maintenance_expiring_soon_days=config.maintenance_expiring_soon_days,
+        review_due_after_days=config.review_due_after_days,
         status_autofill=config.status_autofill,
         kb_main_path_source=config.kb_main_path_source,
         kb_index_path_source=config.kb_index_path_source,

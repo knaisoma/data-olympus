@@ -168,28 +168,75 @@ def is_inbox_path(rel_path: str) -> bool:
     return norm.startswith(memory_inbox_prefix())
 
 
+def _days_since(date_str: str, today: str) -> int | None:
+    """Whole days between ``date_str`` and ``today`` (today - date_str), or
+    ``None`` when ``date_str`` fails to parse as an ISO date. A malformed
+    hand-authored date must not crash a search/get request; the caller
+    treats ``None`` as "cannot establish an age", not as fresh."""
+    try:
+        return (
+            datetime.date.fromisoformat(today) - datetime.date.fromisoformat(date_str)
+        ).days
+    except ValueError:
+        return None
+
+
 def compute_freshness(
     *,
     valid_from: str | None,
     valid_until: str | None,
     recheck_by: str | None,
+    last_verified: str | None,
     today: str,
-) -> str | None:
-    """Return the deviation-only freshness indicator, or ``None`` when fresh.
+    review_due_after_days: int | None,
+) -> tuple[str | None, str | None]:
+    """Return ``(state, reason)``. ``state`` is the deviation-only freshness
+    indicator, ``None`` when fresh; ``reason`` names the field and date/day
+    count behind a non-``None`` state, ``None`` when fresh.
 
-    Priority: ``expired`` (valid_until in the past) beats ``upcoming``
-    (valid_from in the future) beats ``stale`` (recheck_by in the past,
-    advisory only — the doc otherwise stays in force and visible). Returns
-    ``None`` when none of the three conditions hold, so a caller can drop the
-    field entirely (compact output) rather than emit a "fresh" no-op value.
+    Priority: ``expired`` (``valid_until`` in the past) beats ``upcoming``
+    (``valid_from`` in the future) beats ``stale``. Returns ``(None, None)``
+    when none of the conditions hold, so a caller can drop the field entirely
+    (compact output) rather than emit a "fresh" no-op value.
+
+    ``stale`` now has two distinct sources (issue #142), because
+    ``recheck_by`` alone left review-due dependent on someone having
+    remembered to set a date, while ``last_verified`` -- the actual
+    verification timestamp -- was evaluated by nothing:
+
+    - **An explicit ``recheck_by`` is an override**, in EITHER direction. Set
+      and in the past: ``stale``, regardless of ``last_verified``, exactly as
+      before. Set and in the future: fresh, and the automatic
+      verification-age check below does NOT run -- the operator has already
+      decided when this needs a look, so an old ``last_verified`` next to a
+      deliberately deferred ``recheck_by`` is not reported stale early.
+    - **No ``recheck_by``** falls back to deriving review-due from
+      verification age against the ``review_due_after_days`` policy
+      threshold (``None`` or ``<= 0`` disables this derivation entirely,
+      restoring the pre-#142 default exactly). A ``last_verified`` older than
+      the threshold is ``stale``. A document carrying **no ``last_verified``
+      at all** is ALSO ``stale`` under this derivation -- it has no
+      verification age to fall back on being fresh, and defaulting it to
+      fresh would hide exactly the documents most worth looking at.
     """
     if is_expired(valid_until, today):
-        return "expired"
+        return "expired", f"valid_until {valid_until} is before {today}"
     if is_upcoming(valid_from, today):
-        return "upcoming"
-    if recheck_by and recheck_by < today:
-        return "stale"
-    return None
+        return "upcoming", f"valid_from {valid_from} is after {today}"
+    if recheck_by:
+        if recheck_by < today:
+            return "stale", f"recheck_by {recheck_by} is before {today}"
+        return None, None
+    if review_due_after_days is not None and review_due_after_days > 0:
+        if not last_verified:
+            return "stale", "last_verified is not set"
+        age_days = _days_since(last_verified, today)
+        if age_days is not None and age_days > review_due_after_days:
+            return "stale", (
+                f"last_verified {last_verified} is {age_days} day(s) old, "
+                f"over the {review_due_after_days}-day review threshold"
+            )
+    return None, None
 
 
 def not_expired_sql_fragment(param: str = "?") -> str:

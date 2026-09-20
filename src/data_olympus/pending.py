@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import time
 import uuid
 from collections.abc import Mapping
@@ -169,21 +170,92 @@ class PendingQueue:
     ) -> float:
         """Create the exclusive lock file for ``target_path``. Returns the
         ``acquired_at`` timestamp stamped into the file so the caller can hand it
-        back to ``_release_lock`` for an ownership-checked delete."""
+        back to ``_release_lock`` for an ownership-checked delete.
+
+        Publishes the COMPLETE record atomically (issue #272): the previous
+        ``O_CREAT | O_EXCL``-then-write sequence left ``lock_path`` existing
+        but empty/truncated for the whole write, a window writers were
+        serialized against but readers were not, so a reader (health,
+        ``derive_running_contest``, GC) could observe a held path as free or
+        malformed. The record is written whole to a private temp file in the
+        same directory, then published with a single ``os.link`` onto
+        ``lock_path`` -- ``os.link`` fails with ``FileExistsError`` if the
+        destination already exists, so exclusive-create semantics are kept
+        exactly, and because the temp file already holds the complete bytes
+        before it gets that second name, there is no intermediate state where
+        the target path exists with partial content: it is either absent or
+        complete. The temp name is ``_path_lock_filename(...) + ".tmp.<rand>"``,
+        which does not end in ``.lock``, so it is structurally invisible to
+        every lock-enumerating scan (``locks_held``, ``held_locks``,
+        ``gc_orphan_locks``, ``reclaim_stale_auto_commit_locks`` all filter on
+        that suffix). A leftover temp file from a crash mid-publish, or from a
+        cleanup that itself failed, is reaped by
+        :meth:`reclaim_stale_lock_tmpfiles`, age-bounded like the auto-commit
+        reclaim so a live (if narrow) in-flight window is never touched."""
         lock_path = os.path.join(self._locks_dir, _path_lock_filename(target_path))
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            raise PathLockBusyError(target_path) from None
         acquired_at = time.time()
+        record = {"pending_id": pending_id, "target_path": target_path,
+                  "owner_kind": owner_kind, "acquired_at": acquired_at}
+        fd, tmp_path = tempfile.mkstemp(
+            dir=self._locks_dir,
+            prefix=_path_lock_filename(target_path) + ".tmp.",
+        )
         try:
             with os.fdopen(fd, "w") as f:
-                json.dump({"pending_id": pending_id, "target_path": target_path,
-                           "owner_kind": owner_kind, "acquired_at": acquired_at}, f)
-        except Exception:
-            os.unlink(lock_path)
-            raise
+                json.dump(record, f)
+            try:
+                os.link(tmp_path, lock_path)
+            except FileExistsError:
+                raise PathLockBusyError(target_path) from None
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp_path)
         return acquired_at
+
+    def reclaim_stale_lock_tmpfiles(self, *, max_age_sec: float) -> int:
+        """Remove lock-publish temp files left by a crash between writing the
+        temp file and linking it onto the lock path, or by a cleanup that
+        itself failed after a publish failure (issue #272).
+
+        Age-bounded like :meth:`reclaim_stale_auto_commit_locks`: a temp file
+        is identified by ``_path_lock_filename(...) + ".tmp."`` and, because
+        that never ends in ``.lock``, it carries no pending-entry or
+        auto-commit semantics to key an unambiguous "orphaned" signal off of
+        (unlike :meth:`gc_orphan_locks`, which can tell a lock apart from its
+        entry). Age is the only signal available, so a temp file younger than
+        ``max_age_sec`` is left alone even though it looks identical to a
+        crash leftover -- it may simply be mid-write.
+
+        Runs under ``self._serializer``, the same process-wide write
+        serializer ``_acquire_lock`` publishes under (see :meth:`gc_orphan_locks`,
+        the same pattern for real locks), so reaping cannot interleave with a
+        concurrent publish and remove a file mid-publication. Periodic-only,
+        like ``gc_orphan_locks``: unlike the auto-commit reclaim there is no
+        startup call, since a crash-leftover temp file is exactly as safe to
+        leave for the first periodic sweep as an orphaned lock is. Returns the
+        number of temp files removed."""
+        with self._serializer:
+            return self._reclaim_stale_lock_tmpfiles_locked(max_age_sec)
+
+    def _reclaim_stale_lock_tmpfiles_locked(self, max_age_sec: float) -> int:
+        if not os.path.isdir(self._locks_dir):
+            return 0
+        now = time.time()
+        removed = 0
+        for name in os.listdir(self._locks_dir):
+            if name.endswith(".lock") or ".tmp." not in name:
+                continue
+            tmp_path = os.path.join(self._locks_dir, name)
+            try:
+                mtime = os.path.getmtime(tmp_path)
+            except FileNotFoundError:
+                continue
+            if (now - mtime) < max_age_sec:
+                continue
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp_path)
+                removed += 1
+        return removed
 
     def _release_lock(
         self, target_path: str, *, expected_acquired_at: float | None = None,
@@ -312,11 +384,26 @@ class PendingQueue:
                     "meta": meta,
                     "enqueued_at": time.time(),
                 }
-                atomic_write_json(
-                    os.path.join(self._root, f"{pending_id}.json"), entry,
-                )
+                entry_path = os.path.join(self._root, f"{pending_id}.json")
+                atomic_write_json(entry_path, entry)
             except Exception:
-                self._release_lock(target_path)
+                # #272: atomic_write_json's os.replace publishes the entry
+                # BEFORE its trailing parent-directory fsync, so a failure in
+                # that fsync raises AFTER the entry is already live on disk.
+                # Releasing the lock unconditionally here, as before, would
+                # strand a published entry with no lock protecting its path --
+                # a second proposal to the same target_path would then be
+                # accepted, silently colliding with this one. Release only
+                # when the entry never actually landed; a published entry
+                # keeps its lock and stands as an ordinary pending entry (the
+                # caller still sees the raised exception, since durability was
+                # not confirmed, but the server-side state is exactly what a
+                # normal successful enqueue produces -- gc_orphan_locks and
+                # kb_list_pending already treat a lock with a live matching
+                # entry as unremarkable, so no new reconciliation state is
+                # needed).
+                if not os.path.exists(entry_path):
+                    self._release_lock(target_path)
                 raise
             return pending_id
 

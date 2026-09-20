@@ -12,6 +12,84 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-21
+
+### Added
+
+* **New `kb_curate` tool: which in-force documents are due for review, most
+  overdue first.** Aggregates the `freshness`/`freshness_reason` signal
+  `kb_search` and `kb_get` already expose per-document into one list, so
+  finding what needs a look no longer requires already knowing to filter for
+  `validity_state:stale`. Advisory and read-only, with no write-pipeline
+  dependency; registered in read-only replicas alongside `kb_search`/
+  `kb_get`. Candidates are exactly the `kb_search(in_force=true)` set, and an
+  empty or nothing-review-due result is a valid empty list, never an error.
+  The tool name is reserved on issue #31 (avoiding a collision with the
+  existing `kb_audit` event-log tool), but #31's request -- pattern promotion:
+  detecting repeated patterns and proposing to hoist them up the tier chain --
+  is not implemented here and #31 stays open. (#142)
+* **Review-due can now be derived from how long a document has actually gone
+  unverified, not only from a hand-set deadline.** `last_verified` used to be
+  advisory and evaluated by nothing, so a document nobody ever re-verified
+  looked exactly as fresh as one checked yesterday. With the new
+  `KB_REVIEW_DUE_AFTER_DAYS` setting, a document with no explicit
+  `recheck_by` is reported `freshness: "stale"` once its `last_verified` is
+  older than that many days, or has no `last_verified` at all -- a document
+  never verified does not default to fresh, since that would hide exactly
+  the documents most worth looking at. An explicit `recheck_by` remains an
+  override in either direction: past, it is `stale` regardless of
+  verification age; future, it suppresses the automatic check entirely. A
+  new `freshness_reason` field on `kb_search` hits and `kb_get` names the
+  field and the date or day count behind a non-empty `freshness`. Unset
+  (the default): behaviour is unchanged from before this release. This is
+  advisory only and never affects `in_force` or default search. (#142)
+
+### Fixed
+
+* **A path lock is now published atomically, and a failure after a proposal
+  is published no longer strands it unlocked.** The lock file used to be
+  created empty and then written into, so a reader (health, GC, the #241
+  contest projection) could observe an existing-but-empty or truncated lock
+  for the whole write. It is now written complete to a private temp file and
+  published in a single `os.link`, which still fails if the path is already
+  locked, so exclusive-create semantics are unchanged. Separately,
+  `atomic_write_json` publishes a pending entry before its trailing
+  parent-directory fsync; a failure in that fsync used to release the entry's
+  lock unconditionally even though the entry was already live on disk,
+  letting a second proposal take the same path. The lock is now released only
+  when the entry never actually landed. A crash-leftover publish temp file is
+  reaped by the existing periodic GC pass, past the auto-commit lock TTL; see
+  `docs/operations.md` §4.6. (#272)
+
+### Security
+
+* **Health no longer hands pending ids to unauthenticated callers.** When auth
+  is configured, `GET /api/v1/health`, the degraded 503 body every read route
+  can return, and MCP `kb_health` now omit each `path_locks` record's
+  `pending_id` for a missing or invalid token; a valid token still sees it.
+  Behaviour is unchanged when auth is not configured. Responses served with
+  auth configured now carry `Cache-Control: private` and `Vary: Authorization`.
+  (#270)
+
+### Changed
+
+* **Healthy REST reads no longer enumerate or read every path lock.** The
+  degraded-precheck every read route runs first listed the lock directory and
+  opened/parsed each `*.lock` file even though it only needed `degraded`, so
+  cost scaled with the pending queue on the overwhelming-common healthy path.
+  `get`, `search`, `outline`, `list`, `/readyz` and `/metrics` now skip the
+  enumeration entirely when the index is healthy; a degraded response still
+  carries the full `path_locks` list in its 503 body. (#271)
+
+* **The benchmark receipt is now checked for a reachable `source_commit` before
+  merge.** A receipt refreshed on a pull request branch named a commit that the
+  squash merge then removed from `main`, so the benchmark-docs guard passed on
+  the pull request and failed afterwards, and a reproduction could not check out
+  the revision the numbers were measured at. CI now fails the pull request that
+  introduces such a receipt, with a message explaining how to re-measure.
+  `benchmarks/README.md` documents the resulting workflow. (#268)
+
+
 ## [0.8.2] - 2026-09-15
 
 ### Security
@@ -2290,12 +2368,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/knaisoma/data-olympus/compare/v0.8.2...v0.9.0
+[0.8.2]: https://github.com/knaisoma/data-olympus/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/knaisoma/data-olympus/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/knaisoma/data-olympus/compare/v0.7.3...v0.8.0
 [0.7.3]: https://github.com/knaisoma/data-olympus/compare/v0.7.2...v0.7.3
+[0.7.2]: https://github.com/knaisoma/data-olympus/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/knaisoma/data-olympus/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/knaisoma/data-olympus/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/knaisoma/data-olympus/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/knaisoma/data-olympus/compare/v0.4.2...v0.5.0
+[0.4.2]: https://github.com/knaisoma/data-olympus/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/knaisoma/data-olympus/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/knaisoma/data-olympus/compare/v0.3.5...v0.4.0
 [0.3.5]: https://github.com/knaisoma/data-olympus/compare/v0.3.4...v0.3.5

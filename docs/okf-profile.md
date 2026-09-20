@@ -174,8 +174,8 @@ merged to `release/0.4.0`. An optional nested object, concept-level only:
 |---|---|---|
 | `valid_from` | Document not yet in force before this date (`upcoming`). | `is_in_force`, `compute_freshness` |
 | `valid_until` | Document expired on/after the day after this date (inclusive boundary). **Has teeth**: excluded from `in_force=true` AND every default `kb_search` result, not merely downranked. | `is_expired`, `not_expired_sql_fragment`, `in_force_sql_fragment` |
-| `last_verified` | Advisory; not evaluated by any filter. | none |
-| `recheck_by` | Soft staleness deadline. Past date does NOT remove the doc from search; only adds a `stale` deviation indicator. | `compute_freshness` (lint warning only) |
+| `last_verified` | The verification timestamp. Advisory only (never affects `in_force` or default search): with `KB_REVIEW_DUE_AFTER_DAYS` set and no `recheck_by` override, a `last_verified` older than that many days -- or absent entirely -- adds a `stale` deviation indicator (issue #142). Unset env var: not evaluated, matching the pre-#142 default. | `compute_freshness` |
+| `recheck_by` | Soft staleness deadline, and an explicit OVERRIDE of the `last_verified`-age derivation in either direction: past date adds `stale` regardless of `last_verified`; a future date is NOT reported stale even next to an old `last_verified`. Never removes the doc from search; only adds the deviation indicator. | `compute_freshness` (lint warning only) |
 | `verification_source` | Free text; not evaluated by tooling. | none |
 
 All dates normalize to ISO `YYYY-MM-DD` at index/lint time
@@ -200,7 +200,8 @@ additive and orthogonal, visible only in served MCP/REST responses.
 | Field | Where it appears | Semantics |
 |---|---|---|
 | `in_force` | `SearchHitModel.in_force`, `GetResponse.in_force` | Single-sourced predicate: status class AND validity window AND not-inbox AND not-graph-excluded (`format.validate.is_in_force`). Verbose responses carry it unconditionally; compact responses emit it deviation-only (`in_force: false` only). |
-| `freshness` | `SearchHitModel.freshness`, `GetResponse.freshness` | One of `stale` / `expired` / `upcoming`, or omitted when fresh or the doc has no `validity` block (`compute_freshness`). |
+| `freshness` | `SearchHitModel.freshness`, `GetResponse.freshness` | One of `stale` / `expired` / `upcoming`, or omitted when fresh (`compute_freshness`). A doc with no `validity` block is omitted only while `KB_REVIEW_DUE_AFTER_DAYS` is unset; with the threshold enabled it has no `last_verified` either, so it reports `stale` with reason `last_verified is not set` (issue #142). |
+| `freshness_reason` | `SearchHitModel.freshness_reason`, `GetResponse.freshness_reason` | Why `freshness` is non-empty: names the field and the date or day count, from the SAME `compute_freshness` call that set `freshness` (issue #142). Omitted exactly when `freshness` is omitted. |
 | `superseded_by` (computed) | `SearchHitModel.superseded_by`, `GetResponse.superseded_by` | Union of the document's own frontmatter claim and any reverse `supersedes` edge naming it; omitted when empty. |
 | `contradicted_by` | `GetResponse.contradicted_by` | Computed reverse of `contradicts`: every other doc whose `contradicts` names this one. `kb_get` only (not on search hits); verbose responses always carry it, compact responses emit it when non-empty (`GetResponse.compact_dump`). |
 | `pending_actions` | `HealthResponse.pending_actions`, `ConsultResponse.pending_actions` | Maintenance-ledger CTA (issue #113): short `{kind, message, count}` items an agent should surface to the operator and act on only with confirmation. Omitted entirely (not an empty list) when the corpus is clean. |

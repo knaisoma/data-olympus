@@ -1296,3 +1296,291 @@ def test_reconciliation_leaves_a_fresh_legacy_claim_alone(tmp_path) -> None:
 
     with open(path) as f:
         assert json.load(f)["effective_postimage"] == "# live edit\n"
+
+
+# ---------------------------------------------------------------------------
+# Atomic lock publication (issue #272)
+# ---------------------------------------------------------------------------
+
+def _fail_nth_fsync(monkeypatch, n: int, exc: type[Exception] = OSError):
+    """Make the Nth call to os.fsync (as durable.py sees it) raise ``exc``.
+
+    atomic_write_json calls os.fsync twice: once on the temp file's own
+    descriptor (content durability, BEFORE os.replace publishes it), once on
+    the parent directory's descriptor (AFTER os.replace). n=1 fails before
+    publish; n=2 fails after publish -- the #272 stranded-entry window.
+    """
+    import data_olympus.durable as durable_module
+    real_fsync = durable_module.os.fsync
+    calls = {"n": 0}
+
+    def fake(fd):
+        calls["n"] += 1
+        if calls["n"] == n:
+            raise exc("synthetic fsync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(durable_module.os, "fsync", fake)
+    return calls
+
+
+class _RecordingSerializer:
+    """A fake serializer that counts __enter__ calls, so a test can pin
+    "runs under the serializer" without real threads."""
+
+    def __init__(self) -> None:
+        self.entries = 0
+
+    def __enter__(self) -> _RecordingSerializer:
+        self.entries += 1
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        return False
+
+
+def test_acquire_lock_never_exposes_partial_content_to_a_reader(
+    tmp_path, monkeypatch,
+) -> None:
+    """A reader (held_locks) polled DURING publication sees either nothing or
+    the complete record -- never an existing-but-empty/partial lock file.
+    This is the actual defect #272 reports: the old O_CREAT|O_EXCL-then-write
+    sequence left lock_path existing-but-empty for the whole write."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    observed: list[list[dict]] = []
+    real_dump = pending_module.json.dump
+
+    def spying_dump(obj, fp, *a, **kw):
+        # Mid-write: the temp file has content queued but nothing has been
+        # linked into locks/ yet, so a concurrent reader must see nothing.
+        observed.append(q.held_locks())
+        return real_dump(obj, fp, *a, **kw)
+
+    monkeypatch.setattr(pending_module.json, "dump", spying_dump)
+    q._acquire_lock("decisions/x.md", "abc123def456")  # noqa: SLF001
+
+    assert observed == [[]]
+    locks = q.held_locks()
+    assert len(locks) == 1
+    assert locks[0]["target_path"] == "decisions/x.md"
+    assert locks[0]["pending_id"] == "abc123def456"
+
+
+def test_acquire_lock_is_still_exclusive_under_the_new_publish_scheme(
+    tmp_path,
+) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    q._acquire_lock("decisions/x.md", "first")  # noqa: SLF001
+    with pytest.raises(PathLockBusyError):
+        q._acquire_lock("decisions/x.md", "second")  # noqa: SLF001
+    locks = q.held_locks()
+    assert len(locks) == 1
+    assert locks[0]["pending_id"] == "first"
+
+
+def test_acquire_lock_preserves_ownership_fields_and_permissions(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    q._acquire_lock("decisions/x.md", "abc", owner_kind="pending")  # noqa: SLF001
+    lock_path = os.path.join(q.root, "locks", _path_lock_filename("decisions/x.md"))
+    import stat
+    st = os.stat(lock_path)
+    assert stat.S_IMODE(st.st_mode) == 0o600
+    with open(lock_path) as f:
+        info = json.load(f)
+    assert info["pending_id"] == "abc"
+    assert info["target_path"] == "decisions/x.md"
+    assert info["owner_kind"] == "pending"
+    assert isinstance(info["acquired_at"], float)
+
+
+def test_acquire_lock_publication_failure_leaves_no_temp_file_and_no_lock(
+    tmp_path, monkeypatch,
+) -> None:
+    """A failure in the link-publish step itself (e.g. filesystem-level, not
+    a busy path) must not be mapped to PathLockBusyError, must clean up its
+    temp file, and must not create lock_path."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+
+    def failing_link(_src, _dst):
+        raise OSError("synthetic ENOSPC")
+
+    monkeypatch.setattr(pending_module.os, "link", failing_link)
+    with pytest.raises(OSError):
+        q._acquire_lock("decisions/x.md", "abc")  # noqa: SLF001
+
+    locks_dir = os.path.join(q.root, "locks")
+    assert os.listdir(locks_dir) == []
+
+
+def test_acquire_lock_content_write_failure_leaves_no_temp_file_and_no_lock(
+    tmp_path, monkeypatch,
+) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+
+    def failing_dump(*_a, **_kw):
+        raise ValueError("synthetic encode failure")
+
+    monkeypatch.setattr(pending_module.json, "dump", failing_dump)
+    with pytest.raises(ValueError):
+        q._acquire_lock("decisions/x.md", "abc")  # noqa: SLF001
+
+    locks_dir = os.path.join(q.root, "locks")
+    assert os.listdir(locks_dir) == []
+
+
+def test_enqueue_releases_lock_when_entry_never_published(
+    tmp_path, monkeypatch,
+) -> None:
+    """Entry-write failure BEFORE the entry is published (the content fsync,
+    which runs before os.replace): unchanged behaviour, lock is released."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    _fail_nth_fsync(monkeypatch, n=1)
+    with pytest.raises(OSError):
+        q.enqueue(
+            proposal_type="memory", target_path="decisions/x.md",
+            postimage="b", base_commit="HEAD", base_blob_sha=None,
+            target_file_hash=None, meta={},
+        )
+    assert q.held_locks() == []
+    assert q.list() == []
+
+
+def test_enqueue_keeps_lock_when_entry_already_published_before_fsync_failure(
+    tmp_path, monkeypatch,
+) -> None:
+    """The stranded-entry defect (#272): the parent-directory fsync in
+    atomic_write_json runs AFTER os.replace has published the entry. Failing
+    it must NOT release the lock -- the entry is live and must keep its
+    matching lock, or a second proposal could take the same path."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    _fail_nth_fsync(monkeypatch, n=2)
+    with pytest.raises(OSError):
+        q.enqueue(
+            proposal_type="memory", target_path="decisions/x.md",
+            postimage="b", base_commit="HEAD", base_blob_sha=None,
+            target_file_hash=None, meta={},
+        )
+    locks = q.held_locks()
+    assert len(locks) == 1
+    entries = q.list()
+    assert len(entries) == 1
+    assert entries[0]["target_path"] == "decisions/x.md"
+    assert entries[0]["pending_id"] == locks[0]["pending_id"]
+
+    # And a second proposal to the SAME path is correctly refused: the whole
+    # point of keeping the lock is that this path is not silently stealable.
+    with pytest.raises(PathLockBusyError):
+        q._acquire_lock("decisions/x.md", "intruder")  # noqa: SLF001
+
+
+def test_release_lock_cleanup_failure_does_not_touch_an_unrelated_lock(
+    tmp_path, monkeypatch,
+) -> None:
+    """If the unconditional release's own unlink fails for a reason other
+    than the lock already being gone, the failure propagates (is not
+    silently absorbed) and never touches an unrelated path's lock."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    q._acquire_lock("decisions/keep.md", "keeper")  # noqa: SLF001
+    q._acquire_lock("decisions/victim.md", "victim")  # noqa: SLF001
+
+    def failing_unlink(_path):
+        raise PermissionError("synthetic cleanup failure")
+
+    monkeypatch.setattr(pending_module.os, "unlink", failing_unlink)
+    with pytest.raises(PermissionError):
+        q._release_lock("decisions/victim.md")  # noqa: SLF001
+    monkeypatch.undo()
+
+    locks = {r["target_path"] for r in q.held_locks()}
+    assert "decisions/keep.md" in locks
+
+
+def test_reclaim_stale_lock_tmpfiles_removes_old_crash_leftovers(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    locks_dir = os.path.join(q.root, "locks")
+    tmp_name = _path_lock_filename("decisions/x.md") + ".tmp.crashed"
+    stray = os.path.join(locks_dir, tmp_name)
+    with open(stray, "w") as f:
+        json.dump({"pending_id": "abc"}, f)
+    old = time.time() - 700
+    os.utime(stray, (old, old))
+
+    removed = q.reclaim_stale_lock_tmpfiles(max_age_sec=600)
+
+    assert removed == 1
+    assert not os.path.exists(stray)
+
+
+def test_reclaim_stale_lock_tmpfiles_spares_a_fresh_temp_file(tmp_path) -> None:
+    """An in-flight publish's temp file must never be reaped mid-write: the
+    age bound is the only thing distinguishing crash leftovers from a live
+    (if rare) window."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    locks_dir = os.path.join(q.root, "locks")
+    tmp_name = _path_lock_filename("decisions/x.md") + ".tmp.inflight"
+    fresh = os.path.join(locks_dir, tmp_name)
+    with open(fresh, "w") as f:
+        f.write("{}")
+
+    removed = q.reclaim_stale_lock_tmpfiles(max_age_sec=600)
+
+    assert removed == 0
+    assert os.path.exists(fresh)
+
+
+def test_reclaim_stale_lock_tmpfiles_ignores_real_lock_files(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    q._acquire_lock("decisions/x.md", "abc")  # noqa: SLF001
+    lock_path = os.path.join(q.root, "locks", _path_lock_filename("decisions/x.md"))
+    old = time.time() - 700
+    os.utime(lock_path, (old, old))
+
+    removed = q.reclaim_stale_lock_tmpfiles(max_age_sec=600)
+
+    assert removed == 0
+    assert os.path.exists(lock_path)
+
+
+def test_reclaim_stale_lock_tmpfiles_runs_under_the_serializer(tmp_path) -> None:
+    rec = _RecordingSerializer()
+    q = PendingQueue(pending_root=str(tmp_path / "p"), serializer=rec)
+    q.reclaim_stale_lock_tmpfiles(max_age_sec=600)
+    assert rec.entries == 1
+
+
+def test_temp_files_are_invisible_to_locks_held_and_held_locks(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    locks_dir = os.path.join(q.root, "locks")
+    tmp_name = _path_lock_filename("decisions/x.md") + ".tmp.stray"
+    with open(os.path.join(locks_dir, tmp_name), "w") as f:
+        f.write("{}")
+    assert q.locks_held() == 0
+    assert q.held_locks() == []
+
+
+def test_temp_files_are_invisible_to_gc_orphan_locks(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    locks_dir = os.path.join(q.root, "locks")
+    tmp_name = _path_lock_filename("decisions/x.md") + ".tmp.stray"
+    stray = os.path.join(locks_dir, tmp_name)
+    with open(stray, "w") as f:
+        json.dump({"pending_id": "a" * 32}, f)  # would look orphaned if scanned
+    removed = q.gc_orphan_locks()
+    assert removed == 0
+    assert os.path.exists(stray)
+
+
+def test_temp_files_are_invisible_to_reclaim_stale_auto_commit_locks(
+    tmp_path,
+) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    locks_dir = os.path.join(q.root, "locks")
+    tmp_name = _path_lock_filename("decisions/x.md") + ".tmp.stray"
+    stray = os.path.join(locks_dir, tmp_name)
+    with open(stray, "w") as f:
+        json.dump({"pending_id": "auto-commit:sess", "owner_kind": "auto_commit"}, f)
+    old = time.time() - 700
+    os.utime(stray, (old, old))
+    removed = q.reclaim_stale_auto_commit_locks(max_age_sec=600)
+    assert removed == 0
+    assert os.path.exists(stray)

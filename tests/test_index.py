@@ -715,3 +715,71 @@ def test_search_rejects_unknown_column(tmp_path: Path, tmp_index_path: Path) -> 
     idx.build(_excel_governance_kb(tmp_path), source_commit="x")
     with pytest.raises(ValueError, match="unknown fts column"):
         idx.search("excel", limit=5, columns=["title", "bogus"])
+
+
+# ---------------------------------------------------------------------------
+# curate_candidates (issue #142): the in-force candidate set for kb_curate,
+# reusing the SAME single-sourced in-force predicate _facet_filters(in_force=
+# True) already gives kb_search -- not a second definition.
+# ---------------------------------------------------------------------------
+
+def _write_curate_doc(
+    kb: Path, rel: str, *, id_: str, status: str = "active", validity: str = "",
+) -> None:
+    p = kb / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        f"---\nid: {id_}\ntype: standard\nstatus: {status}\ntier: T1\n"
+        f"category: foundation\ntitle: {id_}\n{validity}---\n# {id_}\n\nbody\n",
+        encoding="utf-8",
+    )
+
+
+def test_curate_candidates_empty_index_returns_empty_list(tmp_index_path) -> None:
+    idx = Index(tmp_index_path)
+    assert idx.curate_candidates(today="2026-01-01") == []
+
+
+def test_curate_candidates_returns_validity_columns(tmp_path, tmp_index_path) -> None:
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    _write_curate_doc(
+        kb, "universal/foundation/a.md", id_="DOC-A",
+        validity="validity:\n  last_verified: 2025-01-01\n  recheck_by: 2025-06-01\n",
+    )
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="test")
+    rows = idx.curate_candidates(today="2026-01-01")
+    assert len(rows) == 1
+    assert rows[0]["id"] == "DOC-A"
+    assert rows[0]["last_verified"] == "2025-01-01"
+    assert rows[0]["recheck_by"] == "2025-06-01"
+
+
+def test_curate_candidates_excludes_expired_and_upcoming(tmp_path, tmp_index_path) -> None:
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    _write_curate_doc(
+        kb, "universal/foundation/expired.md", id_="DOC-EXPIRED",
+        validity="validity:\n  valid_until: 2025-01-01\n",
+    )
+    _write_curate_doc(
+        kb, "universal/foundation/upcoming.md", id_="DOC-UPCOMING",
+        validity="validity:\n  valid_from: 2027-01-01\n",
+    )
+    _write_curate_doc(kb, "universal/foundation/fresh.md", id_="DOC-FRESH")
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="test")
+    ids = {r["id"] for r in idx.curate_candidates(today="2026-01-01")}
+    assert ids == {"DOC-FRESH"}
+
+
+def test_curate_candidates_excludes_non_in_force_status(tmp_path, tmp_index_path) -> None:
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    _write_curate_doc(kb, "universal/foundation/draft.md", id_="DOC-DRAFT", status="proposed")
+    _write_curate_doc(kb, "universal/foundation/live.md", id_="DOC-LIVE", status="active")
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="test")
+    ids = {r["id"] for r in idx.curate_candidates(today="2026-01-01")}
+    assert ids == {"DOC-LIVE"}

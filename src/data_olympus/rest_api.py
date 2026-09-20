@@ -51,9 +51,20 @@ async def _offload(fn: Any, /, *args: Any, **kwargs: Any) -> Any:
     return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
 
 
-def _build_health(state: ServerState) -> HealthResponse:
-    """Compose the HealthResponse from current ServerState. Shared by /health and
-    by the degraded-precheck on all other read endpoints."""
+def _build_health(state: ServerState, *, include_path_locks: bool = True) -> HealthResponse:
+    """Compose the HealthResponse from current ServerState. Shared by /health,
+    /metrics, /readyz and the degraded-precheck on every other read endpoint.
+
+    ``include_path_locks`` (issue #271): the precheck on a read route only
+    needs ``degraded``, computed entirely from staleness/build-status/doc-count
+    (see health.snapshot) -- never from path_locks. Unconditionally calling
+    ``PendingQueue.locks_held()`` (lists the lock directory) and
+    ``held_locks()`` (opens and parses every ``*.lock`` file) on every read
+    made cost scale with the pending queue for a value the healthy case (the
+    overwhelming common one) discards immediately. Callers that only need
+    ``degraded`` pass ``include_path_locks=False``; a caller building the
+    actual /health response, or rebuilding after a precheck came back
+    degraded, needs the default."""
     return kb_health_fn(
         idx=state.idx,
         last_git_pull_at=state.last_git_pull_at,
@@ -62,8 +73,14 @@ def _build_health(state: ServerState) -> HealthResponse:
         pending_count=state.pending_count,
         push_queue_size=state.push_queue_size,
         push_queue_frozen=state.push_queue_frozen,
-        path_locks_held=state.pending.locks_held() if state.pending else 0,
-        path_locks=state.pending.held_locks() if state.pending else [],
+        path_locks_held=(
+            state.pending.locks_held()
+            if (state.pending and include_path_locks) else 0
+        ),
+        path_locks=(
+            state.pending.held_locks()
+            if (state.pending and include_path_locks) else []
+        ),
         last_index_build_status=state.last_index_build_status,
         last_index_error=state.last_index_error,
         last_index_error_at=state.last_index_error_at,
@@ -79,13 +96,22 @@ def _build_health(state: ServerState) -> HealthResponse:
     )
 
 
-def _degraded_response(health: HealthResponse) -> JSONResponse:
+def _degraded_response(
+    health: HealthResponse, *, authorized: bool, auth_configured: bool,
+) -> JSONResponse:
     """503 + degraded:true body. Used on all read endpoints when the index is
-    not healthy, so bin/kb --no-stale rejects stale reads across all subcommands."""
-    body = health.model_dump()
+    not healthy, so bin/kb --no-stale rejects stale reads across all subcommands.
+
+    Redacts ``path_locks`` the same way ``/api/v1/health`` does (issue #270):
+    this body carries the full health model, so an unauthenticated caller
+    reaching it through a degraded read route is exactly as exposed as one
+    calling ``/health`` directly."""
+    redacted = health.redact_path_locks(authorized=authorized)
+    body = redacted.model_dump()
     body["degraded"] = True
     body["error"] = "degraded_index"
-    return JSONResponse(body, status_code=503)
+    headers = {"Cache-Control": "private", "Vary": "Authorization"} if auth_configured else None
+    return JSONResponse(body, status_code=503, headers=headers)
 
 
 def _query_bool(raw: str | None) -> bool:
@@ -128,6 +154,18 @@ def _authorize(
                     f"'{capability}'"},
         status_code=403,
     )
+
+
+def _health_authorized(request: Request, registry: PrincipalRegistry) -> bool:
+    """Whether this caller may see pending ids in a health-derived response
+    (issue #270).
+
+    Mirrors the "no auth configured OR authenticated" rule ``_authorize`` uses
+    for ``capability=None`` routes, without its 401/403 branching: health and
+    read routes stay open to every caller regardless of auth. Only the
+    ``path_locks`` payload differs by caller."""
+    principal = registry.resolve(request.headers.get("Authorization"))
+    return (not registry.auth_configured) or principal.authenticated
 
 
 def _missing_fields_response(body: object, required: list[str]) -> JSONResponse | None:
@@ -367,7 +405,15 @@ def register_routes(
         # 503-on-degraded behaviour, so it stays here.
         status = 503 if resp.degraded else 200
         verbose = _query_bool(request.query_params.get("verbose"))
-        return JSONResponse(shape_response(resp, verbose=verbose), status_code=status)
+        authorized = _health_authorized(request, registry)
+        resp = resp.redact_path_locks(authorized=authorized)
+        headers = (
+            {"Cache-Control": "private", "Vary": "Authorization"}
+            if registry.auth_configured else None
+        )
+        return JSONResponse(
+            shape_response(resp, verbose=verbose), status_code=status, headers=headers,
+        )
 
     @app.custom_route("/readyz", methods=["GET"])
     async def readyz(_request: Request) -> JSONResponse:
@@ -380,7 +426,9 @@ def register_routes(
         # built yet (cold start / never-successful build) or the last index build
         # failed (a corrupt/duplicate-id rebuild left no swap-in). Served inline
         # (like /api/v1/health) so the probe never queues behind the worker pool.
-        resp = _build_health(state)
+        # Lock-free (issue #271): the body below reads only index_built_at,
+        # total_rules and last_index_build_status, none of them the lock list.
+        resp = _build_health(state, include_path_locks=False)
         ready = resp.index_built_at is not None and resp.last_index_build_status == "ok"
         body = {
             "ready": ready,
@@ -422,7 +470,9 @@ def register_routes(
                 "'metrics' extra to enable /metrics\n",
                 status_code=501,
             )
-        h = _build_health(state)
+        # Lock-free (issue #271): sync_from_state below reads only counters and
+        # staleness, never the lock list, and a scrape pays this on every hit.
+        h = _build_health(state, include_path_locks=False)
         m.sync_from_state(
             pending_count=h.pending_count,
             push_queue_size=h.push_queue_size,
@@ -435,18 +485,51 @@ def register_routes(
 
     @app.custom_route("/api/v1/outline", methods=["GET"])
     async def outline(request: Request) -> JSONResponse:
-        h = await _offload(_build_health, state)
+        h = await _offload(_build_health, state, include_path_locks=False)
         if h.degraded:
-            return _degraded_response(h)
+            # Rare path: rebuild WITH the lock list for the full 503 envelope.
+            h = await _offload(_build_health, state)
+            return _degraded_response(
+                h, authorized=_health_authorized(request, registry),
+                auth_configured=registry.auth_configured,
+            )
         verbose = _query_bool(request.query_params.get("verbose"))
         resp = await _offload(kb_outline_fn, idx=state.idx)
         return JSONResponse(shape_response(resp, verbose=verbose))
 
+    @app.custom_route("/api/v1/curate", methods=["GET"])
+    async def curate(request: Request) -> JSONResponse:
+        h = await _offload(_build_health, state, include_path_locks=False)
+        if h.degraded:
+            # Rare path: rebuild WITH the lock list for the full 503 envelope.
+            h = await _offload(_build_health, state)
+            return _degraded_response(
+                h, authorized=_health_authorized(request, registry),
+                auth_configured=registry.auth_configured,
+            )
+        verbose = _query_bool(request.query_params.get("verbose"))
+        try:
+            limit = int(request.query_params.get("limit", "50"))
+        except ValueError:
+            return JSONResponse({"error": "bad_limit"}, status_code=400)
+        from data_olympus.tools_curate import kb_curate_fn
+        resp = await _offload(
+            kb_curate_fn, idx=state.idx,
+            review_due_after_days=state.config.review_due_after_days,
+            limit=limit,
+        )
+        return JSONResponse(shape_response(resp, verbose=verbose))
+
     @app.custom_route("/api/v1/search", methods=["GET"])
     async def search(request: Request) -> JSONResponse:
-        h = await _offload(_build_health, state)
+        h = await _offload(_build_health, state, include_path_locks=False)
         if h.degraded:
-            return _degraded_response(h)
+            # Rare path: rebuild WITH the lock list for the full 503 envelope.
+            h = await _offload(_build_health, state)
+            return _degraded_response(
+                h, authorized=_health_authorized(request, registry),
+                auth_configured=registry.auth_configured,
+            )
         q = request.query_params.get("q", "")
         if not q:
             return JSONResponse({"error": "missing_q"}, status_code=400)
@@ -466,6 +549,7 @@ def register_routes(
                 kb_search_fn, idx=state.idx, query=q, limit=limit, tier=tier,
                 category=category, in_force=in_force, abstain=abstain,
                 include_expired=include_expired, validity_state=validity_state,
+                review_due_after_days=state.config.review_due_after_days,
             )
         except ValueError as e:
             # A malformed validity_state (e.g. 'bogus' or 'expiring_within:abc')
@@ -478,22 +562,35 @@ def register_routes(
 
     @app.custom_route("/api/v1/get/{id}", methods=["GET"])
     async def get(request: Request) -> JSONResponse:
-        h = await _offload(_build_health, state)
+        h = await _offload(_build_health, state, include_path_locks=False)
         if h.degraded:
-            return _degraded_response(h)
+            # Rare path: rebuild WITH the lock list for the full 503 envelope.
+            h = await _offload(_build_health, state)
+            return _degraded_response(
+                h, authorized=_health_authorized(request, registry),
+                auth_configured=registry.auth_configured,
+            )
         id_ = request.path_params["id"]
         verbose = _query_bool(request.query_params.get("verbose"))
         try:
-            resp = await _offload(kb_get_fn, idx=state.idx, id=id_)
+            resp = await _offload(
+                kb_get_fn, idx=state.idx, id=id_,
+                review_due_after_days=state.config.review_due_after_days,
+            )
         except KbNotFoundError as e:
             return JSONResponse({"error": "not_found", "message": str(e)}, status_code=404)
         return JSONResponse(shape_response(resp, verbose=verbose))
 
     @app.custom_route("/api/v1/list", methods=["GET"])
     async def list_(request: Request) -> JSONResponse:
-        h = await _offload(_build_health, state)
+        h = await _offload(_build_health, state, include_path_locks=False)
         if h.degraded:
-            return _degraded_response(h)
+            # Rare path: rebuild WITH the lock list for the full 503 envelope.
+            h = await _offload(_build_health, state)
+            return _degraded_response(
+                h, authorized=_health_authorized(request, registry),
+                auth_configured=registry.auth_configured,
+            )
         tier = request.query_params.get("tier")
         if not tier:
             return JSONResponse({"error": "missing_tier"}, status_code=400)

@@ -65,7 +65,7 @@ workflow, not something a docs PR completes.
 2. Set **both** version fields in `server.json` to that release: the top-level `version`
    and `packages[0].version`. Leaving the package pinned to 0.7.3 or earlier points the
    entry at a description that does not carry the marker. Then re-validate the file
-   against the published schema. Both fields are pinned to `0.8.2`, so this step is
+   against the published schema. Both fields are pinned to `0.9.0`, so this step is
    already done for that release and is only owed again on the next one.
 3. Confirm that the pinned release's own description carries the exact marker. Run from
    the repository root:

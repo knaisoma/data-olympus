@@ -2,9 +2,9 @@
 
 A replica set to KB_READ_ONLY refreshes its index from the git remote via the
 git_pull_loop but exposes ONLY the read surface: it registers the read tools
-(kb_search / kb_get / kb_list / kb_outline / kb_health) and read REST routes,
-and does NOT register write/enforcement-write tools or write REST routes, nor
-initialise the write pipeline (worktrees / push queue / pending).
+(kb_search / kb_get / kb_list / kb_outline / kb_curate / kb_health) and read
+REST routes, and does NOT register write/enforcement-write tools or write REST
+routes, nor initialise the write pipeline (worktrees / push queue / pending).
 
 Default (KB_READ_ONLY unset) behaviour is unchanged and is covered elsewhere;
 here we only assert the read-only deltas plus one default-mode control.
@@ -25,7 +25,7 @@ from data_olympus.server import build_app
 if TYPE_CHECKING:
     from pathlib import Path
 
-READ_TOOLS = {"kb_search", "kb_get", "kb_list", "kb_outline", "kb_health"}
+READ_TOOLS = {"kb_search", "kb_get", "kb_list", "kb_outline", "kb_curate", "kb_health"}
 WRITE_OR_ENFORCE_TOOLS = {
     "kb_propose_memory",
     "kb_propose_edit",
@@ -96,6 +96,19 @@ async def test_read_only_read_tool_round_trips(tmp_kb: Path, tmp_path: Path) -> 
     async with Client(app) as client:
         result = await client.call_tool("kb_search", {"query": "worktree", "limit": 5})
         assert "STD-U-001" in str(result)
+
+
+@pytest.mark.asyncio
+async def test_read_only_kb_curate_round_trips(tmp_kb: Path, tmp_path: Path) -> None:
+    """kb_curate (issue #142) has no write-pipeline dependency and must be
+    reachable in a read-only replica the same as the other read tools. A
+    superset check on READ_TOOLS alone would not catch a registration
+    mistake that placed it inside the write-only block; call it for real."""
+    app = _read_only_app(tmp_kb, tmp_path)
+    async with Client(app) as client:
+        result = await client.call_tool("kb_curate", {})
+    assert result.data["entries"] == []
+    assert result.data["total"] == 0
 
 
 @pytest.mark.asyncio
