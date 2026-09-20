@@ -546,7 +546,7 @@ class PendingQueue:
                         "contradicts": list(entry["meta"].get("contradicts") or []),
                         "contest_reason": entry["meta"].get("contest_reason"),
                     }
-                    if entry["meta"].get("intent") == "contest" or entry["meta"].get("contradicts")
+                    if entry["meta"].get("intent") == "contest"
                     else None
                 ),
             }))
@@ -1313,7 +1313,7 @@ class PendingQueue:
             # so caller text reaches health through this projection, and one
             # unrenderable lock would fail health, readiness and every REST
             # read built on it rather than just its own record.
-            rec: dict[str, Any] = {
+            out.append({
                 "target_path": _render_safe(info.get("target_path")),
                 "owner_kind": _render_safe(info.get("owner_kind", "pending")),
                 "pending_id": _render_safe(info.get("pending_id")),
@@ -1323,8 +1323,7 @@ class PendingQueue:
                     if isinstance(acquired_at, (int, float))
                     else None
                 ),
-            }
-            out.append(rec)
+            })
         return out
 
     def derive_running_contest(self, target_path: str) -> RunningContestReceipt:

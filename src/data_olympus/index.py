@@ -2246,8 +2246,6 @@ class Index:
         conn = self._connect()
         try:
             rows = conn.execute("SELECT id, path FROM docs").fetchall()
-        except sqlite3.Error:
-            return {}
         finally:
             conn.close()
         return {row["id"]: row["path"] for row in rows}

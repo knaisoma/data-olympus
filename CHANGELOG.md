@@ -22,6 +22,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   without leaking private path details. `PendingQueue` persists `intent: "contest"` and
   `contradicts` in the path lock across `_claim` and `restore_resolve` transitions, and
   `kb_list_pending` projects the proposal reason and dispute rationale as separate fields.
+  Duplicate `contradicts` items are rejected with `rejected_invalid_contest`. Read-side
+  projection in `held_locks()` is deliberately deferred pending #270 allow-list integration.
   Contributed by @RemanenetSpy in #278.
 
 ### Security
