@@ -1,0 +1,38 @@
+# Paths excluded from scripts/prose_lint.py, one path prefix or exact path per
+# line. Exclusions are for text this project does not author, for machine
+# output, or for bytes something else binds. Never for authored prose that
+# happens to be inconvenient to fix.
+
+# Not this project's text.
+.venv/
+.git/
+node_modules/
+example-bundle/
+to-delete/
+
+# Fixtures and pinned upstream conformance data.
+tests/
+
+# Benchmark material whose CURRENT bytes a measurement receipt hashes, so that
+# a published number stays tamper-evident. Editing any of it means re-running
+# the benchmark, which changes what the numbers mean.
+#
+# Two groups in benchmarks/receipt.py, not one. `_OUTPUT_PATHS` lists the
+# generated result documents. `_corpus_group` additionally hashes the measured
+# corpus, `benchmarks/corpus/**/*.md` and `benchmarks/governance/**/*.md`, which
+# is 290 files; they carry no findings today, and excluding them keeps a later
+# well-meant prose fix from silently invalidating the receipt.
+#
+# The REST of benchmarks/ stays linted, including README.md and
+# real_corpus_eval.md. Its Python sources are reached through `SOURCE_PATTERNS`,
+# which the benchmark-docs CI guard verifies against the bytes committed at the
+# receipt's own source_commit, read from git history, so under that guard
+# editing a comment or a docstring today invalidates nothing. Note that
+# receipt.verify_receipt() called directly compares SOURCE_PATTERNS and uv.lock
+# against the CURRENT tree instead; the CI guard is what runs here, and it is
+# what this exclusion set is written against.
+benchmarks/corpus/
+benchmarks/governance/
+benchmarks/governance_results/ablation.md
+benchmarks/governance_results/embeddings/ablation.md
+benchmarks/results/report.md

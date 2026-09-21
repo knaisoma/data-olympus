@@ -4,7 +4,7 @@
 SPEC.md and docs/adoption.md restate, in prose, the controlled-vocabulary
 enums and reserved-filename list that ``data_olympus.format.validate`` defines
 in code (``TYPES``, ``STATUSES``, ``TIERS``, ``RESERVED``). Those two sources
-of truth have no structural link — nothing stops the code from adding a new
+of truth have no structural link; nothing stops the code from adding a new
 ``status`` value while the docs still list the old set. This script parses
 each prose restatement out of the docs, and fails when its value set no
 longer matches the canonical one imported directly from the package.
@@ -44,7 +44,7 @@ like `` `index.md` `` does not end the scan early). The parser is tolerant of:
 It is NOT tolerant of a value list that spans multiple sentences, or values
 that aren't backtick-quoted. If SPEC.md's prose changes shape enough to break
 the regex, this script should fail loudly (a `ParseError`) rather than
-silently report zero values as "in sync" — an empty extracted set is treated
+silently report zero values as "in sync"; an empty extracted set is treated
 as a parse failure, not a pass.
 
 The reserved-filename restatement is matched the same way, anchored on the

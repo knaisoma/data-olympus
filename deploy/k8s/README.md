@@ -14,9 +14,9 @@ kubectl apply -k .
 
 Both are opt-in because applying them by default would be unsafe:
 
-- **`secret.sops.yaml`** — SOPS-encrypted, applied separately (step 1 above) so
+- **`secret.sops.yaml`**: SOPS-encrypted, applied separately (step 1 above) so
   the plaintext key never lands on disk.
-- **`ingress.yaml`** — the Ingress publishes **all** routes, including the write
+- **`ingress.yaml`**: the Ingress publishes **all** routes, including the write
   and enforcement REST routes (`/api/v1/propose/*`, `/api/v1/resolve/*`,
   `/api/v1/onboarding/bootstrap`, `/api/v1/consult`, `/api/v1/gate/check`). With
   `KB_AUTH_TOKEN` unset that is an **unauthenticated write surface reachable from

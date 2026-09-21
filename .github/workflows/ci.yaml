@@ -40,6 +40,8 @@ jobs:
           uv run python scripts/okf_conformance.py consume-data-olympus --upstream-root to-delete/okf-reference
           uv run python scripts/okf_conformance.py consume-upstream
       - run: uv run ruff check .
+      - name: Writing rules (em-dashes, agent authorship credit, LLM diction)
+        run: python3 scripts/prose_lint.py .
       - run: uv run mypy src
       - name: Benchmark docs drift guard (docs match committed results)
         run: uv run python scripts/check_benchmark_docs.py

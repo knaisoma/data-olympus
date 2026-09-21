@@ -3,7 +3,7 @@
 
 Re-derives every hard-gate condition from raw typed records in the bundle. It
 NEVER trusts a caller-supplied boolean like "ready": true or
-"review_validated": true — those keys, if present, are ignored. Any
+"review_validated": true: those keys, if present, are ignored. Any
 missing/None/unparseable field makes its condition False (fail-closed). A
 malformed bundle never raises; it is simply NOT_READY with a blocker
 explaining why.

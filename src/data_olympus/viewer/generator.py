@@ -358,7 +358,7 @@ def generate_visualization(
     safe_name = html.escape(display_name)
     # Single-pass substitution (item 7): replacing __JSON__ then __DISPLAY_NAME__
     # (or vice versa) let payload content that happened to contain the OTHER
-    # placeholder get mangled by the second pass — e.g. a doc body with the literal
+    # placeholder get mangled by the second pass: e.g. a doc body with the literal
     # ``__DISPLAY_NAME__`` was rewritten to the bundle name. Substituting both in
     # one regex pass means neither replacement's output is rescanned.
     _subs = {"__JSON__": json_str, "__DISPLAY_NAME__": safe_name}

@@ -36,7 +36,7 @@ always clear the gate by calling `kb_consult` and then retrying.
 
 The rules `kb_consult` returns for a governed intent are retrieved with
 `in_force=true` (see `docs/serving.md`'s `in_force` section for the full
-predicate), unconditionally — this is not a caller-facing parameter. So an
+predicate), unconditionally: this is not a caller-facing parameter. So an
 unreviewed agent-written memory (`status: proposed`, stamped automatically by
 `kb_propose_memory`), a superseded/deprecated/rejected decision, an expired or
 upcoming document, or a document under the memory-inbox prefix can never be
@@ -54,7 +54,7 @@ surface via plain `kb_search`/`kb_get`.
   - `source_session`
   - `agent_identity`
   - `trigger` (optional; `"explicit"` default, or `"prompt_hook"` for an
-    installer auto-consult — see the gate policy above). Omitting it is treated as
+    installer auto-consult; see the gate policy above). Omitting it is treated as
     `"explicit"` for backward compatibility.
 - `POST /api/v1/gate/check`: verdict (`allow` | `consult_required`) for a pending
   code action. Body:

@@ -201,7 +201,7 @@ before then. This signal is informational only and does not affect `degraded`,
 ## Write serialization and integrity gates
 
 Every write (`kb_propose_memory`, `kb_propose_edit`, `kb_resolve_pending`, and
-onboarding bootstrap — which commits its whole file bundle through the same
+onboarding bootstrap, which commits its whole file bundle through the same
 serialized/validated multi-file path) goes through one serialized critical
 section so concurrent writes cannot corrupt each other:
 
@@ -218,7 +218,7 @@ section so concurrent writes cannot corrupt each other:
   `rejected_invalid_document` when the frontmatter is malformed YAML, a
   `type`/`status`/`tier` enum value is out of vocabulary, or the `id` is a
   forged/duplicate of one already used by a different path (which would break
-  every subsequent index rebuild — one bad write, persistent degraded state). The
+  every subsequent index rebuild: one bad write, persistent degraded state). The
   response `reason` carries the machine-readable errors.
 - **Supersession targets (issue #259).** On commit, a `supersedes` or
   `superseded_by` value that the write newly introduces must name a document
@@ -264,7 +264,7 @@ section so concurrent writes cannot corrupt each other:
   mismatch returns `rejected_stale_base` and nothing is committed. If the base
   cannot be refreshed at all (the remote is unreachable, or the rebase conflicts)
   while an enforceable marker was supplied, the write is also rejected
-  `rejected_stale_base` rather than committed against a possibly-stale base — the
+  `rejected_stale_base` rather than committed against a possibly-stale base; the
   marker cannot be verified, and the push-path rebase recovery is not an
   equivalent safety net (a compatible rebase would still publish the stale write).
   A bare `base_commit` of `HEAD` is advisory (no per-file expectation), and when
@@ -610,7 +610,7 @@ with the sha, worktree, and last error, and the entry is counted in
 need operator attention.** Non-fast-forward pushes against a moved `origin/main`
 are now recovered automatically (see *Non-fast-forward push recovery* above), so
 a frozen entry now signals a persistent failure the rebase path could not
-handle — typically an authentication, network, or remote-side rejection.
+handle, typically an authentication, network, or remote-side rejection.
 
 To unfreeze, an operator resolves the underlying push failure, then clears the
 entry file directly on the push-queue volume (`KB_PUSH_QUEUE_ROOT`, default
@@ -1253,14 +1253,14 @@ peer, so every client collapses into one `remote_addr` and the per-IP cap
 
 Set `KB_TRUSTED_PROXIES` to the proxy address(es) (comma-separated) to fix this:
 
-- **Unset (default)** — uvicorn runs with `proxy_headers` **off**. `X-Forwarded-For`
+- **Unset (default)**: uvicorn runs with `proxy_headers` **off**. `X-Forwarded-For`
   is ignored and `remote_addr` is the immediate peer. This is the safe default: a
   direct client cannot spoof its address to dodge the limiter.
-- **Set to the proxy IP(s)** — uvicorn enables `proxy_headers` and restricts
+- **Set to the proxy IP(s)**: uvicorn enables `proxy_headers` and restricts
   `forwarded_allow_ips` to those addresses, so it rewrites `remote_addr` from
   `X-Forwarded-For` **only** when the immediate peer is a trusted proxy. The
   limiter then sees the true client IP.
-- **`*`** — trust `X-Forwarded-For` from any peer. Only safe when nothing
+- **`*`**: trust `X-Forwarded-For` from any peer. Only safe when nothing
   untrusted can reach the port directly (e.g. the port is bound to the pod network
   and only the ingress can connect). Otherwise a direct client could forge the
   header.
@@ -1274,10 +1274,10 @@ several agents active, and all clients collapsing to one limiter bucket behind a
 ingress, a fixed hourly quota self-throttles the whole fleet with `429`s. So
 gate-check has its own ceiling:
 
-- **`KB_GATE_CHECK_RATE_LIMIT_PER_HOUR=0` (default)** — gate-check is **not**
+- **`KB_GATE_CHECK_RATE_LIMIT_PER_HOUR=0` (default)**: gate-check is **not**
   rate-limited. It does only cheap classification plus a freshness lookup and no
   writes, so this matches the read routes, which are also unthrottled.
-- **A positive value** — an explicit per-(address, principal) backstop just for
+- **A positive value**: an explicit per-(address, principal) backstop just for
   gate-check, independent of the write/consult limiter. Size it above your fleet's
   real per-hour tool-call volume, not near it, or you reintroduce the self-DoS.
 
@@ -1317,8 +1317,8 @@ in `deploy/docker/entrypoint.sh` so the artifact can commit out of the box; the
 server's `main()` also fills unset `GIT_*` variables as a belt-and-suspenders for
 non-Docker runs. Override the identity with:
 
-- `KB_GIT_AUTHOR_NAME` — commit author/committer name (default `data-olympus-mcp`).
-- `KB_GIT_AUTHOR_EMAIL` — commit author/committer email (default
+- `KB_GIT_AUTHOR_NAME`: commit author/committer name (default `data-olympus-mcp`).
+- `KB_GIT_AUTHOR_EMAIL`: commit author/committer email (default
   `data-olympus-mcp@localhost`).
 
 A pre-existing `GIT_AUTHOR_*`/`GIT_COMMITTER_*` value or a real `git config`

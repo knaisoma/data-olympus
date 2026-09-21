@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from collections.abc import Collection
 
 # Directories whose contents are never KB concepts.  Kept in sync with
-# _EXCLUDED_DIR_NAMES in src/data_olympus/index.py — if you add entries
+# _EXCLUDED_DIR_NAMES in src/data_olympus/index.py: if you add entries
 # there, add them here too (and vice-versa).
 _SKIP_DIRS = frozenset({
     # VCS / tooling

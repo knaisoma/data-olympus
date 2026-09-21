@@ -103,7 +103,7 @@ def normalize_okf_doc(path: Path, *, default_tier: str, category: str | None) ->
     fm, inferences = _apply_aliases(dict(raw_fm))
     needs_review: list[str] = []
 
-    # id (required): synthesize from the filename stem when absent — flag it,
+    # id (required): synthesize from the filename stem when absent: flag it,
     # because a stable id normally comes from the author.
     if not fm.get("id"):
         fm["id"] = path.stem
@@ -150,7 +150,7 @@ def normalize_okf_doc(path: Path, *, default_tier: str, category: str | None) ->
         )
         fm["tier"] = default_tier
 
-    # Recommended fields — backfill so the output is lint-clean.
+    # Recommended fields: backfill so the output is lint-clean.
     if not fm.get("title"):
         fm["title"] = str(fm["id"]).replace("-", " ").replace("_", " ").strip() or path.stem
         inferences.append(f"missing title; derived {fm['title']!r}")

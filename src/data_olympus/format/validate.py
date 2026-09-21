@@ -60,7 +60,7 @@ def normalize_validity_date(value: object) -> tuple[str, bool]:
     frontmatter dates into these), or a string holding an ISO date
     (``2026-06-01``) or an ISO datetime, optionally timezone-suffixed
     (``2026-06-01T12:00:00+02:00`` or the ``Z`` shorthand for UTC). Anything
-    else — an unparsable string or a non-date/string type (e.g. an int) — is
+    else, an unparsable string or a non-date/string type (e.g. an int), is
     malformed: the caller must treat the value as absent (fail open) while
     still surfacing ``malformed=True`` for a lint warning / health counter.
     """
@@ -245,7 +245,7 @@ def not_expired_sql_fragment(param: str = "?") -> str:
     This is the DEFAULT ``kb_search`` exclusion (issue #107): a document past
     its ``valid_until`` is dropped from every default search result, not just
     from an ``in_force=True`` query, because an expired doc has no named
-    successor to outrank it — if it stayed visible it could be the top hit and
+    successor to outrank it; if it stayed visible it could be the top hit and
     would govern. Takes exactly one bind parameter: ``today`` (ISO date).
     """
     return f"(docs.valid_until IS NULL OR docs.valid_until >= {param})"
@@ -352,7 +352,7 @@ def validate_document(doc: Document, *, today: str | None = None) -> list[Findin
     warnings below; it defaults to :func:`today_iso` (the real wall clock) but
     is injectable so a caller (tests, the CLI) gets deterministic results.
     These are wall-clock checks, so per the accepted decision they are ALWAYS
-    warnings, never errors — an error would make ``kb lint`` (and CI) flake
+    warnings, never errors: an error would make ``kb lint`` (and CI) flake
     with the passage of time.
     """
     if doc.path.name in RESERVED:

@@ -66,9 +66,9 @@ See `docs/adoption.md` for the full bundle authoring guide.
 - [`docs/quickstart.md`](docs/quickstart.md): verified local-run procedure.
 - [`docs/adoption.md`](docs/adoption.md): bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - [`docs/serving.md`](docs/serving.md): single-replica serving model, read-only replicas, git pull loop, health/readiness/liveness split, proxy headers, audit-log rotation.
-- [`docs/operations.md`](docs/operations.md): production runbook — backup, upgrade, recovery playbooks (degraded/fetch-failed, history rewrite, frozen/demoted push entries, orphaned locks), the health/alerting model, and release channels (stable and candidate, verification, rollback).
+- [`docs/operations.md`](docs/operations.md): production runbook: backup, upgrade, recovery playbooks (degraded/fetch-failed, history rewrite, frozen/demoted push entries, orphaned locks), the health/alerting model, and release channels (stable and candidate, verification, rollback).
 - [`docs/comparison.md`](docs/comparison.md): how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
-- [`docs/okf-profile.md`](docs/okf-profile.md): field-by-field OKF profile — which governance extensions are stable, which are runtime-only serving fields, and which are experimental candidates.
+- [`docs/okf-profile.md`](docs/okf-profile.md): field-by-field OKF profile: which governance extensions are stable, which are runtime-only serving fields, and which are experimental candidates.
 - [`docs/glama.md`](docs/glama.md): Glama registry claim, release, and score-maintenance notes.
 - [`docs/mcp-registry.md`](docs/mcp-registry.md): official MCP Registry notes, what `server.json` declares, and the checklist for publishing.
 - [`docs/enforcement.md`](docs/enforcement.md): turning the KB into a mandatory consultation gate (hooks, `kb enforce`).
