@@ -12,27 +12,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
-
-* **Writing rules are enforced in CI.** `scripts/prose_lint.py` runs over the
-  repository's Markdown on every pull request and fails on an em-dash, a spaced
-  en-dash used as a sentence dash, agent authorship credit, and a short list of
-  LLM diction. It is a vendored copy of the operator's canonical linter;
-  changes belong upstream first, and the header records the upstream commit and
-  sha256 so the copy is verifiable. `.prose-lintignore` lists what is out of
-  scope, notably the benchmark material whose CURRENT bytes a measurement
-  receipt hashes: the generated result documents in `_OUTPUT_PATHS` and the
-  measured corpus under `benchmarks/corpus/` and `benchmarks/governance/`. The
-  rest of `benchmarks/` is linted, README included: its Python sources are
-  verified against the bytes committed at the receipt's own `source_commit`, so
-  editing a comment today does not invalidate a past measurement.
-* **Documentation prose backfilled to match.** 118 em-dashes across README,
-  SPEC, WHY, CHANGELOG, `docs/` and `deploy/` are replaced with a colon, a
-  comma or two sentences, chosen per sentence rather than mechanically. Prose
-  only: no behaviour, no interface, no documented enum or value changed, and
-  the SPEC edits are punctuation inside existing paragraphs. (No issue; raised
-  by the operator after banned patterns reached public output.)
-
 ## [0.9.0] - 2026-09-21
 
 ### Added
@@ -148,6 +127,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   introduces such a receipt, with a message explaining how to re-measure.
   `benchmarks/README.md` documents the resulting workflow. (#268)
 
+* **Writing rules are enforced in CI.** `scripts/prose_lint.py` runs over the
+  repository's Markdown on every pull request and fails on an em-dash, a spaced
+  en-dash used as a sentence dash, agent authorship credit, and a short list of
+  LLM diction. It is a vendored copy of the operator's canonical linter;
+  changes belong upstream first, and the header records the upstream commit and
+  sha256 so the copy is verifiable. `.prose-lintignore` lists what is out of
+  scope, notably the benchmark material whose CURRENT bytes a measurement
+  receipt hashes: the generated result documents in `_OUTPUT_PATHS` and the
+  measured corpus under `benchmarks/corpus/` and `benchmarks/governance/`. The
+  rest of `benchmarks/` is linted, README included: its Python sources are
+  verified against the bytes committed at the receipt's own `source_commit`, so
+  editing a comment today does not invalidate a past measurement.
+* **Documentation prose backfilled to match.** 118 em-dashes across README,
+  SPEC, WHY, CHANGELOG, `docs/` and `deploy/` are replaced with a colon, a
+  comma or two sentences, chosen per sentence rather than mechanically. Prose
+  only: no behaviour, no interface, no documented enum or value changed, and
+  the SPEC edits are punctuation inside existing paragraphs. (No issue; raised
+  by the operator after banned patterns reached public output.)
 
 ## [0.8.2] - 2026-09-15
 
