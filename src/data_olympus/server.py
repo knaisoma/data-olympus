@@ -180,6 +180,10 @@ EvidenceParam = Annotated[
     list[str] | None,
     Field(description="Optional supporting evidence strings, max 10 items of 500 chars each."),
 ]
+ContestParam = Annotated[
+    dict[str, Any] | None,
+    Field(description="Optional contest declaration with contradicts and optional reason."),
+]
 TargetPathParam = Annotated[
     str,
     Field(description="KB-relative markdown path to create or edit."),
@@ -1074,6 +1078,7 @@ def build_app(
             target_file_hash: TargetFileHashParam, reason: ReasonParam,
             source_session: SourceSessionParam, agent_identity: AgentIdentityParam,
             confidence: ConfidenceParam, evidence: EvidenceParam = None,
+            contest: ContestParam = None,
         ) -> dict[str, object]:
             """Propose an edit to an existing (or new) markdown file under an
             indexed tier. High confidence auto-commits + queues for push; low
@@ -1082,7 +1087,11 @@ def build_app(
             evidence: optional supporting-context strings (max 10 items, 500
             chars each), persisted in pending meta / audit events and surfaced
             by kb_pending (not rendered into the postimage: unlike
-            kb_propose_memory, the postimage here is caller-supplied verbatim)."""
+            kb_propose_memory, the postimage here is caller-supplied verbatim).
+
+            contest: optional contest declaration indicating intent to dispute
+            existing indexed knowledge, specifying contradicted document IDs
+            and optional contest reason."""
             if state.worktrees is None or state.push_queue is None or state.pending is None:
                 return {"status": "write_pipeline_disabled"}
             assert state.worktrees is not None
@@ -1106,6 +1115,7 @@ def build_app(
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
                 evidence=evidence,
+                contest=contest,
             )
             return resp.model_dump()
 

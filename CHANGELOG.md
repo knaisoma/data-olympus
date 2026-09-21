@@ -12,25 +12,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Security
-
-* **Caller-supplied text that cannot be encoded as UTF-8 no longer suppresses an
-  audit event, and no longer breaks reads for everyone else.** An unpaired
-  surrogate passed every write-path gate: `json.loads` accepts the escape, the
-  secret scanner is a regex match, and the entry is persisted with
-  `ensure_ascii=True`. Two consequences, both fixed. Identity and routing fields
-  (`agent_identity`, `source_session`, `target_path`, `pending_id`, `edited_text`)
-  are now REJECTED with `rejected_invalid_encoding` before any side effect: an
-  unencodable one used to raise inside the suppressed block in `_emit_audit`, so
-  the write proceeded and no audit record was written for it. Advisory text
-  (`reason`) is replaced with a placeholder, matching the existing secret-scan
-  treatment of that field, and `evidence` items are rejected, matching theirs.
-  Separately, the pending listing, the pending detail response and the health
-  `path_locks` projection now degrade an unrenderable value to a placeholder
-  instead of failing the whole response, which covers records written before this
-  release. Encodability is tested rather than the surrogate code-point range, so
-  correctly-paired astral characters are unaffected. (#280)
-
 ## [0.9.0] - 2026-09-21
 
 ### Added
@@ -63,6 +44,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (the default): behaviour is unchanged from before this release. This is
   advisory only and never affects `in_force` or default search. (#142)
 
+* **A proposal can now declare that it contests existing indexed knowledge (#241).**
+  `kb_propose_edit` accepts an optional `contest` mapping carrying `contradicts` document IDs
+  and an optional dispute `reason`, so a resolved contradiction becomes distinguishable from an
+  ordinary edit. **A valid contest always parks for confirmation**, even at high confidence with
+  auto-commit otherwise permitted: disputing in-force knowledge is a human decision, never an
+  automatic one. Validation runs in two stages: structural bounds and a credential scan before
+  the rate limiter, then contradiction IDs are resolved against the index after it, rejecting a
+  target that contradicts itself and never echoing a submitted ID or a resolved path back to the
+  caller. Duplicate `contradicts` items are rejected with `rejected_invalid_contest`.
+  `PendingQueue` persists `intent: "contest"` and `contradicts` in the path lock, which the
+  claim and restore transitions preserve, and `kb_list_pending` projects the proposal's
+  operational reason and its dispute rationale as separate fields. `Index.id_to_path_map` now
+  propagates database operational errors (`sqlite3.Error`) instead of returning an empty map, so
+  contest validation and governed-target classification can tell a failed index read from an
+  empty index and fail closed on it; the duplicate-id checks in `write_gate` keep their
+  deliberate fail-open behaviour. Read-side projection in `held_locks()` is deliberately left to
+  a later slice; it is not blocked, since #270's health allow-list already covers these fields by
+  construction. Contributed by @RemanenetSpy in #278.
+
 ### Fixed
 
 * **A path lock is now published atomically, and a failure after a proposal
@@ -89,6 +89,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Behaviour is unchanged when auth is not configured. Responses served with
   auth configured now carry `Cache-Control: private` and `Vary: Authorization`.
   (#270)
+
+* **Caller-supplied text that cannot be encoded as UTF-8 no longer suppresses an
+  audit event, and no longer breaks reads for everyone else.** An unpaired
+  surrogate passed every write-path gate: `json.loads` accepts the escape, the
+  secret scanner is a regex match, and the entry is persisted with
+  `ensure_ascii=True`. Two consequences, both fixed. Identity and routing fields
+  (`agent_identity`, `source_session`, `target_path`, `pending_id`, `edited_text`)
+  are now REJECTED with `rejected_invalid_encoding` before any side effect: an
+  unencodable one used to raise inside the suppressed block in `_emit_audit`, so
+  the write proceeded and no audit record was written for it. Advisory text
+  (`reason`) is replaced with a placeholder, matching the existing secret-scan
+  treatment of that field, and `evidence` items are rejected, matching theirs.
+  Separately, the pending listing, the pending detail response and the health
+  `path_locks` projection now degrade an unrenderable value to a placeholder
+  instead of failing the whole response, which covers records written before this
+  release. Encodability is tested rather than the surrogate code-point range, so
+  correctly-paired astral characters are unaffected. A resolve refused this way
+  returns HTTP 400; the resolve route's status map used to fall through to 200 for
+  any status it did not name, so the refusal would have read as success. (#280)
 
 ### Changed
 

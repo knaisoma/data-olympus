@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -26,6 +27,7 @@ from data_olympus.governed_lane import (
     governed_lane_protection_enabled,
 )
 from data_olympus.models import (
+    ContestDetail,
     PendingDetailResponse,
     PendingEntry,
     PendingListResponse,
@@ -281,6 +283,178 @@ def _redact_evidence(evidence: list[str]) -> list[str]:
         else:
             out.append(str(item))
     return out
+
+
+_MAX_CONTRADICTS_ITEMS = 10
+_MAX_CONTRADICTS_ITEM_CHARS = 200
+_MAX_CONTEST_REASON_CHARS = 500
+
+
+def _validate_contest(contest: object) -> tuple[dict[str, Any] | None, ProposeResponse | None]:
+    """Stage 1: Pre-Rate-Limiter In-Memory Contest Validation (issue #241, PR 1).
+
+    Enforces error precedence:
+    Secret Check > Shape > Bounds/Types.
+    Never echoes submitted values.
+    """
+    if contest is None:
+        return None, None
+    if not isinstance(contest, Mapping):
+        return None, ProposeResponse(
+            status="rejected_invalid_contest",
+            reason="contest must be an object",
+        )
+
+    raw_contradicts = contest.get("contradicts")
+    raw_reason = contest.get("reason")
+
+    # Secret scanning runs FIRST, before structural validation, so a credential
+    # sent in the wrong field is reported as a secret rather than as a shape
+    # error that echoes nothing about why. It covers the two fields this
+    # function accepts, in the shapes it accepts them: `contradicts` items when
+    # it is a list of strings, and `reason` when it is a string. A string under
+    # an UNKNOWN key, or a scalar `contradicts`, is not scanned -- it is
+    # rejected below without being echoed, persisted or logged, so nothing
+    # reaches a downstream surface either way.
+    if isinstance(raw_contradicts, list):
+        for item in raw_contradicts:
+            if isinstance(item, str):
+                s_res = scan_postimage_for_secrets(postimage=item)
+                if not s_res.ok:
+                    assert s_res.match is not None
+                    return None, ProposeResponse(
+                        status="rejected_secret_detected",
+                        reason=f"secret pattern '{s_res.match.pattern_name}' detected in contest",
+                        matching_pattern=s_res.match.pattern_name,
+                    )
+    if isinstance(raw_reason, str):
+        s_res = scan_postimage_for_secrets(postimage=raw_reason)
+        if not s_res.ok:
+            assert s_res.match is not None
+            return None, ProposeResponse(
+                status="rejected_secret_detected",
+                reason=f"secret pattern '{s_res.match.pattern_name}' detected in contest",
+                matching_pattern=s_res.match.pattern_name,
+            )
+
+    valid_keys = {"contradicts", "reason"}
+    extra_keys = set(contest.keys()) - valid_keys
+    if extra_keys:
+        return None, ProposeResponse(
+            status="rejected_invalid_contest",
+            reason="unexpected key in contest",
+        )
+
+    if "contradicts" not in contest:
+        return None, ProposeResponse(
+            status="rejected_invalid_contest",
+            reason="missing required field 'contradicts' in contest",
+        )
+
+    if not isinstance(raw_contradicts, list):
+        return None, ProposeResponse(
+            status="rejected_invalid_contest",
+            reason="contest.contradicts must be a list",
+        )
+
+    if not (1 <= len(raw_contradicts) <= _MAX_CONTRADICTS_ITEMS):
+        return None, ProposeResponse(
+            status="rejected_invalid_contest",
+            reason=f"contest.contradicts must contain between 1 and {_MAX_CONTRADICTS_ITEMS} items",
+        )
+
+    clean_contradicts: list[str] = []
+    for item in raw_contradicts:
+        if not isinstance(item, str):
+            return None, ProposeResponse(
+                status="rejected_invalid_contest",
+                reason="contest.contradicts items must be strings",
+            )
+        if not (1 <= len(item) <= _MAX_CONTRADICTS_ITEM_CHARS) or not item.strip():
+            return None, ProposeResponse(
+                status="rejected_invalid_contest",
+                reason=(
+                    f"contest.contradicts items must be non-empty strings of "
+                    f"at most {_MAX_CONTRADICTS_ITEM_CHARS} characters"
+                ),
+            )
+        if not _is_json_renderable(item):
+            # Same policy as evidence: reject, and never echo the value.
+            return None, ProposeResponse(
+                status="rejected_invalid_contest",
+                reason="contest.contradicts items must be encodable as UTF-8",
+            )
+        clean_contradicts.append(item)
+
+    if len(set(clean_contradicts)) != len(clean_contradicts):
+        return None, ProposeResponse(
+            status="rejected_invalid_contest",
+            reason="contest.contradicts contains duplicate items",
+        )
+
+    clean_reason: str | None = None
+    if raw_reason is not None:
+        if not isinstance(raw_reason, str):
+            return None, ProposeResponse(
+                status="rejected_invalid_contest",
+                reason="contest.reason must be a string",
+            )
+        if len(raw_reason) > _MAX_CONTEST_REASON_CHARS:
+            return None, ProposeResponse(
+                status="rejected_invalid_contest",
+                reason=f"contest.reason exceeds {_MAX_CONTEST_REASON_CHARS} characters",
+            )
+        if not raw_reason.strip():
+            return None, ProposeResponse(
+                status="rejected_invalid_contest",
+                reason="contest.reason cannot be empty or whitespace-only",
+            )
+        if not _is_json_renderable(raw_reason):
+            return None, ProposeResponse(
+                status="rejected_invalid_contest",
+                reason="contest.reason must be encodable as UTF-8",
+            )
+        clean_reason = raw_reason
+
+    return {
+        "contradicts": clean_contradicts,
+        "reason": clean_reason,
+    }, None
+
+
+def _check_contest_index(
+    contradicts: list[str], target_path: str, idx: Index | None,
+) -> ProposeResponse | None:
+    """Stage 2: Post-Rate-Limiter Index Check (issue #241, PR 1).
+
+    Ensures contradicted IDs exist in the index, target document does not
+    contradict itself, and verifies index accessibility.
+    """
+    if idx is None:
+        return ProposeResponse(
+            status="rejected_contest_index_unavailable",
+            reason="contest index resolution unavailable",
+        )
+    try:
+        id_path_map = idx.id_to_path_map()
+    except Exception:
+        return ProposeResponse(
+            status="rejected_contest_index_unavailable",
+            reason="contest index resolution unavailable",
+        )
+
+    for cid in contradicts:
+        if cid not in id_path_map:
+            return ProposeResponse(
+                status="rejected_invalid_contest",
+                reason="contradicted document not found in index",
+            )
+        if id_path_map[cid] == target_path:
+            return ProposeResponse(
+                status="rejected_invalid_contest",
+                reason="target document cannot contradict itself",
+            )
+    return None
 
 
 def _classify(target_path: str) -> tuple[str, str]:
@@ -1482,6 +1656,7 @@ def kb_propose_edit_fn(
     serializer: WriteSerializer | None = None,
     idx: Index | None = None,
     evidence: list[str] | None = None,
+    contest: Mapping[str, Any] | None = None,
 ) -> ProposeResponse:
     """Propose an edit to an existing (or new) file under target_path.
 
@@ -1494,6 +1669,11 @@ def kb_propose_edit_fn(
     server-rendered template), so evidence is never injected into committed
     content -- it is redacted (same treatment as ``reason``) and persisted only
     in pending meta / audit events / ``kb_pending``.
+
+    ``contest`` (issue #241, optional): contest declaration indicating intent
+    to dispute existing indexed knowledge. Validated in two stages: Stage 1
+    in-memory validation runs pre-rate-limiter, and Stage 2 index check runs
+    post-rate-limiter.
     """
     # FIRST statement of the function body, deliberately. Every other gate
     # below can emit an audit event, and an unencodable identity makes that
@@ -1582,6 +1762,21 @@ def kb_propose_edit_fn(
         return ProposeResponse(status="rejected_invalid_evidence",
                                reason=evidence_error, target_path=target_path)
 
+    # Contest stage 1 validation (issue #241): in-memory pre-rate-limiter check
+    # enforcing secret check > shape > length/type bounds.
+    clean_contest, contest_error = _validate_contest(contest)
+    if contest_error is not None:
+        _emit_audit(
+            audit_log,
+            **{
+                **audit_base,
+                "status": contest_error.status,
+                "reason": contest_error.reason,
+                "matching_pattern": contest_error.matching_pattern,
+            },
+        )
+        return contest_error
+
     base_marker_error = _validate_base_markers(base_blob_sha, target_file_hash)
     if base_marker_error is not None:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_invalid_base",
@@ -1625,6 +1820,23 @@ def kb_propose_edit_fn(
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_rate_limited"})
         return ProposeResponse(status="rejected_rate_limited")
 
+    # Contest stage 2 check (issue #241): post-rate-limiter index check
+    # verifying contradicted doc existence and absence of self-contradiction.
+    if clean_contest is not None:
+        contest_idx_error = _check_contest_index(
+            clean_contest["contradicts"], target_path, idx,
+        )
+        if contest_idx_error is not None:
+            _emit_audit(
+                audit_log,
+                **{
+                    **audit_base,
+                    "status": contest_idx_error.status,
+                    "reason": contest_idx_error.reason,
+                },
+            )
+            return contest_idx_error
+
     if max_postimage_bytes > 0 and len(postimage.encode("utf-8")) > max_postimage_bytes:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_payload_too_large"})
         return ProposeResponse(status="rejected_payload_too_large",
@@ -1658,6 +1870,29 @@ def kb_propose_edit_fn(
         flagged_pattern = (
             secret_result.match.pattern_name if secret_result.match is not None else None
         )
+        meta: dict[str, Any] = {
+            "agent_identity": agent_identity,
+            "source_session": source_session,
+            # See the memory path: ownership for the issue #256
+            # readback is the AUTHENTICATED principal, never the
+            # caller-supplied session the listing publishes.
+            "proposer_principal": proposer_principal,
+            "confidence": confidence,
+            "reason": reason,
+            "secret_scan_flagged": flagged_pattern is not None,
+            "matching_pattern": flagged_pattern,
+            "evidence": safe_evidence or None,
+            "demotion_reason": park_demotion_reason,
+            "injection_suspect": bool(injection_matches),
+            "injection_patterns": (
+                governed_verdict.injection_pattern_names() or None
+            ),
+        }
+        if clean_contest is not None:
+            meta["intent"] = "contest"
+            meta["contradicts"] = list(clean_contest["contradicts"])
+            if clean_contest.get("reason") is not None:
+                meta["contest_reason"] = clean_contest["reason"]
         try:
             pid = pending.enqueue(
                 proposal_type="edit",
@@ -1666,22 +1901,7 @@ def kb_propose_edit_fn(
                 base_commit=base_commit,
                 base_blob_sha=base_blob_sha,
                 target_file_hash=target_file_hash,
-                meta={"agent_identity": agent_identity,
-                      "source_session": source_session,
-                      # See the memory path: ownership for the issue #256
-                      # readback is the AUTHENTICATED principal, never the
-                      # caller-supplied session the listing publishes.
-                      "proposer_principal": proposer_principal,
-                      "confidence": confidence,
-                      "reason": reason,
-                      "secret_scan_flagged": flagged_pattern is not None,
-                      "matching_pattern": flagged_pattern,
-                      "evidence": safe_evidence or None,
-                      "demotion_reason": park_demotion_reason,
-                      "injection_suspect": bool(injection_matches),
-                      "injection_patterns": (
-                          governed_verdict.injection_pattern_names() or None
-                      )},
+                meta=meta,
             )
         except PathLockBusyError:
             _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
@@ -1732,7 +1952,12 @@ def kb_propose_edit_fn(
             operator_prompt=f"Proposed edit to {target_path}. Accept (y), edit, or reject (n)?",
         )
 
-    if confidence < confidence_threshold or not can_auto_commit or demotion_reason is not None:
+    if (
+        confidence < confidence_threshold
+        or not can_auto_commit
+        or demotion_reason is not None
+        or clean_contest is not None
+    ):
         return _park(demotion_reason)
 
     # Serialized commit + CAS + validation + enqueue (items 1, 3, 4, 8).
@@ -2085,6 +2310,12 @@ def kb_list_pending_fn(*, pending: PendingQueue) -> PendingListResponse:
                 demotion_reason=e.get("demotion_reason"),
                 injection_suspect=e.get("injection_suspect", False),
                 injection_patterns=e.get("injection_patterns"),
+                intent=e.get("intent"),
+                contest=(
+                    ContestDetail(**e["contest"])
+                    if e.get("contest") is not None
+                    else None
+                ),
             )
             for e in pending.list()
         ]

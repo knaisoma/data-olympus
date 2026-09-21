@@ -30,3 +30,15 @@ def test_resolve_status_codes() -> None:
     assert _resolve_status("rejected_stale_base") == 409
     assert _resolve_status("rejected_invalid_document") == 422
     assert _resolve_status("rejected") == 200
+
+
+def test_resolve_refusals_are_client_errors_not_200() -> None:
+    """A resolve refused for an unencodable identity or edited text must not
+    read as success. The map used to fall through to 200 for any status it
+    did not name, so rejected_invalid_encoding came back 200 and a client
+    checking only the status code would conclude the decision was applied."""
+    assert _resolve_status("rejected_invalid_encoding") == 400
+
+
+def test_propose_encoding_refusal_is_a_client_error() -> None:
+    assert _propose_status("rejected_invalid_encoding") == 400

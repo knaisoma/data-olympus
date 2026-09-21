@@ -267,10 +267,14 @@ def _propose_status(status: str) -> int:
         # The target path is held by an advisory lock; retry after it clears.
         # 423 Locked.
         return 423
+    if status == "rejected_contest_index_unavailable":
+        return 503
     if status in ("rejected_invalid_document", "rejected_secret_detected"):
         # The postimage failed the content-validation or secret-scanning gate
         # (issue #71). 422 Unprocessable.
         return 422
+    if status == "rejected_invalid_contest":
+        return 400
     return 400
 
 
@@ -287,6 +291,11 @@ def _resolve_status(status: str) -> int:
         return 409
     if status in ("rejected_invalid_document", "rejected_secret_detected"):
         return 422
+    if status == "rejected_invalid_encoding":
+        # A client input error, refused before the claim. It must not share the
+        # fall-through 200 below, or a caller checking only the status code
+        # reads a refused decision as an applied one.
+        return 400
     if status in ("rejected", "rejected_symlink_escape"):
         return 200
     return 200
@@ -619,6 +628,14 @@ def register_routes(
             confidence, bad = _parse_confidence(body)
             if bad is not None:
                 return bad
+            if "contest" in body:
+                return JSONResponse(
+                    {
+                        "status": "rejected_invalid_contest",
+                        "reason": "contest is not supported for memory proposals",
+                    },
+                    status_code=400,
+                )
             assert state.worktrees is not None
             assert state.push_queue is not None
             assert state.pending is not None
@@ -692,6 +709,7 @@ def register_routes(
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
                 evidence=body.get("evidence", []),
+                contest=body.get("contest"),
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)

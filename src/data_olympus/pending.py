@@ -120,8 +120,14 @@ def _path_lock_filename(target_path: str) -> str:
 
 def _as_id_list(value: object) -> list[str]:
     """Normalize a decision-chain reference authored as either a scalar ID
-    or a list of IDs into a list of strings."""
-    if isinstance(value, list):
+    or a list of IDs into a list of strings.
+
+    A tuple is accepted alongside a list. JSON never produces one, so this
+    only matters for an in-process caller passing metadata directly, but
+    ``PendingQueue.enqueue`` is public and previously accepted a tuple here;
+    dropping it would have silently narrowed that (issue #241 review).
+    """
+    if isinstance(value, (list, tuple)):
         return [str(v).strip() for v in value if str(v).strip()]
     if isinstance(value, str) and value.strip():
         return [value.strip()]
@@ -199,6 +205,8 @@ class PendingQueue:
         pending_id: str,
         *,
         owner_kind: str = "pending",
+        intent: str | None = None,
+        contradicts: list[str] | None = None,
     ) -> float:
         """Create the exclusive lock file for ``target_path``. Returns the
         ``acquired_at`` timestamp stamped into the file so the caller can hand it
@@ -226,8 +234,19 @@ class PendingQueue:
         reclaim so a live (if narrow) in-flight window is never touched."""
         lock_path = os.path.join(self._locks_dir, _path_lock_filename(target_path))
         acquired_at = time.time()
-        record = {"pending_id": pending_id, "target_path": target_path,
-                  "owner_kind": owner_kind, "acquired_at": acquired_at}
+        record: dict[str, Any] = {
+            "pending_id": pending_id,
+            "target_path": target_path,
+            "owner_kind": owner_kind,
+            "acquired_at": acquired_at,
+        }
+        # Contest disposition (issue #241). Added to the record BEFORE it is
+        # serialized, so the atomicity property above is unchanged: the temp
+        # file still holds the complete record before it gets its second name.
+        if intent is not None:
+            record["intent"] = intent
+        if contradicts is not None:
+            record["contradicts"] = list(contradicts)
         fd, tmp_path = tempfile.mkstemp(
             dir=self._locks_dir,
             prefix=_path_lock_filename(target_path) + ".tmp.",
@@ -403,7 +422,18 @@ class PendingQueue:
         # saw it in that window used to unlink it, leaving this entry pending
         # with no lock at all.
         with self._serializer:
-            self._acquire_lock(target_path, pending_id)
+            raw_intent = meta.get("intent")
+            intent = str(raw_intent) if raw_intent is not None else None
+            raw_contradicts = meta.get("contradicts")
+            # Normalized through the same helper derive_running_contest uses,
+            # so the scalar form its Dispute Metadata Contract documents is
+            # persisted as a one-element list rather than silently dropped.
+            contradicts = (
+                _as_id_list(raw_contradicts) if raw_contradicts is not None else None
+            )
+            self._acquire_lock(
+                target_path, pending_id, intent=intent, contradicts=contradicts,
+            )
             try:
                 entry = {
                     "pending_id": pending_id,
@@ -516,6 +546,21 @@ class PendingQueue:
                 "demotion_reason": entry["meta"].get("demotion_reason"),
                 "injection_suspect": bool(entry["meta"].get("injection_suspect", False)),
                 "injection_patterns": entry["meta"].get("injection_patterns"),
+                # Contest disposition (issue #241): dual rationale separation.
+                "intent": entry["meta"].get("intent"),
+                "contest": (
+                    {
+                        # Same normalization as derive_running_contest, whose
+                        # contract documents contradicts as a scalar id OR a
+                        # list. list() on a scalar would project it as one
+                        # entry per character, and would raise outright on a
+                        # truthy non-iterable, taking the whole listing down.
+                        "contradicts": _as_id_list(entry["meta"].get("contradicts")),
+                        "contest_reason": entry["meta"].get("contest_reason"),
+                    }
+                    if entry["meta"].get("intent") == "contest"
+                    else None
+                ),
             }))
         return out
 
