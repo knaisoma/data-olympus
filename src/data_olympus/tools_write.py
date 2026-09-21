@@ -37,6 +37,7 @@ from data_olympus.pending import (
     PendingNotFoundError,
     PendingQueue,
     PendingQueueFullError,
+    _render_safe,
 )
 from data_olympus.write_gate import (
     SNAPSHOT_DEPENDENT_CODES,
@@ -114,6 +115,86 @@ _MAX_EVIDENCE_ITEMS = 10
 _MAX_EVIDENCE_ITEM_CHARS = 500
 
 
+def _is_json_renderable(value: str) -> bool:
+    """Whether ``value`` survives the response encoder.
+
+    The propose path persists with ``ensure_ascii=True`` (see
+    ``durable.atomic_write_json``), which escapes anything, but the REST layer
+    renders with ``ensure_ascii=False`` and then encodes strictly as UTF-8. A
+    string holding an unpaired surrogate therefore stores fine and only fails
+    much later, on a read by an unrelated caller. Test ENCODABILITY rather than
+    the surrogate code-point range, so a correctly-paired astral character
+    (stored by Python as one code point) is untouched.
+    """
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+_UNENCODABLE_NOTE = "[reason omitted: not encodable as UTF-8]"
+
+
+def _reject_unencodable_text(**fields: object) -> str | None:
+    """Rejection reason if a field is a string the encoder cannot render.
+
+    Lenient about TYPE: a non-string is somebody else's error to report, with
+    the status that fits it. Use this for a field that already has its own
+    type validator, so this one does not steal its rejection status.
+    """
+    for name, value in fields.items():
+        if isinstance(value, str) and not _is_json_renderable(value):
+            return f"{name} is not encodable as UTF-8"
+    return None
+
+
+def _reject_unencodable_identity(**fields: object) -> str | None:
+    """Rejection reason if any IDENTITY or ROUTING field cannot be encoded.
+
+    These are rejected outright rather than replaced, unlike ``reason``,
+    because they are not advisory: they name the principal, the session and
+    the target, they are hashed into the audit chain, and they are echoed in
+    error responses. An unencodable one is not a cosmetic problem.
+
+    It silently SUPPRESSED THE AUDIT EVENT. ``_emit_audit`` wraps the append
+    in ``contextlib.suppress(Exception)`` so that audit trouble never fails a
+    write, and ``AuditLog._canonical`` serializes with ``ensure_ascii=False``
+    before ``_digest`` encodes strictly. An unpaired surrogate in
+    ``agent_identity`` therefore raised inside the suppressed block: the write
+    proceeded and no audit record was written for it. Rejecting here, BEFORE
+    the first side effect and before any audit emission, closes that.
+
+    The message names the field but never echoes its value.
+    """
+    for name, value in fields.items():
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            # A non-string is not merely the wrong type here, it is a BYPASS:
+            # the REST routes check presence rather than type, so a nested
+            # object such as {"nested": "\ud800"} would skip an isinstance-
+            # guarded encodability check entirely and still reach the audit
+            # digest, which is the sink that fails silently.
+            return f"{name} must be a string"
+        if not _is_json_renderable(value):
+            return f"{name} is not encodable as UTF-8"
+    return None
+
+
+def _safe_advisory_text(value: str) -> str:
+    """Replace advisory text that the response encoder cannot render.
+
+    Mirrors the existing secret-scan treatment of ``reason`` rather than
+    inventing a second policy for the same field: advisory metadata is not
+    committed content, so it is REPLACED and the operation proceeds, instead
+    of failing a write whose actual payload is fine. Replacement is wholesale,
+    so no caller-controlled fragment is carried forward.
+
+    """
+    return value if _is_json_renderable(value) else _UNENCODABLE_NOTE
+
+
 def _validate_evidence(evidence: object) -> str | None:
     """Return a rejection reason string if ``evidence`` is invalid, else None.
 
@@ -140,6 +221,12 @@ def _validate_evidence(evidence: object) -> str | None:
     for item in evidence:
         if not isinstance(item, str):
             return "evidence items must be strings"
+        if not _is_json_renderable(item):
+            # Rejected rather than replaced, unlike ``reason``: this validator's
+            # contract is to reject and tell the caller exactly what was wrong.
+            # The message deliberately carries no fragment of the bad item, or
+            # the error response becomes the next poisoned payload.
+            return "evidence items must be encodable as UTF-8"
         if len(item) > _MAX_EVIDENCE_ITEM_CHARS:
             return (
                 f"evidence item exceeds max {_MAX_EVIDENCE_ITEM_CHARS} chars "
@@ -1051,6 +1138,14 @@ def kb_propose_memory_fn(
     # blocker): `evidence or []` also coerced falsy non-lists ('' / {} /
     # False / 0) from raw REST JSON to [] BEFORE validation, silently
     # accepting them instead of rejecting rejected_invalid_evidence.
+    # See the edit path: FIRST statement, before any gate that can emit an
+    # audit event, because that emission fails silently on an unencodable
+    # identity.
+    encoding_error = _reject_unencodable_identity(
+        agent_identity=agent_identity, source_session=source_session,
+    )
+    if encoding_error is not None:
+        return ProposeResponse(status="rejected_invalid_encoding", reason=encoding_error)
     if evidence is None:
         evidence = []
     evidence_error = _validate_evidence(evidence)
@@ -1400,6 +1495,28 @@ def kb_propose_edit_fn(
     content -- it is redacted (same treatment as ``reason``) and persisted only
     in pending meta / audit events / ``kb_pending``.
     """
+    # FIRST statement of the function body, deliberately. Every other gate
+    # below can emit an audit event, and an unencodable identity makes that
+    # emission fail silently inside _emit_audit's suppressed block, so any
+    # check placed after one of them leaves a rejection path that produces no
+    # audit record at all. base_commit is included because write_gate embeds
+    # it verbatim in the CAS rejection reason, which is audited.
+    encoding_error = _reject_unencodable_identity(
+        agent_identity=agent_identity, source_session=source_session,
+        target_path=target_path,
+    ) or _reject_unencodable_text(
+        # Lenient about type on purpose: the base markers have their own
+        # validator, which reports a non-string as rejected_invalid_base, and
+        # a strict check here would steal that status. Only an unencodable
+        # STRING is this function's business, because only that reaches the
+        # audit digest (write_gate embeds base_commit verbatim in the CAS
+        # rejection reason, which is audited).
+        base_commit=base_commit, base_blob_sha=base_blob_sha,
+        target_file_hash=target_file_hash,
+    )
+    if encoding_error is not None:
+        return ProposeResponse(status="rejected_invalid_encoding", reason=encoding_error)
+
     # Normalize ONLY the None sentinel; see the matching comment in
     # kb_propose_memory_fn (codex re-review blocker: falsy non-lists must
     # reject, not silently coerce to []).
@@ -1440,6 +1557,12 @@ def kb_propose_edit_fn(
         assert reason_scan.match is not None
         reason = (f"[reason redacted: secret pattern "
                   f"'{reason_scan.match.pattern_name}' detected]")
+    # Same treatment, second hazard: a reason the RESPONSE encoder cannot
+    # render. Applied after the secret scan so redaction keeps precedence (a
+    # redaction note is always encodable, so this is then a no-op). Without
+    # it an unpaired surrogate persists silently here and later fails the
+    # whole pending listing for every reader, not just this caller.
+    reason = _safe_advisory_text(reason)
 
     audit_base: dict[str, Any] = {
         "event_type": "propose_edit",
@@ -1681,6 +1804,18 @@ def kb_resolve_pending_fn(
         PendingAlreadyResolvedError,
     )
 
+    # Before ANY side effect and before the first audit emission: an
+    # unencodable identity suppressed the audit event for a resolve, which is
+    # the decision surface that most needs a record of who acted.
+    encoding_error = _reject_unencodable_identity(
+        agent_identity=agent_identity, source_session=source_session,
+        pending_id=pending_id, edited_text=edited_text,
+    )
+    if encoding_error is not None:
+        return ResolvePendingResponse(
+            status="rejected_invalid_encoding", reason=encoding_error,
+        )
+
     audit_base: dict[str, Any] = {
         "event_type": "resolve",
         "agent_identity": agent_identity,
@@ -1912,17 +2047,20 @@ def kb_get_pending_fn(
             note="the secret scanner flagged this postimage, so it is readable "
                  "only by a principal that could resolve it",
         )
+    # Same read-side guard the listing applies, for the same reason: a record
+    # written BEFORE the write-side fix, or by anything else, must not make
+    # this route unrenderable. The stored proposal is not modified.
     return PendingDetailResponse(
         status="ok",
         pending_id=pending_id,
         in_force=False,
         note=_PENDING_NOTE,
-        target_path=entry.get("target_path"),
+        target_path=_render_safe(entry.get("target_path")),
         proposal_type=entry.get("proposal_type"),
-        postimage=entry.get("postimage"),
+        postimage=_render_safe(entry.get("postimage")),
         created_at=entry.get("enqueued_at"),
-        reason=meta.get("reason"),
-        matching_pattern=meta.get("matching_pattern"),
+        reason=_render_safe(meta.get("reason")),
+        matching_pattern=_render_safe(meta.get("matching_pattern")),
     )
 
 

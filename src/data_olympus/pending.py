@@ -128,6 +128,38 @@ def _as_id_list(value: object) -> list[str]:
     return []
 
 
+_UNRENDERABLE_TEXT = "[omitted: not encodable as UTF-8]"
+
+
+def _render_safe(value: Any) -> Any:
+    """Recursively replace strings the RESPONSE encoder cannot render.
+
+    The listing persists with ``ensure_ascii=True`` but is served with
+    ``ensure_ascii=False`` and a strict UTF-8 encode, so a stored string
+    holding an unpaired surrogate raises only when it is served. Because the
+    listing is serialized in ONE pass, that single record would take down
+    every other entry with it -- the same failure mode the ``unreadable``
+    branch above exists to prevent, arriving through a different door.
+
+    The write path now keeps such text out of new records, so this guards two
+    things it cannot: records written BEFORE that fix, and records written by
+    anything other than this module. Applied to the whole projected record
+    rather than to a list of known fields, so a field a later slice adds is
+    covered without having to remember this.
+    """
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            return _UNRENDERABLE_TEXT
+        return value
+    if isinstance(value, dict):
+        return {k: _render_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_render_safe(v) for v in value]
+    return value
+
+
 def _text_sha256(text: str) -> str:
     """sha256 of the exact UTF-8 bytes of ``text``."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -455,7 +487,7 @@ class PendingQueue:
                 reconcile = entry.get("reconcile")
                 if isinstance(reconcile, Mapping) and reconcile.get("state") == "uncertain":
                     state = "uncertain"
-            out.append({
+            out.append(_render_safe({
                 "state": state,
                 "pending_id": entry["pending_id"],
                 "proposal_type": entry["proposal_type"],
@@ -484,7 +516,7 @@ class PendingQueue:
                 "demotion_reason": entry["meta"].get("demotion_reason"),
                 "injection_suspect": bool(entry["meta"].get("injection_suspect", False)),
                 "injection_patterns": entry["meta"].get("injection_patterns"),
-            })
+            }))
         return out
 
     def get(self, pending_id: str) -> dict[str, Any]:
@@ -1243,10 +1275,15 @@ class PendingQueue:
                 })
                 continue
             acquired_at = info.get("acquired_at")
+            # _render_safe for the same reason as the listing: an auto-commit
+            # lock records "auto-commit:<source_session>" as its pending_id,
+            # so caller text reaches health through this projection, and one
+            # unrenderable lock would fail health, readiness and every REST
+            # read built on it rather than just its own record.
             out.append({
-                "target_path": info.get("target_path"),
-                "owner_kind": info.get("owner_kind", "pending"),
-                "pending_id": info.get("pending_id"),
+                "target_path": _render_safe(info.get("target_path")),
+                "owner_kind": _render_safe(info.get("owner_kind", "pending")),
+                "pending_id": _render_safe(info.get("pending_id")),
                 "acquired_at": acquired_at,
                 "age_seconds": (
                     max(0.0, now - acquired_at)
