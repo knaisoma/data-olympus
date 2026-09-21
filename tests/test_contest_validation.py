@@ -816,3 +816,19 @@ def test_tuple_contradicts_is_accepted_like_a_list(tmp_path, monkeypatch):
     lock_file = os.path.join(pen._locks_dir, pending_mod._path_lock_filename(target))
     with open(lock_file) as f:
         assert json.load(f)["contradicts"] == ["STD-1", "STD-2"]
+
+
+def test_unencodable_contest_strings_are_rejected_without_echo():
+    """The contest fields follow the same write-side policy as evidence: a
+    value the response encoder cannot render is rejected at validation, and
+    the rejection reason never carries the offending value."""
+    bad = "\ud800"
+    for contest in (
+        {"contradicts": [bad]},
+        {"contradicts": ["STD-001"], "reason": bad},
+    ):
+        clean, err = _validate_contest(contest)
+        assert clean is None
+        assert err is not None and err.status == "rejected_invalid_contest"
+        assert "encodable" in (err.reason or "")
+        assert bad not in (err.reason or "")

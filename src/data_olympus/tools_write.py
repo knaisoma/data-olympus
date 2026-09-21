@@ -378,6 +378,12 @@ def _validate_contest(contest: object) -> tuple[dict[str, Any] | None, ProposeRe
                     f"at most {_MAX_CONTRADICTS_ITEM_CHARS} characters"
                 ),
             )
+        if not _is_json_renderable(item):
+            # Same policy as evidence: reject, and never echo the value.
+            return None, ProposeResponse(
+                status="rejected_invalid_contest",
+                reason="contest.contradicts items must be encodable as UTF-8",
+            )
         clean_contradicts.append(item)
 
     if len(set(clean_contradicts)) != len(clean_contradicts):
@@ -402,6 +408,11 @@ def _validate_contest(contest: object) -> tuple[dict[str, Any] | None, ProposeRe
             return None, ProposeResponse(
                 status="rejected_invalid_contest",
                 reason="contest.reason cannot be empty or whitespace-only",
+            )
+        if not _is_json_renderable(raw_reason):
+            return None, ProposeResponse(
+                status="rejected_invalid_contest",
+                reason="contest.reason must be encodable as UTF-8",
             )
         clean_reason = raw_reason
 
