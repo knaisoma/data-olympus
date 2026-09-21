@@ -105,7 +105,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `path_locks` projection now degrade an unrenderable value to a placeholder
   instead of failing the whole response, which covers records written before this
   release. Encodability is tested rather than the surrogate code-point range, so
-  correctly-paired astral characters are unaffected. (#280)
+  correctly-paired astral characters are unaffected. A resolve refused this way
+  returns HTTP 400; the resolve route's status map used to fall through to 200 for
+  any status it did not name, so the refusal would have read as success. (#280)
 
 ### Changed
 

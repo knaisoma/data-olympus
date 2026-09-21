@@ -291,6 +291,11 @@ def _resolve_status(status: str) -> int:
         return 409
     if status in ("rejected_invalid_document", "rejected_secret_detected"):
         return 422
+    if status == "rejected_invalid_encoding":
+        # A client input error, refused before the claim. It must not share the
+        # fall-through 200 below, or a caller checking only the status code
+        # reads a refused decision as an applied one.
+        return 400
     if status in ("rejected", "rejected_symlink_escape"):
         return 200
     return 200
