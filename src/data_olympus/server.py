@@ -478,6 +478,7 @@ def build_app(
     pending_queue_cap: int = 100,
     worktree_idle_sec: int = 3600,
     git_key_path: str = "/tmp/git-key",
+    kb_git_branch: str = "main",
     auth_token: str = "",
     auth_principals: list[dict[str, Any]] | None = None,
     audit_hmac_key: str = "",
@@ -555,6 +556,7 @@ def build_app(
         status_autofill=status_autofill,
         kb_main_path_source=kb_main_path_source,
         kb_index_path_source=kb_index_path_source,
+        kb_git_branch=kb_git_branch,
     )
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
@@ -1426,6 +1428,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         pending_queue_cap=config.pending_queue_cap,
         worktree_idle_sec=config.worktree_idle_sec,
         git_key_path=config.git_key_path,
+        kb_git_branch=config.kb_git_branch,
         auth_token=config.auth_token,
         auth_principals=list(config.auth_principals),
         audit_hmac_key=config.audit_hmac_key,

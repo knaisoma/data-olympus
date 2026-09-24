@@ -220,11 +220,55 @@ def _split_csv(raw: str) -> list[str]:
 
 
 # Conservative subset of git's ref-name grammar (issue #289). The value is
-# passed to git as an argument and as half of "origin/<branch>", so this rejects
-# rather than sanitises: a name that would need rewriting is a misconfiguration
-# the operator should see at startup, not something to guess at. A LEADING DASH
-# is the case that matters most, because git would read it as an option.
+# passed to git as an argument and reaches a ref path, so this rejects rather
+# than sanitises: a name that would need rewriting is a misconfiguration the
+# operator should see at startup, not something to guess at. A LEADING DASH is
+# the case that matters most, because git would read it as an option.
+#
+# The supported subset is deliberately narrower than git's grammar: ASCII
+# letters, digits, `.`, `_`, `-` and `/`. A name git would accept but this
+# rejects (unicode, `@`) fails loudly at startup with the setting named, which
+# is a configuration error the operator can act on; the alternative is
+# reimplementing git's full grammar for names almost nobody uses as a trunk.
 _BRANCH_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]*$")
+
+# Reserved and namespace-shaped values. `HEAD` is a ref git resolves specially.
+# A value starting with a ref namespace is refused rather than qualified
+# silently: `refs/tags/release` is a legal BRANCH name, so a naive
+# `HEAD:<branch>` push would have created a tag. GitOps now qualifies every ref
+# it builds, and this refusal means the operator is told their value is not a
+# plain branch name instead of getting `refs/heads/refs/tags/release`.
+_BRANCH_RESERVED = frozenset({"HEAD"})
+_BRANCH_NAMESPACE_PREFIXES = ("refs/",)
+
+
+def _git_branch_problem(branch: str) -> str | None:
+    """Why ``branch`` is unusable as a trunk name, or None when it is fine."""
+    if not _BRANCH_NAME.match(branch):
+        return (
+            "it may contain only ASCII letters, digits, '.', '_', '-' and "
+            "'/', and may not start with '-', '.' or '/'"
+        )
+    if branch in _BRANCH_RESERVED:
+        return "it is a reserved git ref name"
+    if branch.startswith(_BRANCH_NAMESPACE_PREFIXES):
+        return "it must be a plain branch name, not a fully qualified ref"
+    if ".." in branch:
+        return "it may not contain '..'"
+    if "//" in branch:
+        return "it may not contain an empty path component ('//')"
+    if branch.endswith("/"):
+        return "it may not end with '/'"
+    if branch.endswith("."):
+        return "it may not end with '.'"
+    for part in branch.split("/"):
+        # git rejects a path component that begins with '.' or ends '.lock',
+        # at every level, not only the first. `release/.hidden` is invalid.
+        if part.startswith("."):
+            return "no '/'-separated component may begin with '.'"
+        if part.endswith(".lock"):
+            return "no '/'-separated component may end with '.lock'"
+    return None
 
 
 def _load_git_branch(raw: str) -> str:
@@ -234,28 +278,16 @@ def _load_git_branch(raw: str) -> str:
     same "a blank value is unset" rule the path settings document: an
     unsubstituted compose or Helm variable must not become an empty ref name.
     Anything non-blank that is not a usable branch name raises ValueError so
-    startup fails with the setting named.
+    startup fails with the setting named and the reason stated.
     """
     branch = raw.strip()
     if not branch:
         return "main"
-    ok = bool(_BRANCH_NAME.match(branch))
-    if ok:
-        # Remaining git rules the character class alone does not express.
-        ok = not (
-            ".." in branch
-            or "//" in branch
-            or branch.endswith("/")
-            or branch.endswith(".")
-            or branch.endswith(".lock")
-            or any(part.endswith(".lock") for part in branch.split("/"))
-        )
-    if not ok:
+    problem = _git_branch_problem(branch)
+    if problem is not None:
         raise ValueError(
-            f"KB_GIT_BRANCH must be a usable git branch name; got {raw!r}. "
-            "Use letters, digits, '.', '_', '-' and '/' (for example 'master' "
-            "or 'release/2026-10'); it may not start with '-' or '.', contain "
-            "'..', '//' or whitespace, or end with '/', '.' or '.lock'."
+            f"KB_GIT_BRANCH must be a usable git branch name; got {raw!r}: "
+            f"{problem}. Use for example 'master' or 'release/2026-10'."
         )
     return branch
 

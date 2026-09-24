@@ -66,12 +66,16 @@ trigram, auth, audit rotation):
   pull loop, the branch a session worktree is rebased onto before a write, the
   branch writes are pushed to, and the branch a worktree's commits must be
   reachable from before that worktree can be garbage collected. Set it to
-  `master`, or to whatever your repository actually calls its trunk. `KB_MAIN_PATH`
-  must have that same branch checked out, or the fast-forward has nothing to
-  advance and health stays degraded. A blank value means unset and gets the
-  default. A value that is not a usable branch name (leading `-`, whitespace,
-  `..`, a trailing `/`, `.` or `.lock`, and the rest of git's ref rules) fails
-  startup with the setting named, rather than being passed to git.
+  `master`, or to whatever your repository actually calls its trunk, and check
+  that same branch out in `KB_MAIN_PATH`: the fast-forward merges by ancestry
+  rather than by name, so a checkout left on an unrelated branch is the case
+  that fails and leaves health degraded. A blank value means unset and gets the
+  default. Accepted names are ASCII letters, digits, `.`, `_`, `-` and `/`,
+  subject to git's structural rules (no component beginning with `.` or ending
+  `.lock`, no `..` or `//`, no trailing `/` or `.`); `HEAD` and a fully
+  qualified ref such as `refs/heads/master` are refused, as is anything else
+  outside that set. A rejected value fails startup with the setting and the
+  reason named, rather than being passed to git.
 - `KB_HTTP_PORT`: TCP port the MCP HTTP server binds (default `8080`).
 - `KB_CONFIDENCE_THRESHOLD`: the auto-commit confidence cutoff, in `[0, 1]`
   (default `0.85`). A proposal at or above it from a principal holding

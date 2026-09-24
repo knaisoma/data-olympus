@@ -21,19 +21,26 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `main` literally, so a repository on `master` (or any other trunk) could not
   be served: the refresh loop's `fetch origin main` failed and health stayed
   degraded with the index frozen at whatever was built at bootstrap. Two
-  further consequences were quieter. A write supplying a base marker was
-  refused `rejected_stale_base`, because the compare-and-swap base could not be
-  refreshed; and a write with no base marker committed and then pushed
-  `HEAD:main`, which on a remote without that branch creates one that nothing
-  ever reads. The setting now feeds the fetch, the fast-forward, the session
-  worktree rebase, the push, and the reachability checks that decide whether a
-  session worktree still holds unpushed commits and may be garbage collected.
+  further consequences were quieter. A write supplying an ENFORCEABLE base
+  marker (a pinned `base_commit`, a `base_blob_sha` or a `target_file_hash`;
+  `base_commit: "HEAD"` is advisory and does not count) was refused
+  `rejected_stale_base`, because the compare-and-swap base could not be
+  refreshed. A write with no enforceable marker committed and pushed
+  `HEAD:main`, creating that branch on a remote that had none. The refresh loop
+  then fetched and merged the branch it had just been given, so a server could
+  end up following a trunk its writes had invented while the repository's real
+  trunk went on being ignored. The setting now feeds the fetch, the
+  fast-forward, the session worktree rebase, the push, and the reachability
+  checks that decide whether a session worktree still holds unpushed commits
+  and may be garbage collected. Every ref built from it is fully qualified
+  (`refs/heads/<branch>`, `refs/remotes/origin/<branch>`), so a name shaped
+  like a ref path or colliding with a tag cannot select another namespace.
   It defaults to `main`, so an existing deployment behaves exactly as before,
   and it is validated when configuration loads: a value that is not a usable
-  branch name fails startup with the setting named, rather than reaching a git
-  command line, which matters most for a value starting with `-` that git would
-  read as an option. A blank value means unset and yields the default, as the
-  path settings already document. (#289)
+  branch name fails startup with the setting named and the reason stated,
+  rather than reaching a git command line, which matters most for a value
+  starting with `-` that git would read as an option. A blank value means
+  unset and yields the default, as the path settings already document. (#289)
 
 ### Changed
 
@@ -2487,7 +2494,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/knaisoma/data-olympus/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/knaisoma/data-olympus/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/knaisoma/data-olympus/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/knaisoma/data-olympus/compare/v0.8.0...v0.8.1

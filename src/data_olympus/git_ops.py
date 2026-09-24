@@ -244,13 +244,39 @@ class GitOps:
 
     @property
     def upstream(self) -> str:
-        """The tracking ref for that trunk, e.g. ``origin/main``.
+        """The remote-tracking ref for that trunk, FULLY QUALIFIED.
+
+        ``refs/remotes/origin/main``, not ``origin/main``. An unqualified name
+        is resolved by git's ref-search order, so a branch name shaped like a
+        ref path (``refs/tags/release``) or colliding with a tag would select
+        an object in a different namespace. Qualifying every ref removes that
+        ambiguity; config rejects such names too, and the two together mean
+        neither layer relies on the other to be safe.
 
         Read by collaborators that run their own git commands (the worktree
         registry's garbage-collection reachability check) so exactly one place
         decides what the server's upstream is.
         """
-        return f"origin/{self._branch}"
+        return f"refs/remotes/origin/{self._branch}"
+
+    @property
+    def branch_ref(self) -> str:
+        """The trunk's local/remote branch ref, ``refs/heads/<branch>``.
+
+        Used as a push destination, so ``HEAD:refs/heads/x`` updates the branch
+        ``x`` and cannot be reinterpreted as a tag or another ref class.
+        """
+        return f"refs/heads/{self._branch}"
+
+    @property
+    def fetch_refspec(self) -> str:
+        """Explicit fetch mapping, ``refs/heads/<b>:refs/remotes/origin/<b>``.
+
+        The unqualified form relies on git's opportunistic update of the
+        remote-tracking ref; naming both sides means the ref this class then
+        reads is the one the fetch just wrote.
+        """
+        return f"{self.branch_ref}:{self.upstream}"
 
     def _defer_if_claims_at_risk(self, ref: str) -> None:
         """Reconcile claims on ``ref``, then defer if any evidence is still at
@@ -356,7 +382,8 @@ class GitOps:
             )
         # Fetch may fail (no network, auth, unreachable); classify rather than hide.
         fetch = self._run(
-            "fetch", "origin", self._branch, check=False, timeout_sec=timeout_sec,
+            "fetch", "origin", self.fetch_refspec,
+            check=False, timeout_sec=timeout_sec,
         )
         if fetch.returncode != 0:
             return FfMergeResult(
@@ -634,7 +661,7 @@ class GitOps:
         ``subprocess.TimeoutExpired`` propagates and the caller classifies it as
         a retryable failure (see refresh.push_retry_loop)."""
         subprocess.run(
-            ["git", "-C", worktree_path, "push", "origin", f"HEAD:{self._branch}"],
+            ["git", "-C", worktree_path, "push", "origin", f"HEAD:{self.branch_ref}"],
             check=True, capture_output=True, timeout=timeout_sec,
         )
 
@@ -684,7 +711,7 @@ class GitOps:
         }:
             return ""
         fetch = subprocess.run(
-            ["git", "-C", worktree_path, "fetch", "origin", self._branch],
+            ["git", "-C", worktree_path, "fetch", "origin", self.fetch_refspec],
             check=False, capture_output=True, text=True, timeout=timeout_sec,
         )
         if fetch.returncode != 0:
@@ -730,7 +757,7 @@ class GitOps:
           push-retry loop counts it as a retryable failure.
         """
         first = subprocess.run(
-            ["git", "-C", worktree_path, "push", "origin", f"HEAD:{self._branch}"],
+            ["git", "-C", worktree_path, "push", "origin", f"HEAD:{self.branch_ref}"],
             check=False, capture_output=True, text=True, timeout=timeout_sec,
         )
         if first.returncode == 0:
@@ -744,7 +771,7 @@ class GitOps:
         # RebaseConflictError -> caller demotes) and retry the push once.
         self.refresh_base(worktree_path, timeout_sec=timeout_sec)
         retry = subprocess.run(
-            ["git", "-C", worktree_path, "push", "origin", f"HEAD:{self._branch}"],
+            ["git", "-C", worktree_path, "push", "origin", f"HEAD:{self.branch_ref}"],
             check=False, capture_output=True, text=True, timeout=timeout_sec,
         )
         if retry.returncode == 0:
