@@ -181,7 +181,8 @@ def test_ff_merge_on_default_branch_still_fails_against_master(
 
 def test_push_targets_the_configured_branch(master_kb: tuple[Path, Path]) -> None:
     """The quiet half of the bug: a push of ``HEAD:main`` would CREATE a main
-    branch on a master remote, where nothing ever reads it."""
+    branch on a master remote, and the old refresh loop would then follow that
+    invented trunk while the repository's real one went on being ignored."""
     repo, remote = master_kb
     (repo / "written.md").write_text("written\n", encoding="utf-8")
     _git("-C", str(repo), "add", "-A")
