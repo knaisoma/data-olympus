@@ -12,6 +12,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-28
+
 ### Added
 
 * **`KB_GIT_BRANCH`: serve a knowledge base whose trunk is not called `main`.**
