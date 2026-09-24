@@ -8,7 +8,7 @@ file is the index.
 | Piece | Summary | Status | Tracking |
 |-------|---------|--------|----------|
 | A | Guided onboarding + discovery capture + dedup/cleanup | Shipped | this repo |
-| B | Curation / pattern promotion (`kb_curate`): surface repeated patterns and propose hoisting component to project to universal, human-gated | Planned | #31 |
+| B | Curation / pattern promotion: surface repeated patterns and propose hoisting component to project to universal, human-gated | Planned | #31 |
 | C | Consultation telemetry + per-user stats + reporting, privacy-gated (config opt-in, stored off the public KB) | Planned | #32 |
 | D | Cross-agent skill distribution: import team-shareable skills from the MCP on first agent run | Planned | #33 |
 | E | Skill suggestion: detect repeated instructions and propose a reusable skill or workflow | Planned | #34 |
