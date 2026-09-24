@@ -310,10 +310,15 @@ def test_extract_env_defaults_single_occurrence() -> None:
     assert _extract_env_defaults(text, name="KB_SESSION_REAP_INTERVAL_SEC") == [(1, 60)]
 
 
-def test_extract_env_defaults_wraps_across_lines() -> None:
-    # serving.md wraps mid-phrase: the variable ends one line and the
-    # parenthetical begins the next.
+def test_extract_env_defaults_wraps_between_default_and_value() -> None:
+    # serving.md's actual wrap: the line breaks after the word "default".
     text = "and `KB_SESSION_IDLE_TIMEOUT_SEC` (default\n  `300`) terminates a session.\n"
+    assert _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC") == [(1, 300)]
+
+
+def test_extract_env_defaults_wraps_between_variable_and_parenthetical() -> None:
+    # The other place the line can break: after the variable itself.
+    text = "and `KB_SESSION_IDLE_TIMEOUT_SEC`\n  (default `300`) terminates a session.\n"
     assert _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC") == [(1, 300)]
 
 
@@ -415,3 +420,102 @@ def test_real_repo_serving_doc_states_every_guarded_default() -> None:
         stated = _extract_env_defaults(text, name=name)
         assert stated, name
     assert _check_env_defaults(repo_root) == []
+
+
+# --- regressions from review round 3 -----------------------------------------
+
+
+def test_extract_env_defaults_refuses_a_value_carrying_a_unit() -> None:
+    # The first version read the leading digits, so "(default 300 minutes)"
+    # certified a 300-SECOND config as correctly documented.
+    text = "`KB_SESSION_IDLE_TIMEOUT_SEC` (default 300 minutes).\n"
+    with pytest.raises(ParseError, match="whole number"):
+        _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC")
+
+
+def test_extract_env_defaults_refuses_a_non_integer_value() -> None:
+    text = "`KB_SESSION_IDLE_TIMEOUT_SEC` (default 300.5).\n"
+    with pytest.raises(ParseError, match="whole number"):
+        _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC")
+
+
+def test_extract_env_defaults_refuses_the_stale_reference_wording() -> None:
+    # The exact string this issue was about.
+    text = "`KB_SESSION_IDLE_TIMEOUT_SEC` (default 1800s / 30 min).\n"
+    with pytest.raises(ParseError, match="whole number"):
+        _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC")
+
+
+def test_extract_env_defaults_does_not_borrow_a_neighbours_default() -> None:
+    # A bare mention beside another variable's declaration used to report that
+    # other variable's number as its own.
+    text = (
+        "`KB_SESSION_IDLE_TIMEOUT_SEC` and `KB_SESSION_REAP_INTERVAL_SEC` "
+        "(default 60) both matter.\n"
+    )
+    with pytest.raises(ParseError, match="no .* default stated"):
+        _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC")
+    assert _extract_env_defaults(text, name="KB_SESSION_REAP_INTERVAL_SEC") == [(1, 60)]
+
+
+def test_extract_env_defaults_does_not_cross_a_question_mark() -> None:
+    text = "Is `KB_SESSION_IDLE_TIMEOUT_SEC` set? Something else (default 99).\n"
+    with pytest.raises(ParseError, match="no .* default stated"):
+        _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC")
+
+
+def test_extract_env_defaults_does_not_cross_a_paragraph_break() -> None:
+    text = (
+        "`KB_SESSION_IDLE_TIMEOUT_SEC` is described here.\n"
+        "\n"
+        "Unrelated paragraph (default 99).\n"
+    )
+    with pytest.raises(ParseError, match="no .* default stated"):
+        _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC")
+
+
+def test_extract_env_defaults_ignores_fenced_examples() -> None:
+    # An example is an illustration, not the document's statement of the
+    # default, and must not satisfy the required-default check on its own.
+    text = (
+        "```bash\n"
+        "`KB_SESSION_IDLE_TIMEOUT_SEC` (default 7)\n"
+        "```\n"
+        "Prose that states nothing.\n"
+    )
+    with pytest.raises(ParseError, match="no .* default stated"):
+        _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC")
+
+
+def test_extract_env_defaults_keeps_line_numbers_after_a_fence() -> None:
+    text = (
+        "```\n"
+        "example\n"
+        "```\n"
+        "`KB_SESSION_REAP_INTERVAL_SEC` (default `60`).\n"
+    )
+    assert _extract_env_defaults(text, name="KB_SESSION_REAP_INTERVAL_SEC") == [(4, 60)]
+
+
+def test_check_env_defaults_surfaces_an_unreadable_value_as_an_error(
+    tmp_path: Path,
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "serving.md").write_text(
+        f"- `KB_SESSION_IDLE_TIMEOUT_SEC` (default `{_IDLE}`).\n"
+        f"- `KB_SESSION_REAP_INTERVAL_SEC` (default `{_REAP}`).\n"
+        f"- `KB_SESSION_TOUCH_INTERVAL_SEC` (default {_TOUCH} seconds).\n",
+        encoding="utf-8",
+    )
+    errors = _check_env_defaults(tmp_path)
+    assert len(errors) == 1
+    assert "KB_SESSION_TOUCH_INTERVAL_SEC" in errors[0]
+    assert "whole number" in errors[0]
+
+
+def test_extract_env_defaults_does_not_span_a_blank_line() -> None:
+    # One wrap is prose; a blank line is a new block and a different subject.
+    text = "`KB_SESSION_IDLE_TIMEOUT_SEC`\n\n(default 9).\n"
+    with pytest.raises(ParseError, match="no .* default stated"):
+        _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC")

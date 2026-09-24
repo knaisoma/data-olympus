@@ -14,27 +14,37 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-* **`docs/serving.md` described session reaping as it behaved two releases
-  ago.** Its session reference section still said `KB_SESSION_IDLE_TIMEOUT_SEC`
+* **`docs/serving.md` described session reaping as it behaved before 0.3.3.**
+  Its session reference section still said `KB_SESSION_IDLE_TIMEOUT_SEC`
   defaults to `1800s / 30 min`, and still said a quiet long-lived `GET` SSE
   stream stamps no activity and is reaped on that timer, with excluding open
   streams from reaping listed as a possible follow-up. None of that has been
-  true since the SSE session-churn fix: the default is `300`, the activity
-  middleware re-stamps an open stream every `KB_SESSION_TOUCH_INTERVAL_SEC`
-  with that interval clamped to at most a third of the idle window, and the
-  reaper clears only sessions whose stream has actually closed. The summary
-  bullet near the top of the same document already said all of this, so the
-  document contradicted itself, and the reference section is the half an
-  operator reads when sizing a client keep-alive. Both halves now agree. (#286)
+  true since the SSE session-churn fix, which is in 0.3.3: the default is
+  `300`, the activity middleware runs a keep-alive task for an open stream and
+  re-stamps the session every `KB_SESSION_TOUCH_INTERVAL_SEC`, and the server
+  clamps that interval to at most a third of the idle window, so the stamps
+  are scheduled at least three times per window. The summary bullet near the
+  top of the same document already said all of this, so the document
+  contradicted itself, and the reference section is the half an operator reads
+  when sizing a client keep-alive. Both halves now agree, and the corrected
+  text also states the condition the old text left out: the reaper measures
+  elapsed time since the last activity stamp, so a client that polls less
+  often than the idle window is reaped between calls. (#286)
 
 ### Changed
 
 * **The doc-consistency CI guard now also checks documented configuration
-  defaults, not just schema enums.** Every default stated in prose in
-  `docs/serving.md` for the session reaping variables is compared against the
-  corresponding `Config` field, so lowering a default in code and updating only
-  one of the places the documentation states it fails CI instead of ageing
-  quietly. The guard reports the document line and both values. (#286)
+  defaults, not just schema enums.** For each session reaping variable it
+  reads every ``(default ...)`` the prose of `docs/serving.md` states
+  immediately after that variable, outside fenced examples, and compares it
+  with the corresponding `Config` field, so lowering a default in code and
+  updating only one of the places the documentation states it fails CI instead
+  of ageing quietly. The guard reports the document line and both values. It
+  covers this one document and this one list of variables rather than every
+  setting the project has, and it requires the value as a whole number in the
+  unit the configuration uses, with any gloss after a comma, so that a form it
+  cannot read whole fails loudly instead of being certified from its leading
+  digits. (#286)
 
 ## [0.9.0] - 2026-09-21
 

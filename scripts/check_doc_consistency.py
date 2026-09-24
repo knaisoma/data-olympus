@@ -166,31 +166,76 @@ _ENV_DEFAULT_FIELDS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _env_default_pattern(name: str) -> re.Pattern[str]:
-    """Match a backtick-quoted variable name followed by ``(default <n>)``.
+_FENCED_BLOCK = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
 
-    The gap between the variable name and ``(default`` excludes ``.``, so the
-    scan cannot run past a sentence boundary into an unrelated default, and it
-    is non-greedy and length-bounded. It does cross newlines, because
-    serving.md wraps prose mid-phrase: the variable can end one line and
-    ``(default`` begin the next. Backticks around the number are optional;
-    both ``(default `300`)`` and ``(default 60)`` occur in the document today.
+# The value inside a ``(default ...)`` parenthetical, up to its closing paren.
+# Only whitespace is allowed between the variable and the parenthetical: a
+# default stated further away belongs to whatever sits between them, not to
+# this variable. Without that restriction
+# a mention of A, then a mention of B, then B's default, reports that
+# default as A's.
+_ENV_DEFAULT_BODY = (
+    r"[ \t]*\n?[ \t]*"        # at most one line wrap, never a blank line
+    r"\(default[ \t]*\n?[ \t]*(?P<body>[^)]*)\)"
+)
+
+# A whole, unambiguous value: an optionally backticked integer that ENDS the
+# statement of the value, either closing the parenthetical or handing over to a
+# prose gloss after a comma. Requiring the boundary is what stops the scanner
+# reading the leading digits of something it does not understand: ``300
+# minutes`` and ``300.5`` are refused rather than read as 300.
+_ENV_DEFAULT_VALUE = re.compile(r"^`?(?P<value>\d+)`?(?:,|$)")
+
+
+def _strip_fenced_blocks(text: str) -> str:
+    """Blank out fenced code blocks, preserving line numbers.
+
+    A default inside a fenced example is an illustration, not the document's
+    statement of the default. Counting one would let an example satisfy the
+    "this variable states a default" requirement while the prose states
+    nothing, and could contradict the prose with a deliberately different
+    sample value. Newlines are kept so reported line numbers stay right.
     """
-    return re.compile(rf"`{re.escape(name)}`[^.]{{0,60}}?\(default\s+`?(\d+)`?")
+    def _blank(m: re.Match[str]) -> str:
+        return "\n" * m.group(0).count("\n")
+
+    return _FENCED_BLOCK.sub(_blank, text)
+
+
+def _env_default_pattern(name: str) -> re.Pattern[str]:
+    """Match the variable name followed by ``(default <body>)``, whitespace only.
+
+    Whitespace includes the newline, because serving.md wraps prose mid-phrase
+    and ``(default`` can begin the line after the variable.
+    """
+    return re.compile(rf"`{re.escape(name)}`{_ENV_DEFAULT_BODY}")
 
 
 def _extract_env_defaults(text: str, *, name: str) -> list[tuple[int, int]]:
     """Every ``(line_number, documented_default)`` stated for ``name`` in ``text``.
 
-    Raises ParseError when the variable is never given a default in the
-    document. An empty result is a parse failure rather than a silent pass,
-    for the same reason the enum extractor treats one that way: a reshaped
-    document must fail loudly instead of quietly checking nothing.
+    Fenced code blocks are excluded. Raises ParseError when the variable is
+    never given a default outside a fence, and also when a default IS stated in
+    a form this parser cannot read as a whole number in the configured unit.
+    Both are parse failures rather than silent passes: a reshaped document, or
+    one that states ``(default 5 minutes)`` for a value the code holds in
+    seconds, must fail loudly instead of being certified against a number the
+    parser guessed from the leading digits.
     """
-    results = [
-        (text.count("\n", 0, m.start()) + 1, int(m.group(1)))
-        for m in _env_default_pattern(name).finditer(text)
-    ]
+    scanned = _strip_fenced_blocks(text)
+    results: list[tuple[int, int]] = []
+    for m in _env_default_pattern(name).finditer(scanned):
+        line_no = scanned.count("\n", 0, m.start()) + 1
+        body = m.group("body").strip()
+        value = _ENV_DEFAULT_VALUE.match(body)
+        if value is None:
+            raise ParseError(
+                f"'`{name}`' at line {line_no} states its default as "
+                f"'{body}', which is not a whole number in the unit the "
+                "configuration uses; state the configured value and put any "
+                "gloss after a comma"
+            )
+        results.append((line_no, int(value.group("value"))))
     if not results:
         raise ParseError(f"no '`{name}`' default stated")
     return results

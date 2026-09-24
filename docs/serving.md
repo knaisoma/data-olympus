@@ -671,21 +671,25 @@ data-olympus closes this two ways:
   only. Termination uses the SDK's own `terminate()` path, so a client that
   reconnects simply gets a fresh session.
 
-The activity clock advances on every request carrying that session's
-`mcp-session-id` header, so a client that polls or makes periodic calls is never
-reaped. It also advances for a session whose long-lived `GET` SSE stream is
-open: the activity middleware starts a keep-alive task for that stream and
-re-stamps the session every `KB_SESSION_TOUCH_INTERVAL_SEC`, and the server
-clamps that interval to at most a third of the idle window, so an open stream is
-re-stamped at least three times per window however short the window is. A quiet
-but connected client is therefore not reaped either.
+The reaper works on elapsed time since a session's last activity stamp, not on
+whether its connection is open. The clock advances on every request carrying
+that session's `mcp-session-id` header, so a client whose calls arrive more
+often than `KB_SESSION_IDLE_TIMEOUT_SEC` is never reaped. A client that polls
+less often than that is reaped between calls and gets a fresh session on its
+next handshake, so pick a keep-alive interval shorter than the idle window.
 
-What the reaper does clear is a session whose stream has actually closed: the
-abandoned handshake, the client that disconnected without sending `DELETE`. That
-is the leak this exists to bound, and it is why the default window can be as
-short as five minutes without disturbing a connected client. The clamp applies
-whatever you set `KB_SESSION_TOUCH_INTERVAL_SEC` to, so no combination of these
-two values configures an open stream into being reaped.
+A session whose long-lived `GET` SSE stream is open does not need one. The
+activity middleware runs a keep-alive task for the duration of that request and
+re-stamps the session every `KB_SESSION_TOUCH_INTERVAL_SEC`, and the server
+clamps that interval to at most a third of the idle window, so the stamps are
+scheduled at least three times per window however short the window is. No
+accepted combination of the two settings schedules them further apart than the
+window, so a quiet but connected client is not reaped.
+
+What the reaper is there to clear is the session nothing is stamping any more:
+the abandoned handshake, the client that disconnected without sending `DELETE`.
+That is the leak it bounds, and it is why a five minute default window does not
+disturb a connected client.
 
 ## Search ranking
 
