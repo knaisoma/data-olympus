@@ -52,6 +52,14 @@ def master_kb(tmp_path: Path) -> tuple[Path, Path]:
     repo.mkdir()
     _git("init", "--bare", "--initial-branch=master", str(remote))
     _git("init", "--initial-branch=master", str(repo))
+    # Repository-local identity, not just _ENV. The product runs `git rebase`
+    # itself, with the ambient environment, so a machine with no configured
+    # user (a CI runner) fails with "empty ident name" and the rebase-driving
+    # tests report a conflict that is really a missing identity. Config on the
+    # repository is inherited by every git process in it, including the linked
+    # session worktrees these tests create.
+    _git("-C", str(repo), "config", "user.name", "tester")
+    _git("-C", str(repo), "config", "user.email", "t@example.com")
     (repo / "seed.md").write_text("seed\n", encoding="utf-8")
     _git("-C", str(repo), "add", "-A")
     _git("-C", str(repo), "commit", "-m", "seed")
@@ -154,6 +162,8 @@ def test_ff_merge_follows_the_configured_branch(master_kb: tuple[Path, Path]) ->
     repo, remote = master_kb
     clone = repo.parent / "clone"
     _git("clone", str(remote), str(clone))
+    _git("-C", str(clone), "config", "user.name", "tester")
+    _git("-C", str(clone), "config", "user.email", "t@example.com")
     (clone / "new.md").write_text("new\n", encoding="utf-8")
     _git("-C", str(clone), "add", "-A")
     _git("-C", str(clone), "commit", "-m", "second")
@@ -201,6 +211,8 @@ def test_refresh_base_rebases_onto_the_configured_branch(
     repo, remote = master_kb
     clone = repo.parent / "clone"
     _git("clone", str(remote), str(clone))
+    _git("-C", str(clone), "config", "user.name", "tester")
+    _git("-C", str(clone), "config", "user.email", "t@example.com")
     (clone / "upstream.md").write_text("upstream\n", encoding="utf-8")
     _git("-C", str(clone), "add", "-A")
     _git("-C", str(clone), "commit", "-m", "upstream work")
@@ -311,6 +323,8 @@ def test_push_with_rebase_recovery_survives_a_real_race(
     # A second writer moves the trunk underneath us.
     clone = repo.parent / "clone"
     _git("clone", str(remote), str(clone))
+    _git("-C", str(clone), "config", "user.name", "tester")
+    _git("-C", str(clone), "config", "user.email", "t@example.com")
     (clone / "theirs.md").write_text("theirs\n", encoding="utf-8")
     _git("-C", str(clone), "add", "-A")
     _git("-C", str(clone), "commit", "-m", "their write")
