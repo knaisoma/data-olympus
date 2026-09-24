@@ -665,28 +665,28 @@ data-olympus closes this two ways:
   logs the live count each reaper pass. A `live_sessions` value that only ever
   climbs is the signal of a leak.
 - Bound: a background reaper terminates sessions idle beyond
-  `KB_SESSION_IDLE_TIMEOUT_SEC` (default 1800s / 30 min). It scans every
-  `KB_SESSION_REAP_INTERVAL_SEC` (default 60s). Set
+  `KB_SESSION_IDLE_TIMEOUT_SEC` (default `300`, five minutes). It scans every
+  `KB_SESSION_REAP_INTERVAL_SEC` (default `60`). Set
   `KB_SESSION_IDLE_TIMEOUT_SEC=0` to disable reaping and keep observability
   only. Termination uses the SDK's own `terminate()` path, so a client that
   reconnects simply gets a fresh session.
 
-Idle is measured from the last *request* seen for a session: the activity clock
-advances only when a request carrying that session's `mcp-session-id` header
-reaches the server. A client that keeps polling or making periodic calls is
-therefore never reaped, because each call re-stamps its activity.
+The activity clock advances on every request carrying that session's
+`mcp-session-id` header, so a client that polls or makes periodic calls is never
+reaped. It also advances for a session whose long-lived `GET` SSE stream is
+open: the activity middleware starts a keep-alive task for that stream and
+re-stamps the session every `KB_SESSION_TOUCH_INTERVAL_SEC`, and the server
+clamps that interval to at most a third of the idle window, so an open stream is
+re-stamped at least three times per window however short the window is. A quiet
+but connected client is therefore not reaped either.
 
-The consequence to be aware of is that "idle" is per-request, not
-per-connection. A quiet long-lived `GET` SSE stream that stays open but makes no
-periodic `POST` requests still stamps no activity, so after
-`KB_SESSION_IDLE_TIMEOUT_SEC` its session is reaped and the stream is torn down;
-the client must reconnect (it gets a fresh session on the next handshake). If
-your client relies on a long-lived stream without periodic requests, either
-raise `KB_SESSION_IDLE_TIMEOUT_SEC` above your longest expected quiet period,
-set it to `0` to disable reaping (observability only), or have the client send a
-periodic keep-alive request. Excluding sessions with an active open stream from
-reaping (so a live stream is never torn down) is a possible follow-up; the
-current behavior reaps purely on request-activity age.
+What the reaper does clear is a session whose stream has actually closed: the
+abandoned handshake, the client that disconnected without sending `DELETE`. That
+is the leak this exists to bound, and it is why the default window can be as
+short as five minutes without disturbing a connected client. The clamp applies
+whatever you set `KB_SESSION_TOUCH_INTERVAL_SEC` to, so no combination of these
+two values configures an open stream into being reaped.
+
 ## Search ranking
 
 `kb_search` orders hits by BM25 relevance and then applies a **status-aware

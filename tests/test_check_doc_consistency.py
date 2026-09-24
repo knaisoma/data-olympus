@@ -12,9 +12,12 @@ from pathlib import Path
 import pytest
 
 from scripts.check_doc_consistency import (
+    _ENV_DEFAULT_FIELDS,
     ParseError,
+    _check_env_defaults,
     _diff_message,
     _extract_enum_occurrences,
+    _extract_env_defaults,
     _extract_reserved,
     check_doc_consistency,
 )
@@ -274,3 +277,141 @@ def test_check_doc_consistency_real_repo_docs_are_in_sync() -> None:
     """
     repo_root = Path(__file__).resolve().parent.parent
     assert check_doc_consistency(repo_root) == []
+
+
+# --- environment-variable defaults (issue #286) ------------------------------
+
+
+def _config_default(field: str) -> int:
+    """The canonical default for a ``Config`` field.
+
+    ``Config`` is a ``slots=True`` dataclass, so ``Config.<field>`` is the slot
+    descriptor rather than the default value; the default lives in the field
+    metadata. The guard reads it the same way, and these tests must not
+    hard-code the numbers or they stop tracking the code.
+    """
+    from dataclasses import fields as dataclass_fields
+
+    from data_olympus.config import Config
+
+    value = next(f.default for f in dataclass_fields(Config) if f.name == field)
+    assert isinstance(value, int)
+    return value
+
+
+_IDLE = _config_default("session_idle_timeout_sec")
+_REAP = _config_default("session_reap_interval_sec")
+_TOUCH = _config_default("session_touch_interval_sec")
+
+
+
+def test_extract_env_defaults_single_occurrence() -> None:
+    text = "`KB_SESSION_REAP_INTERVAL_SEC` (default `60`). Next sentence.\n"
+    assert _extract_env_defaults(text, name="KB_SESSION_REAP_INTERVAL_SEC") == [(1, 60)]
+
+
+def test_extract_env_defaults_wraps_across_lines() -> None:
+    # serving.md wraps mid-phrase: the variable ends one line and the
+    # parenthetical begins the next.
+    text = "and `KB_SESSION_IDLE_TIMEOUT_SEC` (default\n  `300`) terminates a session.\n"
+    assert _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC") == [(1, 300)]
+
+
+def test_extract_env_defaults_accepts_an_unquoted_number() -> None:
+    text = "`KB_SESSION_REAP_INTERVAL_SEC` (default 60). More prose.\n"
+    assert _extract_env_defaults(text, name="KB_SESSION_REAP_INTERVAL_SEC") == [(1, 60)]
+
+
+def test_extract_env_defaults_finds_every_restatement() -> None:
+    # The whole point of #286: one knob stated twice, differently.
+    text = (
+        "top: `KB_SESSION_IDLE_TIMEOUT_SEC` (default `300`).\n"
+        "reference: `KB_SESSION_IDLE_TIMEOUT_SEC` (default 1800).\n"
+    )
+    assert _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC") == [
+        (1, 300), (2, 1800),
+    ]
+
+
+def test_extract_env_defaults_does_not_cross_a_sentence_boundary() -> None:
+    # A mention with no default of its own must not pick up the next
+    # sentence's default for a different knob.
+    text = (
+        "Set `KB_SESSION_IDLE_TIMEOUT_SEC=0` to disable reaping. "
+        "`KB_SESSION_REAP_INTERVAL_SEC` (default `60`) sets the scan period.\n"
+    )
+    with pytest.raises(ParseError):
+        _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC=0")
+    assert _extract_env_defaults(text, name="KB_SESSION_REAP_INTERVAL_SEC") == [(1, 60)]
+
+
+def test_extract_env_defaults_raises_when_no_default_is_stated() -> None:
+    text = "`KB_SESSION_IDLE_TIMEOUT_SEC` is mentioned but never given a default.\n"
+    with pytest.raises(ParseError):
+        _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC")
+
+
+def test_check_env_defaults_detects_a_stale_documented_default(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    idle = _IDLE
+    (docs / "serving.md").write_text(
+        f"- `KB_SESSION_IDLE_TIMEOUT_SEC` (default `{idle}`) bounds an idle session.\n"
+        f"- `KB_SESSION_REAP_INTERVAL_SEC` (default `{_REAP}`).\n"
+        f"- `KB_SESSION_TOUCH_INTERVAL_SEC` (default `{_TOUCH}`).\n"
+        # The #286 shape: a second restatement that was never updated.
+        f"- reference: `KB_SESSION_IDLE_TIMEOUT_SEC` (default {idle * 6}).\n",
+        encoding="utf-8",
+    )
+
+    errors = _check_env_defaults(tmp_path)
+    assert len(errors) == 1
+    assert "line 4" in errors[0]
+    assert "KB_SESSION_IDLE_TIMEOUT_SEC" in errors[0]
+    assert str(idle * 6) in errors[0]
+    assert str(idle) in errors[0]
+
+
+def test_check_env_defaults_passes_when_every_statement_matches(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "serving.md").write_text(
+        f"- `KB_SESSION_IDLE_TIMEOUT_SEC` (default `{_IDLE}`).\n"
+        f"- `KB_SESSION_REAP_INTERVAL_SEC` (default `{_REAP}`).\n"
+        f"- `KB_SESSION_TOUCH_INTERVAL_SEC` (default `{_TOUCH}`).\n",
+        encoding="utf-8",
+    )
+    assert _check_env_defaults(tmp_path) == []
+
+
+def test_check_env_defaults_reports_a_variable_that_lost_its_default(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "serving.md").write_text(
+        f"- `KB_SESSION_IDLE_TIMEOUT_SEC` (default `{_IDLE}`).\n"
+        f"- `KB_SESSION_REAP_INTERVAL_SEC` (default `{_REAP}`).\n"
+        "- `KB_SESSION_TOUCH_INTERVAL_SEC` is described without a default.\n",
+        encoding="utf-8",
+    )
+    errors = _check_env_defaults(tmp_path)
+    assert len(errors) == 1
+    assert "KB_SESSION_TOUCH_INTERVAL_SEC" in errors[0]
+
+
+def test_check_env_defaults_is_silent_without_a_serving_doc(tmp_path: Path) -> None:
+    # The scratch roots used by the enum tests have no docs/serving.md; the
+    # env-default check must not turn those into failures. The real-repo test
+    # below is what stops this tolerance from making the check vacuous.
+    assert _check_env_defaults(tmp_path) == []
+
+
+def test_real_repo_serving_doc_states_every_guarded_default() -> None:
+    """Every variable in _ENV_DEFAULT_FIELDS is genuinely checked against the
+    real docs/serving.md, so a rename or a reshaped sentence fails here rather
+    than silently checking nothing."""
+    repo_root = Path(__file__).resolve().parent.parent
+    text = (repo_root / "docs" / "serving.md").read_text(encoding="utf-8")
+    for name, _field in _ENV_DEFAULT_FIELDS:
+        stated = _extract_env_defaults(text, name=name)
+        assert stated, name
+    assert _check_env_defaults(repo_root) == []

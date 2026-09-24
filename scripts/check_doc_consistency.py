@@ -16,6 +16,10 @@ What this checks:
    ``data_olympus.format.validate.TYPES`` / ``STATUSES`` / ``TIERS``.
 2. The reserved-filename list stated in SPEC.md against
    ``data_olympus.format.validate.RESERVED``.
+3. Every default stated in prose in docs/serving.md for the environment
+   variables in ``_ENV_DEFAULT_FIELDS`` against the corresponding
+   ``data_olympus.config.Config`` field default (issue #286). A document that
+   states the same knob's default twice must state it the same way both times.
 
 What this deliberately does NOT check: `applies_when` (not an enum) or any
 other field's documentation; whether the prose reads well; whether a doc's
@@ -146,6 +150,98 @@ def _extract_reserved(text: str) -> tuple[int, set[str]]:
     return line_no, values
 
 
+# --- environment-variable defaults -------------------------------------------
+
+# Environment variables whose default is restated in prose in docs/serving.md,
+# paired with the ``Config`` field that holds the canonical value. This second
+# kind of drift is what issue #286 was: the reaper's idle default was lowered
+# from 1800 to 300 in the SSE churn fix, the summary bullet near the top of
+# serving.md was updated, and the reference section further down was not, so
+# the document stated two different defaults for one knob for five releases.
+# An operator sizing a client keep-alive reads the reference section.
+_ENV_DEFAULT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("KB_SESSION_IDLE_TIMEOUT_SEC", "session_idle_timeout_sec"),
+    ("KB_SESSION_REAP_INTERVAL_SEC", "session_reap_interval_sec"),
+    ("KB_SESSION_TOUCH_INTERVAL_SEC", "session_touch_interval_sec"),
+)
+
+
+def _env_default_pattern(name: str) -> re.Pattern[str]:
+    """Match a backtick-quoted variable name followed by ``(default <n>)``.
+
+    The gap between the variable name and ``(default`` excludes ``.``, so the
+    scan cannot run past a sentence boundary into an unrelated default, and it
+    is non-greedy and length-bounded. It does cross newlines, because
+    serving.md wraps prose mid-phrase: the variable can end one line and
+    ``(default`` begin the next. Backticks around the number are optional;
+    both ``(default `300`)`` and ``(default 60)`` occur in the document today.
+    """
+    return re.compile(rf"`{re.escape(name)}`[^.]{{0,60}}?\(default\s+`?(\d+)`?")
+
+
+def _extract_env_defaults(text: str, *, name: str) -> list[tuple[int, int]]:
+    """Every ``(line_number, documented_default)`` stated for ``name`` in ``text``.
+
+    Raises ParseError when the variable is never given a default in the
+    document. An empty result is a parse failure rather than a silent pass,
+    for the same reason the enum extractor treats one that way: a reshaped
+    document must fail loudly instead of quietly checking nothing.
+    """
+    results = [
+        (text.count("\n", 0, m.start()) + 1, int(m.group(1)))
+        for m in _env_default_pattern(name).finditer(text)
+    ]
+    if not results:
+        raise ParseError(f"no '`{name}`' default stated")
+    return results
+
+
+def _check_env_defaults(root: Path) -> list[str]:
+    """Compare every documented default in docs/serving.md with ``Config``.
+
+    Returns messages; empty means in sync. When docs/serving.md is absent the
+    check reports nothing, so a caller pointed at a root without it (the unit
+    tests' scratch roots) is unaffected; the real-repo test asserts that all
+    three variables are genuinely checked here, so a rename cannot make this
+    silently vacuous.
+    """
+    serving = root / "docs" / "serving.md"
+    if not serving.is_file():
+        return []
+    from dataclasses import fields as dataclass_fields
+
+    from data_olympus.config import Config
+
+    canonical = {f.name: f.default for f in dataclass_fields(Config)}
+    try:
+        text = serving.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"docs/serving.md: could not read {serving}: {exc}"]
+
+    errors: list[str] = []
+    for name, field in _ENV_DEFAULT_FIELDS:
+        expected = canonical.get(field)
+        if not isinstance(expected, int):
+            errors.append(
+                f"docs/serving.md: Config has no int field {field!r} for {name}; "
+                "update _ENV_DEFAULT_FIELDS"
+            )
+            continue
+        try:
+            stated = _extract_env_defaults(text, name=name)
+        except ParseError as exc:
+            errors.append(f"docs/serving.md: {exc}")
+            continue
+        for line_no, value in stated:
+            if value != expected:
+                errors.append(
+                    f"docs/serving.md line {line_no}: {name} is documented as "
+                    f"defaulting to {value}, but Config.{field} defaults to "
+                    f"{expected}"
+                )
+    return errors
+
+
 # --- checks ------------------------------------------------------------------
 
 
@@ -223,6 +319,8 @@ def check_doc_consistency(root: Path) -> list[str]:
             )
             if msg:
                 errors.append(msg)
+
+    errors.extend(_check_env_defaults(root))
 
     return errors
 

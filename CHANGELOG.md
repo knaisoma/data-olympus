@@ -12,6 +12,30 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* **`docs/serving.md` described session reaping as it behaved two releases
+  ago.** Its session reference section still said `KB_SESSION_IDLE_TIMEOUT_SEC`
+  defaults to `1800s / 30 min`, and still said a quiet long-lived `GET` SSE
+  stream stamps no activity and is reaped on that timer, with excluding open
+  streams from reaping listed as a possible follow-up. None of that has been
+  true since the SSE session-churn fix: the default is `300`, the activity
+  middleware re-stamps an open stream every `KB_SESSION_TOUCH_INTERVAL_SEC`
+  with that interval clamped to at most a third of the idle window, and the
+  reaper clears only sessions whose stream has actually closed. The summary
+  bullet near the top of the same document already said all of this, so the
+  document contradicted itself, and the reference section is the half an
+  operator reads when sizing a client keep-alive. Both halves now agree. (#286)
+
+### Changed
+
+* **The doc-consistency CI guard now also checks documented configuration
+  defaults, not just schema enums.** Every default stated in prose in
+  `docs/serving.md` for the session reaping variables is compared against the
+  corresponding `Config` field, so lowering a default in code and updating only
+  one of the places the documentation states it fails CI instead of ageing
+  quietly. The guard reports the document line and both values. (#286)
+
 ## [0.9.0] - 2026-09-21
 
 ### Added
