@@ -33,6 +33,27 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   read as an option. A blank value means unset and yields the default, as the
   path settings already document. (#289)
 
+### Changed
+
+* **Benchmark extra: `sentence-transformers` 6.0.1 to 6.1.0.** Lock only, and
+  the benchmark extra is not installed by the server or by the ordinary test
+  job, so nothing a deployment runs changes. The regenerated lock moves that
+  one package and no transitive dependency shared with a runtime package.
+  (#285)
+
+* **The doc-consistency CI guard now also checks documented configuration
+  defaults, not just schema enums.** For each session reaping variable it
+  reads every ``(default ...)`` the prose of `docs/serving.md` states
+  immediately after that variable, outside fenced examples, and compares it
+  with the corresponding `Config` field, so lowering a default in code and
+  updating only one of the places the documentation states it fails CI instead
+  of ageing quietly. The guard reports the document line and both values. It
+  covers this one document and this one list of variables rather than every
+  setting the project has, and it requires the value as a whole number in the
+  unit the configuration uses, with any gloss after a comma, so that a form it
+  cannot read whole fails loudly instead of being certified from its leading
+  digits. (#286)
+
 ### Fixed
 
 * **`docs/serving.md` described session reaping as it behaved before 0.3.3.**
@@ -51,21 +72,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   text also states the condition the old text left out: the reaper measures
   elapsed time since the last activity stamp, so a client that polls less
   often than the idle window is reaped between calls. (#286)
-
-### Changed
-
-* **The doc-consistency CI guard now also checks documented configuration
-  defaults, not just schema enums.** For each session reaping variable it
-  reads every ``(default ...)`` the prose of `docs/serving.md` states
-  immediately after that variable, outside fenced examples, and compares it
-  with the corresponding `Config` field, so lowering a default in code and
-  updating only one of the places the documentation states it fails CI instead
-  of ageing quietly. The guard reports the document line and both values. It
-  covers this one document and this one list of variables rather than every
-  setting the project has, and it requires the value as a whole number in the
-  unit the configuration uses, with any gloss after a comma, so that a form it
-  cannot read whole fails loudly instead of being certified from its leading
-  digits. (#286)
 
 ## [0.9.0] - 2026-09-21
 
