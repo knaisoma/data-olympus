@@ -56,7 +56,7 @@ def refresh_once(
     failed) and the git ``sync_status`` (changed / no_change / no_remote /
     fetch_failed / ff_failed) plus ``remote_head_sha``, so the loop reports sync
     failures distinctly from index-build failures."""
-    result = git.ff_merge_origin_main(timeout_sec=30)
+    result = git.ff_merge_upstream(timeout_sec=30)
     sync = {
         "sync_status": result.status,
         "remote_head_sha": result.remote_sha,
@@ -178,7 +178,7 @@ def demote_conflict_to_pending(
     audit_log: AuditLog | None,
 ) -> None:
     """Demote a push-queue entry whose commit could not be rebased onto the moved
-    origin/main to a pending proposal for operator resolution (scope item 2).
+    the upstream trunk to a pending proposal for operator resolution (scope item 2).
 
     Called by the push loop's ``on_rebase_conflict`` hook. Reads the target path
     and postimage FROM THE COMMIT (``git show <sha>:<path>``) rather than the
@@ -254,7 +254,7 @@ async def push_retry_loop(
     executor rather than on the event loop: a hung origin must never block the
     loop that also answers the readiness probe (the probe timing out would
     crash-loop the pod). The push now goes through ``push_with_rebase_recovery``:
-    a non-fast-forward rejection (a second overlapping session moved origin/main)
+    a non-fast-forward rejection (a second overlapping session moved the trunk)
     triggers a fetch + rebase + retry instead of retrying identically forever. A
     rebase CONFLICT raises ``RebaseConflictError``, which ``drain`` routes to the
     ``on_rebase_conflict`` demotion hook (the commit becomes a pending entry for
@@ -312,7 +312,7 @@ async def worktree_gc_loop(
 
     Without this loop one full KB checkout accumulates per session forever.
     ``WorktreeRegistry.gc`` removes only worktrees idle beyond ``idle_sec`` whose
-    commits are all reachable from origin/main (it defers any with unpushed
+    commits are all reachable from the upstream trunk (it defers any with unpushed
     commits so the push queue can drain first) AND deletes the session's
     ``kb-session/<safe_id>`` branch so a returning session can create its
     worktree again. Runs in a thread executor because gc shells out to git."""

@@ -677,7 +677,7 @@ def _commit_in_worktree(
     Order of operations, all under the process-wide write lock AND the per-path
     advisory lock (shared with the pending queue):
 
-    1. Refresh the worktree base onto origin/main (so CAS compares against, and the
+    1. Refresh the worktree base onto the upstream trunk (so CAS compares against, and the
        commit sits on, current content).
     2. Build the commit message FIRST (trailer validation can raise; doing it
        before any disk side effect means a late rejection leaves nothing staged --
@@ -699,7 +699,7 @@ def _commit_in_worktree(
             wt = worktrees.get_or_create(
                 source_session=source_session, agent_identity=agent_identity
             )
-            # 1. Refresh the session branch base onto origin/main so CAS compares
+            # 1. Refresh the session branch base onto the upstream trunk so CAS compares
             # against, and the commit sits on, current content.
             #
             # A refresh failure (network down, or a rebase conflict) is handled by
@@ -723,7 +723,8 @@ def _commit_in_worktree(
             if cas_enforceable and not refresh_ok:
                 raise _WriteRejected(ProposeResponse(
                     status="rejected_stale_base", target_path=target_path,
-                    reason=(f"base could not be refreshed onto origin/main, so the "
+                    reason=(f"base could not be refreshed onto "
+                            f"{worktrees.git.upstream}, so the "
                             f"supplied base marker cannot be verified: "
                             f"{refresh_err}")))
 
@@ -830,7 +831,7 @@ def _commit_in_worktree(
             # 5b. Governed-target backstop (issue #112, codex round-2
             # blocker): judge the target's in-force state from its CURRENT
             # bytes on the refreshed base -- the exact content this commit
-            # would replace -- so an index that lags origin/main can never
+            # would replace -- so an index that lags the upstream trunk can never
             # be used to slip an edit past the governed-target rule.
             # Deliberately AFTER the hard gates above (reject-before-demote,
             # enforced authoritatively here rather than predicted at the

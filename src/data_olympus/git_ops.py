@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 class RebaseConflictError(Exception):
-    """A rebase of the session branch onto origin/main hit a conflict that cannot
+    """A rebase of the session branch onto the upstream trunk hit a conflict that cannot
     be auto-resolved (scope item 2). The caller demotes the commit to a pending
     entry for operator resolution rather than retrying forever."""
 
@@ -29,7 +29,7 @@ class RebaseConflictError(Exception):
 
 class NonFastForwardError(Exception):
     """A push was rejected non-fast-forward and the rebase-and-retry still lost
-    the race (origin/main moved again). Retryable on the next drain; distinct
+    the race (the upstream trunk moved again). Retryable on the next drain; distinct
     from a network failure so the push loop can log it clearly."""
 
     def __init__(self, *, worktree_path: str, detail: str) -> None:
@@ -40,7 +40,7 @@ class NonFastForwardError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class FfMergeResult:
-    """Outcome of an ff-only merge from origin/main.
+    """Outcome of an ff-only merge from the configured upstream trunk.
 
     ``status`` distinguishes the failure modes the refresh loop must surface so a
     broken remote does not masquerade as "fresh, no change":
@@ -218,10 +218,16 @@ class GitOps:
         self,
         repo_path: Path,
         *,
+        branch: str = "main",
         claim_guard: Callable[[str], list[Any]] | None = None,
         serializer: AbstractContextManager[Any] | None = None,
     ) -> None:
         self._repo = repo_path
+        # The knowledge base's trunk (KB_GIT_BRANCH, issue #289). Every remote
+        # operation below derives its refs from this rather than naming "main",
+        # so a repository whose trunk is "master" (or anything else) syncs.
+        # Config validates the value; the default preserves existing behaviour.
+        self._branch = branch
         # Returns the claims on a ref whose evidence a rewrite would destroy.
         # Optional: without it these operations behave exactly as before.
         self._claim_guard = claim_guard
@@ -230,6 +236,21 @@ class GitOps:
         # write context in between, so the guard protects an earlier snapshot
         # of history rather than the history actually being rewritten.
         self._serializer = serializer or contextlib.nullcontext()
+
+    @property
+    def branch(self) -> str:
+        """The knowledge base's trunk branch on ``origin``."""
+        return self._branch
+
+    @property
+    def upstream(self) -> str:
+        """The tracking ref for that trunk, e.g. ``origin/main``.
+
+        Read by collaborators that run their own git commands (the worktree
+        registry's garbage-collection reachability check) so exactly one place
+        decides what the server's upstream is.
+        """
+        return f"origin/{self._branch}"
 
     def _defer_if_claims_at_risk(self, ref: str) -> None:
         """Reconcile claims on ``ref``, then defer if any evidence is still at
@@ -315,8 +336,12 @@ class GitOps:
         remotes = {line.strip() for line in result.stdout.splitlines() if line.strip()}
         return "origin" in remotes
 
-    def ff_merge_origin_main(self, *, timeout_sec: int = 30) -> FfMergeResult:
-        """Fetch origin and fast-forward main, returning a status-classified result.
+    def ff_merge_upstream(self, *, timeout_sec: int = 30) -> FfMergeResult:
+        """Fetch origin and fast-forward the configured branch, returning a
+        status-classified result.
+
+        The branch is ``KB_GIT_BRANCH`` (default ``main``), so this reads
+        ``origin/master`` on a repository whose trunk is ``master``.
 
         A read-only deployment with no ``origin`` returns ``no_remote`` (healthy,
         not a failure). Fetch and fast-forward failures return ``fetch_failed`` /
@@ -330,7 +355,9 @@ class GitOps:
                 status="no_remote",
             )
         # Fetch may fail (no network, auth, unreachable); classify rather than hide.
-        fetch = self._run("fetch", "origin", "main", check=False, timeout_sec=timeout_sec)
+        fetch = self._run(
+            "fetch", "origin", self._branch, check=False, timeout_sec=timeout_sec,
+        )
         if fetch.returncode != 0:
             return FfMergeResult(
                 previous_sha=previous,
@@ -339,9 +366,13 @@ class GitOps:
                 note=f"fetch_failed: {fetch.stderr.strip()[:200]}",
                 status="fetch_failed",
             )
-        remote = self._run("rev-parse", "origin/main", check=False, timeout_sec=timeout_sec)
+        remote = self._run(
+            "rev-parse", self.upstream, check=False, timeout_sec=timeout_sec,
+        )
         remote_sha = remote.stdout.strip() if remote.returncode == 0 else None
-        merge = self._run("merge", "--ff-only", "origin/main", check=False, timeout_sec=timeout_sec)
+        merge = self._run(
+            "merge", "--ff-only", self.upstream, check=False, timeout_sec=timeout_sec,
+        )
         if merge.returncode != 0:
             return FfMergeResult(
                 previous_sha=previous,
@@ -578,7 +609,7 @@ class GitOps:
         return result.stdout
 
     def list_unpushed_shas(self, worktree_path: str, *, timeout_sec: int = 10) -> list[str]:
-        """SHAs reachable from the worktree's HEAD but not from origin/main.
+        """SHAs reachable from the worktree's HEAD but not from the upstream trunk.
 
         Used by push-queue init-recovery to find commits that were made but
         never enqueued (a crash between ``git commit`` and ``push_queue.enqueue``
@@ -586,7 +617,7 @@ class GitOps:
         rather than crashing startup."""
         try:
             result = subprocess.run(
-                ["git", "-C", worktree_path, "rev-list", "HEAD", "--not", "origin/main"],
+                ["git", "-C", worktree_path, "rev-list", "HEAD", "--not", self.upstream],
                 check=False, capture_output=True, text=True, timeout=timeout_sec,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -596,14 +627,14 @@ class GitOps:
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
     def push(self, worktree_path: str, *, timeout_sec: int = 60) -> None:
-        """Push the worktree's HEAD to origin/main.
+        """Push the worktree's HEAD to the configured upstream trunk.
 
         A bounded ``timeout_sec`` (default 60s) prevents a hung origin from
         blocking the push-retry loop indefinitely; on timeout,
         ``subprocess.TimeoutExpired`` propagates and the caller classifies it as
         a retryable failure (see refresh.push_retry_loop)."""
         subprocess.run(
-            ["git", "-C", worktree_path, "push", "origin", "HEAD:main"],
+            ["git", "-C", worktree_path, "push", "origin", f"HEAD:{self._branch}"],
             check=True, capture_output=True, timeout=timeout_sec,
         )
 
@@ -625,13 +656,13 @@ class GitOps:
         )
 
     def refresh_base(self, worktree_path: str, *, timeout_sec: int = 60) -> str:
-        """Rebase the worktree's session branch onto the latest ``origin/main`` so
+        """Rebase the worktree's session branch onto the latest upstream trunk so
         subsequent reads/commits sit on the refreshed base (scope items 2, 3).
 
         Session worktrees branch from main at creation and are never refreshed, so
         an auto-commit's CAS check would compare against a STALE base and a push
-        would be rejected non-FF. This fetches ``origin/main`` and rebases the
-        session branch onto it. Returns the resulting ``origin/main`` sha (or ""
+        would be rejected non-FF. This fetches the upstream trunk and rebases the
+        session branch onto it. Returns the resulting upstream sha (or ""
         when there is no origin). Raises :class:`RebaseConflictError` on a conflict
         (the caller demotes to pending). ``subprocess.TimeoutExpired`` propagates
         for a hung remote (retryable). No-op when there is no ``origin`` remote.
@@ -653,17 +684,17 @@ class GitOps:
         }:
             return ""
         fetch = subprocess.run(
-            ["git", "-C", worktree_path, "fetch", "origin", "main"],
+            ["git", "-C", worktree_path, "fetch", "origin", self._branch],
             check=False, capture_output=True, text=True, timeout=timeout_sec,
         )
         if fetch.returncode != 0:
             raise RuntimeError(f"fetch_failed: {fetch.stderr.strip()[:200]}")
         remote_sha = subprocess.run(
-            ["git", "-C", worktree_path, "rev-parse", "origin/main"],
+            ["git", "-C", worktree_path, "rev-parse", self.upstream],
             check=False, capture_output=True, text=True, timeout=timeout_sec,
         ).stdout.strip()
         rebase = subprocess.run(
-            ["git", "-C", worktree_path, "rebase", "origin/main"],
+            ["git", "-C", worktree_path, "rebase", self.upstream],
             check=False, capture_output=True, text=True, timeout=timeout_sec,
         )
         if rebase.returncode != 0:
@@ -682,13 +713,13 @@ class GitOps:
     def push_with_rebase_recovery(
         self, worktree_path: str, *, timeout_sec: int = 60,
     ) -> None:
-        """Push HEAD to origin/main; on a non-fast-forward rejection, fetch +
-        rebase the session branch onto origin/main and retry once (scope item 2).
+        """Push HEAD to the upstream trunk; on a non-fast-forward rejection, fetch +
+        rebase the session branch onto it and retry once (scope item 2).
 
         Distinguishes the two failure modes the plain ``push`` conflated:
 
-        - **Non-fast-forward** (a second overlapping session moved origin/main):
-          recoverable. Rebase the session branch onto the new origin/main and push
+        - **Non-fast-forward** (a second overlapping session moved the trunk):
+          recoverable. Rebase the session branch onto the new trunk and push
           again. If the retry still fails non-FF (origin moved again mid-rebase),
           raise :class:`NonFastForwardError` so the caller retries the whole entry
           on the next drain rather than looping in-line.
@@ -699,7 +730,7 @@ class GitOps:
           push-retry loop counts it as a retryable failure.
         """
         first = subprocess.run(
-            ["git", "-C", worktree_path, "push", "origin", "HEAD:main"],
+            ["git", "-C", worktree_path, "push", "origin", f"HEAD:{self._branch}"],
             check=False, capture_output=True, text=True, timeout=timeout_sec,
         )
         if first.returncode == 0:
@@ -709,11 +740,11 @@ class GitOps:
             raise subprocess.CalledProcessError(
                 first.returncode, first.args, first.stdout, first.stderr,
             )
-        # Non-FF: rebase onto the moved origin/main (may raise
+        # Non-FF: rebase onto the moved trunk (may raise
         # RebaseConflictError -> caller demotes) and retry the push once.
         self.refresh_base(worktree_path, timeout_sec=timeout_sec)
         retry = subprocess.run(
-            ["git", "-C", worktree_path, "push", "origin", "HEAD:main"],
+            ["git", "-C", worktree_path, "push", "origin", f"HEAD:{self._branch}"],
             check=False, capture_output=True, text=True, timeout=timeout_sec,
         )
         if retry.returncode == 0:

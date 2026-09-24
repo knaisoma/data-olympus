@@ -135,7 +135,7 @@ def test_refresh_once_records_duplicate_id_failure(tmp_git_kb: Path, tmp_path: P
     subprocess.run(["git", "-C", str(tmp_git_kb), "add", "-A"], check=True, env=env)
     subprocess.run(["git", "-C", str(tmp_git_kb), "commit", "-m", "add dup"],
                    check=True, env=env)
-    # No remote configured: ff_merge_origin_main is a no-op; build_index manually
+    # No remote configured: ff_merge_upstream is a no-op; build_index manually
     # to simulate the refresh path encountering a duplicate.
     from data_olympus.refresh import rebuild_index_safely
     result = rebuild_index_safely(idx=idx, kb_main_path=tmp_git_kb, source_commit="bad")

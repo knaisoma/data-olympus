@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,13 @@ class Config:
     governed_extra_command_patterns: tuple[str, ...] = ()
     worktree_idle_sec: int = 3600
     git_key_path: str = "/tmp/git-key"
+    # Branch of the knowledge-base repository the server fetches, fast-forwards,
+    # rebases session worktrees onto, and pushes to (KB_GIT_BRANCH, issue #289).
+    # Every git operation against the remote used to name "main" literally, so a
+    # repository whose trunk is called anything else could not be served. The
+    # default keeps existing deployments byte-identical. Validated at load: an
+    # unusable ref name fails startup rather than reaching a git command line.
+    kb_git_branch: str = "main"
     audit_log_path: str = "/state/audit/events.log"
     audit_hmac_key: str = ""
     # Size-based audit-log rotation threshold in bytes (KB_AUDIT_MAX_BYTES). 0
@@ -209,6 +217,47 @@ class Config:
 
 def _split_csv(raw: str) -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+# Conservative subset of git's ref-name grammar (issue #289). The value is
+# passed to git as an argument and as half of "origin/<branch>", so this rejects
+# rather than sanitises: a name that would need rewriting is a misconfiguration
+# the operator should see at startup, not something to guess at. A LEADING DASH
+# is the case that matters most, because git would read it as an option.
+_BRANCH_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]*$")
+
+
+def _load_git_branch(raw: str) -> str:
+    """Validate KB_GIT_BRANCH, returning the branch the server syncs.
+
+    Blank (unset, empty, or whitespace-only) yields the default ``main``, the
+    same "a blank value is unset" rule the path settings document: an
+    unsubstituted compose or Helm variable must not become an empty ref name.
+    Anything non-blank that is not a usable branch name raises ValueError so
+    startup fails with the setting named.
+    """
+    branch = raw.strip()
+    if not branch:
+        return "main"
+    ok = bool(_BRANCH_NAME.match(branch))
+    if ok:
+        # Remaining git rules the character class alone does not express.
+        ok = not (
+            ".." in branch
+            or "//" in branch
+            or branch.endswith("/")
+            or branch.endswith(".")
+            or branch.endswith(".lock")
+            or any(part.endswith(".lock") for part in branch.split("/"))
+        )
+    if not ok:
+        raise ValueError(
+            f"KB_GIT_BRANCH must be a usable git branch name; got {raw!r}. "
+            "Use letters, digits, '.', '_', '-' and '/' (for example 'master' "
+            "or 'release/2026-10'); it may not start with '-' or '.', contain "
+            "'..', '//' or whitespace, or end with '/', '.' or '.lock'."
+        )
+    return branch
 
 
 def _load_status_weights(raw: str) -> dict[str, float] | None:
@@ -396,6 +445,7 @@ def load_config() -> Config:
     governed_extra_command_patterns = _csv_tuple("KB_GOVERNED_EXTRA_COMMAND_PATTERNS")
     worktree_idle_sec = int(os.getenv("KB_WORKTREE_IDLE_SEC", "3600"))
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
+    kb_git_branch = _load_git_branch(os.getenv("KB_GIT_BRANCH", ""))
     audit_log_path = os.getenv("KB_AUDIT_LOG_PATH", "/state/audit/events.log")
     audit_hmac_key = os.getenv("KB_AUDIT_HMAC_KEY", "")
     audit_max_bytes = int(os.getenv("KB_AUDIT_MAX_BYTES", "0"))
@@ -492,6 +542,7 @@ def load_config() -> Config:
         governed_extra_command_patterns=governed_extra_command_patterns,
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
+        kb_git_branch=kb_git_branch,
         audit_log_path=audit_log_path,
         audit_hmac_key=audit_hmac_key,
         audit_max_bytes=audit_max_bytes,

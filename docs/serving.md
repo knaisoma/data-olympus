@@ -61,6 +61,17 @@ trigram, auth, audit rotation):
   path it resolved to, and whether that path came from the environment or the
   built-in default. An existing but empty corpus is not an error: the server
   starts, builds the schema, and reports `degraded` until content arrives.
+- `KB_GIT_BRANCH`: the branch of the knowledge-base repository the server
+  syncs (default `main`). It is the branch fetched and fast-forwarded by the
+  pull loop, the branch a session worktree is rebased onto before a write, the
+  branch writes are pushed to, and the branch a worktree's commits must be
+  reachable from before that worktree can be garbage collected. Set it to
+  `master`, or to whatever your repository actually calls its trunk. `KB_MAIN_PATH`
+  must have that same branch checked out, or the fast-forward has nothing to
+  advance and health stays degraded. A blank value means unset and gets the
+  default. A value that is not a usable branch name (leading `-`, whitespace,
+  `..`, a trailing `/`, `.` or `.lock`, and the rest of git's ref rules) fails
+  startup with the setting named, rather than being passed to git.
 - `KB_HTTP_PORT`: TCP port the MCP HTTP server binds (default `8080`).
 - `KB_CONFIDENCE_THRESHOLD`: the auto-commit confidence cutoff, in `[0, 1]`
   (default `0.85`). A proposal at or above it from a principal holding
@@ -148,7 +159,8 @@ kubectl -n data-olympus scale deployment/data-olympus-mcp-read --replicas=5
 ## Git pull loop
 
 On startup, and at the interval set by `KB_SYNC_INTERVAL_SEC` (default 60s),
-the server calls `git pull` on `KB_MAIN_PATH`. If `KB_REMOTE_URL` is empty,
+the server calls `git pull` on `KB_MAIN_PATH`, against the branch named by
+`KB_GIT_BRANCH` (default `main`). If `KB_REMOTE_URL` is empty,
 the pull loop runs but exits cleanly with no action. The `health` endpoint
 reports `degraded: true` only when the index has not been rebuilt within
 `KB_STALENESS_DEGRADED_SEC` (default 600s).

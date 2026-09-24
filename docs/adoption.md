@@ -346,6 +346,11 @@ remote), set two environment variables before starting the server:
 - The deploy key or credential must be available to the server process (SSH
   key on disk, or a credential helper).
 
+If your repository's trunk is not called `main`, also set `KB_GIT_BRANCH` (for
+example `master`). It names the branch that is fetched, fast-forwarded, rebased
+onto and pushed to; see the core configuration reference in
+[serving.md](serving.md).
+
 Without `KB_REMOTE_URL`, the server runs in read-only mode: the pull loop runs
 but does not push, and the write pipeline is disabled. REST write routes
 (`/api/v1/propose/*`, `/resolve/{id}`, `/onboarding/bootstrap`) return

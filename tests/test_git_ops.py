@@ -25,7 +25,7 @@ def test_ff_merge_no_op_when_no_remote_change(tmp_git_kb: Path) -> None:
     git = GitOps(tmp_git_kb)
     before = git.head_sha()
     # No remote configured; ff_merge should be a no-op (or report no fetch source) without raising.
-    result = git.ff_merge_origin_main(timeout_sec=10)
+    result = git.ff_merge_upstream(timeout_sec=10)
     assert result.previous_sha == before
     assert result.current_sha == before
     assert result.changed is False
@@ -56,7 +56,7 @@ def test_ff_merge_advances_after_local_remote_commit(tmp_git_kb: Path, tmp_path:
     subprocess.run(["git", "-C", str(clone), "push", "origin", "main"], check=True, env=env)
 
     before = git.head_sha()
-    result = git.ff_merge_origin_main(timeout_sec=10)
+    result = git.ff_merge_upstream(timeout_sec=10)
     assert result.previous_sha == before
     assert result.current_sha != before
     assert result.changed is True

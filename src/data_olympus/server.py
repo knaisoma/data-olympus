@@ -660,7 +660,8 @@ def build_app(
             )
         return list(pending.claims_at_risk(ref))
 
-    git = GitOps(kb_main_path, claim_guard=_claims_at_risk,
+    git = GitOps(kb_main_path, branch=config.kb_git_branch,
+                 claim_guard=_claims_at_risk,
                  serializer=write_serializer)
     # retention_sec = the consult TTL: an entry older than that can never be
     # fresh, so it is safe to evict and keeps the ledger bounded (see
@@ -1659,7 +1660,7 @@ def main() -> None:
         # (tools_write) leaves a committed-but-unqueued orphan on a session
         # worktree branch that no loop would ever push. Before the push-retry
         # loop starts, scan every session worktree and re-enqueue any commit
-        # reachable from its HEAD but not from origin/main. init_recovery skips
+        # reachable from its HEAD but not from the upstream trunk. init_recovery skips
         # shas already queued, so this cannot double-enqueue.
         if state.push_queue is not None and state.worktrees is not None:
             try:

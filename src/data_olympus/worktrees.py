@@ -56,7 +56,7 @@ class WorktreeRegistry:
     @property
     def git(self) -> GitOps:
         """The GitOps handle for the main repo backing this registry. The write
-        path uses it to refresh a session worktree's base onto origin/main (git
+        path uses it to refresh a session worktree's base onto the upstream trunk (git
         subcommands accept ``-C <worktree>``, so one handle serves any worktree)."""
         return self._git
 
@@ -85,7 +85,7 @@ class WorktreeRegistry:
 
     def gc(self, *, idle_sec: int) -> list[str]:
         """Remove worktrees whose last_activity is older than idle_sec AND
-        whose commits are all reachable from origin/main. Defer otherwise.
+        whose commits are all reachable from the upstream trunk. Defer otherwise.
 
         Returns the list of worktree paths that were actually removed.
         """
@@ -104,7 +104,7 @@ class WorktreeRegistry:
                 meta = json.load(f)
             if now - float(meta.get("last_activity", 0)) < idle_sec:
                 continue
-            # All commits reachable from origin/main? If not, defer (push queue
+            # All commits reachable from the upstream trunk? If not, defer (push queue
             # will retry; once pushed, next GC pass will clean up).
             if self._has_unpushed_commits(wt_path):
                 continue
@@ -146,25 +146,25 @@ class WorktreeRegistry:
         return removed
 
     def _has_unpushed_commits(self, wt_path: str) -> bool:
-        """True if the worktree has commits not reachable from origin/main, i.e.
+        """True if the worktree has commits not reachable from the upstream trunk, i.e.
         it is unsafe to GC. Fail closed: if we cannot *prove* every commit is
         pushed, return True and defer.
 
         The one exception is a repo with no ``origin`` remote at all (a local-only
         / read-only demo): there is nothing to push to, so ``git rev-list ...
-        origin/main`` would legitimately fail with an unknown-ref error. In that
+        origin/<branch>`` would legitimately fail with an unknown-ref error. In that
         case there is no unpushed state to protect and GC may proceed."""
         import subprocess
         try:
             result = subprocess.run(
-                ["git", "-C", wt_path, "rev-list", "HEAD", "--not", "origin/main"],
+                ["git", "-C", wt_path, "rev-list", "HEAD", "--not", self._git.upstream],
                 check=False, capture_output=True, text=True, timeout=10,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             # Can't tell -> defer the GC (fail closed).
             return True
         if result.returncode != 0:
-            # rev-list failed. This is either a missing/corrupt origin/main ref
+            # rev-list failed. This is either a missing/corrupt upstream ref
             # or a repo with no origin. If there is genuinely no origin remote,
             # there is nothing to push and GC is safe; otherwise (origin exists
             # but the ref could not be resolved) we cannot prove commits are

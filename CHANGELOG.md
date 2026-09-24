@@ -12,6 +12,27 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+* **`KB_GIT_BRANCH`: serve a knowledge base whose trunk is not called `main`.**
+  Every git operation the server ran against the knowledge-base remote named
+  `main` literally, so a repository on `master` (or any other trunk) could not
+  be served: the refresh loop's `fetch origin main` failed and health stayed
+  degraded with the index frozen at whatever was built at bootstrap. Two
+  further consequences were quieter. A write supplying a base marker was
+  refused `rejected_stale_base`, because the compare-and-swap base could not be
+  refreshed; and a write with no base marker committed and then pushed
+  `HEAD:main`, which on a remote without that branch creates one that nothing
+  ever reads. The setting now feeds the fetch, the fast-forward, the session
+  worktree rebase, the push, and the reachability checks that decide whether a
+  session worktree still holds unpushed commits and may be garbage collected.
+  It defaults to `main`, so an existing deployment behaves exactly as before,
+  and it is validated when configuration loads: a value that is not a usable
+  branch name fails startup with the setting named, rather than reaching a git
+  command line, which matters most for a value starting with `-` that git would
+  read as an option. A blank value means unset and yields the default, as the
+  path settings already document. (#289)
+
 ### Fixed
 
 * **`docs/serving.md` described session reaping as it behaved before 0.3.3.**
