@@ -12,6 +12,76 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-28
+
+### Added
+
+* **`KB_GIT_BRANCH`: serve a knowledge base whose trunk is not called `main`.**
+  Every git operation the server ran against the knowledge-base remote named
+  `main` literally, so a repository on `master` (or any other trunk) could not
+  be served: the refresh loop's `fetch origin main` failed and health stayed
+  degraded with the index frozen at whatever was built at bootstrap. Two
+  further consequences were quieter. A write supplying an ENFORCEABLE base
+  marker (a pinned `base_commit`, a `base_blob_sha` or a `target_file_hash`;
+  `base_commit: "HEAD"` is advisory and does not count) was refused
+  `rejected_stale_base`, because the compare-and-swap base could not be
+  refreshed. A write with no enforceable marker committed and pushed
+  `HEAD:main`, creating that branch on a remote that had none. The refresh loop
+  then fetched and merged the branch it had just been given, so a server could
+  end up following a trunk its writes had invented while the repository's real
+  trunk went on being ignored. The setting now feeds the fetch, the
+  fast-forward, the session worktree rebase, the push, and the reachability
+  checks that decide whether a session worktree still holds unpushed commits
+  and may be garbage collected. Every ref built from it is fully qualified
+  (`refs/heads/<branch>`, `refs/remotes/origin/<branch>`), so a name shaped
+  like a ref path or colliding with a tag cannot select another namespace.
+  It defaults to `main`, so an existing deployment behaves exactly as before,
+  and it is validated when configuration loads: a value that is not a usable
+  branch name fails startup with the setting named and the reason stated,
+  rather than reaching a git command line, which matters most for a value
+  starting with `-` that git would read as an option. A blank value means
+  unset and yields the default, as the path settings already document. (#289)
+
+### Changed
+
+* **Benchmark extra: `sentence-transformers` 6.0.1 to 6.1.0.** Lock only, and
+  the benchmark extra is not installed by the server or by the ordinary test
+  job, so nothing a deployment runs changes. The regenerated lock moves that
+  one package and no transitive dependency shared with a runtime package.
+  (#285)
+
+* **The doc-consistency CI guard now also checks documented configuration
+  defaults, not just schema enums.** For each session reaping variable it
+  reads every ``(default ...)`` the prose of `docs/serving.md` states
+  immediately after that variable, outside fenced examples, and compares it
+  with the corresponding `Config` field, so lowering a default in code and
+  updating only one of the places the documentation states it fails CI instead
+  of ageing quietly. The guard reports the document line and both values. It
+  covers this one document and this one list of variables rather than every
+  setting the project has, and it requires the value as a whole number in the
+  unit the configuration uses, with any gloss after a comma, so that a form it
+  cannot read whole fails loudly instead of being certified from its leading
+  digits. (#286)
+
+### Fixed
+
+* **`docs/serving.md` described session reaping as it behaved before 0.3.3.**
+  Its session reference section still said `KB_SESSION_IDLE_TIMEOUT_SEC`
+  defaults to `1800s / 30 min`, and still said a quiet long-lived `GET` SSE
+  stream stamps no activity and is reaped on that timer, with excluding open
+  streams from reaping listed as a possible follow-up. None of that has been
+  true since the SSE session-churn fix, which is in 0.3.3: the default is
+  `300`, the activity middleware runs a keep-alive task for an open stream and
+  re-stamps the session every `KB_SESSION_TOUCH_INTERVAL_SEC`, and the server
+  clamps that interval to at most a third of the idle window, so the stamps
+  are scheduled at least three times per window. The summary bullet near the
+  top of the same document already said all of this, so the document
+  contradicted itself, and the reference section is the half an operator reads
+  when sizing a client keep-alive. Both halves now agree, and the corrected
+  text also states the condition the old text left out: the reaper measures
+  elapsed time since the last activity stamp, so a client that polls less
+  often than the idle window is reaped between calls. (#286)
+
 ## [0.9.0] - 2026-09-21
 
 ### Added
@@ -2424,7 +2494,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/knaisoma/data-olympus/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/knaisoma/data-olympus/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/knaisoma/data-olympus/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/knaisoma/data-olympus/compare/v0.8.0...v0.8.1

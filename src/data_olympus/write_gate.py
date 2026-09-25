@@ -17,7 +17,7 @@ so both surfaces share one policy.
   is unchanged.
 - ``validate_postimage``: format-level validation of the postimage bytes plus a
   duplicate-id check against the live index, so a malformed / forged document
-  never reaches ``origin/main`` (a duplicate id makes every subsequent index
+  never reaches the upstream trunk (a duplicate id makes every subsequent index
   rebuild fail: one bad write -> persistent degraded state).
 """
 from __future__ import annotations

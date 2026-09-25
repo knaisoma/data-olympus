@@ -90,7 +90,7 @@ class PushQueue:
         ``on_rebase_conflict`` (scope item 2): when ``push_fn`` raises
         :class:`~data_olympus.git_ops.RebaseConflictError`, the commit cannot be
         auto-published (the session branch does not rebase cleanly onto the moved
-        origin/main). Instead of retrying forever, the callback demotes the commit
+        the upstream trunk). Instead of retrying forever, the callback demotes the commit
         to a pending entry for operator resolution and the queue entry is removed.
         The callback is responsible for the audit event and the pending record; if
         it raises, the entry is treated as a retryable failure (kept in the queue)
@@ -102,7 +102,7 @@ class PushQueue:
             RebaseConflictError,
         )
 
-        # A repeated non-FF race (origin/main moves faster than we can rebase) is
+        # A repeated non-FF race (the trunk moves faster than we can rebase) is
         # contention, not a content conflict, but it can neither publish nor demote
         # on its own. Bound the in-line retries: after this many consecutive
         # attempts that all end non-FF, demote to pending (like a rebase conflict)
@@ -254,7 +254,7 @@ class PushQueue:
         list_unpushed_shas: Callable[[str], list[str]],
     ) -> None:
         """At startup, scan every worktree under worktree_root.
-        For each commit reachable from HEAD but NOT from origin/main, ensure
+        For each commit reachable from HEAD but NOT from the upstream trunk, ensure
         a queue entry exists."""
         if not os.path.isdir(worktree_root):
             return

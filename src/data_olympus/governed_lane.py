@@ -188,7 +188,7 @@ def is_base_content_in_force(
     in-worktree backstop; codex round-2 security review blocker)?
 
     The index-based :func:`governed_target_state` lookup can lag
-    ``origin/main``: a doc pushed as in-force but not yet re-indexed reads as
+    the upstream trunk: a doc pushed as in-force but not yet re-indexed reads as
     "path absent -> definitively not in force" there, opening a window where
     a high-confidence edit to a governing doc auto-commits. This helper runs
     INSIDE the serialized commit section, against the SAME refreshed base

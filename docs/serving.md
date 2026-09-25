@@ -61,6 +61,21 @@ trigram, auth, audit rotation):
   path it resolved to, and whether that path came from the environment or the
   built-in default. An existing but empty corpus is not an error: the server
   starts, builds the schema, and reports `degraded` until content arrives.
+- `KB_GIT_BRANCH`: the branch of the knowledge-base repository the server
+  syncs (default `main`). It is the branch fetched and fast-forwarded by the
+  pull loop, the branch a session worktree is rebased onto before a write, the
+  branch writes are pushed to, and the branch a worktree's commits must be
+  reachable from before that worktree can be garbage collected. Set it to
+  `master`, or to whatever your repository actually calls its trunk, and check
+  that same branch out in `KB_MAIN_PATH`: the fast-forward merges by ancestry
+  rather than by name, so a checkout left on an unrelated branch is the case
+  that fails and leaves health degraded. A blank value means unset and gets the
+  default. Accepted names are ASCII letters, digits, `.`, `_`, `-` and `/`,
+  subject to git's structural rules (no component beginning with `.` or ending
+  `.lock`, no `..` or `//`, no trailing `/` or `.`); `HEAD` and a fully
+  qualified ref such as `refs/heads/master` are refused, as is anything else
+  outside that set. A rejected value fails startup with the setting and the
+  reason named, rather than being passed to git.
 - `KB_HTTP_PORT`: TCP port the MCP HTTP server binds (default `8080`).
 - `KB_CONFIDENCE_THRESHOLD`: the auto-commit confidence cutoff, in `[0, 1]`
   (default `0.85`). A proposal at or above it from a principal holding
@@ -148,7 +163,8 @@ kubectl -n data-olympus scale deployment/data-olympus-mcp-read --replicas=5
 ## Git pull loop
 
 On startup, and at the interval set by `KB_SYNC_INTERVAL_SEC` (default 60s),
-the server calls `git pull` on `KB_MAIN_PATH`. If `KB_REMOTE_URL` is empty,
+the server calls `git pull` on `KB_MAIN_PATH`, against the branch named by
+`KB_GIT_BRANCH` (default `main`). If `KB_REMOTE_URL` is empty,
 the pull loop runs but exits cleanly with no action. The `health` endpoint
 reports `degraded: true` only when the index has not been rebuilt within
 `KB_STALENESS_DEGRADED_SEC` (default 600s).
@@ -665,28 +681,32 @@ data-olympus closes this two ways:
   logs the live count each reaper pass. A `live_sessions` value that only ever
   climbs is the signal of a leak.
 - Bound: a background reaper terminates sessions idle beyond
-  `KB_SESSION_IDLE_TIMEOUT_SEC` (default 1800s / 30 min). It scans every
-  `KB_SESSION_REAP_INTERVAL_SEC` (default 60s). Set
+  `KB_SESSION_IDLE_TIMEOUT_SEC` (default `300`, five minutes). It scans every
+  `KB_SESSION_REAP_INTERVAL_SEC` (default `60`). Set
   `KB_SESSION_IDLE_TIMEOUT_SEC=0` to disable reaping and keep observability
   only. Termination uses the SDK's own `terminate()` path, so a client that
   reconnects simply gets a fresh session.
 
-Idle is measured from the last *request* seen for a session: the activity clock
-advances only when a request carrying that session's `mcp-session-id` header
-reaches the server. A client that keeps polling or making periodic calls is
-therefore never reaped, because each call re-stamps its activity.
+The reaper works on elapsed time since a session's last activity stamp, not on
+whether its connection is open. The clock advances on every request carrying
+that session's `mcp-session-id` header, so a client whose calls arrive more
+often than `KB_SESSION_IDLE_TIMEOUT_SEC` is never reaped. A client that polls
+less often than that is reaped between calls and gets a fresh session on its
+next handshake, so pick a keep-alive interval shorter than the idle window.
 
-The consequence to be aware of is that "idle" is per-request, not
-per-connection. A quiet long-lived `GET` SSE stream that stays open but makes no
-periodic `POST` requests still stamps no activity, so after
-`KB_SESSION_IDLE_TIMEOUT_SEC` its session is reaped and the stream is torn down;
-the client must reconnect (it gets a fresh session on the next handshake). If
-your client relies on a long-lived stream without periodic requests, either
-raise `KB_SESSION_IDLE_TIMEOUT_SEC` above your longest expected quiet period,
-set it to `0` to disable reaping (observability only), or have the client send a
-periodic keep-alive request. Excluding sessions with an active open stream from
-reaping (so a live stream is never torn down) is a possible follow-up; the
-current behavior reaps purely on request-activity age.
+A session whose long-lived `GET` SSE stream is open does not need one. The
+activity middleware runs a keep-alive task for the duration of that request and
+re-stamps the session every `KB_SESSION_TOUCH_INTERVAL_SEC`, and the server
+clamps that interval to at most a third of the idle window, so the stamps are
+scheduled at least three times per window however short the window is. No
+accepted combination of the two settings schedules them further apart than the
+window, so a quiet but connected client is not reaped.
+
+What the reaper is there to clear is the session nothing is stamping any more:
+the abandoned handshake, the client that disconnected without sending `DELETE`.
+That is the leak it bounds, and it is why a five minute default window does not
+disturb a connected client.
+
 ## Search ranking
 
 `kb_search` orders hits by BM25 relevance and then applies a **status-aware

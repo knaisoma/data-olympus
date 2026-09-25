@@ -28,7 +28,7 @@ _ENV = {"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
 
 def test_ff_merge_no_remote_status(tmp_git_kb: Path) -> None:
     git = GitOps(tmp_git_kb)
-    result = git.ff_merge_origin_main()
+    result = git.ff_merge_upstream()
     assert result.status == "no_remote"
     assert result.changed is False
 
@@ -41,7 +41,7 @@ def test_ff_merge_fetch_failed_status(tmp_git_kb: Path, tmp_path: Path) -> None:
         check=True, env=_ENV,
     )
     git = GitOps(tmp_git_kb)
-    result = git.ff_merge_origin_main(timeout_sec=10)
+    result = git.ff_merge_upstream(timeout_sec=10)
     assert result.status == "fetch_failed"
     assert result.changed is False
     assert "fetch_failed" in result.note
