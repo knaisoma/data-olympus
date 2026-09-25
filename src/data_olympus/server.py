@@ -1368,7 +1368,11 @@ def build_app(
                 return {"recorded": False, "error": str(e)}
             return resp.model_dump()
 
-    registry = PrincipalRegistry(auth_token=auth_token, principals=auth_principals)
+    # Read from the running config, not this function's own arguments, so the
+    # registry that enforces authentication and state.config cannot disagree
+    # (issue #291). The registry treats None and [] alike.
+    registry = PrincipalRegistry(auth_token=config.auth_token,
+                                 principals=list(config.auth_principals))
     # Outermost: keep submitted tool input out of validation and unknown-tool
     # errors and out of FastMCP's logs (see mcp_sanitize).
     from data_olympus.mcp_sanitize import ArgumentSanitizingMiddleware, install_log_filter

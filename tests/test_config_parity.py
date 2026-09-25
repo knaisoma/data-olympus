@@ -29,8 +29,10 @@ NOT_MUTATED = {
     "kb_index_path": "must point at the real test index",
     "kb_remote_url": "a non-empty remote starts the git write pipeline",
     "embeddings_enabled": "enabling it loads an embedding model",
-    "auth_principals": "a structured value validated at load time",
-    "status_weights": "a structured value validated at load time",
+    # A structured value this test does not construct. Covered by the identity
+    # assertion instead, which does not depend on mutation.
+    "auth_principals": "structured; covered by the identity assertion",
+    "status_weights": "structured; covered by the identity assertion",
     "kb_main_path_source": "an enum describing how the path was resolved",
     "kb_index_path_source": "an enum describing how the path was resolved",
 }
@@ -64,7 +66,10 @@ def _mutate(cfg: Config, tmp_path: Path) -> Config:
         if name in NOT_MUTATED:
             continue
         if isinstance(value, bool):
-            changes[name] = not value
+            # Relative to the class default, not the loaded value: a boolean the
+            # environment already set away from its default would otherwise be
+            # flipped back onto it, and a dropped field would pass unnoticed.
+            changes[name] = not field.default
         elif isinstance(value, int):
             changes[name] = value + 7
         elif isinstance(value, float):
@@ -113,6 +118,10 @@ def test_every_config_field_reaches_the_running_state(
     assert len(mutated) >= len(dataclasses.fields(Config)) - len(NOT_MUTATED) - 2, mutated
 
     running = _build_and_capture(cfg, monkeypatch)["config"]
+    # The guarantee the fix makes: the production path hands the loaded object
+    # through unchanged. Identity covers every field, including the ones the
+    # mutation below leaves alone.
+    assert running is cfg
     dropped = {
         f.name: (getattr(cfg, f.name), getattr(running, f.name))
         for f in dataclasses.fields(Config)
