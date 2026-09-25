@@ -500,6 +500,7 @@ def build_app(
     status_autofill: bool = True,
     kb_main_path_source: str = PATH_SOURCE_DEFAULT,
     kb_index_path_source: str = PATH_SOURCE_DEFAULT,
+    loaded_config: Config | None = None,
 ) -> FastMCP:
     """Construct a FastMCP app with the read tools registered.
 
@@ -561,6 +562,13 @@ def build_app(
     if audit_log_path is not None:
         config_kwargs["audit_log_path"] = audit_log_path
     config = Config(**config_kwargs)  # type: ignore[arg-type]
+    # Issue #291: rebuilding a Config from this function's own keyword arguments
+    # silently reverts every field it does not take as a parameter to its
+    # default. On the production path, build_app_from_config passes the loaded
+    # Config, and the running state uses exactly that object. The rebuild above
+    # remains only for direct callers that construct the app from arguments.
+    if loaded_config is not None:
+        config = loaded_config
     # Composed search wiring. Expand-query seam: synonym/acronym expansion (issue
     # #38, KB_SYNONYMS / KB_SYNONYMS_MODE) composed with corpus co-occurrence
     # expansion (issue #40, KB_COOCCURRENCE_*). Synonyms run FIRST, then
@@ -1450,6 +1458,7 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         status_autofill=config.status_autofill,
         kb_main_path_source=config.kb_main_path_source,
         kb_index_path_source=config.kb_index_path_source,
+        loaded_config=config,
     )
 
 

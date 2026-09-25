@@ -65,6 +65,26 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* **Several documented settings were read and then silently ignored.**
+  `load_config()` read `KB_CONSULT_TTL_SEC`, `KB_PENDING_CLAIM_TTL_SEC`,
+  `KB_TRIGRAM_MODE` and `KB_TRIGRAM_FALLBACK_THRESHOLD` correctly, but
+  `build_app` rebuilt its configuration from its own keyword arguments, and it
+  took none of these as parameters, so the running server used their defaults.
+  In practice the trigram typo and identifier fallback could not be enabled in a
+  deployment started through the shipped entry point; the consultation
+  freshness window, for `kb_consult`, for `kb_gate_check` and for the
+  consultation ledger's retention, was fixed at 300 seconds; and the claim guard
+  used a 900-second claim TTL while the background sweep in the same process
+  used the configured one. The same rebuild also dropped `ledger_path` and the
+  co-occurrence settings from the running state and hardcoded `http_port` to
+  8080 there, which was harmless only because those values happen to be read
+  from the original configuration elsewhere. None of this was new in 0.10.0.
+  The production entry point now hands the loaded configuration to the server
+  unchanged, so the running state is exactly what was loaded. A parity test
+  sets every configuration field to a non-default value and names any field
+  that does not reach the running state, and an end-to-end test checks the
+  objects the server builds from these four settings. (#291)
+
 * **`docs/serving.md` described session reaping as it behaved before 0.3.3.**
   Its session reference section still said `KB_SESSION_IDLE_TIMEOUT_SEC`
   defaults to `1800s / 30 min`, and still said a quiet long-lived `GET` SSE
