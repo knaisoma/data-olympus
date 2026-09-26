@@ -81,9 +81,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from the original configuration elsewhere. None of this was new in 0.10.0.
   The production entry point now hands the loaded configuration to the server
   unchanged, so the running state is exactly what was loaded. A parity test
-  sets every configuration field to a non-default value and names any field
-  that does not reach the running state, and an end-to-end test checks the
-  objects the server builds from these four settings. (#291)
+  moves every configuration field it can safely change off its loaded value,
+  names any field that does not reach the running state, and asserts the
+  running configuration is the loaded object itself, which also covers the few
+  fields it leaves alone; an end-to-end test checks the objects the server
+  builds from these four settings. (#291)
 
 * **`docs/serving.md` described session reaping as it behaved before 0.3.3.**
   Its session reference section still said `KB_SESSION_IDLE_TIMEOUT_SEC`

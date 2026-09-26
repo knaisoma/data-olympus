@@ -118,10 +118,8 @@ def test_every_config_field_reaches_the_running_state(
     assert len(mutated) >= len(dataclasses.fields(Config)) - len(NOT_MUTATED) - 2, mutated
 
     running = _build_and_capture(cfg, monkeypatch)["config"]
-    # The guarantee the fix makes: the production path hands the loaded object
-    # through unchanged. Identity covers every field, including the ones the
-    # mutation below leaves alone.
-    assert running is cfg
+    # Name the offending fields first, so a regression reports what was lost
+    # rather than only that the object changed.
     dropped = {
         f.name: (getattr(cfg, f.name), getattr(running, f.name))
         for f in dataclasses.fields(Config)
@@ -131,6 +129,10 @@ def test_every_config_field_reaches_the_running_state(
         "loaded settings did not reach state.config (configured, running): "
         f"{dropped}"
     )
+    # The guarantee the fix makes: the production path hands the loaded object
+    # through unchanged. Identity also covers the NOT_MUTATED fields, which the
+    # comparison above cannot distinguish from their defaults.
+    assert running is cfg
 
 
 def test_not_mutated_list_names_only_real_fields() -> None:
