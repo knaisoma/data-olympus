@@ -60,6 +60,9 @@ Run `rc-publish.yml` with these inputs:
 * `ref`: the exact reviewed source SHA or a ref that resolves to it
 * `number`: the positive candidate number, such as `3`
 
+The resolved source must be an ancestor of `main`, and the workflow itself must
+be dispatched from `main`; otherwise it stops before building anything.
+
 The workflow builds `0.6.0rc3` for PyPI and `0.6.0-rc.3` for GHCR and GitHub.
 It publishes an immutable image, wheel, source distribution, and provenance
 receipt. It verifies PyPI file hashes and the image digest before moving `:rc`
@@ -84,7 +87,10 @@ candidate must have all of these assets:
 * candidate source distribution
 * verified image digest
 
-The candidate source SHA must be an ancestor of `main`. The stable Git tag is
+The candidate source SHA must be an ancestor of `main`, and a dispatch from any
+other branch stops immediately. The resolve step prints the candidate tag,
+source SHA and image digest it will promote, so they can be checked against the
+verified candidate before the protected environment is approved. The stable Git tag is
 created at that candidate SHA only after the protected PyPI environment is
 approved and the stable Python files are published and verified. The workflow
 rebuilds only the stable Python version overlay, compares the wheel payload with

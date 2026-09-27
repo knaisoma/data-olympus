@@ -373,3 +373,31 @@ def test_stable_version_is_derived_from_requested_candidate_not_main() -> None:
     assert "scripts/should_tag.py" not in decide_commands
     assert "CANDIDATE_TAG" in decide_commands
     assert "-rc." in decide_commands
+
+
+def _step_commands(doc: dict, job: str) -> str:
+    return "\n".join(str(step.get("run", "")) for step in doc["jobs"][job]["steps"])
+
+
+def test_rc_refuses_a_source_that_is_not_on_main() -> None:
+    doc = _load("rc-publish.yml")
+    commands = _step_commands(doc, "decide")
+    assert 'test "$GITHUB_REF" = "refs/heads/main"' in commands
+    assert "git fetch origin main" in commands
+    assert 'git merge-base --is-ancestor "$SOURCE_SHA" origin/main' in commands
+    # The ancestry check runs on the resolved SHA, before any version is computed.
+    assert commands.index("git merge-base --is-ancestor") < commands.index("project_version")
+
+
+def test_stable_promotion_runs_only_from_main_and_logs_its_resolved_inputs() -> None:
+    doc = _load("tag-release.yml")
+    decide = _step_commands(doc, "decide")
+    assert 'test "$GITHUB_REF" = "refs/heads/main"' in decide
+    resolve = _step_commands(doc, "resolve-rc")
+    # The three resolved values are written to the job outputs AND the log, so
+    # the promotion's actual source is observable before anyone approves it.
+    end = resolve.index('} | tee -a "$GITHUB_OUTPUT"')
+    block = resolve[resolve.rindex("{", 0, end) : end]
+    for name in ("rc_tag", "source_sha", "image_digest"):
+        assert f'echo "{name}=$' in block, name
+    assert '} >> "$GITHUB_OUTPUT"' not in resolve

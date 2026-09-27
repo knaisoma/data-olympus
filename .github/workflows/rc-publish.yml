@@ -33,9 +33,20 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
-      - name: Resolve source revision
+      - name: Resolve source revision and require it on main
         id: source
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          if ! test "$GITHUB_REF" = "refs/heads/main"; then
+            echo "candidates must be dispatched from main, not $GITHUB_REF" >&2
+            exit 1
+          fi
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" origin/main; then
+            echo "ref resolves to $SOURCE_SHA, which is not on main" >&2
+            exit 1
+          fi
+          echo "sha=$SOURCE_SHA" | tee -a "$GITHUB_OUTPUT"
       - name: Compute explicit RC versions
         id: rc
         env:
