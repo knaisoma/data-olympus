@@ -10,8 +10,11 @@ Keeps the release wiring honest without needing a live GitHub Actions run:
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -375,29 +378,143 @@ def test_stable_version_is_derived_from_requested_candidate_not_main() -> None:
     assert "-rc." in decide_commands
 
 
-def _step_commands(doc: dict, job: str) -> str:
-    return "\n".join(str(step.get("run", "")) for step in doc["jobs"][job]["steps"])
+
+def _step_run(workflow: str, job: str, step_id_or_name: str) -> str:
+    doc = _load(workflow)
+    for step in doc["jobs"][job]["steps"]:
+        if step_id_or_name in (step.get("id"), step.get("name")):
+            return str(step["run"])
+    raise AssertionError(f"{workflow}:{job} has no step {step_id_or_name}")
 
 
-def test_rc_refuses_a_source_that_is_not_on_main() -> None:
-    doc = _load("rc-publish.yml")
-    commands = _step_commands(doc, "decide")
-    assert 'test "$GITHUB_REF" = "refs/heads/main"' in commands
-    assert "git fetch origin main" in commands
-    assert 'git merge-base --is-ancestor "$SOURCE_SHA" origin/main' in commands
-    # The ancestry check runs on the resolved SHA, before any version is computed.
-    assert commands.index("git merge-base --is-ancestor") < commands.index("project_version")
+def _git(cwd: Path, *args: str) -> str:
+    env = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "HOME": str(cwd),
+           "PATH": os.environ["PATH"], "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    return subprocess.run(["git", "-c", "init.defaultBranch=main", *args], cwd=cwd, env=env,
+                          check=True, capture_output=True, text=True).stdout.strip()
 
 
-def test_stable_promotion_runs_only_from_main_and_logs_its_resolved_inputs() -> None:
-    doc = _load("tag-release.yml")
-    decide = _step_commands(doc, "decide")
-    assert 'test "$GITHUB_REF" = "refs/heads/main"' in decide
-    resolve = _step_commands(doc, "resolve-rc")
-    # The three resolved values are written to the job outputs AND the log, so
-    # the promotion's actual source is observable before anyone approves it.
-    end = resolve.index('} | tee -a "$GITHUB_OUTPUT"')
-    block = resolve[resolve.rindex("{", 0, end) : end]
-    for name in ("rc_tag", "source_sha", "image_digest"):
-        assert f'echo "{name}=$' in block, name
+@pytest.fixture
+def release_repo(tmp_path: Path) -> dict:
+    """An origin with main (A, B), an unmerged branch (C), and a clone like checkout's."""
+    origin = tmp_path / "origin.git"
+    work = tmp_path / "work"
+    work.mkdir()
+    _git(tmp_path, "init", "--bare", str(origin))
+    _git(work, "init")
+    shas = {}
+    for name in ("A", "B"):
+        (work / "f").write_text(name)
+        _git(work, "add", "f")
+        _git(work, "commit", "-m", name)
+        shas[name] = _git(work, "rev-parse", "HEAD")
+    _git(work, "tag", "-a", "v-annotated", shas["A"], "-m", "on main")
+    _git(work, "tag", "v-light", shas["B"])
+    _git(work, "remote", "add", "origin", str(origin))
+    _git(work, "push", "origin", "main", "--tags")
+    _git(work, "checkout", "-b", "feature")
+    (work / "f").write_text("C")
+    _git(work, "commit", "-am", "C")
+    shas["C"] = _git(work, "rev-parse", "HEAD")
+    _git(work, "push", "origin", "feature")
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "--quiet", str(origin), str(clone))
+    return {"clone": clone, "tmp": tmp_path, **shas}
+
+
+def _run_step(script: str, cwd: Path, checkout: str, github_ref: str, tmp: Path,
+              **env: str) -> subprocess.CompletedProcess:
+    _git(cwd, "checkout", "--quiet", "--detach", checkout)
+    output = tmp / "github_output"
+    output.write_text("")
+    full_env = {"PATH": os.environ["PATH"], "HOME": str(tmp), "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_CONFIG_NOSYSTEM": "1", "GITHUB_REF": github_ref,
+                "GITHUB_OUTPUT": str(output), **env}
+    # GitHub runs `run:` blocks with bash -e -o pipefail.
+    return subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+                          cwd=cwd, env=full_env, capture_output=True, text=True, check=False)
+
+
+RC_SOURCE = ("rc-publish.yml", "decide", "source")
+
+
+@pytest.mark.parametrize("checkout", ["B", "A", "v-annotated", "v-light", "main"])
+def test_rc_source_on_main_is_accepted_and_recorded(release_repo: dict, checkout: str) -> None:
+    ref = release_repo.get(checkout, checkout)
+    if checkout == "main":
+        ref = "origin/main"
+    result = _run_step(_step_run(*RC_SOURCE), release_repo["clone"], ref, "refs/heads/main",
+                       release_repo["tmp"])
+    assert result.returncode == 0, result.stderr
+    sha = _git(release_repo["clone"], "rev-parse", "HEAD")
+    assert (release_repo["tmp"] / "github_output").read_text() == f"sha={sha}\n"
+    assert f"sha={sha}" in result.stdout
+
+
+def test_rc_refuses_a_source_that_is_not_on_main(release_repo: dict) -> None:
+    result = _run_step(_step_run(*RC_SOURCE), release_repo["clone"], release_repo["C"],
+                       "refs/heads/main", release_repo["tmp"])
+    assert result.returncode != 0
+    assert "not on main" in result.stderr
+    assert (release_repo["tmp"] / "github_output").read_text() == ""
+
+
+def test_rc_refuses_a_dispatch_from_another_branch(release_repo: dict) -> None:
+    result = _run_step(_step_run(*RC_SOURCE), release_repo["clone"], release_repo["B"],
+                       "refs/heads/feature", release_repo["tmp"])
+    assert result.returncode != 0
+    assert "must be dispatched from main" in result.stderr
+    assert (release_repo["tmp"] / "github_output").read_text() == ""
+
+
+def test_rc_is_not_fooled_by_a_tag_named_origin_main(release_repo: dict) -> None:
+    _git(release_repo["clone"], "tag", "origin/main", release_repo["C"])
+    result = _run_step(_step_run(*RC_SOURCE), release_repo["clone"], release_repo["C"],
+                       "refs/heads/main", release_repo["tmp"])
+    assert result.returncode != 0
+    assert "not on main" in result.stderr
+
+
+def test_rc_fails_closed_when_main_cannot_be_fetched(release_repo: dict) -> None:
+    _git(release_repo["clone"], "remote", "set-url", "origin", str(release_repo["tmp"] / "gone"))
+    result = _run_step(_step_run(*RC_SOURCE), release_repo["clone"], release_repo["B"],
+                       "refs/heads/main", release_repo["tmp"])
+    assert result.returncode != 0
+    assert (release_repo["tmp"] / "github_output").read_text() == ""
+
+
+def test_stable_decide_runs_only_from_main(tmp_path: Path) -> None:
+    script = _step_run("tag-release.yml", "decide", "decide")
+    for ref, expected in (("refs/heads/main", 0), ("refs/heads/feature", 1)):
+        output = tmp_path / "out"
+        output.write_text("")
+        result = subprocess.run(
+            ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+            env={"PATH": os.environ["PATH"], "GITHUB_REF": ref, "GITHUB_OUTPUT": str(output),
+                 "CANDIDATE_TAG": "1.2.3-rc.4"},
+            capture_output=True, text=True, check=False)
+        assert result.returncode == expected, (ref, result.stderr)
+        if expected:
+            assert "must be dispatched from main" in result.stderr
+            assert output.read_text() == ""
+        else:
+            assert output.read_text() == "version=1.2.3\ntag=v1.2.3\n"
+
+
+def test_stable_resolve_logs_the_promotion_source_it_outputs(tmp_path: Path) -> None:
+    resolve = _step_run("tag-release.yml", "resolve-rc", "resolve")
+    end = resolve.index('} | tee -a "$GITHUB_OUTPUT"') + len('} | tee -a "$GITHUB_OUTPUT"')
+    block = resolve[resolve.rindex("{", 0, end):end]
+    output = tmp_path / "out"
+    output.write_text("")
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", block],
+        env={"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(output), "RC_TAG": "1.2.3-rc.4",
+             "SOURCE_SHA": "a" * 40, "IMAGE_DIGEST": "sha256:" + "b" * 64},
+        capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    expected = f"rc_tag=1.2.3-rc.4\nsource_sha={'a' * 40}\nimage_digest=sha256:{'b' * 64}\n"
+    assert output.read_text() == expected
+    assert result.stdout == expected
     assert '} >> "$GITHUB_OUTPUT"' not in resolve
