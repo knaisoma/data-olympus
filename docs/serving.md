@@ -1142,6 +1142,59 @@ disk. That failure does not fail the index build: the build logs a warning and
 continues with no related-terms table, so the index still serves and only
 co-occurrence expansion is lost until the next successful build.
 
+### Memory between rebuilds
+
+A build's working set is freed when the build returns, but on Linux freed
+memory does not necessarily leave the process. Two glibc behaviours keep it
+resident:
+
+- glibc serves threads from separate arenas and keeps free memory in them for
+  reuse. The refresh loop runs rebuilds on an executor thread and request
+  handlers run on a worker pool, so several long-lived arenas each end up
+  holding a build-sized amount of free memory.
+- Free space at the top of a worker thread's arena is returned only when it
+  exceeds the trim threshold, and glibc raises that threshold on its own after
+  large blocks are freed, up to 64 MiB. After a rebuild each worker arena kept
+  about 10 MiB of free top that nothing returned.
+
+Resident memory therefore climbed to a plateau several times the starting size
+and did not come back down while the server idled. Nothing is leaked at the
+Python level.
+
+The server pins the trim threshold at 128 KiB when it starts (`mallopt`, which
+also stops the automatic increase), and asks the allocator to return free
+memory after the bootstrap build and at the end of every refresh tick, whether
+or not the tick rebuilt (`malloc_trim(0)`, which walks every arena, so memory
+freed by request handlers between rebuilds is covered as well). The pin is
+process-wide, and it also stops glibc adjusting its mmap threshold, so large
+blocks keep being served by `mmap` and returned on free rather than cached in
+an arena. If you set the trim threshold yourself, through
+`MALLOC_TRIM_THRESHOLD_` or `glibc.malloc.trim_threshold` in `GLIBC_TUNABLES`,
+the server leaves your value alone. In a separate probe on a heap with four
+worker arenas, one `malloc_trim(0)` usually took between 0.1 and 2.3 ms, with
+a slowest observed call of 12 ms; it runs on the refresh executor thread, once
+per tick. This is best-effort: glibc
+returns whole free pages, not every freed allocation, and a rebuild still
+needs its working set while it runs, so the container needs room for the
+baseline plus one build. Where the allocator offers neither call, as on macOS,
+both steps do nothing.
+
+Measured on Linux (glibc 2.41, CPython 3.13, 1 GiB container) with a 641-file,
+4.4 MiB corpus, replaying a burst of eight writes through `kb_propose_edit`,
+each followed by a rebuild, with five of the documents a single
+23,000-character line, three times, while three clients issued searches,
+consultations and gate checks every second. Resident anonymous memory:
+
+| | at start | after 8 rebuilds | after 24 rebuilds and 3 idle minutes | peak |
+| --- | --- | --- | --- | --- |
+| before this change | 110 MiB | 308 MiB | 321 MiB (after 32) | 359 MiB |
+| `malloc_trim` after each tick, no threshold | 82 MiB | 176 MiB | 186 MiB | 303 MiB |
+| this change | 81 MiB | 124 MiB | 126 MiB | 208 MiB |
+
+Setting `MALLOC_ARENA_MAX=2` in the environment, with no code change, lowered
+the plateau of the same burst without that traffic from 324 MiB to 223 MiB.
+With this change it made no measurable difference in these runs.
+
 ## Extending the governed action vocabulary
 
 The enforcement gate classifies an action as governed from three shipped lists

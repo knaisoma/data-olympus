@@ -9,6 +9,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from data_olympus.heap import release_free_heap
 from data_olympus.index import DuplicateIdError, Index
 
 if TYPE_CHECKING:
@@ -55,7 +56,21 @@ def refresh_once(
     The returned dict carries both the index ``outcome`` (no_change / rebuilt /
     failed) and the git ``sync_status`` (changed / no_change / no_remote /
     fetch_failed / ff_failed) plus ``remote_head_sha``, so the loop reports sync
-    failures distinctly from index-build failures."""
+    failures distinctly from index-build failures.
+
+    Every tick ends by returning free heap to the OS (issue #284). A rebuild's
+    working set is freed on this worker thread, and request handlers free theirs
+    on other threads between rebuilds; without the release the allocator keeps
+    both, and resident memory ratchets up to the container limit."""
+    try:
+        return _refresh_once(git=git, idx=idx, kb_main_path=kb_main_path)
+    finally:
+        release_free_heap()
+
+
+def _refresh_once(
+    *, git: GitOps, idx: Index, kb_main_path: Path
+) -> dict[str, Any]:
     result = git.ff_merge_upstream(timeout_sec=30)
     sync = {
         "sync_status": result.status,

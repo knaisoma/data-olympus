@@ -65,6 +65,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* **Resident memory no longer ratchets up with every index rebuild.** A
+  server with a 1 GiB limit could be OOM-killed after a burst of writes and,
+  short of that, sat for hours at several times its starting size while idle.
+  Nothing leaked at the Python level. A rebuild frees its working set when it
+  returns, but glibc keeps free memory in its per-thread arenas, and rebuilds
+  and request handlers run on different long-lived threads; glibc also raises
+  its trim threshold after large frees, so each worker arena kept its free top
+  as well. The server now pins the trim threshold at startup (`mallopt`) and
+  returns free memory after the bootstrap build and at the end of every
+  refresh tick (`malloc_trim(0)`). Both are glibc only and do nothing
+  elsewhere. An operator's own trim threshold (`MALLOC_TRIM_THRESHOLD_` or
+  `GLIBC_TUNABLES`) is left alone. Replaying the burst that triggered the
+  report with concurrent read traffic, the unchanged server held 321 MiB after
+  32 rebuilds and a short idle, from a start of 110 MiB; with this change it
+  held 126 MiB after 24, from 81 MiB, and its peak fell from 359 MiB to
+  208 MiB. `docs/serving.md` ("Memory between rebuilds") has the
+  measurements. (#284)
+
 * **Several documented settings were read and then silently ignored.**
   `load_config()` read `KB_CONSULT_TTL_SEC`, `KB_PENDING_CLAIM_TTL_SEC`,
   `KB_TRIGRAM_MODE` and `KB_TRIGRAM_FALLBACK_THRESHOLD` correctly, but

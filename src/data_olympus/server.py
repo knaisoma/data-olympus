@@ -43,6 +43,7 @@ from data_olympus.enforce_policy import (
     classifier_from_config,
 )
 from data_olympus.git_ops import GitOps
+from data_olympus.heap import configure_allocator, release_free_heap
 from data_olympus.index import Index, SearchHit, make_status_reranker
 from data_olympus.pending import PendingQueue
 from data_olympus.principals import (
@@ -513,6 +514,9 @@ def build_app(
     enforcement-write tools/routes are exposed. The git_pull_loop still runs (in
     main()) so the replica refreshes its own index snapshot from the git remote.
     """
+    # Before anything large is allocated: keep worker-thread arenas giving back
+    # the free memory a rebuild leaves behind (issue #284).
+    configure_allocator()
     config_kwargs: dict[str, object] = dict(
         kb_main_path=kb_main_path,
         kb_index_path=kb_index_path,
@@ -743,6 +747,9 @@ def build_app(
     if bootstrap_now:
         sha = git.head_sha() if (kb_main_path / ".git").exists() else "no-git"
         idx.build(kb_main_path, source_commit=sha)
+        # The startup build's working set is the largest allocation the server
+        # makes before serving; give it back rather than carry it (issue #284).
+        release_free_heap()
         state.record_pull(time.time())
 
     app: FastMCP = FastMCP(name="data-olympus-mcp")
