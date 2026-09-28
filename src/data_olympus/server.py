@@ -43,6 +43,7 @@ from data_olympus.enforce_policy import (
     classifier_from_config,
 )
 from data_olympus.git_ops import GitOps
+from data_olympus.heap import release_free_heap
 from data_olympus.index import Index, SearchHit, make_status_reranker
 from data_olympus.pending import PendingQueue
 from data_olympus.principals import (
@@ -743,6 +744,9 @@ def build_app(
     if bootstrap_now:
         sha = git.head_sha() if (kb_main_path / ".git").exists() else "no-git"
         idx.build(kb_main_path, source_commit=sha)
+        # The startup build's working set is the largest allocation the server
+        # makes before serving; give it back rather than carry it (issue #284).
+        release_free_heap()
         state.record_pull(time.time())
 
     app: FastMCP = FastMCP(name="data-olympus-mcp")

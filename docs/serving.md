@@ -1142,6 +1142,40 @@ disk. That failure does not fail the index build: the build logs a warning and
 continues with no related-terms table, so the index still serves and only
 co-occurrence expansion is lost until the next successful build.
 
+### Memory between rebuilds
+
+A build's working set is freed when the build returns, but on Linux freed
+memory does not necessarily leave the process. glibc serves each thread from
+its own arena and keeps what is freed there for reuse. The refresh loop runs
+rebuilds on an executor thread and request handlers run on a worker pool, so
+over time several threads each hold a build-sized amount of free memory, and
+resident memory climbs to a plateau that is a multiple of one build's peak.
+Nothing is leaked at the Python level, and the plateau does not come back down
+while the server idles.
+
+The server therefore asks the allocator to return free memory after the
+bootstrap build and at the end of every refresh tick, whether or not the tick
+rebuilt (`malloc_trim(0)`, which covers every arena, so memory freed by request
+handlers between rebuilds is returned as well). Only glibc offers that call;
+on other platforms the step does nothing.
+
+Measured on Linux (glibc 2.41, 1 GiB container) with a 641-file, 4.4 MiB
+corpus, replaying a burst of eight writes through `kb_propose_edit`, each
+followed by a rebuild, with five of the documents a single 23,000-character
+line. The figures are resident anonymous memory after the burst, from a
+baseline of about 100 MiB:
+
+| | after 8 rebuilds | after 24 rebuilds |
+| --- | --- | --- |
+| before this change | 320 MiB | 324 MiB |
+| before this change, with concurrent search, consult and gate traffic | 223 MiB (8) | 315 MiB (16), still rising |
+| `MALLOC_ARENA_MAX=2`, no code change | 215 MiB | 223 MiB |
+| returning free memory after each rebuild | 123 MiB | 122 MiB |
+
+`MALLOC_ARENA_MAX=2` in the server's environment caps the number of arenas and
+remains a reasonable setting for a small container; it narrows the plateau but
+does not remove it on its own.
+
 ## Extending the governed action vocabulary
 
 The enforcement gate classifies an action as governed from three shipped lists
