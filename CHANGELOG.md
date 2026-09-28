@@ -44,6 +44,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+* **Release workflows publish only what is on `main`.** `rc-publish.yml` now
+  stops unless it is dispatched from `main` and its `ref` input resolves to an
+  ancestor of `main`, so a candidate can no longer be built from an unmerged
+  branch or an arbitrary SHA. `tag-release.yml` also refuses a dispatch from any
+  other branch, and prints the candidate tag, source SHA and image digest it
+  resolved, so the exact promotion source is visible in the run log before the
+  protected PyPI environment is approved. (#293)
+
 * **Benchmark extra: `sentence-transformers` 6.0.1 to 6.1.0.** Lock only, and
   the benchmark extra is not installed by the server or by the ordinary test
   job, so nothing a deployment runs changes. The regenerated lock moves that

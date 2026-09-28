@@ -667,7 +667,8 @@ candidate number rather than replaced.
 
 Candidate publication is a complete transaction across PyPI, GHCR, and GitHub.
 Dispatch `rc-publish.yml` from `main` with the reviewed source in `ref` and an
-explicit positive `number`. Send that number as a decimal string in the GitHub
+explicit positive `number`. The workflow stops unless it runs from `main` and
+`ref` resolves to an ancestor of `main`. Send that number as a decimal string in the GitHub
 workflow dispatch request because GitHub rejects a JSON number even though the
 workflow input type is numeric. The workflow does not move `:rc` or create a
 public prerelease until the candidate wheel, source distribution, image, and
@@ -676,7 +677,8 @@ provenance receipt have passed registry read back verification.
 Stable promotion runs only through an explicit `tag-release.yml` dispatch from
 `main`. Supply the highest complete candidate in `candidate_tag`; any lower or
 incomplete candidate is rejected. The workflow requires its source SHA to be an
-ancestor of `main`, builds the stable Python overlay from that SHA, and verifies
+ancestor of `main`, prints the candidate tag, source SHA and image digest it
+resolved, builds the stable Python overlay from that SHA, and verifies
 version only wheel equivalence. Protected environment approval and verified
 PyPI publication happen before the stable Git tag is created. The workflow then
 retags the candidate image digest as the version, `stable`, and `latest`; it does

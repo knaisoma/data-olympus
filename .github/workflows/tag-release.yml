@@ -30,6 +30,10 @@ jobs:
         env:
           CANDIDATE_TAG: ${{ inputs.candidate_tag }}
         run: |
+          if ! test "$GITHUB_REF" = "refs/heads/main"; then
+            echo "stable promotion must be dispatched from main, not $GITHUB_REF" >&2
+            exit 1
+          fi
           if ! printf '%s' "$CANDIDATE_TAG" \
               | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$'; then
             echo "candidate_tag must be X.Y.Z-rc.N with a positive N" >&2
@@ -134,7 +138,7 @@ jobs:
             echo "rc_tag=$RC_TAG"
             echo "source_sha=$SOURCE_SHA"
             echo "image_digest=$IMAGE_DIGEST"
-          } >> "$GITHUB_OUTPUT"
+          } | tee -a "$GITHUB_OUTPUT"
 
   create-tag:
     needs: [decide, resolve-rc, publish-pypi]
