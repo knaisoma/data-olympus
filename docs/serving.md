@@ -1165,8 +1165,15 @@ The server pins the trim threshold at 128 KiB when it starts (`mallopt`, which
 also stops the automatic increase), and asks the allocator to return free
 memory after the bootstrap build and at the end of every refresh tick, whether
 or not the tick rebuilt (`malloc_trim(0)`, which walks every arena, so memory
-freed by request handlers between rebuilds is covered as well). Each call took
-between 0.1 and 2.3 ms in the measurements below. This is best-effort: glibc
+freed by request handlers between rebuilds is covered as well). The pin is
+process-wide, and it also stops glibc adjusting its mmap threshold, so large
+blocks keep being served by `mmap` and returned on free rather than cached in
+an arena. If you set the trim threshold yourself, through
+`MALLOC_TRIM_THRESHOLD_` or `glibc.malloc.trim_threshold` in `GLIBC_TUNABLES`,
+the server leaves your value alone. In a separate probe on a heap with four
+worker arenas, one `malloc_trim(0)` usually took between 0.1 and 2.3 ms, with
+a slowest observed call of 12 ms; it runs on the refresh executor thread, once
+per tick. This is best-effort: glibc
 returns whole free pages, not every freed allocation, and a rebuild still
 needs its working set while it runs, so the container needs room for the
 baseline plus one build. Where the allocator offers neither call, as on macOS,
@@ -1185,8 +1192,8 @@ consultations and gate checks every second. Resident anonymous memory:
 | this change | 81 MiB | 124 MiB | 126 MiB | 208 MiB |
 
 Setting `MALLOC_ARENA_MAX=2` in the environment, with no code change, lowered
-the plateau of the same burst without that traffic from 324 MiB to 223 MiB; it
-is not needed with this change.
+the plateau of the same burst without that traffic from 324 MiB to 223 MiB.
+With this change it made no measurable difference in these runs.
 
 ## Extending the governed action vocabulary
 

@@ -62,6 +62,31 @@ def test_configure_pins_the_trim_threshold(monkeypatch: pytest.MonkeyPatch) -> N
     arena stops giving back its free top; a fixed threshold keeps it trimmed."""
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr(heap, "_mallopt", lambda: lambda p, v: calls.append((p, v)) or 1)
+    monkeypatch.delenv("MALLOC_TRIM_THRESHOLD_", raising=False)
+    monkeypatch.delenv("GLIBC_TUNABLES", raising=False)
+    assert heap.configure_allocator() is True
+    assert calls == [(heap.M_TRIM_THRESHOLD, heap.TRIM_THRESHOLD_BYTES)]
+
+
+@pytest.mark.parametrize("name,value", [
+    ("MALLOC_TRIM_THRESHOLD_", "1048576"),
+    ("GLIBC_TUNABLES", "glibc.malloc.arena_max=2:glibc.malloc.trim_threshold=1048576"),
+])
+def test_configure_leaves_an_operator_threshold_alone(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str,
+) -> None:
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(heap, "_mallopt", lambda: lambda p, v: calls.append((p, v)) or 1)
+    monkeypatch.setenv(name, value)
+    assert heap.configure_allocator() is False
+    assert calls == []
+
+
+def test_configure_ignores_unrelated_tunables(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(heap, "_mallopt", lambda: lambda p, v: calls.append((p, v)) or 1)
+    monkeypatch.delenv("MALLOC_TRIM_THRESHOLD_", raising=False)
+    monkeypatch.setenv("GLIBC_TUNABLES", "glibc.malloc.arena_max=2")
     assert heap.configure_allocator() is True
     assert calls == [(heap.M_TRIM_THRESHOLD, heap.TRIM_THRESHOLD_BYTES)]
 
@@ -95,7 +120,9 @@ def test_release_survives_a_failing_symbol_lookup(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.skipif(not _GLIBC, reason="malloc_trim is a glibc function")
-def test_release_uses_glibc_malloc_trim() -> None:
+def test_release_uses_glibc_malloc_trim(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MALLOC_TRIM_THRESHOLD_", raising=False)
+    monkeypatch.delenv("GLIBC_TUNABLES", raising=False)
     assert heap._malloc_trim() is not None, "glibc exports malloc_trim; lookup found nothing"
     assert heap.release_free_heap() is True
     assert heap.configure_allocator() is True

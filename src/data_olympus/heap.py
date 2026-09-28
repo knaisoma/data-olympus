@@ -16,8 +16,12 @@ Two glibc behaviours combine, and each needs its own remedy:
   exceeds the trim threshold, and glibc raises that threshold on its own after
   large blocks are freed, up to 64 MiB. After a rebuild each worker arena kept
   about 10 MiB of free top that ``malloc_trim`` does not shrink.
-  :func:`configure_allocator` pins the threshold, which also stops glibc from
-  adjusting it.
+  :func:`configure_allocator` pins the threshold. That is process-wide and
+  also stops glibc adjusting its mmap threshold, so large blocks keep being
+  served by ``mmap`` and returned on free instead of being cached in an arena.
+  An operator who sets the trim threshold explicitly
+  (``MALLOC_TRIM_THRESHOLD_`` or ``glibc.malloc.trim_threshold`` in
+  ``GLIBC_TUNABLES``) keeps that value.
 
 Only glibc provides these calls. Elsewhere (macOS, musl) there is nothing to
 call and both functions do nothing.
@@ -27,6 +31,7 @@ from __future__ import annotations
 import ctypes
 import functools
 import logging
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -65,13 +70,23 @@ def _mallopt() -> Callable[[int, int], int] | None:
     return opt
 
 
+def _operator_set_trim_threshold() -> bool:
+    if os.environ.get("MALLOC_TRIM_THRESHOLD_"):
+        return True
+    tunables = os.environ.get("GLIBC_TUNABLES", "")
+    return any(t.split("=", 1)[0] == "glibc.malloc.trim_threshold" for t in tunables.split(":"))
+
+
 def configure_allocator() -> bool:
     """Pin glibc's trim threshold so worker-thread arenas give back their top.
 
-    Call once at startup, before the first large allocation. Returns True when
-    the allocator accepted the setting, False where there is no ``mallopt``,
-    the allocator rejected it, or the call failed. Never raises.
+    Call once during single-threaded startup (``mallopt`` is not safe against
+    concurrent allocation). Returns True when the allocator accepted the
+    setting, False where the operator set the threshold themselves, there is no
+    ``mallopt``, the allocator rejected it, or the call failed. Never raises.
     """
+    if _operator_set_trim_threshold():
+        return False
     try:
         # Lookup belongs inside the guard: loading the C library can fail with
         # more than OSError (an audit hook may veto ctypes.dlopen).

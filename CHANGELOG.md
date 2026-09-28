@@ -75,9 +75,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as well. The server now pins the trim threshold at startup (`mallopt`) and
   returns free memory after the bootstrap build and at the end of every
   refresh tick (`malloc_trim(0)`). Both are glibc only and do nothing
-  elsewhere. Replaying the burst that triggered the report with concurrent
-  read traffic, resident memory after 24 rebuilds fell from 321 MiB to
-  126 MiB against a start of about 80 to 110 MiB, and the peak from 359 MiB to
+  elsewhere. An operator's own trim threshold (`MALLOC_TRIM_THRESHOLD_` or
+  `GLIBC_TUNABLES`) is left alone. Replaying the burst that triggered the
+  report with concurrent read traffic, the unchanged server held 321 MiB after
+  32 rebuilds and a short idle, from a start of 110 MiB; with this change it
+  held 126 MiB after 24, from 81 MiB, and its peak fell from 359 MiB to
   208 MiB. `docs/serving.md` ("Memory between rebuilds") has the
   measurements. (#284)
 
