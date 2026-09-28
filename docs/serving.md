@@ -1145,36 +1145,48 @@ co-occurrence expansion is lost until the next successful build.
 ### Memory between rebuilds
 
 A build's working set is freed when the build returns, but on Linux freed
-memory does not necessarily leave the process. glibc serves each thread from
-its own arena and keeps what is freed there for reuse. The refresh loop runs
-rebuilds on an executor thread and request handlers run on a worker pool, so
-over time several threads each hold a build-sized amount of free memory, and
-resident memory climbs to a plateau that is a multiple of one build's peak.
-Nothing is leaked at the Python level, and the plateau does not come back down
-while the server idles.
+memory does not necessarily leave the process. Two glibc behaviours keep it
+resident:
 
-The server therefore asks the allocator to return free memory after the
-bootstrap build and at the end of every refresh tick, whether or not the tick
-rebuilt (`malloc_trim(0)`, which covers every arena, so memory freed by request
-handlers between rebuilds is returned as well). Only glibc offers that call;
-on other platforms the step does nothing.
+- glibc serves threads from separate arenas and keeps free memory in them for
+  reuse. The refresh loop runs rebuilds on an executor thread and request
+  handlers run on a worker pool, so several long-lived arenas each end up
+  holding a build-sized amount of free memory.
+- Free space at the top of a worker thread's arena is returned only when it
+  exceeds the trim threshold, and glibc raises that threshold on its own after
+  large blocks are freed, up to 64 MiB. After a rebuild each worker arena kept
+  about 10 MiB of free top that nothing returned.
 
-Measured on Linux (glibc 2.41, 1 GiB container) with a 641-file, 4.4 MiB
-corpus, replaying a burst of eight writes through `kb_propose_edit`, each
-followed by a rebuild, with five of the documents a single 23,000-character
-line. The figures are resident anonymous memory after the burst, from a
-baseline of about 100 MiB:
+Resident memory therefore climbed to a plateau several times the starting size
+and did not come back down while the server idled. Nothing is leaked at the
+Python level.
 
-| | after 8 rebuilds | after 24 rebuilds |
-| --- | --- | --- |
-| before this change | 320 MiB | 324 MiB |
-| before this change, with concurrent search, consult and gate traffic | 223 MiB (8) | 315 MiB (16), still rising |
-| `MALLOC_ARENA_MAX=2`, no code change | 215 MiB | 223 MiB |
-| returning free memory after each rebuild | 123 MiB | 122 MiB |
+The server pins the trim threshold at 128 KiB when it starts (`mallopt`, which
+also stops the automatic increase), and asks the allocator to return free
+memory after the bootstrap build and at the end of every refresh tick, whether
+or not the tick rebuilt (`malloc_trim(0)`, which walks every arena, so memory
+freed by request handlers between rebuilds is covered as well). Each call took
+between 0.1 and 2.3 ms in the measurements below. This is best-effort: glibc
+returns whole free pages, not every freed allocation, and a rebuild still
+needs its working set while it runs, so the container needs room for the
+baseline plus one build. Where the allocator offers neither call, as on macOS,
+both steps do nothing.
 
-`MALLOC_ARENA_MAX=2` in the server's environment caps the number of arenas and
-remains a reasonable setting for a small container; it narrows the plateau but
-does not remove it on its own.
+Measured on Linux (glibc 2.41, CPython 3.13, 1 GiB container) with a 641-file,
+4.4 MiB corpus, replaying a burst of eight writes through `kb_propose_edit`,
+each followed by a rebuild, with five of the documents a single
+23,000-character line, three times, while three clients issued searches,
+consultations and gate checks every second. Resident anonymous memory:
+
+| | at start | after 8 rebuilds | after 24 rebuilds and 3 idle minutes | peak |
+| --- | --- | --- | --- | --- |
+| before this change | 110 MiB | 308 MiB | 321 MiB (after 32) | 359 MiB |
+| `malloc_trim` after each tick, no threshold | 82 MiB | 176 MiB | 186 MiB | 303 MiB |
+| this change | 81 MiB | 124 MiB | 126 MiB | 208 MiB |
+
+Setting `MALLOC_ARENA_MAX=2` in the environment, with no code change, lowered
+the plateau of the same burst without that traffic from 324 MiB to 223 MiB; it
+is not needed with this change.
 
 ## Extending the governed action vocabulary
 

@@ -1,15 +1,26 @@
 """Return freed heap memory to the operating system (issue #284).
 
 An index rebuild allocates a large, short-lived working set on whichever worker
-thread runs it. glibc serves each thread from its own arena and keeps memory
-freed there instead of returning it, so every thread that ever ran a rebuild
-held on to that rebuild's peak. Nothing leaked at the Python level, yet a 1 GiB
+thread runs it. glibc serves threads from separate arenas and keeps free memory
+in them for reuse, so every long-lived thread that ever ran a rebuild held on to
+a share of that rebuild's peak. Nothing leaked at the Python level, yet a 1 GiB
 server reached its limit after a handful of rebuilds and stayed there while
-idle. ``malloc_trim(0)`` walks every arena and gives its free pages back.
+idle.
 
-Only glibc provides ``malloc_trim``. Elsewhere (macOS, musl) there is nothing
-to call and :func:`release_free_heap` does nothing; those allocators return
-memory on their own terms.
+Two glibc behaviours combine, and each needs its own remedy:
+
+- Free memory inside an arena stays resident until something releases it.
+  :func:`release_free_heap` calls ``malloc_trim(0)``, which walks every arena
+  and returns its whole free pages.
+- The free space at the top of a worker thread's arena is returned only when it
+  exceeds the trim threshold, and glibc raises that threshold on its own after
+  large blocks are freed, up to 64 MiB. After a rebuild each worker arena kept
+  about 10 MiB of free top that ``malloc_trim`` does not shrink.
+  :func:`configure_allocator` pins the threshold, which also stops glibc from
+  adjusting it.
+
+Only glibc provides these calls. Elsewhere (macOS, musl) there is nothing to
+call and both functions do nothing.
 """
 from __future__ import annotations
 
@@ -23,19 +34,54 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("data_olympus.heap")
 
+# mallopt(3) parameter number for M_TRIM_THRESHOLD in glibc's <malloc.h>.
+M_TRIM_THRESHOLD = -1
+# glibc's own starting value; pinning it is what stops the dynamic increase.
+TRIM_THRESHOLD_BYTES = 128 * 1024
+
 
 @functools.cache
-def _malloc_trim() -> Callable[[int], int] | None:
+def _libc_function(name: str) -> Callable[..., int] | None:
     try:
         libc = ctypes.CDLL(None)
     except OSError:
         return None
-    trim = getattr(libc, "malloc_trim", None)
-    if trim is None:
-        return None
-    trim.argtypes = [ctypes.c_size_t]
-    trim.restype = ctypes.c_int
-    return trim  # type: ignore[no-any-return]
+    return getattr(libc, name, None)
+
+
+def _malloc_trim() -> Callable[[int], int] | None:
+    trim = _libc_function("malloc_trim")
+    if trim is not None:
+        trim.argtypes = [ctypes.c_size_t]  # type: ignore[attr-defined]
+        trim.restype = ctypes.c_int  # type: ignore[attr-defined]
+    return trim
+
+
+def _mallopt() -> Callable[[int, int], int] | None:
+    opt = _libc_function("mallopt")
+    if opt is not None:
+        opt.argtypes = [ctypes.c_int, ctypes.c_int]  # type: ignore[attr-defined]
+        opt.restype = ctypes.c_int  # type: ignore[attr-defined]
+    return opt
+
+
+def configure_allocator() -> bool:
+    """Pin glibc's trim threshold so worker-thread arenas give back their top.
+
+    Call once at startup, before the first large allocation. Returns True when
+    the allocator accepted the setting, False where there is no ``mallopt``,
+    the allocator rejected it, or the call failed. Never raises.
+    """
+    try:
+        # Lookup belongs inside the guard: loading the C library can fail with
+        # more than OSError (an audit hook may veto ctypes.dlopen).
+        opt = _mallopt()
+        if opt is None:
+            return False
+        return bool(opt(M_TRIM_THRESHOLD, TRIM_THRESHOLD_BYTES))
+    except Exception:  # noqa: BLE001  housekeeping must never fail the caller
+        log.debug("mallopt failed", exc_info=True)
+        return False
 
 
 def release_free_heap() -> bool:
@@ -45,10 +91,10 @@ def release_free_heap() -> bool:
     way to make it or the call failed. Never raises: this is housekeeping, and a
     failure must not take down the refresh loop or startup.
     """
-    trim = _malloc_trim()
-    if trim is None:
-        return False
     try:
+        trim = _malloc_trim()
+        if trim is None:
+            return False
         trim(0)
     except Exception:  # noqa: BLE001  housekeeping must never fail the caller
         log.debug("malloc_trim failed", exc_info=True)

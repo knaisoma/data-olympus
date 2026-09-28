@@ -69,15 +69,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   server with a 1 GiB limit could be OOM-killed after a burst of writes and,
   short of that, sat for hours at several times its starting size while idle.
   Nothing leaked at the Python level. A rebuild frees its working set when it
-  returns, but glibc keeps freed memory in the arena of the thread that freed
-  it, and rebuilds and request handlers run on different long-lived threads, so
-  each thread went on holding a build-sized amount of free memory. The server
-  now returns free memory to the operating system after the bootstrap build and
-  at the end of every refresh tick (`malloc_trim(0)`, glibc only; a no-op
-  elsewhere). Replaying the burst that triggered the report, on the same
-  corpus and container limit, resident memory after eight rebuilds fell from
-  320 MiB to 123 MiB against a baseline of about 100 MiB, and stayed there
-  through 24. `docs/serving.md` ("Memory between rebuilds") has the
+  returns, but glibc keeps free memory in its per-thread arenas, and rebuilds
+  and request handlers run on different long-lived threads; glibc also raises
+  its trim threshold after large frees, so each worker arena kept its free top
+  as well. The server now pins the trim threshold at startup (`mallopt`) and
+  returns free memory after the bootstrap build and at the end of every
+  refresh tick (`malloc_trim(0)`). Both are glibc only and do nothing
+  elsewhere. Replaying the burst that triggered the report with concurrent
+  read traffic, resident memory after 24 rebuilds fell from 321 MiB to
+  126 MiB against a start of about 80 to 110 MiB, and the peak from 359 MiB to
+  208 MiB. `docs/serving.md` ("Memory between rebuilds") has the
   measurements. (#284)
 
 * **Several documented settings were read and then silently ignored.**

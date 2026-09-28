@@ -10,12 +10,13 @@ bootstrap build.
 """
 from __future__ import annotations
 
-import ctypes.util
+import contextlib
 import platform
 import queue
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -56,10 +57,48 @@ def test_release_survives_an_allocator_error(monkeypatch: pytest.MonkeyPatch) ->
     assert heap.release_free_heap() is False
 
 
+def test_configure_pins_the_trim_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """glibc raises its trim threshold after large frees, so a worker thread's
+    arena stops giving back its free top; a fixed threshold keeps it trimmed."""
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(heap, "_mallopt", lambda: lambda p, v: calls.append((p, v)) or 1)
+    assert heap.configure_allocator() is True
+    assert calls == [(heap.M_TRIM_THRESHOLD, heap.TRIM_THRESHOLD_BYTES)]
+
+
+def test_configure_is_a_noop_without_mallopt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(heap, "_mallopt", lambda: None)
+    assert heap.configure_allocator() is False
+
+
+def test_configure_survives_a_failing_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    def vetoed() -> None:
+        raise RuntimeError("ctypes.dlopen vetoed")
+
+    monkeypatch.setattr(heap, "_mallopt", vetoed)
+    assert heap.configure_allocator() is False
+
+
+def test_configure_reports_a_rejected_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(heap, "_mallopt", lambda: lambda *_args: 0)
+    assert heap.configure_allocator() is False
+
+
+def test_release_survives_a_failing_symbol_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Loading the allocator can fail with more than OSError (an audit hook can
+    veto ctypes.dlopen with any exception); startup and refresh must not care."""
+    def vetoed() -> None:
+        raise RuntimeError("ctypes.dlopen vetoed")
+
+    monkeypatch.setattr(heap, "_malloc_trim", vetoed)
+    assert heap.release_free_heap() is False
+
+
 @pytest.mark.skipif(not _GLIBC, reason="malloc_trim is a glibc function")
 def test_release_uses_glibc_malloc_trim() -> None:
-    assert ctypes.util.find_library("c") is not None
+    assert heap._malloc_trim() is not None, "glibc exports malloc_trim; lookup found nothing"
     assert heap.release_free_heap() is True
+    assert heap.configure_allocator() is True
 
 
 def _remote_for(kb: Path, tmp_path: Path) -> Path:
@@ -151,11 +190,14 @@ def test_bootstrap_build_releases_heap(
     from data_olympus import server
 
     releases: list[str] = []
+    monkeypatch.setattr(server, "configure_allocator",
+                        lambda: releases.append("configured") or True)
     monkeypatch.setattr(server, "release_free_heap",
                         lambda: releases.append("released") or True)
     server.build_app(kb_main_path=tmp_kb, kb_index_path=tmp_index_path,
                      sync_interval_sec=60, staleness_degraded_sec=600, bootstrap_now=True)
-    assert releases == ["released"]
+    # Configured before the bootstrap build allocates, released after it.
+    assert releases == ["configured", "released"]
 
 
 def _rss_anon_kib() -> int:
@@ -171,11 +213,11 @@ def test_rebuilds_on_several_threads_do_not_keep_their_peaks(
 ) -> None:
     """The regression the issue describes, measured rather than mocked.
 
-    Each rebuild runs on a different thread, as the refresh executor and the
-    request worker pool do in the server, over a corpus large enough to make the
-    co-occurrence pair counter allocate tens of mebibytes. Without the release
-    step every thread's arena keeps its build peak and resident memory ends far
-    above where it started.
+    Each rebuild runs on a different long-lived thread, as the refresh executor
+    and the request worker pool do in the server, over a corpus that makes the
+    co-occurrence pair counter allocate and spill. Without the allocator
+    configuration and the release step, every worker's arena keeps free memory
+    resident and the total ends far above where it started.
     """
     import random
 
@@ -196,6 +238,8 @@ def test_rebuilds_on_several_threads_do_not_keep_their_peaks(
     idx = Index(tmp_path / "idx.db")
     idx.build(tmp_git_kb, source_commit=git.head_sha())
     clone = _remote_for(tmp_git_kb, tmp_path)
+    # What build_app does at startup, before any worker allocates.
+    heap.configure_allocator()
     heap.release_free_heap()
     baseline = _rss_anon_kib()
     peak = baseline
@@ -205,35 +249,54 @@ def test_rebuilds_on_several_threads_do_not_keep_their_peaks(
     # one, which would hide the retention this test exists to catch.
     workers = 4
     jobs: list[queue.Queue[object]] = [queue.Queue() for _ in range(workers)]
-    done: queue.Queue[dict[str, object]] = queue.Queue()
+    done: queue.Queue[tuple[str, object]] = queue.Queue()
 
     def serve(inbox: queue.Queue[object]) -> None:
         while inbox.get() is not None:
-            done.put(refresh_once(git=git, idx=idx, kb_main_path=tmp_git_kb))
+            try:
+                done.put(("ok", refresh_once(git=git, idx=idx, kb_main_path=tmp_git_kb)))
+            except BaseException as exc:  # noqa: BLE001  reported to the test thread
+                done.put(("error", repr(exc)))
 
     threads = [threading.Thread(target=serve, args=(q,), daemon=True) for q in jobs]
     for t in threads:
         t.start()
+    deadline = time.monotonic() + 240
     try:
         for cycle in range(workers):
             _push_doc(clone, f"DEC-{cycle}", " ".join(rnd.sample(vocab, 400)))
             jobs[cycle].put("rebuild")
             while True:
                 try:
-                    outcome = done.get(timeout=0.01)
+                    status, outcome = done.get(timeout=0.01)
                     break
                 except queue.Empty:
                     peak = max(peak, _rss_anon_kib())
-            assert outcome["outcome"] == "rebuilt"
+                    assert time.monotonic() < deadline, "rebuild workers did not finish"
+            assert status == "ok", outcome
+            assert isinstance(outcome, dict) and outcome["outcome"] == "rebuilt", outcome
+        # Measured while every worker is still alive: a thread's exit changes
+        # allocator state and would flatter the result.
+        retained = _rss_anon_kib()
     finally:
         for q in jobs:
             q.put(None)
         for t in threads:
             t.join(30)
+    assert not any(t.is_alive() for t in threads)
 
-    retained_mib = (_rss_anon_kib() - baseline) / 1024
+    # Fix-independent proof that the rebuilds ran the allocation-heavy path:
+    # the co-occurrence pair counter populated its table. (The peak itself is
+    # no guard: a pinned trim threshold lowers it as well.)
+    import sqlite3
+    with contextlib.closing(sqlite3.connect(tmp_path / "idx.db")) as conn:
+        related = conn.execute("SELECT COUNT(*) FROM related_terms").fetchone()[0]
+    assert related > 0, "co-occurrence expansion did not run; the test exercised nothing"
+
+    retained_mib = (retained - baseline) / 1024
     peak_mib = (peak - baseline) / 1024
-    assert peak_mib > 30, f"corpus too small to exercise the allocator: peak {peak_mib:.0f} MiB"
+    # On glibc 2.41 this corpus leaves about 60 MiB resident across the four
+    # live workers without the fix, and about 5 MiB with it.
     assert retained_mib < 10, (
-        f"rebuilds kept {retained_mib:.0f} MiB of a {peak_mib:.0f} MiB peak resident"
+        f"rebuilds kept {retained_mib:.0f} MiB resident (peak {peak_mib:.0f} MiB)"
     )
