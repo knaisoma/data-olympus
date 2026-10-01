@@ -348,6 +348,11 @@ session-to-commit link. State the limits plainly:
   label.
 - False negatives (a governed change that goes unreported): a change whose path
   the classifier does not consider governed.
+- Coverage is not checked here. Since #296 the live gate clears a governed
+  action only when a fresh consult covered its signals; the report still
+  counts any consult in the window, whatever it covered. It is a detection
+  floor for agents the gate cannot hook, so it reports less than the gate
+  would refuse, never more.
 
 When the audit endpoint is unreachable, the command degrades to warn: it lists
 the governed changes it found and marks the consult state as unknown rather

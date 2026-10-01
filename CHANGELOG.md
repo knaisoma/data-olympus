@@ -113,7 +113,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   GHSA-gh4c-6fx4-qh6g, medium): HTTPS proxy TLS settings could be ignored, and
   a chunked response could make the client buffer an unbounded line. urllib3
   reaches Data Olympus only through `requests`, which the optional embeddings
-  extra uses to download its model.
+  extra uses to download its model. Upstream notes that a
+  configuration relying on destination TLS settings for an HTTPS proxy may need
+  `proxy_ssl_context` instead.
 * **cryptography 50.0.2**, whose wheels are built against OpenSSL 4.0.3.
 
 ## [0.10.0] - 2026-09-28
