@@ -245,12 +245,28 @@ def _validate_evidence(evidence: object) -> str | None:
 # up front instead. Absent (None or "") keeps meaning "no marker".
 _BLOB_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _FILE_HASH_RE = re.compile(r"[0-9a-f]{64}")
+# ``base_commit`` names the commit the caller read the target from: a full or
+# abbreviated commit id (SHA-1 or SHA-256 object format), or the advisory
+# ``HEAD``. Refs and revision expressions are not accepted.
+_BASE_COMMIT_RE = re.compile(r"[0-9a-f]{7,64}")
 
 
-def _validate_base_markers(base_blob_sha: object, target_file_hash: object) -> str | None:
+def _validate_base_markers(
+    base_blob_sha: object, target_file_hash: object, *, base_commit: object = None,
+) -> str | None:
     """Return a rejection reason naming the malformed field, else None.
 
-    The reason never includes the submitted value."""
+    The reason never includes the submitted value. A rejected marker is
+    therefore never stored: this runs before the pending enqueue and before
+    the compare-and-swap check, whose reasons quote ``base_commit``."""
+    base_commit_ok = (
+        base_commit is None or base_commit == ""
+        or (isinstance(base_commit, str) and (
+            base_commit.upper() == "HEAD" or _BASE_COMMIT_RE.fullmatch(base_commit)))
+    )
+    if not base_commit_ok:
+        return ("base_commit must be HEAD or a commit id: 7 to 64 lowercase "
+                "hex characters")
     checks = (
         ("base_blob_sha", base_blob_sha, _BLOB_SHA_RE,
          "the file's git blob id: 40 lowercase hex characters"),
@@ -1917,7 +1933,8 @@ def kb_propose_edit_fn(
         )
         return contest_error
 
-    base_marker_error = _validate_base_markers(base_blob_sha, target_file_hash)
+    base_marker_error = _validate_base_markers(
+        base_blob_sha, target_file_hash, base_commit=base_commit)
     if base_marker_error is not None:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_invalid_base",
                                    "reason": base_marker_error})
