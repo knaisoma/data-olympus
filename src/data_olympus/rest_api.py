@@ -294,13 +294,16 @@ def _resolve_status(status: str) -> int:
     if status in ("rejected_invalid_document", "rejected_secret_detected",
                   "rejected_writing_rule"):
         return 422
-    if status in ("rejected_invalid_encoding", "rejected_bad_decision"):
+    if status in ("rejected_invalid_encoding", "rejected_bad_decision",
+                  "rejected_symlink_escape"):
         # A client input error, refused before the claim. It must not share the
         # fall-through 200 below, or a caller checking only the status code
         # reads a refused decision as an applied one. An unknown decision (for
-        # example a typo of "approve") is the same class.
+        # example a typo of "approve") is the same class, and so is a target
+        # that escapes the knowledge base through a symlink: nothing was
+        # committed, so it answers 400 here as it does on propose.
         return 400
-    if status in ("rejected", "rejected_symlink_escape"):
+    if status == "rejected":
         return 200
     return 200
 
