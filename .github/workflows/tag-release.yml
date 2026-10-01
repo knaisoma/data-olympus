@@ -362,22 +362,39 @@ jobs:
           /tmp/mcp-publisher --help >/dev/null
       - name: Publish the registry entry with GitHub OIDC
         run: |
-          # Filter by version server side so a long version history cannot
-          # page the release out of the first response.
-          registry_versions() {
-            curl -fsS --get "$REGISTRY/v0/servers" \
-              --data-urlencode "search=$SERVER_NAME" --data-urlencode "version=$VERSION" \
-              | jq -r --arg name "$SERVER_NAME" \
-                  '.servers[] | (.server // .) | select(.name == $name) | .version'
+          # A failed read must never look like "not listed": retry it, then
+          # stop rather than publish blind. The version filter keeps a long
+          # history from paging the release out; the unfiltered search is a
+          # second opinion in case the filter's semantics change.
+          registry_query() {
+            for _ in $(seq 1 6); do
+              if curl -fsS --get "$REGISTRY/v0/servers" "$@" -o /tmp/registry.json; then
+                jq -r --arg name "$SERVER_NAME" \
+                  '.servers[] | (.server // .) | select(.name == $name) | .version' \
+                  /tmp/registry.json
+                return 0
+              fi
+              sleep 5
+            done
+            echo "cannot read the registry API at $REGISTRY" >&2
+            return 1
           }
-          if registry_versions | grep -qx "$VERSION"; then
+          is_listed() {
+            local filtered unfiltered
+            filtered="$(registry_query --data-urlencode "search=$SERVER_NAME" \
+              --data-urlencode "version=$VERSION")" || exit 1
+            grep -qx "$VERSION" <<<"$filtered" && return 0
+            unfiltered="$(registry_query --data-urlencode "search=$SERVER_NAME")" || exit 1
+            grep -qx "$VERSION" <<<"$unfiltered"
+          }
+          if is_listed; then
             echo "$SERVER_NAME $VERSION is already in the registry; not publishing again"
           else
             /tmp/mcp-publisher login github-oidc
             /tmp/mcp-publisher publish
           fi
           for _ in $(seq 1 12); do
-            if registry_versions | grep -qx "$VERSION"; then
+            if is_listed; then
               echo "registry lists $SERVER_NAME $VERSION"
               exit 0
             fi
