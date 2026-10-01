@@ -519,7 +519,7 @@ def _rule_audit(findings: list[str] | None, outcome: str) -> str | None:
         return None
     marks = []
     for f in findings:
-        m = re.search(r"line (\d+): ([a-z-]+):", f)
+        m = re.match(r"(?:[^:]+: )?line (\d+): ([^:\s]+):", f)
         marks.append(f"{m.group(2)}@{m.group(1)}" if m else "check-failed")
     return f"{outcome}:" + ",".join(marks)
 
