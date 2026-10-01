@@ -665,6 +665,9 @@ class AuditResponse(BaseModel):
     events: list[AuditEvent]
     returned: int
     limit_hit: bool = False
+    # Lines in the read window that could not be read as an event (issue
+    # #310), skipped rather than failing the whole query.
+    skipped: int = 0
 
 
 class CurateEntry(BaseModel):
@@ -752,6 +755,9 @@ class ComplianceResponse(BaseModel):
 
     counts: dict[str, int] = {}
     by_agent: dict[str, dict[str, int]] = {}
+    # Enforcement events that could not be attributed to an agent because the
+    # line is malformed (issue #310), skipped rather than failing the query.
+    skipped: int = 0
 
 
 class RecordEventResponse(BaseModel):
