@@ -27,10 +27,80 @@ A prompt-hook consult never downgrades a still-fresh explicit consult on the sam
 interleaved prompt-hook consults cannot un-clear a gate an explicit consult
 cleared.
 
-There is no deadlock for legitimately non-governed intents: `kb_gate_check` only
-requires a consult for actions the classifier deems governed, and any explicit
-consult (governed or not) records a fresh explicit timestamp, so an agent can
-always clear the gate by calling `kb_consult` and then retrying.
+`kb_gate_check` only requires a consult for actions the classifier deems
+governed. Which explicit consults clear a governed action depends on
+`KB_GATE_CLEARANCE`, described in the next section.
+
+## Clearance is bound to the consulted intent (issue #296)
+
+Under `KB_GATE_CLEARANCE=intent`, the default, a fresh explicit consult clears
+only the governed actions its intent covers. A consult about the database schema
+no longer clears a `pip install` that follows it inside the TTL.
+
+Each explicit consult records a coverage set computed from its `intent` text:
+
+- the keyword signals (`keyword:<kw>`) the classifier finds in the intent;
+- a `command:<fragment>` signal for each governed command fragment the intent
+  contains, by the same substring rule the gate applies to a Bash command;
+- a `path:<glob>` signal for each whitespace or quote delimited token of the
+  intent, computed by the same path matcher the gate applies to `action_path`.
+  A quoted span counts as one token, so a path containing spaces can be named.
+
+Coverage accumulates per `(session_id, workspace)`: several fresh consults on
+different topics all count, and each signal expires on its own TTL. A
+prompt-hook consult never adds coverage. A governed action is allowed when
+EVERY one of its signals is covered by a fresh coverage signal, either directly
+or through the family mapping below. An action that is both a dependency
+manifest edit and an install command needs both covered; one dependency consult
+does that through the mapping.
+
+Path signals are compared by family, the glob with one leading `*/` removed, so
+`path:*/go.mod` (a nested `services/api/go.mod`) and `path:go.mod` are the same
+family, `go.mod`.
+
+The family mapping lets a topical consult cover the actions it plainly governs,
+without the agent reciting file paths:
+
+| Action signal | Covered by any of |
+| --- | --- |
+| `path:` dependency manifest families (`pyproject.toml`, `package.json`, `requirements*.txt`, `go.mod`, `Cargo.toml`, `pom.xml`) | `keyword:dependency`, `dependencies`, `package`, `library` |
+| `command:` built-in install fragments | the same four keywords |
+| `path:` families `migrations/*` and `migration/*` | `keyword:migration`, `migrate`, `schema` |
+| `path:` families `schema/*`, `schema.sql` and `*.sql` | `keyword:schema`, `migration`, `migrate` |
+| `path:` families `Dockerfile` and `docker-compose*.yml` | the same family only |
+| `keyword:<kw>` from a Bash action | the same keyword only |
+
+Operator additions (`KB_GOVERNED_EXTRA_*`) have no mapping and are covered by
+the same signal only.
+
+**No deadlock.** Every governed action stays clearable: an intent that contains
+the action's path exactly as the gate saw it, or the command fragment, or the
+keyword, reproduces the action's signal through the same function. A basename
+also works for a manifest family that has a bare twin (`Cargo.toml` clears a
+nested `crates/x/Cargo.toml`), but not for `pom.xml`, which is governed only
+when nested, or for a directory family such as `migrations/*`; name the full
+path or use a mapped keyword for those.
+
+**Denial.** The verdict stays `consult_required`, so hooks and installers are
+unaffected. The `reason` lists every uncovered signal and ends with one
+copy-pasteable `kb_consult(...)` call whose `intent` covers all of them
+together, leading with the exact path when a path signal is uncovered and
+quoting the command fragment when a command signal is. The `gate_block` audit
+event keeps `status: consult_required` and adds an `uncovered` field holding the
+signal list, so `kb_compliance` counts are unchanged and a mismatch is
+countable.
+
+**Not a security boundary.** An agent can name every keyword in one intent and
+cover everything. The gate makes consulting the governing rules the path of
+least resistance; it does not authenticate intent. A consult still retrieves
+the rules for the intent it states, so an over-broad intent returns a broad
+rule set.
+
+**Migration.** `KB_GATE_CLEARANCE=pair` restores the earlier rule exactly: any
+fresh explicit consult for the `(session_id, workspace)` pair, governed or not,
+clears every governed action. A ledger written before this change has no
+recorded coverage, so under `intent` a session that consulted before the
+upgrade needs one new consult before its next governed action.
 
 ## Retrieval is hard-filtered to the in-force class (issue #109)
 
@@ -67,7 +137,8 @@ surface via plain `kb_search`/`kb_get`.
   The response echoes `session_id` and `workspace` (the exact gate key) alongside
   the verdict and reason, so a blocked MCP caller can build the clearing
   `kb_consult` call without guessing the session id. When blocked, `reason`
-  contains a copy-pasteable `kb_consult(...)` instruction.
+  contains a copy-pasteable `kb_consult(...)` instruction and, under intent
+  clearance, the uncovered signals and an intent that covers them.
 - `GET /api/v1/compliance`: aggregated enforcement-event counts.
 
 The same three are exposed as the `kb_consult`, `kb_gate_check`, and
@@ -76,6 +147,11 @@ The same three are exposed as the `kb_consult`, `kb_gate_check`, and
 ## Configuration
 
 - `KB_CONSULT_TTL_SEC` (default 300): how long a consultation stays fresh.
+- `KB_GATE_CLEARANCE` (default `intent`): what a fresh explicit consult clears.
+  `intent` clears only the governed actions the consult's intent covers (see
+  above); `pair` clears every governed action for the `(session_id, workspace)`
+  pair, the behaviour before issue #296. Case-insensitive; blank means unset;
+  any other value fails startup naming the setting.
 - `KB_ENFORCE_FAIL_MODE` (default `open`): hook behaviour when the server is
   unreachable. `open` allows the action with a warning; `closed` blocks it.
 

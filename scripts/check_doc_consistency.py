@@ -20,6 +20,8 @@ What this checks:
    variables in ``_ENV_DEFAULT_FIELDS`` against the corresponding
    ``data_olympus.config.Config`` field default (issue #286). A document that
    states the same knob's default twice must state it the same way both times.
+   Word-valued settings in ``_ENV_WORD_DEFAULT_FIELDS`` are checked the same
+   way, their default stated as one backticked value.
 
 What this deliberately does NOT check: `applies_when` (not an enum) or any
 other field's documentation; whether the prose reads well; whether a doc's
@@ -163,6 +165,12 @@ _ENV_DEFAULT_FIELDS: tuple[tuple[str, str], ...] = (
     ("KB_SESSION_IDLE_TIMEOUT_SEC", "session_idle_timeout_sec"),
     ("KB_SESSION_REAP_INTERVAL_SEC", "session_reap_interval_sec"),
     ("KB_SESSION_TOUCH_INTERVAL_SEC", "session_touch_interval_sec"),
+)
+
+# The same guard for settings whose value is a word rather than a number, stated
+# as a single backticked value: ``(default `intent`)``.
+_ENV_WORD_DEFAULT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("KB_GATE_CLEARANCE", "gate_clearance"),
     ("KB_WRITING_RULES_MODE", "writing_rules_mode"),
 )
 
@@ -186,10 +194,11 @@ _ENV_DEFAULT_BODY = (
 # reading the leading digits of something it does not understand: ``300
 # minutes`` and ``300.5`` are refused rather than read as 300.
 _ENV_DEFAULT_VALUE = re.compile(r"^`?(?P<value>\d+)`?(?:,|$)")
-# The same for a word-valued setting (KB_WRITING_RULES_MODE): a backticked
-# lowercase word with the same boundary, so ``warn mode`` or an unquoted value
-# is refused rather than guessed.
-_ENV_DEFAULT_WORD = re.compile(r"^`(?P<value>[a-z][a-z0-9_-]*)`(?:,|$)")
+
+# A word-valued default: exactly one backticked value ending the statement, the
+# same boundary rule as above. Unquoted prose is refused, so ``(default intent
+# clearance)`` cannot be certified as ``intent``.
+_ENV_DEFAULT_WORD = re.compile(r"^`(?P<value>[A-Za-z0-9_.-]+)`(?:,|$)")
 
 
 def _strip_fenced_blocks(text: str) -> str:
@@ -216,9 +225,7 @@ def _env_default_pattern(name: str) -> re.Pattern[str]:
     return re.compile(rf"`{re.escape(name)}`{_ENV_DEFAULT_BODY}")
 
 
-def _extract_env_defaults(
-    text: str, *, name: str, kind: type = int,
-) -> list[tuple[int, int | str]]:
+def _extract_env_defaults(text: str, *, name: str) -> list[tuple[int, int]]:
     """Every ``(line_number, documented_default)`` stated for ``name`` in ``text``.
 
     Fenced code blocks are excluded. Raises ParseError when the variable is
@@ -230,22 +237,43 @@ def _extract_env_defaults(
     parser guessed from the leading digits.
     """
     scanned = _strip_fenced_blocks(text)
-    results: list[tuple[int, int | str]] = []
-    pattern = _ENV_DEFAULT_WORD if kind is str else _ENV_DEFAULT_VALUE
+    results: list[tuple[int, int]] = []
     for m in _env_default_pattern(name).finditer(scanned):
         line_no = scanned.count("\n", 0, m.start()) + 1
         body = m.group("body").strip()
-        value = pattern.match(body)
+        value = _ENV_DEFAULT_VALUE.match(body)
         if value is None:
-            expected = ("a backticked word" if kind is str
-                        else "a whole number in the unit the configuration uses")
             raise ParseError(
                 f"'`{name}`' at line {line_no} states its default as "
-                f"'{body}', which is not {expected}; state the configured "
-                "value and put any gloss after a comma"
+                f"'{body}', which is not a whole number in the unit the "
+                "configuration uses; state the configured value and put any "
+                "gloss after a comma"
             )
-        raw = value.group("value")
-        results.append((line_no, raw if kind is str else int(raw)))
+        results.append((line_no, int(value.group("value"))))
+    if not results:
+        raise ParseError(f"no '`{name}`' default stated")
+    return results
+
+
+def _extract_env_word_defaults(text: str, *, name: str) -> list[tuple[int, str]]:
+    """Every ``(line_number, documented_default)`` for a word-valued ``name``.
+
+    The word counterpart of ``_extract_env_defaults``, with the same fence,
+    proximity and missing-default rules.
+    """
+    scanned = _strip_fenced_blocks(text)
+    results: list[tuple[int, str]] = []
+    for m in _env_default_pattern(name).finditer(scanned):
+        line_no = scanned.count("\n", 0, m.start()) + 1
+        body = m.group("body").strip()
+        value = _ENV_DEFAULT_WORD.match(body)
+        if value is None:
+            raise ParseError(
+                f"'`{name}`' at line {line_no} states its default as "
+                f"'{body}', which is not a single backticked value; state the "
+                "configured value and put any gloss after a comma"
+            )
+        results.append((line_no, value.group("value")))
     if not results:
         raise ParseError(f"no '`{name}`' default stated")
     return results
@@ -276,14 +304,14 @@ def _check_env_defaults(root: Path) -> list[str]:
     errors: list[str] = []
     for name, field in _ENV_DEFAULT_FIELDS:
         expected = canonical.get(field)
-        if isinstance(expected, bool) or not isinstance(expected, int | str):
+        if not isinstance(expected, int):
             errors.append(
-                f"docs/serving.md: Config has no int or str field {field!r} for "
-                f"{name}; update _ENV_DEFAULT_FIELDS"
+                f"docs/serving.md: Config has no int field {field!r} for {name}; "
+                "update _ENV_DEFAULT_FIELDS"
             )
             continue
         try:
-            stated = _extract_env_defaults(text, name=name, kind=type(expected))
+            stated = _extract_env_defaults(text, name=name)
         except ParseError as exc:
             errors.append(f"docs/serving.md: {exc}")
             continue
@@ -293,6 +321,26 @@ def _check_env_defaults(root: Path) -> list[str]:
                     f"docs/serving.md line {line_no}: {name} is documented as "
                     f"defaulting to {value}, but Config.{field} defaults to "
                     f"{expected}"
+                )
+    for name, field in _ENV_WORD_DEFAULT_FIELDS:
+        expected_word = canonical.get(field)
+        if not isinstance(expected_word, str):
+            errors.append(
+                f"docs/serving.md: Config has no str field {field!r} for {name}; "
+                "update _ENV_WORD_DEFAULT_FIELDS"
+            )
+            continue
+        try:
+            stated_words = _extract_env_word_defaults(text, name=name)
+        except ParseError as exc:
+            errors.append(f"docs/serving.md: {exc}")
+            continue
+        for line_no, word in stated_words:
+            if word != expected_word:
+                errors.append(
+                    f"docs/serving.md line {line_no}: {name} is documented as "
+                    f"defaulting to {word}, but Config.{field} defaults to "
+                    f"{expected_word}"
                 )
     return errors
 
