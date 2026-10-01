@@ -310,6 +310,10 @@ section so concurrent writes cannot corrupt each other:
   `rejected_stale_base` rather than committed against a possibly-stale base; the
   marker cannot be verified, and the push-path rebase recovery is not an
   equivalent safety net (a compatible rebase would still publish the stale write).
+  `base_commit` must be `HEAD` or a commit id of 7 to 64 lowercase hex
+  characters (abbreviated or full, SHA-1 or SHA-256); any other value, such as
+  a branch name or a revision expression, is refused as `rejected_invalid_base`
+  when the proposal is made, with a reason that does not repeat the value.
   A bare `base_commit` of `HEAD` is advisory (no per-file expectation), and when
   no marker is supplied the pre-0.3.0 behavior is preserved (a refresh failure is
   non-fatal; the push path's non-FF recovery publishes the commit).
