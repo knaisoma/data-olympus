@@ -46,6 +46,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+* **`kb enforce report` judges consult coverage like the live gate** (#309).
+  The report and its `--staged` commit gate count a governed commit as
+  verified only when the explicit consults in the window cover every signal of
+  its governed paths, with the same family rules as the gate. The `consult`
+  audit event records the consult's `coverage`, and the audit API now returns
+  it with `trigger`. Rows written before this release keep timing-only
+  judgement and are reported as `TIMING ONLY` (`timing_only` in `--json`);
+  `KB_GATE_CLEARANCE=pair` keeps timing-only behaviour throughout, and an
+  invalid value makes the report exit 2. The gate's suggested `kb_consult`
+  call now stays well formed for a path containing a quote character.
+* **`data-olympus lint` warns when frontmatter disagrees with the path
+  taxonomy** (#304). A document whose declared `tier` or `category` differs
+  from what its path implies (honouring `KB_TAXONOMY_PATH`) gets a warning
+  naming the path value, because the index uses the declared value while the
+  write blocklist governs writes by the path tier. It is never an error and
+  never changes the exit code.
+
 * **A consult now clears only the governed actions it covers** (#296). The
   enforcement gate used to clear any governed action after any fresh explicit
   consult in the session, whatever that consult was about. Each consult now
