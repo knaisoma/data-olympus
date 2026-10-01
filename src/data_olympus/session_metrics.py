@@ -6,24 +6,25 @@ Each session-less ``POST /mcp`` handshake makes the mcp SDK's
 ``StreamableHTTPSessionManager`` create a ``StreamableHTTPServerTransport``,
 register it in ``_server_instances[session_id]``, and start a long-lived task
 whose ``app.run()`` blocks on the transport read stream (see the installed
-``mcp/server/streamable_http_manager.py`` ``_handle_stateful_request`` /
-``run_server``). That entry is removed on exactly three events: an explicit
-client ``DELETE`` (``streamable_http.py`` ``_handle_delete_request`` ->
-``terminate``), the session task crashing, or the manager shutting down
-(``run`` finally -> ``_server_instances.clear()``).
+``mcp/server/streamable_http_manager.py`` ``_admit_session`` /
+``_serve_opening_request``). The entry is removed by ``_discard_session`` when
+the session ends: an explicit client ``DELETE``, a ``terminate()`` (which is
+what our reaper calls), the session task crashing, the SDK's own idle timeout,
+or the manager shutting down.
 
-The SDK *does* support idle reaping, but only when its manager is built with a
-positive ``session_idle_timeout`` (``streamable_http_manager.py`` lines ~293-311
-arm an ``anyio.CancelScope`` deadline). FastMCP 3.4.2 constructs that manager
-with no ``session_idle_timeout`` argument and exposes no setting or ``run_async``
-knob to inject one (``fastmcp/server/http.py`` ``create_streamable_http_app``
-lifespan). So under FastMCP's default wiring the timeout is ``None`` and there is
-no automatic reaping.
+Since mcp 1.30 the SDK manager defaults to ``session_idle_timeout=1800`` (no
+request in flight, an open GET stream counting as in flight) and
+``max_sessions=10000`` (503 beyond that). FastMCP 3.4.x constructs the manager
+without passing either and exposes no knob for them (``fastmcp/server/http.py``
+``create_streamable_http_app`` lifespan), so those defaults act as a backstop.
+Before 1.30 there was no automatic expiry at all, and a session ended through
+``terminate()`` stayed listed in ``_server_instances``.
 
 Consequence: a client that handshakes and drops the connection without sending
 ``DELETE`` (the exact symptom behind the repeated "Created new transport with
-session ID" logs) leaves its transport resident. Over long uptime
-``_server_instances`` grows without bound and leaks memory + tasks.
+session ID" logs) leaves its transport resident for up to 30 minutes, and a
+burst of them can fill the table toward the 503 cap. The reaper here bounds that
+to ``KB_SESSION_IDLE_TIMEOUT_SEC`` (default 300s).
 
 This module adds, entirely inside our own code and using only the public
 transport surface (``mcp_session_id``, ``terminate``, ``is_terminated``) plus the
@@ -146,9 +147,9 @@ def count_live_sessions(app: Any) -> int | None:
 class SessionActivityTracker:
     """Last-activity timestamps per streamable-http session id.
 
-    The mcp SDK only stamps activity (via ``idle_scope.deadline``) when the
-    session manager is built with an idle timeout, which FastMCP does not do. We
-    therefore keep our own map, updated from the ASGI middleware on every request
+    The mcp SDK tracks in-flight requests for its own 30 minute expiry but does
+    not expose a last-activity time, and its window is not configurable through
+    FastMCP. We therefore keep our own map, updated from the ASGI middleware on every request
     that carries an ``mcp-session-id`` header (both the handshake response and
     subsequent client requests carry it). There is no explicit ``touch`` at
     session creation; instead :meth:`idle_session_ids` stamps any live session id

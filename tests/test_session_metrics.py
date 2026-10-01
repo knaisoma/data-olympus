@@ -413,3 +413,126 @@ async def test_middleware_short_post_stamps_once_not_periodically() -> None:
     }
     await mw(scope, _noop_receive, _noop_send)
     assert tracker.touch_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Real SDK session manager: the mcp SDK's own idle expiry and session cap
+# (mcp 1.30+) apply to the app data-olympus serves, alongside our reaper.
+# ---------------------------------------------------------------------------
+
+_INIT = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "session-test", "version": "0"},
+    },
+}
+_PING = {"jsonrpc": "2.0", "id": 2, "method": "ping"}
+_MCP_HEADERS = {
+    "accept": "application/json, text/event-stream",
+    "content-type": "application/json",
+}
+
+
+def _served_http_app(tmp_kb: Path, tmp_path: Path):  # type: ignore[no-untyped-def]
+    app = build_app(
+        kb_main_path=tmp_kb,
+        kb_index_path=tmp_path / "idx.db",
+        sync_interval_sec=60,
+        staleness_degraded_sec=600,
+        bootstrap_now=True,
+    )
+    return app.http_app(transport="streamable-http")
+
+
+async def _wait_until(predicate, timeout: float = 5.0) -> bool:  # type: ignore[no-untyped-def]
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.02)
+    return predicate()
+
+
+@pytest.mark.asyncio
+async def test_sdk_session_backstop_defaults_on_served_app(
+    tmp_kb: Path, tmp_path: Path
+) -> None:
+    """FastMCP builds the SDK session manager without passing an idle timeout or
+    a session cap, so the SDK defaults apply to the app we serve: idle sessions
+    expire after 1800s and a 10000th concurrent session gets a 503. docs/serving.md
+    documents these values as the backstop behind our reaper; if a FastMCP or mcp
+    upgrade changes them, this fails so the documentation is revisited."""
+    http_app = _served_http_app(tmp_kb, tmp_path)
+    async with http_app.router.lifespan_context(http_app):
+        mgr = find_session_manager(http_app)
+        assert mgr is not None
+        assert mgr.stateless is False
+        assert mgr.session_idle_timeout == 1800
+        assert mgr.max_sessions == 10000
+
+
+@pytest.mark.asyncio
+async def test_reaper_evicts_real_sdk_session(tmp_kb: Path, tmp_path: Path) -> None:
+    """Our reaper's terminate() must still remove the session from the SDK's
+    table, and the reaped id must answer 404 so the client re-initializes."""
+    import httpx
+
+    http_app = _served_http_app(tmp_kb, tmp_path)
+    async with http_app.router.lifespan_context(http_app):
+        mgr = find_session_manager(http_app)
+        assert mgr is not None
+        transport = httpx.ASGITransport(app=http_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+            resp = await client.post("/mcp", json=_INIT, headers=_MCP_HEADERS)
+            assert resp.status_code == 200
+            sid = resp.headers["mcp-session-id"]
+            assert count_live_sessions(http_app) == 1
+
+            tracker = SessionActivityTracker()
+            tracker.touch(sid, now=0.0)  # last activity far in the past
+            reaped = await reap_idle_sessions(app=http_app, tracker=tracker, idle_after_sec=1)
+            assert reaped == 1
+            assert await _wait_until(lambda: count_live_sessions(http_app) == 0)
+
+            again = await client.post(
+                "/mcp", json=_PING, headers={**_MCP_HEADERS, "mcp-session-id": sid}
+            )
+            assert again.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_sdk_idle_expiry_coexists_with_tracker(tmp_kb: Path, tmp_path: Path) -> None:
+    """When the SDK expires a session itself, the id answers 404 and our tracker
+    drops its bookkeeping on the next pass instead of trying to reap it."""
+    import httpx
+
+    http_app = _served_http_app(tmp_kb, tmp_path)
+    async with http_app.router.lifespan_context(http_app):
+        mgr = find_session_manager(http_app)
+        assert mgr is not None
+        # Shorten the SDK window for the test; it is read when a session opens.
+        mgr.session_idle_timeout = 0.2
+        transport = httpx.ASGITransport(app=http_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+            resp = await client.post("/mcp", json=_INIT, headers=_MCP_HEADERS)
+            assert resp.status_code == 200
+            sid = resp.headers["mcp-session-id"]
+            tracker = SessionActivityTracker()
+            tracker.touch(sid)
+
+            assert await _wait_until(lambda: count_live_sessions(http_app) == 0)
+            again = await client.post(
+                "/mcp", json=_PING, headers={**_MCP_HEADERS, "mcp-session-id": sid}
+            )
+            assert again.status_code == 404
+
+            reaped = await reap_idle_sessions(app=http_app, tracker=tracker, idle_after_sec=300)
+            assert reaped == 0
+            assert tracker.last_seen(sid) is None
