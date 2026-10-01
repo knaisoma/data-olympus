@@ -5,13 +5,13 @@
     "KB_EMBEDDINGS_MODE=on uv run --extra embeddings python -m benchmarks.generate_embeddings_ablation",
     "uv run python -m benchmarks.real_corpus_eval --corpus example-bundle --queries benchmarks/real_corpus/example_bundle_queries.json --lexical-only --out benchmarks/real_corpus/example_bundle_result.json",
     "uv run python -m benchmarks.docs_tables --write",
-    "uv run python -m benchmarks.receipt write --source-commit b35ee2f8f3a823e5a8e65dbe5d2e907ff0a0d5f7"
+    "uv run python -m benchmarks.receipt write --source-commit 8619bbece947857d5e19742935494ef4e08bdc82"
   ],
   "dependency_lock": {
     "packages": [
       {
         "name": "data-olympus",
-        "version": "0.8.1"
+        "version": "0.11.0"
       },
       {
         "name": "fastmcp",
@@ -19,7 +19,7 @@
       },
       {
         "name": "numpy",
-        "version": "2.5.2"
+        "version": "2.5.3"
       },
       {
         "name": "pyyaml",
@@ -27,7 +27,7 @@
       },
       {
         "name": "sentence-transformers",
-        "version": "6.0.1"
+        "version": "6.1.0"
       },
       {
         "name": "tiktoken",
@@ -35,13 +35,13 @@
       }
     ],
     "path": "uv.lock",
-    "sha256": "c083fc1a19d7d33430125aca011170dc4c95b6cab9cf21581c224429680e904f"
+    "sha256": "b0d1fca95c010a9e42e03a594f41ea74a6f4adace2511b1d7d11a968857570a2"
   },
   "environment": {
-    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
     "python": {
       "implementation": "CPython",
-      "version": "3.13.9"
+      "version": "3.13.14"
     }
   },
   "inputs": {
@@ -1515,7 +1515,7 @@
         {
           "bytes": 2010,
           "path": "example-bundle/index.md",
-          "sha256": "3ec020b17559756ea570f3db715e8ce31b70cdb86f3b3ee82e82cb61070b7ece"
+          "sha256": "357a1ba142cdcc9845629b249fb8be8104d795032a533bc2f4fcb79b3c90b098"
         },
         {
           "bytes": 2086,
@@ -1628,7 +1628,7 @@
           "sha256": "1246a1643cf66a1694c34b1a1d43eaa49616833fc16f065bbcf2b9ea12e78975"
         }
       ],
-      "sha256": "756bff70682508dc0092d18c261bd22b38ddc90bc53747377e5d71132f5e09b3"
+      "sha256": "e2edc7225fb9af1209d23665fe5d615916cad31dee19cf6222b94f6520274082"
     },
     "queries": {
       "files": [
@@ -1708,7 +1708,7 @@
     "synthetic_corpus": 0,
     "token_curve_corpus": 42
   },
-  "source_commit": "b35ee2f8f3a823e5a8e65dbe5d2e907ff0a0d5f7",
+  "source_commit": "8619bbece947857d5e19742935494ef4e08bdc82",
   "source_tree": {
     "files": [
       {
@@ -1842,6 +1842,16 @@
         "sha256": "b1d4a60b3e0ab1884dc82abd0f1473b4f7702b64a99a668c2ab6ec2a8de0c873"
       },
       {
+        "bytes": 83,
+        "path": "src/data_olympus/_vendor/__init__.py",
+        "sha256": "7823f5a25862586065c988dcd4bb6b98184c79785bf8c26435ba8f90b0e95deb"
+      },
+      {
+        "bytes": 15354,
+        "path": "src/data_olympus/_vendor/prose_lint.py",
+        "sha256": "dee84e46004805c5134d5735f0d0d7ff4fec01be2399a2393c5e4b87ce426278"
+      },
+      {
         "bytes": 13087,
         "path": "src/data_olympus/audit_log.py",
         "sha256": "8d520937ff6e597db14b7d0735d50d09464fcfe5a8b5e8710b2a0768a2d5c270"
@@ -1855,6 +1865,11 @@
         "bytes": 7540,
         "path": "src/data_olympus/auth.py",
         "sha256": "1525e8fd0d729c99c6d8653d3c191fc0a2c8c2000e681bb663ebcc5d549c544f"
+      },
+      {
+        "bytes": 10677,
+        "path": "src/data_olympus/capture.py",
+        "sha256": "3d62b937cdfb78430ac3abdac7d9191ad4eaa6c7e3cd6436e96882b4198af2dd"
       },
       {
         "bytes": 62,
@@ -1877,9 +1892,9 @@
         "sha256": "23d5627f5cdffef8e124cacfa6a129b1605848c3dcdf00baca3748ee5a05b786"
       },
       {
-        "bytes": 7316,
+        "bytes": 7898,
         "path": "src/data_olympus/cli/main.py",
-        "sha256": "7266f47f8f0786736c1ed4ab913016f59f3603f8d51f2a41082b873860c2d41b"
+        "sha256": "ab3899718c4305008d2eb019686fe58c8b482e95f65b84fbf389c6501592abbe"
       },
       {
         "bytes": 3935,
@@ -1887,9 +1902,9 @@
         "sha256": "81c0c4bdc23308e787fc51d6db86b8d1a575b6d21e52931772fef9c8f6eeb358"
       },
       {
-        "bytes": 7051,
+        "bytes": 7488,
         "path": "src/data_olympus/cli/report_cmd.py",
-        "sha256": "572098d5bccda13dacba39cfa9c7d9f60feac60b7bc783db23c1c663c5f2cb9e"
+        "sha256": "a4f22d98070941c3c524abe17c40ab52e4eb3ecf9ce188617e1c494c135400db"
       },
       {
         "bytes": 3887,
@@ -1902,9 +1917,9 @@
         "sha256": "98f85c52970ec47f267556ef0d9bbd3d70600f3db55c1375f6884ee396bc45fa"
       },
       {
-        "bytes": 26939,
+        "bytes": 35574,
         "path": "src/data_olympus/config.py",
-        "sha256": "cff629c45f2012ad6a676a3863b894ee55172d2dc996249d46c6268cb71e32e4"
+        "sha256": "42da8a5467eb7ee67d61b9db6231165f061e7be8cf09cbecb5c2f015a5381167"
       },
       {
         "bytes": 25513,
@@ -1927,9 +1942,9 @@
         "sha256": "8d8fe6c9d1641798aef5159976c5784c72df632355ddba6045f3b0d5c23a63bd"
       },
       {
-        "bytes": 14997,
+        "bytes": 21444,
         "path": "src/data_olympus/enforce_policy.py",
-        "sha256": "5cd265cbb440ff46cf9268e4b23e4c05ea5e677e519e82bc8ab340f0f5a90c23"
+        "sha256": "263a2d9025ec44fb725aaec6f6e05d899ea93fbb2f3f6c785bed3216cb458ac9"
       },
       {
         "bytes": 434,
@@ -1947,9 +1962,9 @@
         "sha256": "4b53aad5e83496aebdeebdfa727b97ebaecf3f1bb2dc0c40f4753e4254c286f1"
       },
       {
-        "bytes": 18519,
+        "bytes": 30371,
         "path": "src/data_olympus/format/lint.py",
-        "sha256": "83f931b28e733aee6f0edb97de27fb408a9bc6f04170407fe9837bfa1b808b1e"
+        "sha256": "836f1f191ad1755215af1df0b4cd7846391e068c4e0dbab09b0becb640861314"
       },
       {
         "bytes": 3486,
@@ -1957,19 +1972,19 @@
         "sha256": "f6d307b9924f1d30bec9acebc95b240f3fbe12a662079db0a743ef19a039ae63"
       },
       {
-        "bytes": 17644,
+        "bytes": 21732,
         "path": "src/data_olympus/format/validate.py",
-        "sha256": "473713e9cae3386418f73b02b5b2e150b80686ae6158466729cab27ef33eb46b"
+        "sha256": "fba9892f0aa3b20a4d5ebd32c694f276903a08acdcbd6c655ad3b033073b8738"
       },
       {
-        "bytes": 34697,
+        "bytes": 37105,
         "path": "src/data_olympus/git_ops.py",
-        "sha256": "fcbb1559ecf613589548e6c7480bc5e8ae302677865ebf7860f1b5e7d12e1124"
+        "sha256": "5d79a87b16c8f3a6ff6d1690c853344d33714802f951821a23a68b690c2ded9f"
       },
       {
-        "bytes": 17305,
+        "bytes": 17308,
         "path": "src/data_olympus/governed_lane.py",
-        "sha256": "6e72d93551c6ca416c1418deac752a80b54e67600c7d01ae601cdeb5dd7f96c2"
+        "sha256": "e2d4f4351b86ca5faf6ec42e950a6d5514a011862dde7722cca14e03c0ef90bb"
       },
       {
         "bytes": 6339,
@@ -1977,19 +1992,24 @@
         "sha256": "d3949d148c77ba86225325c088a5b5d1efaf49e351a5a230c72bbf91bb6e8d45"
       },
       {
-        "bytes": 515,
+        "bytes": 4796,
+        "path": "src/data_olympus/heap.py",
+        "sha256": "2f9fd999bb9fee6c52d936655fb0f4adb2b79ebf9c6731d4993bb6b8455069d6"
+      },
+      {
+        "bytes": 503,
         "path": "src/data_olympus/importer/__init__.py",
-        "sha256": "45635279784e63d0fe675efa567fbbe6835a412d457ec0b2d4c9151f198a75ab"
+        "sha256": "aa01810cf574a4aba8ecb4ce7908239f55bbb71e7ce4a0bde1f685d75d6c377d"
       },
       {
-        "bytes": 10429,
+        "bytes": 10426,
         "path": "src/data_olympus/importer/adr.py",
-        "sha256": "cb1789b2dc0306306db005ba4b14b4274d3b040fdf43a12cf039b6ee3320a078"
+        "sha256": "c3821601b3165d234024ecdbd6fedd3221f9f4a0026c3794cc9db62ca0f9b54f"
       },
       {
-        "bytes": 6829,
+        "bytes": 6826,
         "path": "src/data_olympus/importer/flat.py",
-        "sha256": "d031833492385786755e5268215e39615309107e5fc874d6d69c300778030065"
+        "sha256": "fb09bbb757df6713b34a36d0e3606a7a56667d27a856ac946324f9ff152dddac"
       },
       {
         "bytes": 3676,
@@ -1997,34 +2017,39 @@
         "sha256": "a0c7ef53b4a05c0d5c7ac7dddc44afb85fb00d70f169bda5fe4d6c065d91714a"
       },
       {
-        "bytes": 8871,
+        "bytes": 8865,
         "path": "src/data_olympus/importer/okf.py",
-        "sha256": "cf0f4f8b97ae726bcadc230412abe9ac6beddf195b266251e18a94fd45bf3352"
+        "sha256": "083b124efe384cf4248260193ae7884e7f6e862b4a58d475b6db8116994c065c"
       },
       {
-        "bytes": 16864,
+        "bytes": 16858,
         "path": "src/data_olympus/importer/run.py",
-        "sha256": "f3c2ca65c67b531f18a8936d177c4dbe2deede590a79d2bee2a81c71e97ece35"
+        "sha256": "2d7fa13cb76dbf03defb58565e4c6f4844850902623fcd785a19cbb27eebaa80"
       },
       {
         "bytes": 8097,
         "path": "src/data_olympus/importer/stamp.py",
-        "sha256": "0999b465298b09d928310304558da2d9a38495a0439eee340497bafaca759f25"
+        "sha256": "6f27c517c334e2c8d9f19cbf1cdd33fccf47c929713257b266879110cbae5d4f"
       },
       {
-        "bytes": 116123,
+        "bytes": 122629,
         "path": "src/data_olympus/index.py",
-        "sha256": "fe88025feea7f48b2bcac8f4cb7924bf092bb11c5ffac56c4cd504b0b8055f65"
+        "sha256": "5083c03feb0787fecf0a01b5199e8d972dd3df01e3fe1c79dd6987597ad4d4a2"
       },
       {
-        "bytes": 22370,
+        "bytes": 22702,
         "path": "src/data_olympus/maintenance.py",
-        "sha256": "c69dac591cfd98eb22a7ce30f72d32f18f8debdcd1df18bcff9e03c0b878caab"
+        "sha256": "f5276714c414402f9a6a8a41f05eef9abd267bb4ece7c83cca272ef7a3a407b6"
       },
       {
-        "bytes": 7596,
+        "bytes": 7871,
         "path": "src/data_olympus/markdown_parse.py",
-        "sha256": "8c5925ad0a07ea8d34a94d807f33b4b8770b6edd032f315d5b2ed31e63c31c98"
+        "sha256": "f5fd6ceabfa0670d09eb1ea0cead77ca25d3a8512123573359b58c3f1e2331b3"
+      },
+      {
+        "bytes": 15007,
+        "path": "src/data_olympus/mcp_sanitize.py",
+        "sha256": "37dca9044fa63cdb0a7fca76a6de7cdf4d75e6b7080cfa16caa0f7d6dddfeefa"
       },
       {
         "bytes": 8443,
@@ -2032,9 +2057,9 @@
         "sha256": "068ad7522ed20aff98e030bc7c55dad270a6a2405b960a5d825f746ba8abda0d"
       },
       {
-        "bytes": 29616,
+        "bytes": 37818,
         "path": "src/data_olympus/models.py",
-        "sha256": "a8de53d4fb4794b03ae6514753487904e711fb7f3de63ba830af4e417908c5bf"
+        "sha256": "d65d3bac71384edb8b8e52eaeeba6168b1347217733557cc4d667993ef9bbd32"
       },
       {
         "bytes": 4660,
@@ -2052,14 +2077,14 @@
         "sha256": "dd2d1e86cf29a68d975831b4898d354749816271330c2630571b1f1ade7306c7"
       },
       {
-        "bytes": 60703,
+        "bytes": 71068,
         "path": "src/data_olympus/pending.py",
-        "sha256": "9468f84f478f0248424f562539e6acee06ed5fc0d3abfd7e32ef950aa924647e"
+        "sha256": "adf93a644ab29a66343779b7ffaabfdac41bf9225b6859fb009205f3b94182a2"
       },
       {
-        "bytes": 7966,
+        "bytes": 8834,
         "path": "src/data_olympus/principals.py",
-        "sha256": "b89a053ab141fe6db797e93de6ad45f6fa1f97c64f7cdcc2bdd61d97410e39ac"
+        "sha256": "546c521d1901d1d1ec0f8105a57824fb0af6fccbae5454e10d724ed0579bba8f"
       },
       {
         "bytes": 1261,
@@ -2067,9 +2092,9 @@
         "sha256": "a59cea06040900a76f8772fd845ac3ee64af19aca4d37e845cfcce6b32202422"
       },
       {
-        "bytes": 12463,
+        "bytes": 12475,
         "path": "src/data_olympus/push_queue.py",
-        "sha256": "32fde6c4033552aa6cf7f2e3a14dcd2758859c25a38a65837b139386fa951bbf"
+        "sha256": "9997908cee010521953160f54b5accb657ca2c668b4dfc7b6821bd6e54b19be7"
       },
       {
         "bytes": 9066,
@@ -2077,24 +2102,24 @@
         "sha256": "1935cc29237b7e0b6ea6e4cddb37e2bf22ed114a45c545cddf558ea2e27bfa48"
       },
       {
-        "bytes": 3838,
+        "bytes": 3832,
         "path": "src/data_olympus/rate_limit.py",
-        "sha256": "33410ccb282f8448e431497294da8433bd10bdc35f1490a82a68ce27c3b7ff94"
+        "sha256": "b5705b9e22542dcf23004d924879c714077d275623b4085ff45ea2240062e4b4"
       },
       {
-        "bytes": 21161,
+        "bytes": 22434,
         "path": "src/data_olympus/refresh.py",
-        "sha256": "fb2dc7e44c729ac414a9039bd151e31d773b3f8f25bf9fcc309a0ba4116fc5ee"
+        "sha256": "7e4031c8a219294c612a3f65d282961254a8076a43c9178255cd11b505c69826"
       },
       {
-        "bytes": 5067,
+        "bytes": 8824,
         "path": "src/data_olympus/report.py",
-        "sha256": "057db35fe9418dc5708e1ad3bdc4cd38c5e2ce2207bcb62024e0b7283028b109"
+        "sha256": "09775035720c24a8964165666798a27fdfd72b9d5852507c431a8ee2073f6a29"
       },
       {
-        "bytes": 46146,
+        "bytes": 57755,
         "path": "src/data_olympus/rest_api.py",
-        "sha256": "cf033a7084c027db9501cc8cbd45c0171606ca35b56fb4edc2ff4a892866ea29"
+        "sha256": "3c7a403eecda5695fa36cb6b3b34fdd1379da8cee7d06ef73cc8ed482717df53"
       },
       {
         "bytes": 1246,
@@ -2104,7 +2129,7 @@
       {
         "bytes": 15506,
         "path": "src/data_olympus/scaffold.py",
-        "sha256": "12ae5fd82d7a9b4c7f54af0e8ee31254c47d37ef3b7201e8aaf8b8f9f37637c9"
+        "sha256": "96ea976adbd2de4d99534977f0bd810258ed93559a33c39d3729409b825d6380"
       },
       {
         "bytes": 3049,
@@ -2117,14 +2142,14 @@
         "sha256": "7f166b9afd1d981b15a0e04b2dded33164721b8ba0e26bcd662f7f360e70ee79"
       },
       {
-        "bytes": 82746,
+        "bytes": 92042,
         "path": "src/data_olympus/server.py",
-        "sha256": "84889ae8ad28d812801e40f0faf3cba7e779515315dd6e7cd2cc4c33497e8dea"
+        "sha256": "0904cb46449f10e5cf7825836612b815f403c18734d9c7e680b9aa1516f3f8a6"
       },
       {
-        "bytes": 14110,
+        "bytes": 14194,
         "path": "src/data_olympus/session_metrics.py",
-        "sha256": "a64e429a14e5a08a3706cd7b8ba38d3df850e8c7a99d8e2d70eca04e45699155"
+        "sha256": "32c2cef8c0aa61f9901cf7999a7163468c730d1f0b1732faeb96ec5495f75043"
       },
       {
         "bytes": 27691,
@@ -2147,34 +2172,39 @@
         "sha256": "efc306a5ca0efc39835e93f157b143910ada19fd31ba9e586ca20ab1490c6d01"
       },
       {
-        "bytes": 1534,
+        "bytes": 1970,
         "path": "src/data_olympus/tools_audit.py",
-        "sha256": "7f728905a320b6f4275ee39945475cfe6b3097585b2ae774dc4cca737e0d4793"
+        "sha256": "ee323396686ce8d08a9f8d024188e318dc02548071f5b9ec50a19668106f7d25"
       },
       {
-        "bytes": 12314,
+        "bytes": 6176,
+        "path": "src/data_olympus/tools_curate.py",
+        "sha256": "f2904650bb1e43401928b8dd40dc9a254f81062d9984fabdf497b876aa1ed45c"
+      },
+      {
+        "bytes": 15729,
         "path": "src/data_olympus/tools_enforce.py",
-        "sha256": "c4df4efd6c0296c2663d79e56e1c846dd945459f5238b117b3b025377088ee93"
+        "sha256": "9af75f61225735323f9f7aec3ee716b641cdb6280fa66f56b7b5130a475ee09f"
       },
       {
-        "bytes": 36229,
+        "bytes": 38014,
         "path": "src/data_olympus/tools_onboarding.py",
-        "sha256": "cf0f015df6640daf6661fe4717e7f66e9cac975a6111bc25b1564785adeff872"
+        "sha256": "f5a99780ce101c759ba18311ca9b3fd22c0681dc5a15263266d1d20f20588b49"
       },
       {
-        "bytes": 11629,
+        "bytes": 14344,
         "path": "src/data_olympus/tools_read.py",
-        "sha256": "a9ce2dae51ca63c23904a8aff21a73b7d96577cb549679be051ccf7546547179"
+        "sha256": "d17e65ba0c8ebe79c48c93c3514d410ffa973acc7763bb227534383180bc8318"
       },
       {
-        "bytes": 2599,
+        "bytes": 3020,
         "path": "src/data_olympus/tools_recap.py",
-        "sha256": "19a81fad106c7b2cbf0f20a96b20c0f3ee60311e4e396476534a6d49beba2606"
+        "sha256": "7345a1cef31642a472695f3ad3ba05e5d0e714a218dd9db852db4a61450ae061"
       },
       {
-        "bytes": 95812,
+        "bytes": 126788,
         "path": "src/data_olympus/tools_write.py",
-        "sha256": "c1a5565ce45f1e75c84f3804ca920fd5fe770dad6f12a9ec1ab724664be68acd"
+        "sha256": "60934d426d07437e900888eb04a9a9c56e2ac8250ff6a7455ab8f1e19fda696f"
       },
       {
         "bytes": 5662,
@@ -2192,22 +2222,27 @@
         "sha256": "a2f702ef873879f0c3d7016bca3081ad6a98ef12d49057da396fa1f4447fd218"
       },
       {
-        "bytes": 15915,
+        "bytes": 15912,
         "path": "src/data_olympus/viewer/generator.py",
-        "sha256": "61ab7990f68d38aadb8caf94201c2ebffdac1986e0afe2345241eee165b1f881"
+        "sha256": "ac5341c4c9f8935c6152644b3a2fd800bd1f8d91d34e86e4e6c46f478d525114"
       },
       {
-        "bytes": 8155,
+        "bytes": 8189,
         "path": "src/data_olympus/worktrees.py",
-        "sha256": "8bf0ea9dd570e5db3f38c51a1e4055b8ec848a0d5b41d3020e9d7ca41241bc91"
+        "sha256": "92d44e7c20e55d7cf29fff717979da31a71ca6d3e43ad121bc7f59542f74c748"
       },
       {
-        "bytes": 47705,
+        "bytes": 52439,
         "path": "src/data_olympus/write_gate.py",
-        "sha256": "0e122bc93335ed345f7df0572068a97b39fb6d9e4fa8e20c7295249a011c9bf9"
+        "sha256": "a90838c352cffaa4a1e58571eff2050783866e4e7816b05255a2b16d222726f3"
+      },
+      {
+        "bytes": 3836,
+        "path": "src/data_olympus/writing_rules.py",
+        "sha256": "3c32818fc18ca5ae568020a2c11148621d180d2d3a41cae0c5516c522af4e0ae"
       }
     ],
-    "sha256": "5402d027edb73d55e9ce100ac6c5d7e363be2d681cd14371e1a836e568a73c4a"
+    "sha256": "5506a17a970858f73f90d27b4bc97d9ceb8a29b4d5446f9fe6c889a13dfa5bea"
   },
   "summary": {
     "embedding_ablation": {
