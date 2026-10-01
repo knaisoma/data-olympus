@@ -35,6 +35,11 @@ class Config:
     push_queue_root: str = "/state/push-queue"
     write_block_tiers: list[str] = field(default_factory=list)
     write_block_paths: list[str] = field(default_factory=list)
+    # Writing rules on write-pipeline postimages (issue #283): "enforce",
+    # "warn" (report findings, still commit) or "off"; and fnmatch globs of
+    # target paths the rules skip, matched like write_block_paths.
+    writing_rules_mode: str = "warn"
+    writing_rules_exclude_paths: list[str] = field(default_factory=list)
     rate_limit_per_hour: int = 100
     rate_limit_per_ip_per_hour: int = 0
     # Separate ceiling for the high-frequency /api/v1/gate/check route (the
@@ -439,6 +444,12 @@ def load_config() -> Config:
     push_queue_root = os.getenv("KB_PUSH_QUEUE_ROOT", "/state/push-queue")
     write_block_tiers = _split_csv(os.getenv("KB_WRITE_BLOCK_TIERS", ""))
     write_block_paths = _split_csv(os.getenv("KB_WRITE_BLOCK_PATHS", ""))
+    from data_olympus.writing_rules import parse_mode
+    # A typo is refused here with the accepted values named, never defaulted,
+    # so it cannot silently become the permissive mode.
+    writing_rules_mode = parse_mode(os.getenv("KB_WRITING_RULES_MODE", "warn"))
+    writing_rules_exclude_paths = _split_csv(
+        os.getenv("KB_WRITING_RULES_EXCLUDE_PATHS", ""))
     rate_limit_per_hour = int(os.getenv("KB_RATE_LIMIT_PER_HOUR", "100"))
     rate_limit_per_ip_per_hour = int(os.getenv("KB_RATE_LIMIT_PER_IP_PER_HOUR", "0"))
     gate_check_rate_limit_per_hour = int(os.getenv("KB_GATE_CHECK_RATE_LIMIT_PER_HOUR", "0"))
@@ -558,6 +569,8 @@ def load_config() -> Config:
         push_queue_root=push_queue_root,
         write_block_tiers=write_block_tiers,
         write_block_paths=write_block_paths,
+        writing_rules_mode=writing_rules_mode,
+        writing_rules_exclude_paths=writing_rules_exclude_paths,
         rate_limit_per_hour=rate_limit_per_hour,
         rate_limit_per_ip_per_hour=rate_limit_per_ip_per_hour,
         gate_check_rate_limit_per_hour=gate_check_rate_limit_per_hour,

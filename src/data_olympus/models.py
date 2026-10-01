@@ -494,6 +494,11 @@ class ProposeResponse(BaseModel):
     # read failure -- and the rule fails closed). None on every other outcome
     # (including a plain low-confidence pending_confirmation).
     demotion_reason: str | None = None
+    # Writing rules on the postimage (issue #283), one "line <n>: <rule>:
+    # <excerpt>" entry per finding on an ADDED line. Set with status
+    # rejected_writing_rule in enforce mode, and alongside "committed" in warn
+    # mode, where the write proceeds and the findings are reported.
+    writing_rule_findings: list[str] | None = None
 
 
 class ResolvePendingRequest(BaseModel):
@@ -520,6 +525,11 @@ class ResolvePendingResponse(BaseModel):
     # entry landed, else "enqueue_failed_recovery_pending" (the commit is durable
     # but is recovered by in-process/startup recovery, not queued this attempt).
     push_state: str | None = None
+    # Writing rules on the postimage (issue #283), one "line <n>: <rule>:
+    # <excerpt>" entry per finding on an ADDED line. Set with status
+    # rejected_writing_rule in enforce mode, and alongside "committed" in warn
+    # mode, where the write proceeds and the findings are reported.
+    writing_rule_findings: list[str] | None = None
 
 
 class PendingDetailResponse(BaseModel):

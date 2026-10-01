@@ -68,6 +68,7 @@ from data_olympus.tools_read import (
     shape_response,
 )
 from data_olympus.worktrees import WorktreeRegistry
+from data_olympus.writing_rules import policy_from_config
 
 log = logging.getLogger("data_olympus")
 
@@ -467,6 +468,8 @@ def build_app(
     audit_log_path: str | None = None,
     write_block_tiers: list[str] | None = None,
     write_block_paths: list[str] | None = None,
+    writing_rules_mode: str = "warn",
+    writing_rules_exclude_paths: list[str] | None = None,
     confidence_threshold: float = 0.85,
     rate_limit_per_hour: int = 100,
     rate_limit_per_ip_per_hour: int = 0,
@@ -530,6 +533,8 @@ def build_app(
         push_queue_root=push_queue_root,
         write_block_tiers=write_block_tiers or [],
         write_block_paths=write_block_paths or [],
+        writing_rules_mode=writing_rules_mode,
+        writing_rules_exclude_paths=list(writing_rules_exclude_paths or []),
         rate_limit_per_hour=rate_limit_per_hour,
         rate_limit_per_ip_per_hour=rate_limit_per_ip_per_hour,
         gate_check_rate_limit_per_hour=gate_check_rate_limit_per_hour,
@@ -1085,6 +1090,7 @@ def build_app(
                 proposer_principal=_current_principal.get().name,
                 max_text_bytes=state.config.max_text_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                writing_rules=policy_from_config(state.config),
                 evidence=evidence,
             )
             return resp.model_dump()
@@ -1132,6 +1138,7 @@ def build_app(
                 proposer_principal=_current_principal.get().name,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                writing_rules=policy_from_config(state.config),
                 evidence=evidence,
                 contest=contest,
             )
@@ -1171,6 +1178,7 @@ def build_app(
                 # cap here so the two surfaces match.
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                writing_rules=policy_from_config(state.config),
                 override_secret_scan=override_secret_scan,
             )
             return resp.model_dump()
@@ -1263,6 +1271,7 @@ def build_app(
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 max_files=state.config.max_bootstrap_files,
                 serializer=state.write_serializer,
+                writing_rules=policy_from_config(state.config),
             )
             return resp.model_dump()
 
@@ -1435,6 +1444,8 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         audit_log_path=config.audit_log_path,
         write_block_tiers=list(config.write_block_tiers),
         write_block_paths=list(config.write_block_paths),
+        writing_rules_mode=config.writing_rules_mode,
+        writing_rules_exclude_paths=list(config.writing_rules_exclude_paths),
         confidence_threshold=config.confidence_threshold,
         rate_limit_per_hour=config.rate_limit_per_hour,
         rate_limit_per_ip_per_hour=config.rate_limit_per_ip_per_hour,

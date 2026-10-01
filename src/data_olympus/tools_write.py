@@ -50,6 +50,7 @@ from data_olympus.write_gate import (
     scan_postimage_for_secrets,
     validate_postimage,
 )
+from data_olympus.writing_rules import WritingRulesPolicy, added_line_findings
 
 if TYPE_CHECKING:
     from data_olympus.audit_log import AuditLog
@@ -482,6 +483,7 @@ def _emit_audit(
     evidence: list[str] | None = None,
     demotion_reason: str | None = None,
     injection_suspect: bool | None = None,
+    writing_rules: str | None = None,
 ) -> None:
     if audit_log is None:
         return
@@ -505,7 +507,21 @@ def _emit_audit(
             "evidence": evidence,
             "demotion_reason": demotion_reason,
             "injection_suspect": injection_suspect,
+            "writing_rules": writing_rules,
         })
+
+
+def _rule_audit(findings: list[str] | None, outcome: str) -> str | None:
+    """Audit form of writing-rule findings: rule names and line numbers only.
+    Excerpts stay out of the audit log, so it never accumulates rejected prose
+    (issue #283)."""
+    if not findings:
+        return None
+    marks = []
+    for f in findings:
+        m = re.search(r"line (\d+): ([a-z-]+):", f)
+        marks.append(f"{m.group(2)}@{m.group(1)}" if m else "check-failed")
+    return f"{outcome}:" + ",".join(marks)
 
 
 def _governed_lane_check(
@@ -593,6 +609,62 @@ class _WriteRejected(Exception):
         super().__init__(response.status)
 
 
+def _read_preimage(full_path: str) -> str:
+    """The target's current text, or "" for a new file. An existing target that
+    is not valid UTF-8 raises, so it can never pass as an empty preimage that
+    would treat the whole postimage as added (issue #283)."""
+    if not os.path.isfile(full_path):
+        return ""
+    with open(full_path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _writing_rule_gate(
+    *,
+    policy: WritingRulesPolicy | None,
+    target_path: str,
+    full_path: str,
+    postimage: str,
+) -> list[str]:
+    """Apply the writing rules to the lines ``postimage`` adds (issue #283).
+
+    Returns the rendered findings to report alongside a ``warn``-mode commit
+    (empty when clean, off, unconfigured or excluded). In ``enforce`` mode a
+    finding raises :class:`_WriteRejected` with ``rejected_writing_rule``.
+
+    The gate itself failing is never suppressed: an exception (an undecodable
+    target, a regex pathology, anything else) rejects in ``enforce`` and is
+    reported as a warning in ``warn``, so a broken gate cannot become a silently
+    absent one.
+    """
+    if policy is None or policy.mode == "off" or policy.excludes(target_path):
+        return []
+    try:
+        findings = [f.render() for f in added_line_findings(
+            preimage=_read_preimage(full_path), postimage=postimage)]
+    except Exception as exc:  # noqa: BLE001 - classified by mode below, never dropped
+        reason = f"writing-rule check failed: {type(exc).__name__}: {exc}"
+        if policy.mode == "enforce":
+            raise _WriteRejected(ProposeResponse(
+                status="rejected_writing_rule", target_path=target_path,
+                reason=reason)) from exc
+        _log.warning("writing-rule check failed for %s; committing in warn mode: %s",
+                     target_path, reason)
+        return [reason]
+    if not findings:
+        return []
+    if policy.mode == "enforce":
+        raise _WriteRejected(ProposeResponse(
+            status="rejected_writing_rule", target_path=target_path,
+            reason=(f"{len(findings)} writing-rule finding(s) on added lines; "
+                    "rewrite them, or end a genuine quotation with "
+                    "<!-- prose-lint: allow -->"),
+            writing_rule_findings=findings))
+    _log.warning("writing-rule findings on %s committed in warn mode: %d",
+                 target_path, len(findings))
+    return findings
+
+
 class _WriteDemoted(Exception):
     """Internal control-flow signal (issue #112, codex round-2 blocker): the
     in-worktree governed-target backstop found the edit's target IN FORCE on
@@ -634,6 +706,8 @@ def _commit_in_worktree(
     secret_scan_override: bool = False,
     governed_target_check: bool = False,
     claim_recorder: _ClaimRecorder | None = None,
+    writing_rules: WritingRulesPolicy | None = None,
+    writing_rule_sink: list[str] | None = None,
 ) -> tuple[str, str, SecretMatch | None]:
     """Serialized write -> git add -> commit -> enqueue critical section.
 
@@ -815,6 +889,21 @@ def _commit_in_worktree(
                         ),
                         matching_pattern=secret_result.match.pattern_name,
                     ))
+
+            # 5-post. Writing rules on the lines this write ADDS (issue #283).
+            # After the secret scan, because a writing-rule rejection echoes the
+            # offending lines and a postimage that also carries a credential
+            # must still be rejected as the redacted rejected_secret_detected;
+            # before content validation, so the rejection names the rule rather
+            # than a schema complaint. The preimage is the target on the
+            # refreshed base, read here rather than borrowed from the governed
+            # backstop below, which not every caller runs. Warn-mode findings
+            # go to the caller through ``writing_rule_sink``.
+            rule_warnings = _writing_rule_gate(
+                policy=writing_rules, target_path=target_path,
+                full_path=full_path, postimage=postimage)
+            if writing_rule_sink is not None:
+                writing_rule_sink.extend(rule_warnings)
 
             # 5a. Content-validation gate (item 4). Pass the worktree so the
             # duplicate-id check also scans the committed tree (catches a
@@ -1140,6 +1229,9 @@ def commit_multifile_in_worktree(
     target_path_for_msg: str,
     confidence: float,
     push_meta: dict[str, Any] | None = None,
+    writing_rules: WritingRulesPolicy | None = None,
+    writing_rule_sink: list[str] | None = None,
+    writing_rule_exempt: bool = False,
 ) -> tuple[str, str]:
     """Serialized multi-file write -> add -> ONE commit -> enqueue (Codex Blocker 2).
 
@@ -1151,7 +1243,17 @@ def commit_multifile_in_worktree(
     commit. Rejection order: secret scan of the whole bundle, then intra-bundle
     duplicate ids, then per-file containment and content validation (issue
     #259). CAS is not applied here (bootstrap creates NEW files under a
-    not-yet-onboarded workspace; there is no base to compare). Returns
+    not-yet-onboarded workspace; there is no base to compare).
+
+    Writing rules (issue #283) apply after the secret scan, per file, against
+    what the worktree holds now (an absent file is an empty preimage). That is
+    only safe for today's callers, whose files are new or machine-rendered: a
+    future caller that edits an EXISTING file must move to the CAS-validated
+    single-file basis first. ``writing_rule_exempt`` skips them for a
+    machine-rendered bundle; it is passed True ONLY by
+    ``maintenance.maybe_update_ledger`` and is on no MCP or REST surface, so no
+    client can reach it. The identity assertion beside it is a tripwire for a
+    future in-tree misuse, not a control. Returns
     ``(commit_sha, push_state)``. Raises :class:`_WriteRejected` on a gate failure
     or :class:`PathLockBusyError` when any target path is already locked.
     """
@@ -1214,6 +1316,21 @@ def commit_multifile_in_worktree(
                     ),
                     matching_pattern=secret_result.match.pattern_name,
                 ))
+
+        if writing_rule_exempt:
+            assert agent_identity == "data-olympus-system", (
+                "writing_rule_exempt is for the machine-rendered ledger only")
+        else:
+            for f in files:
+                tp, pi = f["target_path"], f["postimage"]
+                full = safe_join_under_root(wt.path, tp)
+                if full is None:
+                    continue  # containment rejects it below, without echoing text
+                rule_warnings = _writing_rule_gate(
+                    policy=writing_rules, target_path=tp, full_path=full,
+                    postimage=pi)
+                if writing_rule_sink is not None:
+                    writing_rule_sink.extend(f"{tp}: {w}" for w in rule_warnings)
 
         from data_olympus.write_gate import CommitSnapshot, _effective_doc_id
         seen_ids: dict[str, str] = {}
@@ -1291,6 +1408,7 @@ def kb_propose_memory_fn(
     serializer: WriteSerializer | None = None,
     idx: Index | None = None,
     evidence: list[str] | None = None,
+    writing_rules: WritingRulesPolicy | None = None,
 ) -> ProposeResponse:
     """Propose a new memory file under the memory inbox prefix as
     <date>-<slug>-<uniq>.md.
@@ -1539,6 +1657,7 @@ def kb_propose_memory_fn(
         )
 
     # High confidence: serialized commit + enqueue push (items 1, 4, 8).
+    rule_warnings: list[str] = []
     try:
         sha, push_state, _secret_override = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
@@ -1550,12 +1669,15 @@ def kb_propose_memory_fn(
             operator_confirmed=False,
             push_meta={"source_session": source_session,
                        "agent_identity": agent_identity},
+            writing_rules=writing_rules, writing_rule_sink=rule_warnings,
         )
     except _WriteRejected as rej:
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
                                    "reason": resp.reason,
-                                   "matching_pattern": resp.matching_pattern})
+                                   "matching_pattern": resp.matching_pattern,
+                                   "writing_rules": _rule_audit(
+                                       resp.writing_rule_findings, "rejected")})
         return resp
     except PathLockBusyError:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
@@ -1563,8 +1685,10 @@ def kb_propose_memory_fn(
                                target_path=target_path)
     _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha,
                                "evidence": _redact_evidence(evidence) or None,
-                               "injection_suspect": bool(injection_matches) or None})
-    return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state)
+                               "injection_suspect": bool(injection_matches) or None,
+                               "writing_rules": _rule_audit(rule_warnings, "warned")})
+    return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state,
+                           writing_rule_findings=rule_warnings or None)
 
 
 def _render_memory(
@@ -1658,6 +1782,7 @@ def kb_propose_edit_fn(
     idx: Index | None = None,
     evidence: list[str] | None = None,
     contest: Mapping[str, Any] | None = None,
+    writing_rules: WritingRulesPolicy | None = None,
 ) -> ProposeResponse:
     """Propose an edit to an existing (or new) file under target_path.
 
@@ -1967,6 +2092,7 @@ def kb_propose_edit_fn(
     # CURRENT bytes on the refreshed base, closing the index-lag window the
     # tool-layer check above cannot see. Enabled exactly when protection is
     # on; a _WriteDemoted raised there parks the proposal below.
+    rule_warnings: list[str] = []
     try:
         sha, push_state, _secret_override = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
@@ -1981,6 +2107,7 @@ def kb_propose_edit_fn(
             push_meta={"source_session": source_session,
                        "agent_identity": agent_identity, "reason": reason},
             governed_target_check=governed_lane_protection_enabled(),
+            writing_rules=writing_rules, writing_rule_sink=rule_warnings,
         )
     except _WriteDemoted as dem:
         return _park(dem.demotion_reason)
@@ -1988,7 +2115,9 @@ def kb_propose_edit_fn(
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
                                    "reason": resp.reason or reason,
-                                   "matching_pattern": resp.matching_pattern})
+                                   "matching_pattern": resp.matching_pattern,
+                                   "writing_rules": _rule_audit(
+                                       resp.writing_rule_findings, "rejected")})
         return resp
     except PathLockBusyError:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
@@ -1996,8 +2125,10 @@ def kb_propose_edit_fn(
                                target_path=target_path)
     _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha,
                                "evidence": safe_evidence or None,
-                               "injection_suspect": bool(injection_matches) or None})
-    return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state)
+                               "injection_suspect": bool(injection_matches) or None,
+                               "writing_rules": _rule_audit(rule_warnings, "warned")})
+    return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state,
+                           writing_rule_findings=rule_warnings or None)
 
 
 def kb_resolve_pending_fn(
@@ -2015,6 +2146,7 @@ def kb_resolve_pending_fn(
     serializer: WriteSerializer | None = None,
     idx: Index | None = None,
     override_secret_scan: bool = False,
+    writing_rules: WritingRulesPolicy | None = None,
 ) -> ResolvePendingResponse:
     """Resolve a pending proposal. ``override_secret_scan`` (default False) is
     the operator's explicit, conscious override of the issue #71 secret-
@@ -2132,6 +2264,7 @@ def kb_resolve_pending_fn(
     recorder = _ClaimRecorder(
         pending=pending, pending_id=pending_id, claim_token=resolved.claim_token,
     )
+    rule_warnings: list[str] = []
     try:
         sha, push_state, secret_override = _commit_in_worktree(
             claim_recorder=recorder,
@@ -2152,6 +2285,7 @@ def kb_resolve_pending_fn(
             lock_owner=f"resolve:{pending_id}",
             hold_path_lock=True,
             secret_scan_override=override_secret_scan,
+            writing_rules=writing_rules, writing_rule_sink=rule_warnings,
         )
     except _WriteRejected as rej:
         # Gate rejected BEFORE anything was written, so nothing committed. Put
@@ -2162,8 +2296,12 @@ def kb_resolve_pending_fn(
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
                                    "reason": resp.reason,
-                                   "matching_pattern": resp.matching_pattern})
-        return ResolvePendingResponse(status=resp.status, reason=resp.reason)
+                                   "matching_pattern": resp.matching_pattern,
+                                   "writing_rules": _rule_audit(
+                                       resp.writing_rule_findings, "rejected")})
+        return ResolvePendingResponse(
+            status=resp.status, reason=resp.reason,
+            writing_rule_findings=resp.writing_rule_findings)
     except _WriteOutcomeUnknown:
         # A commit MAY exist. Do not restore: that would offer an
         # already-applied decision for approval a second time. The claim record
@@ -2208,10 +2346,13 @@ def kb_resolve_pending_fn(
     if secret_override is not None:
         audit_extra["secret_scan_override"] = True
         audit_extra["matching_pattern"] = secret_override.pattern_name
+    if rule_warnings:
+        audit_extra["writing_rules"] = _rule_audit(rule_warnings, "warned")
     _emit_audit(audit_log, **{**audit_base, "status": "committed",
                                "commit_sha": sha, **audit_extra})
     return ResolvePendingResponse(status="committed", commit_sha=sha,
-                                  push_state=push_state)
+                                  push_state=push_state,
+                                  writing_rule_findings=rule_warnings or None)
 
 
 _PENDING_NOTE = (

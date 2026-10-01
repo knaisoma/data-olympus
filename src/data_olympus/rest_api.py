@@ -26,6 +26,7 @@ from data_olympus.tools_read import (
     kb_search_fn,
     shape_response,
 )
+from data_olympus.writing_rules import policy_from_config
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -269,9 +270,10 @@ def _propose_status(status: str) -> int:
         return 423
     if status == "rejected_contest_index_unavailable":
         return 503
-    if status in ("rejected_invalid_document", "rejected_secret_detected"):
-        # The postimage failed the content-validation or secret-scanning gate
-        # (issue #71). 422 Unprocessable.
+    if status in ("rejected_invalid_document", "rejected_secret_detected",
+                  "rejected_writing_rule"):
+        # The postimage failed the content-validation, secret-scanning (issue
+        # #71) or writing-rule (issue #283) gate. 422 Unprocessable.
         return 422
     if status == "rejected_invalid_contest":
         return 400
@@ -289,7 +291,8 @@ def _resolve_status(status: str) -> int:
         return 409
     if status == "rejected_stale_base":
         return 409
-    if status in ("rejected_invalid_document", "rejected_secret_detected"):
+    if status in ("rejected_invalid_document", "rejected_secret_detected",
+                  "rejected_writing_rule"):
         return 422
     if status == "rejected_invalid_encoding":
         # A client input error, refused before the claim. It must not share the
@@ -658,6 +661,7 @@ def register_routes(
                 proposer_principal=principal.name,
                 max_text_bytes=state.config.max_text_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                writing_rules=policy_from_config(state.config),
                 evidence=body.get("evidence", []),
             )
             status = _propose_status(resp.status)
@@ -708,6 +712,7 @@ def register_routes(
                 proposer_principal=principal.name,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                writing_rules=policy_from_config(state.config),
                 evidence=body.get("evidence", []),
                 contest=body.get("contest"),
             )
@@ -744,6 +749,7 @@ def register_routes(
                     audit_log=state.audit_log,
                     max_postimage_bytes=state.config.max_postimage_bytes,
                     serializer=state.write_serializer, idx=state.idx,
+                    writing_rules=policy_from_config(state.config),
                     override_secret_scan=bool(body.get("override_secret_scan", False)),
                 )
             except PendingNotFoundError:
@@ -1029,6 +1035,7 @@ def register_routes(
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 max_files=state.config.max_bootstrap_files,
                 serializer=state.write_serializer,
+                writing_rules=policy_from_config(state.config),
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from data_olympus.rate_limit import SlidingWindowLimiter
     from data_olympus.worktrees import WorktreeRegistry
     from data_olympus.write_gate import WriteSerializer
+    from data_olympus.writing_rules import WritingRulesPolicy
 
 
 
@@ -111,6 +112,7 @@ def kb_bootstrap_project_fn(
     max_files: int = 0,
     in_flight: BootstrapInFlight | None = None,
     serializer: WriteSerializer | None = None,
+    writing_rules: WritingRulesPolicy | None = None,
 ) -> BootstrapResponse:
     """Bootstrap a new workspace/component. Callable when status is ``absent`` or
     ``partial``.
@@ -230,7 +232,7 @@ def kb_bootstrap_project_fn(
             remote_addr=remote_addr, can_auto_commit=can_auto_commit,
             proposer_principal=proposer_principal,
             max_postimage_bytes=max_postimage_bytes, max_files=max_files,
-            serializer=serializer,
+            serializer=serializer, writing_rules=writing_rules,
         )
         committed = resp.status == "committed"
         return _audited(resp)
@@ -263,6 +265,7 @@ def _bootstrap_admitted(
     max_postimage_bytes: int,
     max_files: int,
     serializer: WriteSerializer | None = None,
+    writing_rules: WritingRulesPolicy | None = None,
 ) -> BootstrapResponse:
     """Body of a bootstrap that passed the state re-check and won the in-flight
     claim. Split out so the outer function owns the claim/release lifecycle and
@@ -605,6 +608,7 @@ def _bootstrap_admitted(
             target_path_for_msg=path_for_msg, confidence=confidence,
             push_meta={"source_session": source_session,
                        "agent_identity": agent_identity, "bootstrap": True},
+            writing_rules=writing_rules,
         )
     except _WriteRejected as rej:
         resp = rej.response
