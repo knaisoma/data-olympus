@@ -1426,6 +1426,8 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         problem = corpus_path_problem(config)
         if problem is not None:
             raise NotADirectoryError(problem)
+    from data_olympus.write_gate import configure_extra_secret_patterns
+    configure_extra_secret_patterns(config.secret_scan_extra_patterns)
     return build_app(
         # Issue #257: the shipped entry point could not reach the classifier's
         # own constructor arguments, so an operator had no way to govern an

@@ -39,6 +39,15 @@ def _force_git_default_branch_main(
             os.environ["GIT_CONFIG_GLOBAL"] = prev
 
 
+@pytest.fixture(autouse=True)
+def _reset_configured_secret_patterns() -> Iterator[None]:
+    """Building an app from a Config installs its extra secret-scan patterns
+    process-wide; restore the environment fallback after every test."""
+    yield
+    from data_olympus.write_gate import configure_extra_secret_patterns
+    configure_extra_secret_patterns(None)
+
+
 @pytest.fixture
 def tmp_kb(tmp_path: Path) -> Path:
     """A tiny KB with markdown files mimicking the v2 KB structure.

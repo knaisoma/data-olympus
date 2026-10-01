@@ -73,6 +73,9 @@ class Config:
     governed_extra_keywords: tuple[str, ...] = ()
     governed_extra_path_globs: tuple[str, ...] = ()
     governed_extra_command_patterns: tuple[str, ...] = ()
+    # Operator-supplied secret-scan regexes (KB_SECRET_SCAN_EXTRA_PATTERNS),
+    # validated at load and installed into the scan gate by the server.
+    secret_scan_extra_patterns: tuple[str, ...] = ()
     worktree_idle_sec: int = 3600
     git_key_path: str = "/tmp/git-key"
     # Branch of the knowledge-base repository the server fetches, fast-forwards,
@@ -478,6 +481,20 @@ def _csv_tuple(name: str) -> tuple[str, ...]:
     return entries
 
 
+def _load_secret_scan_extra_patterns(raw: str) -> tuple[str, ...]:
+    """Parse and validate ``KB_SECRET_SCAN_EXTRA_PATTERNS`` (a JSON array of
+    strings, or the comma form). An unusable entry raises ``ValueError``
+    naming the setting and the entry number."""
+    from data_olympus.write_gate import (
+        compile_extra_secret_patterns,
+        split_extra_secret_patterns,
+    )
+
+    entries = split_extra_secret_patterns(raw)
+    compile_extra_secret_patterns(entries, strict=True)
+    return tuple(str(e) for e in entries)
+
+
 def load_config() -> Config:
     """Load configuration from environment, applying defaults."""
     threshold = float(os.environ.get("KB_CONFIDENCE_THRESHOLD", "0.85"))
@@ -532,6 +549,9 @@ def load_config() -> Config:
     governed_extra_keywords = _csv_tuple("KB_GOVERNED_EXTRA_KEYWORDS")
     governed_extra_path_globs = _csv_tuple("KB_GOVERNED_EXTRA_PATH_GLOBS")
     governed_extra_command_patterns = _csv_tuple("KB_GOVERNED_EXTRA_COMMAND_PATTERNS")
+    secret_scan_extra_patterns = _load_secret_scan_extra_patterns(
+        os.getenv("KB_SECRET_SCAN_EXTRA_PATTERNS", "")
+    )
     worktree_idle_sec = int(os.getenv("KB_WORKTREE_IDLE_SEC", "3600"))
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
     kb_git_branch = _load_git_branch(os.getenv("KB_GIT_BRANCH", ""))
@@ -633,6 +653,7 @@ def load_config() -> Config:
         governed_extra_keywords=governed_extra_keywords,
         governed_extra_path_globs=governed_extra_path_globs,
         governed_extra_command_patterns=governed_extra_command_patterns,
+        secret_scan_extra_patterns=secret_scan_extra_patterns,
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
         kb_git_branch=kb_git_branch,
