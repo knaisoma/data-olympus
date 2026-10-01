@@ -135,6 +135,8 @@ Authentication is resolved from the `Authorization: Bearer <token>` header again
 
   A principal with `propose` but not `auto_commit` may propose, but its proposals are always parked as pending (the confidence clamp).
 
+  A set but malformed value (invalid JSON, not a list, an empty list, or any entry that is not an object with a non-empty string `token`) fails startup with an error naming `KB_AUTH_PRINCIPALS`, without repeating the value.
+
   **Breaking change in v0.3.0:** a `KB_AUTH_PRINCIPALS` entry that omits the `capabilities` field now defaults to least privilege (`{read, propose}`) instead of all capabilities; grant `resolve`, `auto_commit`, `bootstrap`, or `record_event` by listing them explicitly. This prevents an agent token from silently gaining self-approval (`resolve` + `auto_commit`).
 
 Tokens are compared with `hmac.compare_digest` (constant time).

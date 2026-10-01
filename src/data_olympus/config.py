@@ -517,6 +517,7 @@ def load_config() -> Config:
     audit_max_bytes = int(os.getenv("KB_AUDIT_MAX_BYTES", "0"))
     auth_token = os.getenv("KB_AUTH_TOKEN", "")
     from data_olympus.principals import parse_principals_env
+    # Raises when set but malformed: dropping it could leave auth off.
     auth_principals = parse_principals_env(os.getenv("KB_AUTH_PRINCIPALS", ""))
     consult_ttl_sec = int(os.getenv("KB_CONSULT_TTL_SEC", "300"))
     gate_clearance = _load_gate_clearance(os.getenv("KB_GATE_CLEARANCE", ""))
