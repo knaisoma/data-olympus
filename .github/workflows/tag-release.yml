@@ -368,10 +368,12 @@ jobs:
           # second opinion in case the filter's semantics change.
           registry_query() {
             for _ in $(seq 1 6); do
-              if curl -fsS --get "$REGISTRY/v0/servers" "$@" -o /tmp/registry.json; then
-                jq -r --arg name "$SERVER_NAME" \
-                  '.servers[] | (.server // .) | select(.name == $name) | .version' \
-                  /tmp/registry.json
+              # A 200 whose body is not the expected shape is a failed read too.
+              if curl -fsS --get "$REGISTRY/v0/servers" "$@" -o /tmp/registry.json \
+                  && jq -r --arg name "$SERVER_NAME" \
+                    '.servers[] | (.server // .) | select(.name == $name) | .version' \
+                    /tmp/registry.json > /tmp/registry-versions.txt; then
+                cat /tmp/registry-versions.txt
                 return 0
               fi
               sleep 5
