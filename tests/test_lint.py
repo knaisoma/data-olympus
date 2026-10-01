@@ -5,8 +5,9 @@ from data_olympus.format.validate import RESERVED
 
 
 def test_lint_bundle_reports_only_nonconformant_files(tmp_path: Path):
+    # A root-level path classifies as tier 'meta' (issue #304 taxonomy warning).
     (tmp_path / "good.md").write_text(
-        "---\nid: A-1\ntype: standard\nstatus: active\ntier: T1\n"
+        "---\nid: A-1\ntype: standard\nstatus: active\ntier: meta\n"
         "title: t\ndescription: d\ntags: [x]\ntimestamp: 2026-01-01\n---\nok\n",
         encoding="utf-8",
     )

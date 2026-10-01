@@ -1045,6 +1045,18 @@ time, with no code change:
 - `KB_MEMORY_INBOX_PREFIX`: directory new memory proposals are written under
   (default `memory/inbox/`).
 
+A document's frontmatter `tier` or `category`, when present, overrides the
+path-derived value in the index, so search facets and listings use it. The
+write blocklist (`KB_WRITE_BLOCK_TIERS`) ignores that override and classifies
+the target by path, so an author cannot declare a document out of a blocked
+tier. `data-olympus lint <bundle>` reports each disagreement as a warning that
+names the path-implied value, using the same taxonomy (`KB_TAXONOMY_PATH` when
+set). The warning never changes the exit code. Because the frontmatter
+vocabulary has no spelling for the meta path tiers (`decisions`, `workflows`,
+`memory`, `tooling`, `templates`, or an unmatched path), a declared `meta`
+satisfies them. If `KB_TAXONOMY_PATH` cannot be loaded, lint prints a notice
+on stderr and skips this check.
+
 ## Synonym / acronym query expansion
 
 Before building the FTS MATCH, the server rewrites the query term list through a
