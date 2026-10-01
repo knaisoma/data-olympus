@@ -302,6 +302,7 @@ def kb_compliance_fn(
     counts. Ignores non-enforcement audit events."""
     counts: dict[str, int] = {}
     by_agent: dict[str, dict[str, int]] = {}
+    skipped = 0
     # A ``since`` window may reach into rotated segments; include them so the
     # aggregate is complete over the requested window (the ``since`` floor bounds
     # the scan). Without ``since`` the aggregate is over the live file only,
@@ -312,11 +313,16 @@ def kb_compliance_fn(
         et = ev.get("event_type", "")
         if et not in ENFORCE_EVENT_TYPES:
             continue
-        counts[et] = counts.get(et, 0) + 1
         who = ev.get("agent_identity") or "unknown"
+        if not isinstance(who, str):
+            # A malformed line (issue #310) cannot be attributed to an agent.
+            # Skip and count it rather than failing the whole aggregate.
+            skipped += 1
+            continue
+        counts[et] = counts.get(et, 0) + 1
         bucket = by_agent.setdefault(who, {})
         bucket[et] = bucket.get(et, 0) + 1
-    return ComplianceResponse(counts=counts, by_agent=by_agent)
+    return ComplianceResponse(counts=counts, by_agent=by_agent, skipped=skipped)
 
 
 RECORDABLE_EVENT_TYPES = ("gate_bypass", "gate_degraded")

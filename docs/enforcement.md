@@ -153,6 +153,13 @@ surface via plain `kb_search`/`kb_get`.
 The same three are exposed as the `kb_consult`, `kb_gate_check`, and
 `kb_compliance` MCP tools.
 
+Over REST, each body field named above must be a JSON string when present, and
+only `action_path` may also be null, matching the MCP tools' typed parameters.
+Any other value is refused with HTTP 400 naming the field, and nothing is
+recorded (issue #310). `kb_audit` and `kb_compliance` (MCP and REST) skip an
+audit line they cannot read, such as one an earlier release accepted with a
+numeric field, and report how many in a `skipped` count instead of failing.
+
 ## Configuration
 
 - `KB_CONSULT_TTL_SEC` (default 300): how long a consultation stays fresh.

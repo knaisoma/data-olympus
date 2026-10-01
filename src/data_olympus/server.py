@@ -1227,7 +1227,7 @@ def build_app(
             since (unix ts), agent (agent_identity), status (event status)."""
             if state.audit_log is None:
                 # No audit log configured: no events, as the REST route answers.
-                return {"events": [], "returned": 0, "limit_hit": False}
+                return {"events": [], "returned": 0, "limit_hit": False, "skipped": 0}
             from data_olympus.tools_audit import kb_audit_fn
             resp = kb_audit_fn(audit_log=state.audit_log, since=since,
                               agent=agent, status=status, limit=limit)
@@ -1359,7 +1359,7 @@ def build_app(
             period; use `kb_audit` instead when you need the raw event log or
             per-event details."""
             if state.audit_log is None:
-                return {"counts": {}, "by_agent": {}}
+                return {"counts": {}, "by_agent": {}, "skipped": 0}
             from data_olympus.tools_enforce import kb_compliance_fn
             resp = kb_compliance_fn(audit_log=state.audit_log, since=since, agent=agent)
             return resp.model_dump()

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
 from data_olympus.models import AuditEvent, AuditResponse
 
 if TYPE_CHECKING:
@@ -31,11 +33,20 @@ def kb_audit_fn(
     include_rotated = since is not None
     max_scan = max(1, limit) * _SCAN_MULTIPLE
     events: list[AuditEvent] = []
+    skipped = 0
     for ev in audit_log.iter_filtered(
         since=since, agent=agent, status=status,
         include_rotated=include_rotated, max_scan_events=max_scan,
     ):
-        events.append(AuditEvent(**ev))
+        # A line written before the REST routes checked field types (issue
+        # #310), or edited by hand, may not validate as an event. Skip and
+        # count it: one bad line must not fail every query whose window holds it.
+        try:
+            events.append(AuditEvent(**ev))
+        except (TypeError, ValidationError):
+            skipped += 1
+            continue
         if len(events) >= limit:
             break
-    return AuditResponse(events=events, returned=len(events), limit_hit=len(events) >= limit)
+    return AuditResponse(events=events, returned=len(events),
+                         limit_hit=len(events) >= limit, skipped=skipped)
