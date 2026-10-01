@@ -45,6 +45,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nobody set the threshold and the memory retention fixed in 0.10.0 (#284)
   came back. Only an entry with a non-empty value now counts.
 
+### Security
+
+* **PyJWT 2.15.1** (GHSA-r6x4-923q-g947, GHSA-w2cx-738m-mc7w, both high). The
+  version 0.10.0 resolved, 2.13.0, could accept public key material, such as a
+  JWK container or a BOM-prefixed key, as an HMAC secret. PyJWT reaches Data
+  Olympus only through the MCP SDK's optional crypto extra, and Data Olympus
+  does not call it directly; the lock now resolves the fixed release.
+
 ## [0.10.0] - 2026-09-28
 
 ### Added
