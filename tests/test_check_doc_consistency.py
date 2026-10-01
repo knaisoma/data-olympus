@@ -365,7 +365,8 @@ def test_check_env_defaults_detects_a_stale_documented_default(tmp_path: Path) -
         f"- `KB_SESSION_REAP_INTERVAL_SEC` (default `{_REAP}`).\n"
         f"- `KB_SESSION_TOUCH_INTERVAL_SEC` (default `{_TOUCH}`).\n"
         # The #286 shape: a second restatement that was never updated.
-        f"- reference: `KB_SESSION_IDLE_TIMEOUT_SEC` (default {idle * 6}).\n",
+        f"- reference: `KB_SESSION_IDLE_TIMEOUT_SEC` (default {idle * 6}).\n"
+        "- `KB_WRITING_RULES_MODE` (default `warn`).\n",
         encoding="utf-8",
     )
 
@@ -383,7 +384,8 @@ def test_check_env_defaults_passes_when_every_statement_matches(tmp_path: Path) 
     (docs / "serving.md").write_text(
         f"- `KB_SESSION_IDLE_TIMEOUT_SEC` (default `{_IDLE}`).\n"
         f"- `KB_SESSION_REAP_INTERVAL_SEC` (default `{_REAP}`).\n"
-        f"- `KB_SESSION_TOUCH_INTERVAL_SEC` (default `{_TOUCH}`).\n",
+        f"- `KB_SESSION_TOUCH_INTERVAL_SEC` (default `{_TOUCH}`).\n"
+        "- `KB_WRITING_RULES_MODE` (default `warn`).\n",
         encoding="utf-8",
     )
     assert _check_env_defaults(tmp_path) == []
@@ -395,7 +397,8 @@ def test_check_env_defaults_reports_a_variable_that_lost_its_default(tmp_path: P
     (docs / "serving.md").write_text(
         f"- `KB_SESSION_IDLE_TIMEOUT_SEC` (default `{_IDLE}`).\n"
         f"- `KB_SESSION_REAP_INTERVAL_SEC` (default `{_REAP}`).\n"
-        "- `KB_SESSION_TOUCH_INTERVAL_SEC` is described without a default.\n",
+        "- `KB_SESSION_TOUCH_INTERVAL_SEC` is described without a default.\n"
+        "- `KB_WRITING_RULES_MODE` (default `warn`).\n",
         encoding="utf-8",
     )
     errors = _check_env_defaults(tmp_path)
@@ -416,8 +419,13 @@ def test_real_repo_serving_doc_states_every_guarded_default() -> None:
     than silently checking nothing."""
     repo_root = Path(__file__).resolve().parent.parent
     text = (repo_root / "docs" / "serving.md").read_text(encoding="utf-8")
-    for name, _field in _ENV_DEFAULT_FIELDS:
-        stated = _extract_env_defaults(text, name=name)
+    from dataclasses import fields
+
+    from data_olympus.config import Config
+
+    defaults = {f.name: f.default for f in fields(Config)}
+    for name, field in _ENV_DEFAULT_FIELDS:
+        stated = _extract_env_defaults(text, name=name, kind=type(defaults[field]))
         assert stated, name
     assert _check_env_defaults(repo_root) == []
 
@@ -505,7 +513,8 @@ def test_check_env_defaults_surfaces_an_unreadable_value_as_an_error(
     (docs / "serving.md").write_text(
         f"- `KB_SESSION_IDLE_TIMEOUT_SEC` (default `{_IDLE}`).\n"
         f"- `KB_SESSION_REAP_INTERVAL_SEC` (default `{_REAP}`).\n"
-        f"- `KB_SESSION_TOUCH_INTERVAL_SEC` (default {_TOUCH} seconds).\n",
+        f"- `KB_SESSION_TOUCH_INTERVAL_SEC` (default {_TOUCH} seconds).\n"
+        "- `KB_WRITING_RULES_MODE` (default `warn`).\n",
         encoding="utf-8",
     )
     errors = _check_env_defaults(tmp_path)
@@ -519,3 +528,11 @@ def test_extract_env_defaults_does_not_span_a_blank_line() -> None:
     text = "`KB_SESSION_IDLE_TIMEOUT_SEC`\n\n(default 9).\n"
     with pytest.raises(ParseError, match="no .* default stated"):
         _extract_env_defaults(text, name="KB_SESSION_IDLE_TIMEOUT_SEC")
+
+
+def test_extract_env_defaults_reads_a_word_default_and_refuses_an_unquoted_one() -> None:
+    ok = "`KB_WRITING_RULES_MODE` (default `warn`, which commits and reports)"
+    assert _extract_env_defaults(ok, name="KB_WRITING_RULES_MODE", kind=str) == [(1, "warn")]
+    bad = "`KB_WRITING_RULES_MODE` (default warn mode)"
+    with pytest.raises(ParseError):
+        _extract_env_defaults(bad, name="KB_WRITING_RULES_MODE", kind=str)

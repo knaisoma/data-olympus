@@ -84,6 +84,14 @@ trigram, auth, audit rotation):
 - `KB_PENDING_TIMEOUT_SEC`: age after which an unresolved pending proposal is
   auto-expired by the pending GC loop (default `86400`, i.e. 24h). Each expiry
   emits an audit event.
+- `KB_WRITING_RULES_MODE`: how the writing-rule gate treats the lines a write
+  adds (default `warn`, which commits and reports the findings). `enforce`
+  rejects such a write as `rejected_writing_rule`, and `off` skips the check.
+  Any other value fails startup with the accepted values named. See
+  "Write serialization and integrity gates" below.
+- `KB_WRITING_RULES_EXCLUDE_PATHS`: comma-separated `fnmatch` globs of target
+  paths the writing-rule gate skips, matched like `KB_WRITE_BLOCK_PATHS`
+  (default empty).
 - `KB_SECRET_SCAN_EXTRA_PATTERNS`: comma-separated additional regexes the
   secret-scanning gate (issue #71) checks alongside its built-in pattern set
   (see "Write serialization and integrity gates" above). Each entry is scanned
@@ -356,6 +364,32 @@ section so concurrent writes cannot corrupt each other:
   `regex` engine with a hard 1-second match timeout, so a catastrophic
   pattern the load-time check misses is bounded at scan time (logged and
   skipped) instead of hanging the single-writer write path.
+- A **writing-rule gate** (issue #283) runs after the secret scan and before
+  content validation, on the same commit paths. It applies the project's own
+  raw writing rules (no em-dash, no en-dash used as one, no agent authorship
+  credit; the rules CI enforces through `scripts/prose_lint.py`) to the lines
+  the write ADDS, so an edit never fails on text it did not write. A line counts
+  as added when it occurs more often in the postimage than in the target's
+  current content on the refreshed base (curly quotes folded first), so moving
+  an existing line is not adding it, while a new offending line is always
+  caught. A line ending in `<!-- prose-lint: allow -->` is exempt and keeps
+  the marker in the committed text. Rules are checked on raw lines, including
+  inside code fences. In `enforce` mode a finding rejects the write
+  `rejected_writing_rule` (HTTP 422 on propose and resolve) with
+  `writing_rule_findings` entries of the form `line <n>: <rule>: <excerpt>`;
+  in the default `warn` mode the write commits, the findings are returned in the
+  same field, the audit event records the rule names and line numbers (never
+  the excerpts), and a WARNING is logged. Because it runs after the secret
+  scan, a postimage carrying both a credential and a finding is still reported
+  as the redacted `rejected_secret_detected`. A failure of the check itself,
+  including an existing target that is not valid UTF-8, rejects in `enforce`
+  and is reported as a warning in `warn`; it is never silently skipped. A
+  rejected resolve puts the pending entry back, as other gate rejections do.
+  The machine-rendered maintenance ledger is exempt (it quotes corpus ids and
+  paths no agent wrote there), recorded in its audit event as
+  `skipped:machine_rendered`; that exemption is reachable from no MCP or REST
+  call. Configure it with `KB_WRITING_RULES_MODE` (default `warn`) and
+  `KB_WRITING_RULES_EXCLUDE_PATHS` (see "Core configuration reference").
 
 ## Governed-lane write protection (`KB_GOVERNED_LANE_PROTECTION`, issue #112)
 

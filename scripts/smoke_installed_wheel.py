@@ -57,6 +57,13 @@ required = {
 missing = sorted(name for name in required if not (root / name).is_file())
 assert not missing, missing
 assert root.name == "_bin", root
+
+# The write pipeline's writing-rule gate (#283) imports its rules from the
+# installed package, not from a repository checkout.
+from data_olympus.writing_rules import added_line_findings
+
+findings = added_line_findings(preimage="", postimage="a \u2014 b\n")
+assert [f.rule for f in findings] == ["em-dash"], findings
 """
 
 _VERSION_PROBE = r"""

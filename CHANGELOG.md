@@ -14,6 +14,26 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+* **Writing rules on the documents agents write** (#283). The write pipeline
+  now applies the project's raw writing rules (no em-dash, no en-dash used as
+  one, no agent authorship credit) to the lines a write ADDS, on every commit
+  path: propose memory, propose edit, resolve, and onboarding bootstrap. A
+  write never fails on text it did not add: a line counts as added only when it
+  occurs more often in the postimage than in the target's current content, so
+  moving an existing line is not adding it, while a new offending line is
+  always caught. A line ending in `<!-- prose-lint: allow -->` is exempt.
+  `KB_WRITING_RULES_MODE` selects `enforce` (reject as
+  `rejected_writing_rule`, HTTP 422), `warn` (the default: commit, return the
+  findings in `writing_rule_findings`, record rule names and line numbers in
+  the audit event, and log a warning) or `off`; an unknown value fails startup.
+  `KB_WRITING_RULES_EXCLUDE_PATHS` skips paths by glob. The check runs after
+  the secret scan, so a postimage with both a credential and a finding is
+  still reported as the redacted secret rejection, and a failure of the check
+  itself rejects in `enforce` rather than being skipped. The machine-rendered
+  maintenance ledger is exempt through its own call path, which no client can
+  reach. Upgrade note: the default `warn` changes nothing for existing writes;
+  set `enforce` once a knowledge base adopts these rules.
+
 * **The stable release now publishes the MCP Registry entry** (#303, part of
   #111). After the GitHub release, the promotion workflow signs in to the
   official registry with GitHub OIDC and publishes `server.json` as
@@ -34,6 +54,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   network access must refresh its model cache before upgrading, or startup
   fails with the model unavailable. Lexical-only deployments are unaffected.
 * ruff 0.16.9 for development (#297).
+* **The CLI's fallback taxonomy is held to the index's** (#304). The
+  dependency-free search fallback (`bin/_kb_fallback.py`) keeps its own copy of
+  the path taxonomy; tests now assert that both copies list the same rules in
+  the same order and classify the same paths identically, including with a
+  custom `KB_TAXONOMY_PATH`. A comment was the only thing aligning them before.
 * **The writing-rule linter ships inside the package** (groundwork for #283).
   The vendored gate moved from `scripts/prose_lint.py` to
   `data_olympus._vendor.prose_lint`, so the installed server can apply the same
@@ -42,6 +67,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `uv run python scripts/prose_lint.py <path>`.
 
 ### Fixed
+
+* **REST resolve no longer answers 200 for an unknown decision** (#307). A
+  `decision` other than `approve`, `reject` or `edit` (for example the typo
+  `aprove`) returned HTTP 200 with `status: rejected_bad_decision`, so a client
+  checking only the status code read it as applied. It is now HTTP 400. A test
+  pins the HTTP code of every status the write tools can return, so a new one
+  cannot fall through to a default unnoticed.
 
 * **A bare `glibc.malloc.trim_threshold` tunable no longer stops the trim
   threshold pin** (#302). The server leaves the trim threshold alone when the
