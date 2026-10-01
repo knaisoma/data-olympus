@@ -403,26 +403,22 @@ def corpus_path_problem(config: Config) -> str | None:
     )
 
 
-def _env_bool(raw: str) -> bool:
-    """Parse a truthy env string. True for 1/true/yes/on (case-insensitive);
-    everything else (including empty) is False."""
-    return raw.strip().lower() in ("1", "true", "yes", "on")
-
-
 _STRICT_BOOL_TRUE = ("1", "true", "yes", "on")
 _STRICT_BOOL_FALSE = ("0", "false", "no", "off")
 
 
-def _env_bool_strict(name: str) -> bool:
-    """Parse a boolean setting that must not misread a typo (issue #314).
+def _env_bool_strict(name: str, default: bool = False) -> bool:
+    """Parse a boolean setting that must not misread a typo (issues #314, #315).
 
     True for 1/true/yes/on, False for 0/false/no/off, case-insensitive with
-    surrounding whitespace ignored. Unset or blank means the default (False).
+    surrounding whitespace ignored. Unset or blank means ``default``.
     Anything else raises ValueError so startup fails naming the setting,
     rather than a mistyped value silently reading as false."""
     raw = os.getenv(name, "")
     value = raw.strip().lower()
-    if not value or value in _STRICT_BOOL_FALSE:
+    if not value:
+        return default
+    if value in _STRICT_BOOL_FALSE:
         return False
     if value in _STRICT_BOOL_TRUE:
         return True
@@ -577,9 +573,10 @@ def load_config() -> Config:
     _review_due_raw = os.getenv("KB_REVIEW_DUE_AFTER_DAYS", "").strip()
     review_due_after_days = int(_review_due_raw) if _review_due_raw else None
     # KB_STATUS_AUTOFILL defaults to on (issue #147 / KNA-69): a legacy corpus
-    # missing `status` keeps its in-force docs after upgrade. Any explicit
-    # non-truthy value (off/0/false/no) restores the conservative behavior.
-    status_autofill = _env_bool(os.getenv("KB_STATUS_AUTOFILL", "on"))
+    # missing `status` keeps its in-force docs after upgrade. An explicit
+    # off/0/false/no restores the conservative behavior; any other value fails
+    # startup rather than silently turning autofill off (#315).
+    status_autofill = _env_bool_strict("KB_STATUS_AUTOFILL", default=True)
     session_idle_timeout_sec = int(os.getenv("KB_SESSION_IDLE_TIMEOUT_SEC", "300"))
     session_reap_interval_sec = int(os.getenv("KB_SESSION_REAP_INTERVAL_SEC", "60"))
     session_touch_interval_sec = int(os.getenv("KB_SESSION_TOUCH_INTERVAL_SEC", "30"))

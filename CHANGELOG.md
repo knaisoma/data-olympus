@@ -99,9 +99,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   splits a pattern at a comma inside `{...}` or `[...]` (so
   `ACME_[A-Z0-9]{20,40}` stays one pattern), and an invalid or
   nested-quantifier pattern stops startup instead of being skipped.
-  `KB_READ_ONLY` and `KB_DISABLE_VERSION_CHECK` accept `1`, `true`, `yes`,
-  `on`, `0`, `false`, `no` and `off` (case-insensitive) and stop startup on
-  any other value (#314).
+  `KB_READ_ONLY`, `KB_DISABLE_VERSION_CHECK` and `KB_STATUS_AUTOFILL` accept
+  `1`, `true`, `yes`, `on`, `0`, `false`, `no` and `off` (case-insensitive)
+  and stop startup on any other value; unset or empty keeps each default, so
+  autofill stays on (#314, #315; the `KB_STATUS_AUTOFILL` case was raised by
+  @thejedi433).
 * **The benchmark receipt guard accepts a measured commit held by a
   `benchmarks/receipt-*` tag.** A change to a benchmark corpus has to be
   re-measured in its own pull request, because corpora are compared with the
