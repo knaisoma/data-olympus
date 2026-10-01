@@ -264,7 +264,7 @@ def _validate_base_markers(
     base_commit_ok = (
         base_commit is None or base_commit == ""
         or (isinstance(base_commit, str) and (
-            base_commit.upper() == "HEAD" or _BASE_COMMIT_RE.fullmatch(base_commit)))
+            base_commit in ("HEAD", "head") or _BASE_COMMIT_RE.fullmatch(base_commit)))
     )
     if not base_commit_ok:
         return ("base_commit must be HEAD or a commit id: 7 to 64 lowercase "

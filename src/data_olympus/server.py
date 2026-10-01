@@ -1455,6 +1455,9 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         problem = corpus_path_problem(config)
         if problem is not None:
             raise NotADirectoryError(problem)
+    # The secret-scan gate is process-wide: one server process serves one
+    # Config, so the parsed extra patterns are installed once here. Building a
+    # second app with a different Config in the same process replaces them.
     from data_olympus.write_gate import configure_extra_secret_patterns
     configure_extra_secret_patterns(config.secret_scan_extra_patterns)
     return build_app(
