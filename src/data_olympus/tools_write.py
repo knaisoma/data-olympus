@@ -20,6 +20,7 @@ from data_olympus.auth import (
     path_rejection_reason,
     safe_join_under_root,
 )
+from data_olympus.capture import project_capture, reattach_capture, validate_capture
 from data_olympus.format.frontmatter import parse_frontmatter
 from data_olympus.governed_lane import (
     GovernedLaneVerdict,
@@ -27,6 +28,7 @@ from data_olympus.governed_lane import (
     governed_lane_protection_enabled,
 )
 from data_olympus.models import (
+    CaptureEnvelope,
     ContestDetail,
     PendingDetailResponse,
     PendingEntry,
@@ -484,9 +486,13 @@ def _emit_audit(
     demotion_reason: str | None = None,
     injection_suspect: bool | None = None,
     writing_rules: str | None = None,
+    capture: dict[str, str] | None = None,
 ) -> None:
     if audit_log is None:
         return
+    # Capture provenance (issue #141) is added only when present, so an event
+    # without an envelope keeps exactly the shape it had before.
+    extra: dict[str, Any] = {} if capture is None else {"capture": capture}
     # audit emission is best-effort; don't fail the write
     with contextlib.suppress(Exception):
         audit_log.append({
@@ -508,6 +514,7 @@ def _emit_audit(
             "demotion_reason": demotion_reason,
             "injection_suspect": injection_suspect,
             "writing_rules": writing_rules,
+            **extra,
         })
 
 
@@ -1411,6 +1418,7 @@ def kb_propose_memory_fn(
     idx: Index | None = None,
     evidence: list[str] | None = None,
     writing_rules: WritingRulesPolicy | None = None,
+    capture: object = None,
 ) -> ProposeResponse:
     """Propose a new memory file under the memory inbox prefix as
     <date>-<slug>-<uniq>.md.
@@ -1428,6 +1436,14 @@ def kb_propose_memory_fn(
     memory's frontmatter (so a credential-shaped item is caught by the SAME
     full-postimage secret scan below -- see ``_render_memory``), and persisted
     (redacted copy) in pending meta / audit events / ``kb_pending``.
+
+    ``capture`` (issue #141, optional): a capture provenance envelope, validated
+    by ``capture.validate_capture`` (secret scan first, then shape, then the
+    derived hash over ``text``). A rejection costs no rate-limit token. The
+    accepted envelope, with the server-computed ``derived_memory_hash``, is
+    rendered into the memory's frontmatter, stored in pending meta and carried
+    on the committed and pending audit events. It labels the proposal only: it
+    never forces pending and never changes ``status: proposed``.
     """
     # Normalize ONLY the None "not supplied" sentinel (codex re-review
     # blocker): `evidence or []` also coerced falsy non-lists ('' / {} /
@@ -1444,6 +1460,8 @@ def kb_propose_memory_fn(
     if evidence is None:
         evidence = []
     evidence_error = _validate_evidence(evidence)
+    capture_check = validate_capture(capture, text=text)
+    clean_capture = capture_check.envelope
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     # issue #71: the slug is derived VERBATIM from the caller's free text (no
     # redaction -- `_slugify` only lowercases and normalizes separators), so a
@@ -1475,6 +1493,25 @@ def kb_propose_memory_fn(
                                    "reason": evidence_error})
         return ProposeResponse(status="rejected_invalid_evidence",
                                reason=evidence_error, target_path=target_path)
+
+    # 0b. Capture envelope (issue #141), also before path, blocklist and rate
+    # limit. A credential-shaped value is rejected outright rather than
+    # redacted: identifiers and hashes have no review value worth parking.
+    # Neither rejection carries a submitted value, and neither audit event
+    # carries the envelope.
+    if capture_check.secret_pattern is not None:
+        reason = f"secret pattern '{capture_check.secret_pattern}' detected in capture"
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_secret_detected",
+                                   "reason": reason,
+                                   "matching_pattern": capture_check.secret_pattern})
+        return ProposeResponse(status="rejected_secret_detected", reason=reason,
+                               matching_pattern=capture_check.secret_pattern,
+                               target_path=target_path)
+    if capture_check.reason is not None:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_invalid_capture",
+                                   "reason": capture_check.reason})
+        return ProposeResponse(status="rejected_invalid_capture",
+                               reason=capture_check.reason, target_path=target_path)
 
     # 1. Structural rule (cheap).
     if not is_writable_path(target_path):
@@ -1512,6 +1549,7 @@ def kb_propose_memory_fn(
     # body-only check (item 3).
     postimage = _render_memory(
         text=text, tags=tags, agent_identity=agent_identity, evidence=evidence,
+        capture=clean_capture,
     )
 
     # 4b. Payload size cap (reject before any disk side effect).
@@ -1569,6 +1607,11 @@ def kb_propose_memory_fn(
         # secret-shaped evidence item never reaches pending meta / audit / the
         # kb_pending response in the clear.
         safe_evidence = _redact_evidence(evidence)
+        # Capture (issue #141): stored only when supplied, so a proposal
+        # without one keeps exactly the meta it had before.
+        capture_meta: dict[str, Any] = (
+            {} if clean_capture is None else {"capture": clean_capture}
+        )
         try:
             pid = pending.enqueue(
                 proposal_type="memory",
@@ -1578,6 +1621,7 @@ def kb_propose_memory_fn(
                 base_blob_sha=None,
                 target_file_hash=None,
                 meta={
+                    **capture_meta,
                     "agent_identity": agent_identity,
                     "source_session": source_session,
                     # The AUTHENTICATED principal that made this proposal
@@ -1614,7 +1658,8 @@ def kb_propose_memory_fn(
                                    "pending_id": pid, "matching_pattern": flagged_pattern,
                                    "evidence": safe_evidence or None,
                                    "demotion_reason": demotion_reason,
-                                   "injection_suspect": bool(injection_matches) or None})
+                                   "injection_suspect": bool(injection_matches) or None,
+                                   "capture": clean_capture})
         if flagged_pattern is not None:
             return ProposeResponse(
                 status="pending_confirmation",
@@ -1688,7 +1733,8 @@ def kb_propose_memory_fn(
     _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha,
                                "evidence": _redact_evidence(evidence) or None,
                                "injection_suspect": bool(injection_matches) or None,
-                               "writing_rules": _rule_audit(rule_warnings, "warned")})
+                               "writing_rules": _rule_audit(rule_warnings, "warned"),
+                               "capture": clean_capture})
     return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state,
                            writing_rule_findings=rule_warnings or None)
 
@@ -1699,6 +1745,7 @@ def _render_memory(
     tags: list[str],
     agent_identity: str,
     evidence: list[str] | None = None,
+    capture: Mapping[str, str] | None = None,
 ) -> str:
     """Render a memory file: YAML frontmatter block + body.
 
@@ -1734,6 +1781,11 @@ def _render_memory(
     input, and a principal named ``human:alice`` must not be recorded as the
     human author of agent-written content. The proposer stays in
     ``created_by``.
+
+    ``capture`` (optional, issue #141) is the validated provenance envelope,
+    rendered after ``evidence`` as a nested mapping through the same
+    ``safe_dump``, so no value can forge a top-level key such as ``status``.
+    Absent, the output is byte-identical to a memory without one.
     """
     import yaml
 
@@ -1752,6 +1804,8 @@ def _render_memory(
         fm["tags"] = [str(t) for t in tags]
     if evidence:
         fm["evidence"] = [str(e) for e in evidence]
+    if capture is not None:
+        fm["capture"] = {str(k): str(v) for k, v in capture.items()}
     dumped = yaml.safe_dump(
         fm, sort_keys=False, default_flow_style=False, allow_unicode=True
     )
@@ -2197,6 +2251,14 @@ def kb_resolve_pending_fn(
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_bad_decision"})
         return ResolvePendingResponse(status="rejected_bad_decision")
 
+    # Capture provenance (issue #141): ``edited_text`` replaces the whole
+    # proposed document, so an operator edit would drop the ``capture:`` label.
+    # Re-attach the envelope stored in pending meta, on approve and on edit,
+    # BEFORE the size cap and the secret scan below so both judge the bytes
+    # that will actually be committed, and before the claim so the claim
+    # records the digest of those bytes.
+    edited_text = _with_capture_reattached(pending, pending_id, edited_text)
+
     # ``edited_text`` becomes the committed postimage, bypassing the cap the
     # propose path enforced on the original postimage (item 2). Enforce it here
     # too, with a distinct status so the operator sees WHY the edit was refused.
@@ -2357,6 +2419,51 @@ def kb_resolve_pending_fn(
                                   writing_rule_findings=rule_warnings or None)
 
 
+def _with_capture_reattached(
+    pending: PendingQueue, pending_id: str, edited_text: str | None,
+) -> str | None:
+    """The text to commit on resolve, with the stored capture envelope kept.
+
+    Returns ``edited_text`` unchanged when the entry is not a memory proposal
+    carrying a well-formed envelope, or cannot be read here (the claim below
+    then reports the entry's real state). On a plain approve, ``None`` is kept
+    whenever the stored postimage already carries the envelope, which is the
+    normal case, so the reviewed bytes are committed exactly.
+
+    The envelope's ``derived_memory_hash`` is the one computed at propose time
+    over the submitted text. It is deliberately not recomputed: when the
+    operator edited the body, the mismatch is the record of that edit.
+    """
+    try:
+        entry = pending.get(pending_id)
+    except Exception:  # noqa: BLE001 - the claim decides not-found / resolved
+        return edited_text
+    if not isinstance(entry, Mapping) or entry.get("proposal_type") != "memory":
+        return edited_text
+    meta = entry.get("meta")
+    envelope = project_capture(meta.get("capture")) if isinstance(meta, Mapping) else None
+    original = entry.get("postimage")
+    if envelope is None or not isinstance(original, str):
+        return edited_text
+    base = original if edited_text is None else edited_text
+    attached = reattach_capture(base, envelope, original=original)
+    if edited_text is None and attached == original:
+        return None
+    return attached
+
+
+def _capture_or_none(value: object) -> CaptureEnvelope | None:
+    """Tolerant model construction for a stored envelope: anything malformed
+    reads as absent rather than failing the response it sits in."""
+    envelope = project_capture(value)
+    if envelope is None:
+        return None
+    try:
+        return CaptureEnvelope(**envelope)
+    except Exception:  # noqa: BLE001 - a read projection never raises
+        return None
+
+
 _PENDING_NOTE = (
     "This content is a PENDING proposal. It is not in force, it does not appear "
     "in kb_consult or any in_force retrieval, and it governs nothing until an "
@@ -2401,7 +2508,12 @@ def kb_get_pending_fn(
         return PendingDetailResponse(
             status="not_found", pending_id=pending_id, note=_PENDING_NOTE,
         )
-    meta = entry.get("meta") or {}
+    # A record whose meta is not a mapping (damaged, or written by something
+    # else) reads as carrying no metadata: no recorded proposer, so it is
+    # resolver-only, and no capture.
+    meta = entry.get("meta")
+    if not isinstance(meta, Mapping):
+        meta = {}
     owner = meta.get("proposer_principal") or ""
     if not can_resolve and (not owner or owner != principal_name):
         return PendingDetailResponse(
@@ -2430,6 +2542,10 @@ def kb_get_pending_fn(
         created_at=entry.get("enqueued_at"),
         reason=_render_safe(meta.get("reason")),
         matching_pattern=_render_safe(meta.get("matching_pattern")),
+        # issue #141: the capture envelope, already shown by the listing to
+        # every authenticated principal, so this adds no exposure. Malformed
+        # stored meta reads as None.
+        capture=_capture_or_none(meta.get("capture")),
     )
 
 
@@ -2460,6 +2576,9 @@ def kb_list_pending_fn(*, pending: PendingQueue) -> PendingListResponse:
                     if e.get("contest") is not None
                     else None
                 ),
+                # issue #141: tolerant, so one malformed record never takes
+                # the listing down.
+                capture=_capture_or_none(e.get("capture")),
             )
             for e in pending.list()
         ]

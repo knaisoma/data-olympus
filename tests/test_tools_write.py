@@ -1439,3 +1439,403 @@ def test_resolve_refuses_a_pending_entry_introducing_a_dangling_target(
     assert "unresolved_supersedes_target" in (resolved.reason or "")
     assert [e["state"] for e in pen.list()] == ["pending"]
     assert pen.locks_held() == 1
+
+
+# ---- issue #141: capture provenance envelope on proposed memories ----
+
+_CAP_TEXT = "Prefer the staging cluster for load tests."
+_CAP_TEXT_HASH = "sha256:" + hashlib.sha256(_CAP_TEXT.encode("utf-8")).hexdigest()
+
+
+def _capture(**overrides):  # noqa: ANN003, ANN202
+    env = {
+        "capture_source": "codex.transcript",
+        "capture_event_id": "urn:evt:7f3a",
+        "source_event_hash": "sha256:" + "b" * 64,
+        "transformation": "automem.distill/1.4.2",
+        "raw_retention": "redacted",
+        "capture_session": "sess-0042",
+        "classification": "decision",
+    }
+    env.update(overrides)
+    return env
+
+
+def _stored_capture(**overrides):  # noqa: ANN003, ANN202
+    return {**_capture(**overrides), "derived_memory_hash": _CAP_TEXT_HASH}
+
+
+def _propose_capture(state, *, confidence, capture, audit_log=None, **kw):  # noqa: ANN001, ANN003, ANN202
+    _git, reg, pq, pen, rl, bl = state
+    return kb_propose_memory_fn(
+        text=kw.pop("text", _CAP_TEXT), tags=[], source_session="session-cap",
+        agent_identity="claude", confidence=confidence, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl, blocklist=bl,
+        remote_addr="10.0.0.1", audit_log=audit_log, capture=capture, **kw,
+    )
+
+
+def _committed_file(git, sha: str) -> tuple[str, str]:  # noqa: ANN001
+    repo = str(git._repo)
+    names = subprocess.check_output(
+        ["git", "-C", repo, "show", "--name-only", "--format=", sha], text=True,
+    ).split()
+    assert len(names) == 1, names
+    body = subprocess.check_output(
+        ["git", "-C", repo, "show", f"{sha}:{names[0]}"], text=True,
+    )
+    return names[0], body
+
+
+def _frontmatter(text: str) -> dict:
+    from data_olympus.format.frontmatter import parse_frontmatter
+    fm, _body = parse_frontmatter(text)
+    return fm
+
+
+class _FrozenDateTime:
+    @staticmethod
+    def now(tz=None):  # noqa: ANN001, ANN205
+        import datetime as real
+        return real.datetime(2026, 10, 1, 12, 0, 0, tzinfo=tz)
+
+
+# 1: absent or null capture is byte-identical to a memory without the feature.
+@pytest.mark.parametrize("supplied", [False, True], ids=["absent", "null"])
+def test_capture_absent_or_null_keeps_the_postimage_byte_identical(
+    tmp_path, monkeypatch, supplied,
+) -> None:
+    import datetime as real
+    import types
+
+    from data_olympus import __version__
+    from data_olympus import tools_write as tw
+
+    monkeypatch.setattr(tw, "datetime", types.SimpleNamespace(
+        datetime=_FrozenDateTime, UTC=real.UTC))
+    state = _state(tmp_path)
+    _git, reg, pq, pen, rl, bl = state
+    kwargs = {"capture": None} if supplied else {}
+    resp = kb_propose_memory_fn(
+        text="body", tags=[], source_session="s", agent_identity="claude",
+        confidence=0.4, confidence_threshold=0.85, worktrees=reg, push_queue=pq,
+        pending=pen, rate_limiter=rl, blocklist=bl, remote_addr="10.0.0.1",
+        **kwargs,
+    )
+    assert resp.status == "pending_confirmation"
+    entry = pen.get(resp.pending_id)
+    stamp = "2026-10-01T12:00:00+00:00"
+    assert entry["postimage"] == (
+        "---\n"
+        "type: memory\n"
+        "status: proposed\n"
+        "created_by: claude\n"
+        f"created_at: '{stamp}'\n"
+        "generated:\n"
+        f"  by: data-olympus/{__version__}\n"
+        f"  at: '{stamp}'\n"
+        "---\n\nbody\n"
+    )
+    assert "capture" not in entry["meta"]
+    [listed] = kb_list_pending_fn(pending=pen).pending
+    assert listed.capture is None
+
+
+# 2: a valid envelope at low confidence reaches pending meta and the listing,
+# with the server-computed derived_memory_hash.
+def test_capture_low_confidence_is_stored_and_listed(tmp_path) -> None:
+    state = _state(tmp_path)
+    pen = state[3]
+    resp = _propose_capture(state, confidence=0.4, capture=_capture())
+    assert resp.status == "pending_confirmation"
+
+    entry = pen.get(resp.pending_id)
+    assert entry["meta"]["capture"] == _stored_capture()
+    assert _frontmatter(entry["postimage"])["capture"] == _stored_capture()
+    # Projection #1: PendingQueue.list().
+    [projected] = pen.list()
+    assert projected["capture"] == _stored_capture()
+    # Projection #2: the kb_list_pending model the REST and MCP listings serve.
+    [listed] = kb_list_pending_fn(pending=pen).pending
+    assert listed.capture is not None
+    assert listed.capture.model_dump() == _stored_capture()
+
+
+def test_capture_does_not_force_pending(tmp_path, monkeypatch) -> None:
+    """Operator decision for 0.11.0: the envelope is a label only."""
+    _set_git_env(monkeypatch)
+    state = _state(tmp_path)
+    resp = _propose_capture(state, confidence=0.95, capture=_capture())
+    assert resp.status == "committed"
+    assert state[3].size() == 0
+
+
+def test_list_pending_tolerates_a_malformed_stored_capture(tmp_path) -> None:
+    """Review item 2: kb_list_pending_fn builds PendingEntry directly, so a
+    record whose capture fails the model must read as None there too."""
+    pen = PendingQueue(pending_root=str(tmp_path / "p"))
+    pen.enqueue(
+        proposal_type="memory", target_path="memory/inbox/a.md", postimage="x",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        meta={"capture": {"capture_source": ["not", "a", "string"]}},
+    )
+    pen.enqueue(
+        proposal_type="memory", target_path="memory/inbox/b.md", postimage="y",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        meta={"capture": _stored_capture()},
+    )
+    listed = {e.target_path: e.capture for e in kb_list_pending_fn(pending=pen).pending}
+    assert listed["memory/inbox/a.md"] is None
+    assert listed["memory/inbox/b.md"] is not None
+
+
+def test_list_pending_model_guard_covers_a_projection_it_cannot_trust(
+    tmp_path, monkeypatch,
+) -> None:
+    """Even a projection that hands back a malformed value cannot take the
+    listing down: kb_list_pending_fn re-checks before building the model."""
+    pen = PendingQueue(pending_root=str(tmp_path / "p"))
+    pen.enqueue(
+        proposal_type="memory", target_path="memory/inbox/a.md", postimage="x",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None, meta={},
+    )
+    real_list = pen.list
+
+    def _tampered():  # noqa: ANN202
+        return [{**e, "capture": {"capture_source": 5}} for e in real_list()]
+
+    monkeypatch.setattr(pen, "list", _tampered)
+    [listed] = kb_list_pending_fn(pending=pen).pending
+    assert listed.capture is None
+
+
+# 4 (tool level) and review item 4: kb_get_pending_fn reads capture back.
+def test_get_pending_returns_capture_on_ok_only(tmp_path) -> None:
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    pen = PendingQueue(pending_root=str(tmp_path / "p"))
+    pid = pen.enqueue(
+        proposal_type="memory", target_path="memory/inbox/a.md", postimage="x",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        meta={"proposer_principal": "proposer", "capture": _stored_capture()},
+    )
+    own = kb_get_pending_fn(pending=pen, pending_id=pid, principal_name="proposer",
+                            can_resolve=False)
+    assert own.status == "ok"
+    assert own.capture is not None
+    assert own.capture.model_dump() == _stored_capture()
+
+    other = kb_get_pending_fn(pending=pen, pending_id=pid, principal_name="reader",
+                              can_resolve=False)
+    assert other.status == "forbidden"
+    assert other.capture is None
+
+
+@pytest.mark.parametrize("stored", [
+    "a string", ["a", "list"], 42, {"capture_source": "x"},
+    {**_stored_capture(), "unknown": "x"},
+    {**_stored_capture(), "capture_event_id": {"nested": "x"}},
+], ids=["string", "list", "number", "partial", "unknown_key", "nested"])
+def test_get_pending_reads_malformed_legacy_capture_as_absent(tmp_path, stored) -> None:
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    pen = PendingQueue(pending_root=str(tmp_path / "p"))
+    pid = pen.enqueue(
+        proposal_type="memory", target_path="memory/inbox/a.md", postimage="x",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None,
+        meta={"proposer_principal": "proposer", "capture": stored},
+    )
+    resp = kb_get_pending_fn(pending=pen, pending_id=pid, principal_name="proposer",
+                             can_resolve=True)
+    assert resp.status == "ok"
+    assert resp.capture is None
+
+
+def test_get_pending_survives_a_non_mapping_meta(tmp_path) -> None:
+    import json as _json
+
+    from data_olympus.tools_write import kb_get_pending_fn
+
+    pen = PendingQueue(pending_root=str(tmp_path / "p"))
+    pid = pen.enqueue(
+        proposal_type="memory", target_path="memory/inbox/a.md", postimage="x",
+        base_commit="HEAD", base_blob_sha=None, target_file_hash=None, meta={},
+    )
+    path = tmp_path / "p" / f"{pid}.json"
+    record = _json.loads(path.read_text())
+    record["meta"] = ["not", "a", "mapping"]
+    path.write_text(_json.dumps(record))
+    resp = kb_get_pending_fn(pending=pen, pending_id=pid, principal_name="any",
+                             can_resolve=True)
+    assert resp.status == "ok"
+    assert resp.capture is None
+
+
+# 13: audit carries the envelope on committed and pending events only.
+def test_capture_audit_on_committed_and_pending_not_on_rejection(
+    tmp_path, monkeypatch,
+) -> None:
+    import json as _json
+
+    from data_olympus.audit_log import AuditLog
+
+    _set_git_env(monkeypatch)
+    state = _state(tmp_path)
+    audit = AuditLog(log_path=str(tmp_path / "audit.log"), hmac_key="")
+    assert _propose_capture(state, confidence=0.95, capture=_capture(),
+                            audit_log=audit).status == "committed"
+    assert _propose_capture(state, confidence=0.4, capture=_capture(),
+                            audit_log=audit, text="another memory").status \
+        == "pending_confirmation"
+    assert _propose_capture(state, confidence=0.4,
+                            capture=_capture(raw_retention="forever"),
+                            audit_log=audit).status == "rejected_invalid_capture"
+    assert _propose_capture(state, confidence=0.4, capture=None,
+                            audit_log=audit, text="plain").status \
+        == "pending_confirmation"
+
+    events = [_json.loads(x) for x in (tmp_path / "audit.log").read_text().splitlines()]
+    by_status = [(e["status"], e.get("capture")) for e in events]
+    assert by_status[0] == ("committed", _stored_capture())
+    assert by_status[1][0] == "pending_confirmation"
+    assert by_status[1][1]["derived_memory_hash"] == (
+        "sha256:" + hashlib.sha256(b"another memory").hexdigest())
+    assert by_status[2] == ("rejected_invalid_capture", None)
+    assert "capture" not in events[2]
+    assert "forever" not in (tmp_path / "audit.log").read_text()
+    # An event without an envelope keeps exactly its old shape.
+    assert "capture" not in events[3]
+    assert audit.verify() == (True, -1)
+
+
+# 16: the rendered capture block counts against max_text_bytes.
+def test_capture_block_counts_against_max_text_bytes(tmp_path) -> None:
+    from data_olympus.capture import validate_capture
+    from data_olympus.tools_write import _render_memory
+
+    envelope = validate_capture(_capture(), text=_CAP_TEXT).envelope
+    assert envelope is not None
+    plain = len(_render_memory(text=_CAP_TEXT, tags=[], agent_identity="claude")
+                .encode("utf-8"))
+    with_capture = len(_render_memory(text=_CAP_TEXT, tags=[], agent_identity="claude",
+                                      capture=envelope).encode("utf-8"))
+    assert with_capture > plain
+    # A cap that fits the plain memory but not the labelled one rejects it.
+    cap = with_capture - 1
+    for sub in ("a", "b", "c"):
+        (tmp_path / sub).mkdir()
+    assert _propose_capture(_state(tmp_path / "a"), confidence=0.4, capture=None,
+                            max_text_bytes=cap).status == "pending_confirmation"
+    assert _propose_capture(_state(tmp_path / "b"), confidence=0.4, capture=_capture(),
+                            max_text_bytes=cap).status == "rejected_payload_too_large"
+    # Generous enough for both: the clock-dependent timestamp is fixed width.
+    assert _propose_capture(_state(tmp_path / "c"), confidence=0.4, capture=_capture(),
+                            max_text_bytes=with_capture + 8).status \
+        == "pending_confirmation"
+
+
+# Review item 1: the label survives resolve, on approve AND on edit.
+def _park_capture(tmp_path):  # noqa: ANN001, ANN202
+    state = _state(tmp_path)
+    resp = _propose_capture(state, confidence=0.4, capture=_capture())
+    assert resp.status == "pending_confirmation"
+    return state, resp.pending_id
+
+
+def _resolve(state, pid, edited_text, decision="approve"):  # noqa: ANN001, ANN202
+    _git, reg, pq, pen, _rl, _bl = state
+    return kb_resolve_pending_fn(
+        pending_id=pid, decision=decision, edited_text=edited_text,
+        worktrees=reg, push_queue=pq, pending=pen,
+        source_session="op", agent_identity="operator",
+    )
+
+
+def test_resolve_approve_commits_the_reviewed_bytes_with_capture(
+    tmp_path, monkeypatch,
+) -> None:
+    _set_git_env(monkeypatch)
+    state, pid = _park_capture(tmp_path)
+    reviewed = state[3].get(pid)["postimage"]
+    resp = _resolve(state, pid, None)
+    assert resp.status == "committed"
+    _path, committed = _committed_file(state[0], resp.commit_sha)
+    assert committed == reviewed
+    assert _frontmatter(committed)["capture"] == _stored_capture()
+
+
+@pytest.mark.parametrize("decision", ["approve", "edit"])
+def test_resolve_body_only_edit_reattaches_capture_and_keeps_the_hash(
+    tmp_path, monkeypatch, decision,
+) -> None:
+    """The interactive edit flow hands the operator the body; edited_text then
+    replaces the whole document. The stored envelope is re-attached with the
+    ORIGINAL derived_memory_hash, so the mismatch with the committed body is
+    the record that a human changed it."""
+    _set_git_env(monkeypatch)
+    state, pid = _park_capture(tmp_path)
+    resp = _resolve(state, pid, "An operator-corrected body.", decision=decision)
+    assert resp.status == "committed"
+    _path, committed = _committed_file(state[0], resp.commit_sha)
+    fm = _frontmatter(committed)
+    assert fm["capture"] == _stored_capture()
+    assert fm["status"] == "proposed"
+    assert fm["type"] == "memory"
+    assert committed.endswith("---\n\nAn operator-corrected body.\n")
+    edited_hash = "sha256:" + hashlib.sha256(
+        b"An operator-corrected body.").hexdigest()
+    assert fm["capture"]["derived_memory_hash"] == _CAP_TEXT_HASH != edited_hash
+
+
+def test_resolve_edit_with_frontmatter_cannot_drop_or_rewrite_capture(
+    tmp_path, monkeypatch,
+) -> None:
+    _set_git_env(monkeypatch)
+    state, pid = _park_capture(tmp_path)
+    edited = ("---\ntype: memory\nstatus: proposed\ntags:\n- reviewed\n"
+              "capture:\n  capture_source: rewritten\n---\n\nEdited body.\n")
+    resp = _resolve(state, pid, edited, decision="edit")
+    assert resp.status == "committed"
+    _path, committed = _committed_file(state[0], resp.commit_sha)
+    fm = _frontmatter(committed)
+    assert fm["capture"] == _stored_capture()
+    assert fm["tags"] == ["reviewed"]
+    assert committed.endswith("---\n\nEdited body.\n")
+
+
+def test_resolve_edit_dropping_the_frontmatter_block_still_keeps_capture(
+    tmp_path, monkeypatch,
+) -> None:
+    _set_git_env(monkeypatch)
+    state, pid = _park_capture(tmp_path)
+    edited = "---\ntype: memory\nstatus: proposed\n---\n\nEdited, label removed.\n"
+    resp = _resolve(state, pid, edited, decision="edit")
+    assert resp.status == "committed"
+    _path, committed = _committed_file(state[0], resp.commit_sha)
+    assert _frontmatter(committed)["capture"] == _stored_capture()
+
+
+def test_resolve_edit_without_capture_is_unchanged(tmp_path, monkeypatch) -> None:
+    """No envelope, no re-attachment: edited_text is committed exactly as
+    before this feature."""
+    _set_git_env(monkeypatch)
+    state = _state(tmp_path)
+    parked = _propose_capture(state, confidence=0.4, capture=None)
+    resp = _resolve(state, parked.pending_id, "edited body\n")
+    assert resp.status == "committed"
+    _path, committed = _committed_file(state[0], resp.commit_sha)
+    assert committed == "edited body\n"
+
+
+def test_resolve_edit_cap_counts_the_reattached_block(tmp_path, monkeypatch) -> None:
+    """The cap and the secret scan judge the bytes that will be committed."""
+    _set_git_env(monkeypatch)
+    state, pid = _park_capture(tmp_path)
+    _git, reg, pq, pen, _rl, _bl = state
+    resp = kb_resolve_pending_fn(
+        pending_id=pid, decision="approve", edited_text="short body",
+        worktrees=reg, push_queue=pq, pending=pen, source_session="op",
+        agent_identity="operator", max_postimage_bytes=100,
+    )
+    assert resp.status == "rejected_edited_text_too_large"
+    assert pen.size() == 1

@@ -324,6 +324,7 @@ _EXPECTED = {
     "rejected_contest_index_unavailable": (503, 200),
     "rejected_edited_text_too_large": (400, 413),
     "rejected_invalid_base": (400, 200),
+    "rejected_invalid_capture": (400, 400),
     "rejected_invalid_contest": (400, 200),
     "rejected_invalid_document": (422, 422),
     "rejected_invalid_encoding": (400, 400),
@@ -372,3 +373,46 @@ def test_the_mode_and_exclusions_load_from_the_environment(monkeypatch) -> None:
     cfg = load_config()
     assert cfg.writing_rules_mode == "enforce"
     assert cfg.writing_rules_exclude_paths == ["archive/*", "*.txt"]
+
+
+# issue #141 ----------------------------------------------------------------
+
+_CAPTURE = {
+    "capture_source": "claude_code.hook",
+    "capture_event_id": "urn:evt:01J9ZK3Q7R8S9T0V1W2X3Y4Z5A",
+    "source_event_hash": "sha256:" + "a" * 64,
+    "transformation": "automem.distill/1.4.2",
+    "raw_retention": "discarded",
+    "capture_session": "sess-42",
+    "classification": "task_state",
+}
+
+
+def test_a_capture_block_yields_no_writing_rule_finding(tmp_path, monkeypatch) -> None:
+    """The token charsets cannot hold a dash or prose, so in enforce mode a
+    labelled memory commits with no findings."""
+    _set_git_env(monkeypatch)
+    _git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_memory_fn(
+        text="a clean captured memory", tags=[], source_session="s",
+        agent_identity="claude", confidence=0.9, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl,
+        blocklist=bl, remote_addr="1.2.3.4", writing_rules=ENFORCE,
+        capture=_CAPTURE,
+    )
+    assert resp.status == "committed", resp
+    assert resp.writing_rule_findings is None
+
+
+def test_a_capture_label_does_not_exempt_the_body(tmp_path, monkeypatch) -> None:
+    _set_git_env(monkeypatch)
+    _git, reg, pq, pen, rl, bl = _state(tmp_path)
+    resp = kb_propose_memory_fn(
+        text=f"a captured memory {DASH} with a dash", tags=[], source_session="s",
+        agent_identity="claude", confidence=0.9, confidence_threshold=0.85,
+        worktrees=reg, push_queue=pq, pending=pen, rate_limiter=rl,
+        blocklist=bl, remote_addr="1.2.3.4", writing_rules=ENFORCE,
+        capture=_CAPTURE,
+    )
+    assert resp.status == "rejected_writing_rule"
+    assert pq.size() == 0

@@ -53,7 +53,38 @@ async def test_rest_session_recap_counts_writes(http_app) -> None:
     assert body["committed"] == 1
     assert body["demoted_to_pending"] == 1
     assert body["rejected"] == 0
+    assert body["capture_derived"] == 0
 
+
+
+@pytest.mark.asyncio
+async def test_rest_session_recap_counts_capture_derived(http_app) -> None:
+    """Issue #141: committed and parked memory proposals carrying a capture
+    envelope are counted; a rejected envelope is not."""
+    capture = {
+        "capture_source": "claude_code.hook", "capture_event_id": "evt-1",
+        "source_event_hash": "sha256:" + "0" * 64,
+        "transformation": "automem.distill/1.4.2", "raw_retention": "discarded",
+    }
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        for text, confidence, cap in (
+            ("x", 0.9, capture), ("y", 0.1, capture), ("z", 0.1, None),
+            ("w", 0.1, {**capture, "raw_retention": "forever"}),
+        ):
+            payload = {"text": text, "tags": [], "source_session": "cap-session",
+                       "agent_identity": "claude", "confidence": confidence}
+            if cap is not None:
+                payload["capture"] = cap
+            await client.post("/api/v1/propose/memory", json=payload)
+        resp = await client.get(
+            "/api/v1/session-recap", params={"source_session": "cap-session"},
+        )
+    body = resp.json()
+    assert body["capture_derived"] == 2
+    assert body["committed"] == 1
+    assert body["demoted_to_pending"] == 2
+    assert body["rejected"] == 1
 
 @pytest.mark.asyncio
 async def test_rest_session_recap_requires_source_session(http_app) -> None:

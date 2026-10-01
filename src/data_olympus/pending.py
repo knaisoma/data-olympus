@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from contextlib import AbstractContextManager
 
+from data_olympus.capture import project_capture
 from data_olympus.durable import atomic_remove, atomic_write_json
 
 # The exact shape of ``uuid.uuid4().hex`` (32 lowercase hex chars). Used to reject
@@ -561,6 +562,9 @@ class PendingQueue:
                     if entry["meta"].get("intent") == "contest"
                     else None
                 ),
+                # Capture provenance (issue #141). Projected tolerantly: a
+                # malformed or legacy value reads as None instead of raising.
+                "capture": project_capture(entry["meta"].get("capture")),
             }))
         return out
 
