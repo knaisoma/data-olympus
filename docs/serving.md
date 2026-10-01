@@ -35,8 +35,8 @@ does not churn:
   `opencode serve`, leaks event listeners. Set a long read timeout and disable
   response buffering on the `/mcp` path (see `deploy/k8s/ingress.yaml` for the
   nginx annotations).
-- **Session reaping.** FastMCP does not reap the transport a client leaves behind
-  when it disconnects without sending `DELETE`. The server runs its own reaper
+- **Session reaping.** The MCP SDK only expires a transport a client leaves
+  behind after 30 minutes without a request. The server runs its own reaper
   (`session_metrics`): the activity middleware keeps a session non-idle for as
   long as its SSE stream is open, and `KB_SESSION_IDLE_TIMEOUT_SEC` (default
   `300`) terminates a session only after its stream has actually closed.
@@ -705,17 +705,20 @@ GC is conservative and coupled to the push queue:
 Each session-less `POST /mcp` handshake makes the underlying MCP SDK create a
 transport, register it in an in-memory session table, and start a task that
 blocks waiting for further messages on that session. The SDK removes a session
-only on an explicit client `DELETE`, on the session task crashing, or on server
-shutdown. It also supports an idle timeout, but only when its session manager is
-constructed with one, and FastMCP does not wire one through: under its default
-construction the idle timeout is unset, so nothing reaps idle sessions.
+on an explicit client `DELETE`, on the session task crashing, on server
+shutdown, and, since MCP SDK 1.30, once the session has had no request in flight
+for 30 minutes. A request being served or an open `GET` stream holds the
+session. FastMCP builds the SDK's session manager without overriding that
+window, so it applies to this server as a backstop.
 
 Consequence: a client that handshakes and drops the connection without sending
 `DELETE` (the common cause of repeated "Created new transport with session ID"
-log lines) leaves its transport resident. Over long uptime the session table
-grows without bound and leaks memory and tasks.
+log lines) leaves its transport resident for at least half an hour, and a burst
+of such handshakes can fill the session table. The SDK also caps the table at
+10000 concurrent sessions and answers a request that would open another one
+with HTTP 503 until room frees up.
 
-data-olympus closes this two ways:
+data-olympus bounds this more tightly in two ways:
 
 - Observability: `health` reports `live_sessions`, the current live transport
   count (or `null` before the HTTP app has started serving). The server also
@@ -724,9 +727,19 @@ data-olympus closes this two ways:
 - Bound: a background reaper terminates sessions idle beyond
   `KB_SESSION_IDLE_TIMEOUT_SEC` (default `300`, five minutes). It scans every
   `KB_SESSION_REAP_INTERVAL_SEC` (default `60`). Set
-  `KB_SESSION_IDLE_TIMEOUT_SEC=0` to disable reaping and keep observability
-  only. Termination uses the SDK's own `terminate()` path, so a client that
-  reconnects simply gets a fresh session.
+  `KB_SESSION_IDLE_TIMEOUT_SEC=0` to disable this reaper and keep observability
+  only. Termination uses the SDK's own `terminate()` path, so the session leaves
+  the table and a client that reconnects simply gets a fresh session.
+
+The SDK's 30 minute expiry stays active whatever these settings are, so
+disabling the reaper, or setting a window longer than 1800 seconds, leaves the
+SDK expiring sessions that have had nothing in flight for 30 minutes. Both
+mechanisms treat a session with an open `GET` stream as live, so neither ends a
+connected client's session while the other keeps it. With the default five
+minute window and one minute scan the reaper acts long before the SDK would,
+and an abandoned session stays in the table for at most six minutes, so
+reaching the 10000 session cap takes clients abandoning about 28 sessions a
+second, sustained.
 
 The reaper works on elapsed time since a session's last activity stamp, not on
 whether its connection is open. The clock advances on every request carrying
