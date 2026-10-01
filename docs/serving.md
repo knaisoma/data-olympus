@@ -300,8 +300,10 @@ section so concurrent writes cannot corrupt each other:
   bundle as `rejected_already_onboarded`, so a bootstrap never replaces a
   file. To change an existing document, use `kb_propose_edit`. The commit
   subject names every path the bootstrap writes.
-- **Bootstrap rejection order (issue #259).** After the earlier path, size and
-  rate-limit refusals (which are unchanged and carry no `reason`), a bundle's
+- **Bootstrap rejection order (issue #259).** A bundle with an empty `files`
+  list is refused first, as `rejected_empty_bundle` (HTTP 400), before any claim,
+  rate-limit slot, commit or pending entry (issue #311). After the earlier path,
+  size and rate-limit refusals (which are unchanged and carry no `reason`), a bundle's
   commit-time checks run in a fixed order and refuse at the first failure:
   every file's path and postimage are secret-scanned first (so no later
   diagnostic can echo credential-shaped content), then duplicate ids inside the

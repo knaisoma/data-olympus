@@ -275,7 +275,9 @@ def _propose_status(status: str) -> int:
         # The postimage failed the content-validation, secret-scanning (issue
         # #71) or writing-rule (issue #283) gate. 422 Unprocessable.
         return 422
-    if status == "rejected_invalid_contest":
+    if status in ("rejected_invalid_contest", "rejected_empty_bundle"):
+        # Client input errors: a malformed contest, or a bootstrap with no
+        # files (issue #311), refused before anything was claimed or written.
         return 400
     return 400
 

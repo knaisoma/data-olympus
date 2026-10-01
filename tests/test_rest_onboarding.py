@@ -204,3 +204,63 @@ async def test_bootstrap_does_not_500_on_the_proposer_argument(http_app) -> None
     assert resp.status_code < 500, body
     assert body.get("status") == "pending_confirmation", body
     assert body.get("pending_id"), body
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_refuses_an_empty_bundle(
+    tmp_kb, tmp_index_path, tmp_path, monkeypatch,
+) -> None:
+    """Issue #311: an empty `files` list reached `git commit` with nothing
+    staged (HTTP 500) at high confidence, and answered 202 with no pending id,
+    while nothing was parked, at low confidence. Both consumed a rate-limit
+    slot. It is now refused as rejected_empty_bundle, HTTP 400, before any
+    claim, commit or pending entry, with one matching audit event per call.
+
+    The limiter allows one write per hour, so a second refusal answering 400
+    rather than 429 shows the first consumed no slot."""
+    for k in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(k, "t")
+    for k in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(k, "t@e.com")
+    env = {**os.environ}
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=tmp_kb, check=True, env=env)
+    subprocess.run(["git", "-C", str(tmp_kb), "add", "-A"], check=True, env=env)
+    subprocess.run(["git", "-C", str(tmp_kb), "commit", "-m", "init"], check=True, env=env)
+    head = subprocess.run(["git", "-C", str(tmp_kb), "rev-parse", "HEAD"],
+                          check=True, capture_output=True, text=True).stdout
+    app = build_app(
+        kb_main_path=tmp_kb, kb_index_path=tmp_index_path,
+        sync_interval_sec=60, staleness_degraded_sec=600, bootstrap_now=True,
+        kb_remote_url="dummy",
+        worktree_root=str(tmp_path / "wts"),
+        pending_root=str(tmp_path / "pending"),
+        push_queue_root=str(tmp_path / "pq"),
+        audit_log_path=str(tmp_path / "audit.log"),
+        write_block_tiers=[], write_block_paths=[],
+        rate_limit_per_hour=1,
+    ).http_app()
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        responses = [
+            await client.post("/api/v1/onboarding/bootstrap", json={
+                "workspace": "newws", "files": [], "source_session": "s",
+                "agent_identity": "claude", "confidence": confidence,
+            })
+            for confidence in (0.9, 0.1)
+        ]
+        pending = (await client.get("/api/v1/pending")).json()["pending"]
+        events = (await client.get("/api/v1/audit")).json()["events"]
+
+    for resp in responses:
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert body["status"] == "rejected_empty_bundle", body
+        assert body["pending_id"] is None and body["commit_sha"] is None, body
+    assert pending == []
+    assert [(e["event_type"], e["status"], e["pending_id"]) for e in events] == [
+        ("bootstrap", "rejected_empty_bundle", None),
+    ] * 2
+    assert subprocess.run(["git", "-C", str(tmp_kb), "rev-parse", "HEAD"],
+                          check=True, capture_output=True, text=True).stdout == head
+    assert not (tmp_path / "bootstrap-inflight").exists() or not any(
+        (tmp_path / "bootstrap-inflight").iterdir())

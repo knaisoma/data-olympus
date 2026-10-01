@@ -175,6 +175,16 @@ def kb_bootstrap_project_fn(
                 })
         return resp
 
+    # An empty bundle has nothing to write. Refuse it before the state check,
+    # the in-flight claim, the rate limiter, any commit or any pending entry:
+    # otherwise it reached `git commit` with nothing staged at high confidence
+    # and reported a pending bootstrap that was never parked at low confidence.
+    if not files:
+        return _audited(BootstrapResponse(
+            status="rejected_empty_bundle",
+            rejected_paths=[],
+        ))
+
     # Server-side re-check that status is absent OR partial. `partial` is a valid
     # entry point: it means the workspace exists in the KB but is missing some
     # canonical file(s), and this bootstrap completes it (item 1).
