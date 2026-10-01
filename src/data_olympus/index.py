@@ -234,8 +234,9 @@ DEFAULT_AUTOFILL_STATUS = "active"
 # prefixes "tech-stacks/" and "projects/" are classified dynamically (see
 # _classify_by_path), so any stack or project name is covered without an
 # enumerated allow-list.
-# NOTE: bin/_kb_fallback.py mirrors this default and the same KB_TAXONOMY_PATH
-# loader. If you change one, change the other.
+# NOTE: bin/_kb_fallback.py mirrors this default, the KB_TAXONOMY_PATH loader
+# and _classify_by_path, because it must run without the package installed.
+# tests/test_taxonomy_parity.py fails if the two copies drift.
 _DEFAULT_PATH_RULES: tuple[tuple[str, str, str], ...] = (
     # T1 Universal, applies to every project, every stack.
     ("universal/foundation/",       "T1", "foundation"),
