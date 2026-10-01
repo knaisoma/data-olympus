@@ -1168,9 +1168,11 @@ or not the tick rebuilt (`malloc_trim(0)`, which walks every arena, so memory
 freed by request handlers between rebuilds is covered as well). The pin is
 process-wide, and it also stops glibc adjusting its mmap threshold, so large
 blocks keep being served by `mmap` and returned on free rather than cached in
-an arena. If you set the trim threshold yourself, through
-`MALLOC_TRIM_THRESHOLD_` or `glibc.malloc.trim_threshold` in `GLIBC_TUNABLES`,
-the server leaves your value alone. In a separate probe on a heap with four
+an arena. If you set the trim threshold yourself, through a non-empty
+`MALLOC_TRIM_THRESHOLD_` or a `glibc.malloc.trim_threshold=<value>` entry in
+`GLIBC_TUNABLES`, the server leaves your value alone. A bare or empty
+`glibc.malloc.trim_threshold` entry is not a setting, because glibc ignores a
+tunable without a value, so the server pins the threshold as usual. In a separate probe on a heap with four
 worker arenas, one `malloc_trim(0)` usually took between 0.1 and 2.3 ms, with
 a slowest observed call of 12 ms; it runs on the refresh executor thread, once
 per tick. This is best-effort: glibc

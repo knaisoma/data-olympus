@@ -19,8 +19,8 @@ Two glibc behaviours combine, and each needs its own remedy:
   :func:`configure_allocator` pins the threshold. That is process-wide and
   also stops glibc adjusting its mmap threshold, so large blocks keep being
   served by ``mmap`` and returned on free instead of being cached in an arena.
-  An operator who sets the trim threshold explicitly
-  (``MALLOC_TRIM_THRESHOLD_`` or ``glibc.malloc.trim_threshold`` in
+  An operator who sets the trim threshold explicitly (a non-empty
+  ``MALLOC_TRIM_THRESHOLD_`` or ``glibc.malloc.trim_threshold=<value>`` in
   ``GLIBC_TUNABLES``) keeps that value.
 
 Only glibc provides these calls. Elsewhere (macOS, musl) there is nothing to
@@ -74,7 +74,13 @@ def _operator_set_trim_threshold() -> bool:
     if os.environ.get("MALLOC_TRIM_THRESHOLD_"):
         return True
     tunables = os.environ.get("GLIBC_TUNABLES", "")
-    return any(t.split("=", 1)[0] == "glibc.malloc.trim_threshold" for t in tunables.split(":"))
+    # glibc ignores a tunable without a value, so only name=<value> counts; a
+    # bare or empty entry would otherwise leave nobody setting the threshold.
+    for entry in tunables.split(":"):
+        name, sep, value = entry.partition("=")
+        if name == "glibc.malloc.trim_threshold" and sep and value:
+            return True
+    return False
 
 
 def configure_allocator() -> bool:

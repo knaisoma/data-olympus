@@ -77,9 +77,32 @@ def test_configure_leaves_an_operator_threshold_alone(
 ) -> None:
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr(heap, "_mallopt", lambda: lambda p, v: calls.append((p, v)) or 1)
+    # Clear both so an inherited setting cannot satisfy the case under test.
+    monkeypatch.delenv("MALLOC_TRIM_THRESHOLD_", raising=False)
+    monkeypatch.delenv("GLIBC_TUNABLES", raising=False)
     monkeypatch.setenv(name, value)
     assert heap.configure_allocator() is False
     assert calls == []
+
+
+@pytest.mark.parametrize("tunables", [
+    "glibc.malloc.trim_threshold",
+    "glibc.malloc.arena_max=2:glibc.malloc.trim_threshold",
+    "glibc.malloc.trim_threshold=",
+    "glibc.malloc.trim_threshold=:glibc.malloc.arena_max=2",
+])
+def test_configure_pins_when_the_tunable_has_no_value(
+    monkeypatch: pytest.MonkeyPatch, tunables: str,
+) -> None:
+    """glibc ignores a tunable without a value, so a bare or empty
+    trim_threshold entry is not an operator setting and must not stop the pin
+    (issue #302)."""
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(heap, "_mallopt", lambda: lambda p, v: calls.append((p, v)) or 1)
+    monkeypatch.delenv("MALLOC_TRIM_THRESHOLD_", raising=False)
+    monkeypatch.setenv("GLIBC_TUNABLES", tunables)
+    assert heap.configure_allocator() is True
+    assert calls == [(heap.M_TRIM_THRESHOLD, heap.TRIM_THRESHOLD_BYTES)]
 
 
 def test_configure_ignores_unrelated_tunables(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -92,11 +115,15 @@ def test_configure_ignores_unrelated_tunables(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_configure_is_a_noop_without_mallopt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MALLOC_TRIM_THRESHOLD_", raising=False)
+    monkeypatch.delenv("GLIBC_TUNABLES", raising=False)
     monkeypatch.setattr(heap, "_mallopt", lambda: None)
     assert heap.configure_allocator() is False
 
 
 def test_configure_survives_a_failing_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MALLOC_TRIM_THRESHOLD_", raising=False)
+    monkeypatch.delenv("GLIBC_TUNABLES", raising=False)
     def vetoed() -> None:
         raise RuntimeError("ctypes.dlopen vetoed")
 
@@ -105,6 +132,8 @@ def test_configure_survives_a_failing_lookup(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_configure_reports_a_rejected_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MALLOC_TRIM_THRESHOLD_", raising=False)
+    monkeypatch.delenv("GLIBC_TUNABLES", raising=False)
     monkeypatch.setattr(heap, "_mallopt", lambda: lambda *_args: 0)
     assert heap.configure_allocator() is False
 

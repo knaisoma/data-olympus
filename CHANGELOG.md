@@ -12,6 +12,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* **A bare `glibc.malloc.trim_threshold` tunable no longer stops the trim
+  threshold pin** (#302). The server leaves the trim threshold alone when the
+  operator has set it, and it treated any `glibc.malloc.trim_threshold` entry
+  in `GLIBC_TUNABLES` as such a setting, including one with no `=value`. glibc
+  ignores a tunable without a value, so under that malformed configuration
+  nobody set the threshold and the memory retention fixed in 0.10.0 (#284)
+  came back. Only an entry with a non-empty value now counts.
+
 ## [0.10.0] - 2026-09-28
 
 ### Added
