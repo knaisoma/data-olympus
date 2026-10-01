@@ -100,6 +100,12 @@ trigram, auth, audit rotation):
 - `KB_GOVERNED_LANE_PROTECTION`: governed-lane write protection (issue #112),
   default `on`; set `off` to restore the exact pre-#112 behavior (see
   "Governed-lane write protection" below).
+- `KB_GATE_CLEARANCE` (default `intent`): what a fresh explicit consult
+  clears at the enforcement gate. `intent` clears only the governed actions the
+  consult's intent covers; `pair` restores the earlier rule, under which any
+  fresh explicit consult for the session and workspace clears every governed
+  action. Any other value fails startup naming the setting. See
+  `docs/enforcement.md` for the coverage rule and the family mapping.
 - `KB_TOOL_DISCOVERY_MODE`: MCP catalog exposure mode. `search` is the default;
   `all` restores the complete native catalog in `tools/list`. Any other value
   fails startup.
@@ -1228,7 +1234,9 @@ the gate require a fresh explicit consultation before such an action, without
 waiting for that class to appear in a release.
 
 This changes only WHAT is classified as governed. It does not change the rule
-that only a fresh explicit consultation clears the gate.
+that only a fresh explicit consultation clears the gate. Under the default
+`KB_GATE_CLEARANCE=intent`, an operator addition has no keyword mapping: a
+consult covers it by naming the keyword, path or command fragment in its intent.
 
 ## Trigram fuzzy-match fallback
 
