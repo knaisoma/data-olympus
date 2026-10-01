@@ -197,3 +197,35 @@ async def test_mcp_propose_edit_returns_the_unresolved_target_code(
     rendered = str(res.data if getattr(res, "data", None) is not None else res)
     assert "rejected_invalid_document" in rendered
     assert "unresolved_supersedes_target: " in rendered
+
+
+@pytest.mark.asyncio
+async def test_mcp_pending_and_audit_tools_answer_without_a_remote(
+    tmp_git_kb: Path, tmp_path: Path,
+) -> None:
+    """Issue #312: without KB_REMOTE_URL (and not a read-only replica) the write
+    objects are absent. The MCP pending and audit tools must then return the
+    same outcomes as their REST equivalents (an empty list, not_found, no
+    events) instead of failing on an assertion with an empty tool error."""
+    app = build_app(
+        kb_main_path=tmp_git_kb, kb_index_path=tmp_path / "idx.db",
+        sync_interval_sec=60, staleness_degraded_sec=600, bootstrap_now=True,
+        kb_remote_url=None,
+        worktree_root=str(tmp_path / "wts"),
+        pending_root=str(tmp_path / "pending"),
+        push_queue_root=str(tmp_path / "pushq"),
+    )
+    async with Client(app) as client:
+        listed = await client.call_tool("kb_list_pending", {}, raise_on_error=False)
+        got = await client.call_tool(
+            "kb_get_pending", {"pending_id": "abc"}, raise_on_error=False)
+        audited = await client.call_tool("kb_audit", {}, raise_on_error=False)
+    assert not listed.is_error, listed.content
+    assert listed.structured_content["pending"] == []
+    assert not got.is_error, got.content
+    assert got.structured_content["status"] == "not_found"
+    assert got.structured_content["pending_id"] == "abc"
+    assert not audited.is_error, audited.content
+    assert audited.structured_content["events"] == []
+    assert audited.structured_content["returned"] == 0
+    assert audited.structured_content["limit_hit"] is False

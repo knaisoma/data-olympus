@@ -1186,7 +1186,10 @@ def build_app(
         @app.tool(title="KB List Pending", annotations=READ_ONLY_TOOL)
         def kb_list_pending() -> dict[str, object]:
             """List currently pending proposals awaiting operator decision."""
-            assert state.pending is not None
+            if state.pending is None:
+                # No write pipeline (KB_REMOTE_URL unset): nothing can be
+                # parked, so the queue is empty, as the REST route answers.
+                return {"pending": []}
             from data_olympus.tools_write import kb_list_pending_fn
             resp = kb_list_pending_fn(pending=state.pending)
             return resp.model_dump()
@@ -1197,7 +1200,14 @@ def build_app(
             the principal that made the proposal, or to one that could resolve
             it. The content is PENDING: it is not in force and governs nothing
             until approved."""
-            assert state.pending is not None
+            if state.pending is None:
+                # No write pipeline: no entry can exist, so answer not_found
+                # as the REST route does rather than failing the call.
+                from data_olympus.models import PendingDetailResponse
+                from data_olympus.tools_write import _PENDING_NOTE
+                return PendingDetailResponse(
+                    status="not_found", pending_id=pending_id, note=_PENDING_NOTE,
+                ).model_dump()
             from data_olympus.principals import CAP_RESOLVE
             from data_olympus.tools_write import kb_get_pending_fn
             principal = _current_principal.get()
@@ -1215,7 +1225,9 @@ def build_app(
         ) -> dict[str, object]:
             """Return recent audit events, most-recent first. Optional filters:
             since (unix ts), agent (agent_identity), status (event status)."""
-            assert state.audit_log is not None
+            if state.audit_log is None:
+                # No audit log configured: no events, as the REST route answers.
+                return {"events": [], "returned": 0, "limit_hit": False}
             from data_olympus.tools_audit import kb_audit_fn
             resp = kb_audit_fn(audit_log=state.audit_log, since=since,
                               agent=agent, status=status, limit=limit)
