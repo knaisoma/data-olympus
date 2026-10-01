@@ -109,10 +109,11 @@ Reference other concepts with bundle-relative paths (absolute from the bundle
 root, e.g. `/universal/foundation/STD-U-001.md`). This applies to markdown
 links in the document body.
 
-The `supersedes`, `superseded_by`, and `contradicts` frontmatter fields are
-different: they hold concept **IDs**, not paths (e.g. `supersedes: ADR-002`,
-not `supersedes: /decisions/ADR-002.md`). Shapes per field: `supersedes` and
-`contradicts` accept a single ID or a list of IDs (both normalize to a list);
+The `supersedes`, `superseded_by`, `contradicts`, and `derived_from`
+frontmatter fields are different: they hold concept **IDs**, not paths (e.g.
+`supersedes: ADR-002`, not `supersedes: /decisions/ADR-002.md`). Shapes per
+field: `supersedes`, `contradicts` and `derived_from` accept a single ID or a
+list of IDs (both normalize to a list);
 `superseded_by` is a single scalar ID only, never a list. `kb lint`
 cross-checks these fields across the bundle (malformed shapes, self-references,
 supersession cycles, dangling/asymmetric targets, path-shaped values, and
@@ -120,7 +121,11 @@ in-force `contradicts` pairs are all reported; see `SPEC.md` section 4.2 for
 the exact error/warning list). Since format `0.4`, a `supersedes` or
 `superseded_by` target that does not resolve to a document is an error, so
 create or import the document being superseded before the one that supersedes
-it. The reference implementation's indexer also
+it. Since format `0.5`, `derived_from` names the documents a concept's
+guidance was drawn from; it follows the same resolution rule, and when a
+source leaves force `kb lint` warns and `kb_get` names the in-force dependents
+for a person to review, without filtering anything. The reference
+implementation's indexer also
 extracts them into an edges table consumed by later retrieval features.
 
 ### Directory structure

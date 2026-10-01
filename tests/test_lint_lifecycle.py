@@ -229,3 +229,30 @@ def test_example_bundle_lints_zero_errors_and_warnings() -> None:
     results = lint_files(files)
     all_findings = [f for findings in results.values() for f in findings]
     assert all_findings == [], f"example-bundle must lint clean: {all_findings}"
+
+
+# ---------------------------------------------------------------------------
+# derived_from shape (issue #300, acceptance check 1)
+# ---------------------------------------------------------------------------
+
+
+def test_derived_from_scalar_and_list_normalize_to_the_same_edges(tmp_path: Path) -> None:
+    from data_olympus.markdown_parse import parse_file
+
+    a = tmp_path / "a.md"
+    b = tmp_path / "b.md"
+    _write(a, "derived_from: GHOST\n", doc_id="A")
+    _write(b, "derived_from: [GHOST]\n", doc_id="A")
+    assert parse_file(a).derived_from == parse_file(b).derived_from == ["GHOST"]
+    from_scalar = [(f.severity, f.field, f.message) for f in lint_files([a]).get(a, [])]
+    from_list = [(f.severity, f.field, f.message) for f in lint_files([b]).get(b, [])]
+    assert from_scalar == from_list
+    assert ("error", "derived_from") in {(s, f) for s, f, _m in from_scalar}
+
+
+def test_derived_from_non_string_entries_are_an_error(tmp_path: Path) -> None:
+    for i, value in enumerate(("[1, A]", "{a: b}", "123")):
+        p = tmp_path / f"x{i}.md"
+        _write(p, f"derived_from: {value}\n", doc_id=f"X{i}")
+        errors = [f for f in _findings(lint_files([p]), p, "error") if f.field == "derived_from"]
+        assert any("malformed 'derived_from'" in f.message for f in errors), value

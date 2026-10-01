@@ -959,6 +959,13 @@ def build_app(
         document is still returned, with its full `validity` object and a
         computed `freshness` indicator (`stale`/`expired`/`upcoming`).
 
+        Derivation cues (ids only, for a person to review; nothing is filtered
+        or demoted because of them): `derived_from` lists the documents this
+        one draws from; `derived_from_retired` lists those that have left
+        force, only while this document is itself in force; and
+        `dependents_to_review` lists the in-force documents that derive from
+        this one, only while this document is retired.
+
         verbose: False (default) returns the full `content_markdown` body (kb_get
         exists to read the doc) with a trimmed envelope: `path`,
         `git_remote_url`, and `last_modified_source` are dropped and empty

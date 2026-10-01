@@ -7,7 +7,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from .document import Document
-from .validate import IN_FORCE_STATUSES, RESERVED, TIERS, Finding, validate_document
+from .validate import (
+    IN_FORCE_STATUSES,
+    RESERVED,
+    RETIRED_STATUSES,
+    TIERS,
+    Finding,
+    is_expired,
+    is_inbox_path,
+    is_retired,
+    is_upcoming,
+    normalize_validity_date,
+    today_iso,
+    validate_document,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -81,6 +94,7 @@ def lint_files(
     unresolved_severity: str = "error",
     root: str | Path | None = None,
     path_rules: tuple[tuple[str, str, str], ...] | None = None,
+    today: str | None = None,
 ) -> dict[Path, list[Finding]]:
     """Validate an already-discovered list of concept files. Returns {path:
     findings} for any file that produced at least one finding.
@@ -90,32 +104,38 @@ def lint_files(
     In addition to the per-file schema checks (`validate_document`), this
     builds an in-memory id map over `files` and cross-checks the typed
     lifecycle-relationship fields `supersedes` / `superseded_by` / `contradicts`
-    (issue #110, slice 1). Cross-file findings only appear here (and via
+    (issue #110, slice 1) and `derived_from` (issue #300). Cross-file findings only appear here (and via
     `lint_bundle`, which delegates to this function); single-file validation
     via `validate_document` is unaffected.
 
     ``resolve_ids`` (issue #259) adds ids that count as existing for
-    `supersedes` / `superseded_by` targets without contributing any findings or
-    relationship context (``--resolve-root``). ``unresolved_severity`` is
-    ``"error"`` (format 0.4) or ``"warn"`` (transitional) for an unresolved
-    `supersedes` / `superseded_by` target only.
+    `supersedes` / `superseded_by` / `derived_from` targets without
+    contributing any findings or relationship context (``--resolve-root``).
+    ``unresolved_severity`` is ``"error"`` (format 0.4) or ``"warn"``
+    (transitional) for an unresolved `supersedes` / `superseded_by` /
+    `derived_from` target only.
 
     ``root`` (issue #304) is the bundle root the files were discovered under.
     When given, a declared ``tier`` or ``category`` that disagrees with the
     path taxonomy is reported as a warning. ``path_rules`` is the taxonomy to
     use; ``None`` loads the active one (``KB_TAXONOMY_PATH`` or the default).
+
+    ``today`` (ISO date, issue #300) drives every wall-clock check, defaulting
+    to the real date. Those checks are always warnings.
     """
+    today = today if today is not None else today_iso()
     results: dict[Path, list[Finding]] = {}
     docs: dict[Path, Document] = {}
     for md in files:
         doc = Document.load(md)
         docs[md] = doc
-        findings = validate_document(doc)
+        findings = validate_document(doc, today=today)
         if findings:
             results[md] = list(findings)
 
     for path, findings in _cross_file_lifecycle_findings(
         docs, resolve_ids=resolve_ids, unresolved_severity=unresolved_severity,
+        today=today, root=Path(root) if root is not None else None,
     ).items():
         results.setdefault(path, []).extend(findings)
 
@@ -182,8 +202,8 @@ def _taxonomy_findings(
 # Cross-file lifecycle-relationship lint (issue #110, slice 1)
 # ---------------------------------------------------------------------------
 #
-# `supersedes` / `superseded_by` / `contradicts` are governance extensions
-# (SPEC.md section 4.2) whose targets are stable concept IDs, never paths.
+# `supersedes` / `superseded_by` / `contradicts` / `derived_from` are
+# governance extensions (SPEC.md section 4.2) whose targets are stable concept IDs, never paths.
 # This pass builds an in-memory id -> path map over the discovered file list
 # and cross-checks the raw frontmatter values directly (NOT the lenient,
 # already-coerced `ParsedDoc` from `data_olympus.markdown_parse`, which the
@@ -197,7 +217,8 @@ def _path_shaped(target: str) -> bool:
 
 
 def _normalize_multi_ref(value: object) -> tuple[list[str], bool]:
-    """Normalize `supersedes` / `contradicts`: a scalar ID string or a list of
+    """Normalize `supersedes` / `contradicts` / `derived_from`: a scalar ID
+    string or a list of
     ID strings. Returns (values, malformed). `malformed` is True when the raw
     shape is anything else (a non-string entry in the list, or a value that is
     neither a string nor a list at all -- e.g. a mapping or a number)."""
@@ -227,9 +248,12 @@ def _cross_file_lifecycle_findings(
     *,
     resolve_ids: Collection[str] = (),
     unresolved_severity: str = "error",
+    today: str | None = None,
+    root: Path | None = None,
 ) -> dict[Path, list[Finding]]:
     findings: dict[Path, list[Finding]] = defaultdict(list)
     external = set(resolve_ids)
+    today = today if today is not None else today_iso()
 
     # id -> path, only for docs with a usable (non-empty string) id. Docs
     # without one still get shape/dangling/path-shaped checks on their own
@@ -245,13 +269,17 @@ def _cross_file_lifecycle_findings(
     supersedes_by_id: dict[str, list[str]] = {}
     superseded_by_by_id: dict[str, str] = {}
     contradicts_by_id: dict[str, list[str]] = {}
+    derived_from_by_id: dict[str, list[str]] = {}
     status_by_id: dict[str, str] = {}
+    in_force_by_id: dict[str, bool] = {}
+    valid_until_by_id: dict[str, str] = {}
 
     for path, doc in docs.items():
         fm = doc.frontmatter
         supersedes, supersedes_bad = _normalize_multi_ref(fm.get("supersedes"))
         superseded_by, superseded_by_bad = _normalize_single_ref(fm.get("superseded_by"))
         contradicts, contradicts_bad = _normalize_multi_ref(fm.get("contradicts"))
+        derived_from, derived_from_bad = _normalize_multi_ref(fm.get("derived_from"))
 
         if supersedes_bad:
             findings[path].append(
@@ -276,15 +304,25 @@ def _cross_file_lifecycle_findings(
                     "or a list of concept id strings",
                 )
             )
+        if derived_from_bad:
+            findings[path].append(
+                Finding(
+                    "error", "derived_from",
+                    "malformed 'derived_from' value: expected a concept id string "
+                    "or a list of concept id strings",
+                )
+            )
 
         for field, targets in (
             ("supersedes", supersedes),
             ("superseded_by", [superseded_by] if superseded_by else []),
             ("contradicts", contradicts),
+            ("derived_from", derived_from),
         ):
             for target in targets:
-                # External ids (--resolve-root) count for supersession only;
-                # `contradicts` resolution is unchanged (issue #259 scope).
+                # External ids (--resolve-root) count for supersession and
+                # `derived_from` (issue #300); `contradicts` resolution is
+                # unchanged (issue #259 scope).
                 resolves = target in id_to_path or (
                     field != "contradicts" and target in external)
                 shaped = _path_shaped(target)
@@ -306,7 +344,9 @@ def _cross_file_lifecycle_findings(
                     ))
                     continue
                 # Issue #259 (format 0.4): an unresolved supersession target
-                # retires nothing, so it is an error unless downgraded.
+                # retires nothing, so it is an error unless downgraded. An
+                # unresolved `derived_from` target tracks nothing and follows
+                # the same rule (issue #300, format 0.5).
                 severity: Literal["error", "warning"] = (
                     "warning" if unresolved_severity == "warn" else "error")
                 hint = ("; it looks like a file path, use the target document's `id`"
@@ -324,7 +364,14 @@ def _cross_file_lifecycle_findings(
             if superseded_by:
                 superseded_by_by_id[doc_id] = superseded_by
             contradicts_by_id[doc_id] = contradicts
+            derived_from_by_id[doc_id] = derived_from
             status_by_id[doc_id] = str(doc.status or "").strip()
+            valid_from, valid_until = _lint_window(fm.get("validity"))
+            valid_until_by_id[doc_id] = valid_until
+            in_force_by_id[doc_id] = _lint_in_force(
+                status_by_id[doc_id], valid_from, valid_until, today,
+                inbox=root is not None and _under_inbox(path, root),
+            )
 
     # --- self-supersession (error) ------------------------------------------
     for doc_id, targets in supersedes_by_id.items():
@@ -431,7 +478,158 @@ def _cross_file_lifecycle_findings(
                     )
                 )
 
+    _derived_from_findings(
+        findings, id_to_path,
+        derived_from_by_id=derived_from_by_id,
+        supersedes_by_id=supersedes_by_id,
+        superseded_by_by_id=superseded_by_by_id,
+        status_by_id=status_by_id,
+        in_force_by_id=in_force_by_id,
+        valid_until_by_id=valid_until_by_id,
+        today=today,
+    )
     return findings
+
+
+def _lint_window(validity: object) -> tuple[str, str]:
+    """``(valid_from, valid_until)`` as ISO dates, ``""`` when absent. A
+    malformed ``validity`` block is treated as absent, as the index does (it
+    already carries its own warning)."""
+    if not isinstance(validity, dict):
+        return "", ""
+    valid_from, bad_from = normalize_validity_date(validity.get("valid_from"))
+    valid_until, bad_until = normalize_validity_date(validity.get("valid_until"))
+    if bad_from or bad_until:
+        return "", ""
+    return valid_from, valid_until
+
+
+def _under_inbox(path: Path, root: Path) -> bool:
+    try:
+        rel = path.relative_to(root).as_posix()
+    except ValueError:
+        return False
+    return is_inbox_path(rel)
+
+
+def _lint_in_force(
+    status: str, valid_from: str, valid_until: str, today: str, *, inbox: bool,
+) -> bool:
+    """Lint's view of "in force" for `derived_from` surfacing (issue #300):
+    status class plus validity window, with the memory-inbox floor applied
+    when the bundle root is known. Graph exclusion is applied separately by
+    the caller (an in-force superseder retires its target)."""
+    if inbox or status.casefold() not in IN_FORCE_STATUSES:
+        return False
+    return not is_expired(valid_until, today) and not is_upcoming(valid_from, today)
+
+
+def _derived_from_findings(
+    findings: dict[Path, list[Finding]],
+    id_to_path: dict[str, Path],
+    *,
+    derived_from_by_id: dict[str, list[str]],
+    supersedes_by_id: dict[str, list[str]],
+    superseded_by_by_id: dict[str, str],
+    status_by_id: dict[str, str],
+    in_force_by_id: dict[str, bool],
+    valid_until_by_id: dict[str, str],
+    today: str,
+) -> None:
+    """Relational `derived_from` checks (issue #300).
+
+    Errors: self-reference, a derivation cycle (its own graph, never merged
+    with supersession: the relations mean different things), and deriving from
+    a document this one supersedes (its own `supersedes`, or the target's
+    `superseded_by` naming it). Warnings, on both ends: an in-force document
+    deriving from a retired one. The retired test is
+    :func:`format.validate.is_retired`; lint learns graph exclusion from a
+    `supersedes` edge whose source lint considers in force. An id resolved only
+    through ``--resolve-root`` has no status here and produces no finding.
+    These warnings are wall-clock relative (expiry), so they are never errors.
+    """
+    # --- self-reference (error) ----------------------------------------------
+    for doc_id, targets in derived_from_by_id.items():
+        if doc_id in targets:
+            findings[id_to_path[doc_id]].append(
+                Finding("error", "derived_from", f"'{doc_id}' cannot derive from itself")
+            )
+
+    # --- derivation cycles (error) -------------------------------------------
+    graph: dict[str, set[str]] = defaultdict(set)
+    for doc_id, targets in derived_from_by_id.items():
+        for target in targets:
+            if target != doc_id and target in id_to_path:
+                graph[doc_id].add(target)
+    for cycle in _find_cycles(graph):
+        chain = " -> ".join(cycle)
+        for member_id in cycle[:-1]:
+            findings[id_to_path[member_id]].append(
+                Finding("error", "derived_from", f"derivation cycle detected: {chain}")
+            )
+
+    # --- deriving from a document this one supersedes (error) ---------------
+    mixed: set[tuple[str, str]] = set()
+    for doc_id, targets in derived_from_by_id.items():
+        for target in sorted(set(targets)):
+            if target == doc_id:
+                continue
+            if target in supersedes_by_id.get(doc_id, []) or (
+                    superseded_by_by_id.get(target) == doc_id):
+                mixed.add((doc_id, target))
+                findings[id_to_path[doc_id]].append(Finding(
+                    "error", "derived_from",
+                    f"'{doc_id}' derives from '{target}' but also supersedes it; a "
+                    "successor is not a dependent of the document it retires, so "
+                    f"remove '{target}' from 'derived_from'",
+                ))
+
+    # --- in-force dependents of retired sources (warning, both ends) --------
+    in_force_superseders: dict[str, list[str]] = defaultdict(list)
+    for doc_id, targets in supersedes_by_id.items():
+        if not in_force_by_id.get(doc_id, False):
+            continue
+        for target in targets:
+            if target != doc_id and target in id_to_path:
+                in_force_superseders[target].append(doc_id)
+
+    def retirement_reason(source: str) -> str | None:
+        raw_status = status_by_id.get(source, "")
+        status = raw_status.casefold()
+        superseders = sorted(in_force_superseders.get(source, []))
+        valid_until = valid_until_by_id.get(source, "")
+        if not is_retired(status, valid_until, today, graph_excluded=bool(superseders)):
+            return None
+        if status in RETIRED_STATUSES:
+            return f"status '{raw_status}'"
+        if superseders:
+            return f"superseded by in-force '{superseders[0]}'"
+        return f"expired: valid_until {valid_until} is before {today}"
+
+    dependents_by_source: dict[str, set[str]] = defaultdict(set)
+    for doc_id, targets in sorted(derived_from_by_id.items()):
+        if not in_force_by_id.get(doc_id, False) or doc_id in in_force_superseders:
+            continue
+        for source in sorted(set(targets)):
+            if source == doc_id or source not in id_to_path or (doc_id, source) in mixed:
+                continue
+            reason = retirement_reason(source)
+            if reason is None:
+                continue
+            dependents_by_source[source].add(doc_id)
+            findings[id_to_path[doc_id]].append(Finding(
+                "warning", "derived_from",
+                f"'{doc_id}' is in force but derives from '{source}', which is no "
+                f"longer in force ({reason}); decide whether '{doc_id}' still holds, "
+                "needs rewording, or should be retired",
+            ))
+    for source, dependents in sorted(dependents_by_source.items()):
+        named = ", ".join(f"'{d}'" for d in sorted(dependents))
+        findings[id_to_path[source]].append(Finding(
+            "warning", "derived_from",
+            f"'{source}' is no longer in force ({retirement_reason(source)}) but "
+            f"in-force documents derive from it: {named}; review them",
+        ))
 
 
 def _find_cycles(graph: dict[str, set[str]]) -> list[list[str]]:

@@ -512,3 +512,66 @@ def test_graph_excluded_ids_matches_counter(
     ids = idx.graph_excluded_ids(today=TODAY)
     assert ids == {"DOC-B"}
     assert len(ids) == idx.graph_excluded_count(today=TODAY)
+
+
+# ---------------------------------------------------------------------------
+# Issue #300, acceptance check 12: `derived_from` never invalidates anything.
+# The same corpus with and without the `derived_from` keys yields identical
+# search results (default and in_force), consult results, per-hit in_force,
+# graph_excluded_docs and hit order.
+# ---------------------------------------------------------------------------
+
+
+def _derivation_corpus(kb: Path, *, with_derived_from: bool) -> None:
+    rel = "derived_from: [DOC-OLD, DOC-GONE]\n" if with_derived_from else ""
+    _write(kb, "universal/foundation/old.md", id_="DOC-OLD", status="active",
+           body="widget schema convention old")
+    _write(kb, "universal/foundation/new.md", id_="DOC-NEW", status="active",
+           body="widget schema convention new", extra="supersedes: DOC-OLD\n")
+    _write(kb, "universal/foundation/gone.md", id_="DOC-GONE", status="deprecated",
+           body="widget schema convention gone")
+    _write(kb, "universal/foundation/dep1.md", id_="DOC-DEP1", status="active",
+           body="widget schema convention dependent one", extra=rel)
+    _write(kb, "universal/foundation/dep2.md", id_="DOC-DEP2", status="accepted",
+           body="widget schema convention dependent two", extra=rel)
+
+
+def _observe(kb: Path, index_path: Path) -> dict[str, object]:
+    from data_olympus.enforce_policy import ConsultationLedger, IntentClassifier
+
+    idx = Index(index_path)
+    idx.build(kb, source_commit="x")
+    default = kb_search_fn(idx=idx, query="widget schema", limit=20, today=TODAY)
+    in_force = kb_search_fn(idx=idx, query="widget schema", limit=20, in_force=True,
+                            today=TODAY)
+    consult = kb_consult_fn(
+        idx=idx, classifier=IntentClassifier(), ledger=ConsultationLedger(),
+        workspace="ws", intent="schema convention for widget docs",
+        source_session="s1", agent_identity="tester", ttl_sec=3600, now=1000.0,
+    )
+    return {
+        "default": [(h.id, h.score, h.in_force) for h in default.hits],
+        "in_force": [(h.id, h.score, h.in_force) for h in in_force.hits],
+        "consult": [h.id for h in consult.rules],
+        "get_in_force": {
+            d: kb_get_fn(idx=idx, id=d, today=TODAY).in_force
+            for d in ("DOC-OLD", "DOC-NEW", "DOC-GONE", "DOC-DEP1", "DOC-DEP2")
+        },
+        "graph_excluded_docs": kb_health_fn(
+            idx=idx, last_git_pull_at=None, staleness_degraded_sec=600,
+        ).graph_excluded_docs,
+    }
+
+
+def test_derived_from_has_no_filtering_or_ranking_effect(tmp_path: Path) -> None:
+    without = _observe(_kb_at(tmp_path / "a", with_derived_from=False), tmp_path / "a.db")
+    with_rel = _observe(_kb_at(tmp_path / "b", with_derived_from=True), tmp_path / "b.db")
+    assert with_rel == without
+    assert with_rel["get_in_force"]["DOC-DEP1"] is True  # type: ignore[index]
+    assert {"DOC-DEP1", "DOC-DEP2"} <= set(with_rel["consult"])  # type: ignore[arg-type]
+
+
+def _kb_at(root: Path, *, with_derived_from: bool) -> Path:
+    kb = root / "kb"
+    _derivation_corpus(kb, with_derived_from=with_derived_from)
+    return kb

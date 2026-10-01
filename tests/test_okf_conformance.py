@@ -196,3 +196,25 @@ def test_okf_pin_freshness_workflow_only_manages_one_issue() -> None:
     assert "pin.commit === upstreamSha" not in script
     assert "fs.write" not in script
     assert "git push" not in script
+
+
+def test_example_bundle_carries_derived_from_for_the_consumer_run() -> None:
+    """Issue #300, acceptance check 15: at least one example-bundle concept
+    carries `derived_from`, so the pinned OKF consumer run in CI proves an OKF
+    consumer tolerates the key rather than asserting it."""
+    from data_olympus.format import Document, discover_bundle_files
+
+    carriers = [
+        p for p in discover_bundle_files(ROOT / "example-bundle")
+        if Document.load(p).frontmatter.get("derived_from")
+    ]
+    assert carriers
+
+
+def test_pinned_consumer_reads_example_bundle_when_checkout_present() -> None:
+    upstream = ROOT / "to-delete" / "okf-reference"
+    if not (upstream / ".git").exists():
+        pytest.skip("pinned OKF checkout not present (CI checks it out before tests)")
+    module = _module()
+    result = module.consume_data_olympus(module.load_reference(REFERENCE), ROOT, upstream)
+    assert result["verified"] is True

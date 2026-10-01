@@ -59,7 +59,7 @@ reference consumer, SPEC, or license is not detected by that workflow.
 
 These fields are shipped, schema-checked by `data-olympus lint`
 (`src/data_olympus/format/lint.py` via `validate_document` and the cross-file
-lifecycle pass), and part of the current `SPEC.md` (version 0.4). "Stable"
+lifecycle pass), and part of the current `SPEC.md` (version 0.5). "Stable"
 here means the field name and semantics are not expected to change shape; it
 does not mean the field is required in every bundle unless stated, and two
 fields (`applies_when`, `owner`) are stable documented conventions with no
@@ -75,6 +75,7 @@ lint coverage; the table's lint column is authoritative per field.
 | `supersedes` | Optional | error on malformed shape/self-reference/cycle or a target that does not resolve (format 0.4); warning on asymmetric pair or a path-shaped target that resolves | Scalar ID or list of IDs, normalized to a list (issue #110). |
 | `superseded_by` | Optional | error on malformed shape/self-reference or a target that does not resolve (format 0.4); warning on asymmetric pair or a path-shaped target that resolves, or set while status is in-force | Scalar ID only (issue #110). |
 | `contradicts` | Optional | error on malformed shape; warning on dangling/path-shaped target, or an in-force pair | Scalar ID or list of IDs; annotation only, never filters or ranks (issue #110). |
+| `derived_from` | Optional | error on malformed shape/self-reference/derivation cycle, a target that does not resolve, or a target the document also supersedes (format 0.5); warning on a path-shaped target that resolves, or an in-force document deriving from a retired one (both ends) | Scalar ID or list of IDs, normalized to a list. Surfacing only: names in-force dependents when a source leaves force, never filters, demotes or invalidates (issue #300). |
 | `owner` | Optional | none (documented convention only) | Team or individual responsible for the concept. |
 
 ### `status`, and the note on issue #114
@@ -165,6 +166,19 @@ property (the edge is *executable retrieval policy*, not just navigation
 metadata) does not require a nested shape. See section 4 below for the
 conditional migration path if OKF #148 standardizes something else.
 
+`derived_from` (format `0.5`, [issue #300](https://github.com/knaisoma/data-olympus/issues/300))
+joins the same edges table under its own `rel` and the same OKF #148
+staged-migration commitment (section 7). Unlike `supersedes`, it is not
+retrieval policy: when a source leaves force (graph-excluded, `deprecated`,
+`superseded`, `rejected` or expired), `kb lint` warns on both ends and `kb_get`
+names the in-force dependents (`dependents_to_review`) and the retired sources
+(`derived_from_retired`), so a person decides. `rejected` counts as retired
+deliberately, because deriving from an explicitly rejected document is worth
+surfacing; `draft` and `proposed` never governed and do not count. Nothing is
+filtered or demoted, and every edges query filters on `rel`, so the new rows
+cannot enter graph exclusion. One `example-bundle` concept carries the field,
+so the pinned OKF consumer run exercises it.
+
 ### `validity`: freshness metadata with hard expiry semantics
 
 Shipped in [issue #107](https://github.com/knaisoma/data-olympus/issues/107),
@@ -204,6 +218,9 @@ additive and orthogonal, visible only in served MCP/REST responses.
 | `freshness_reason` | `SearchHitModel.freshness_reason`, `GetResponse.freshness_reason` | Why `freshness` is non-empty: names the field and the date or day count, from the SAME `compute_freshness` call that set `freshness` (issue #142). Omitted exactly when `freshness` is omitted. |
 | `superseded_by` (computed) | `SearchHitModel.superseded_by`, `GetResponse.superseded_by` | Union of the document's own frontmatter claim and any reverse `supersedes` edge naming it; omitted when empty. |
 | `contradicted_by` | `GetResponse.contradicted_by` | Computed reverse of `contradicts`: every other doc whose `contradicts` names this one. `kb_get` only (not on search hits); verbose responses always carry it, compact responses emit it when non-empty (`GetResponse.compact_dump`). |
+| `derived_from` (resolved) | `GetResponse.derived_from` | The document's own `derived_from` targets that exist as documents, sorted. `kb_get` only; verbose always, compact when non-empty (issue #300). |
+| `derived_from_retired` | `GetResponse.derived_from_retired` | The subset of `derived_from` that has left force (`format.validate.is_retired`), non-empty only while this document is in force. `kb_get` only; verbose always, compact when non-empty. A review cue; changes nothing. |
+| `dependents_to_review` | `GetResponse.dependents_to_review` | In-force documents whose `derived_from` names this one, non-empty only while this document is retired. `kb_get` only; verbose always, compact when non-empty. A review cue; changes nothing. |
 | `pending_actions` | `HealthResponse.pending_actions`, `ConsultResponse.pending_actions` | Maintenance-ledger CTA (issue #113): short `{kind, message, count}` items an agent should surface to the operator and act on only with confirmation. Omitted entirely (not an empty list) when the corpus is clean. |
 
 Every row above is shipped and present in `src/data_olympus/models.py` at the
@@ -317,11 +334,13 @@ OKF consumer choke on this" and "what does data-olympus tooling do with it".
 | `supersedes` | yes (unknown key) | error (shape/self/cycle/unresolved target), warning (asymmetric/path-shaped resolving) | Extracted into the `edges` table; source of the in-force-source graph-exclusion guard. |
 | `superseded_by` | yes (unknown key) | error (shape/self/unresolved target), warning (asymmetric/path-shaped resolving/in-force) | Same edges table; surfaced on `kb_get`/compact hits (deviation-only). |
 | `contradicts` | yes (unknown key) | error (shape), warning (dangling/path-shaped/in-force pair) | Annotation only; never filters or ranks. |
+| `derived_from` | yes (unknown key; exercised by the pinned consumer run over `example-bundle`) | error (shape/self/cycle/unresolved target/also superseded by this document), warning (path-shaped resolving; in-force document deriving from a retired one) | Same edges table under `rel = 'derived_from'`; surfaced on `kb_get` only, never filters or ranks. |
 | `owner` | yes (unknown key) | none | Documented convention; no tooling reads it. |
 | `validity` (and sub-fields) | yes (unknown key) | warning only (malformed value, `recheck_by` past, `valid_until` past while in-force) | Drives `in_force` and default-search exclusion for expiry; `recheck_by` drives `freshness: stale` only. |
 | `in_force` (runtime) | n/a (never in frontmatter) | n/a | Serving-envelope only; MUST NOT be treated as bundle content. |
 | `freshness` (runtime) | n/a (never in frontmatter) | n/a | Serving-envelope only. |
 | `contradicted_by` (runtime) | n/a (never in frontmatter) | n/a | Serving-envelope only; `kb_get` (verbose always, compact when non-empty). |
+| `derived_from_retired`, `dependents_to_review` (runtime) | n/a (never in frontmatter) | n/a | Serving-envelope only; `kb_get` (verbose always, compact when non-empty). |
 | `pending_actions` (runtime) | n/a (never in frontmatter) | n/a | Serving-envelope only; `kb_health`/`kb_consult`. |
 
 ---
@@ -387,7 +406,7 @@ Extension fields graduate out of this profile in one of two directions:
 
 - **Into the core OKF spec**, if an upstream OKF discussion standardizes a
   shape data-olympus's flat fields currently approximate. The clearest
-  candidate is `supersedes`/`superseded_by`/`contradicts` under OKF #148: if
+  candidate is `supersedes`/`superseded_by`/`contradicts`/`derived_from` under OKF #148: if
   OKF adopts a structured `relationships:` block, `SPEC.md` section 4.2
   already commits to accepting the upstream shape via the same importer-style
   normalization that today accepts both a scalar and a list for `supersedes`

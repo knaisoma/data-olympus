@@ -397,6 +397,8 @@ SNAPSHOT_DEPENDENT_CODES: frozenset[str] = frozenset({
     "unresolved_superseded_by_target",
     "malformed_supersedes",
     "malformed_superseded_by",
+    "unresolved_derived_from_target",
+    "malformed_derived_from",
     "unresolved_target_unverifiable",
 })
 """Validation codes whose answer depends on the committed tree, so an
@@ -405,7 +407,15 @@ index-only prediction must not treat them as a certain rejection."""
 _RELATIONSHIP_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("supersedes", "unresolved_supersedes_target", "malformed_supersedes"),
     ("superseded_by", "unresolved_superseded_by_target", "malformed_superseded_by"),
+    # Issue #300: a new `derived_from` edge must resolve like a supersession
+    # target. Retirement of a source never rejects a write; it is surfaced by
+    # kb_get and kb lint only.
+    ("derived_from", "unresolved_derived_from_target", "malformed_derived_from"),
 )
+
+# Relationship fields authored as a scalar id or a list of ids. Every other
+# relationship field in _RELATIONSHIP_FIELDS (`superseded_by`) is scalar only.
+_LIST_OR_SCALAR_FIELDS: frozenset[str] = frozenset({"supersedes", "derived_from"})
 
 
 def _strict_equal(
@@ -466,7 +476,7 @@ def _relationship_targets(field: str, value: object) -> tuple[list[str], bool]:
     """Targets of a present, non-null relationship field exactly as authored,
     and whether the shape is malformed. A blank or whitespace-only string is not
     a concept id and makes the value malformed in either shape."""
-    if field == "supersedes":
+    if field in _LIST_OR_SCALAR_FIELDS:
         items = [value] if isinstance(value, str) else value
         if not isinstance(items, list) or not all(isinstance(v, str) for v in items):
             return [], True
@@ -522,15 +532,18 @@ def _supersession_errors(
     transaction: Mapping[str, str] | None,
 ) -> list[dict[str, str]]:
     """Issue #259: a write may not newly introduce a ``supersedes`` or
-    ``superseded_by`` target that is absent from the commit being made, nor a
-    newly malformed value. Targets and malformed values carried over unchanged
-    from the committed version of the same path keep passing."""
-    if all(fm.get(field) is None for field, _unresolved, _malformed in _RELATIONSHIP_FIELDS):
+    ``superseded_by`` target (or, issue #300, a ``derived_from`` target) that
+    is absent from the commit being made, nor a newly malformed value. Targets
+    and malformed values carried over unchanged from the committed version of
+    the same path keep passing."""
+    present = [field for field, _unresolved, _malformed in _RELATIONSHIP_FIELDS
+               if fm.get(field) is not None]
+    if not present:
         return []
     unverifiable = {
-        "field": "supersedes", "code": "unresolved_target_unverifiable",
+        "field": present[0], "code": "unresolved_target_unverifiable",
         "message": ("unresolved_target_unverifiable: the committed tree could not "
-                    "be read, so supersession targets cannot be verified; retry"),
+                    "be read, so relationship targets cannot be verified; retry"),
     }
     try:
         preimage = snapshot.frontmatter(target_path) or {}
@@ -547,7 +560,8 @@ def _supersession_errors(
         if post_malformed:
             if pre is None or not _strict_equal(post, pre):
                 expected = ("a concept id string or a list of concept id strings"
-                            if field == "supersedes" else "a single concept id string")
+                            if field in _LIST_OR_SCALAR_FIELDS
+                            else "a single concept id string")
                 errors.append({
                     "field": field, "code": malformed_code,
                     "message": f"{malformed_code}: '{field}' must be {expected}",

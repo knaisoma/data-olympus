@@ -270,7 +270,9 @@ section so concurrent writes cannot corrupt each other:
   count, and an id the same write removes does not either). Otherwise the write
   is refused as `rejected_invalid_document` with `unresolved_supersedes_target`
   or `unresolved_superseded_by_target` at the start of the reason, or
-  `malformed_supersedes` / `malformed_superseded_by` for a wrong shape. Target
+  `malformed_supersedes` / `malformed_superseded_by` for a wrong shape. A
+  `derived_from` target follows the same rule (`unresolved_derived_from_target`,
+  `malformed_derived_from`); a source that has retired never causes a refusal. Target
   strings are compared exactly as written, so `" TARGET "` does not resolve to
   `TARGET`, and a blank or whitespace-only target is refused as malformed (lint
   ignores such a value rather than reporting it). A target left unchanged from the committed version of the same file,
@@ -1067,6 +1069,35 @@ the document is not superseded; it is computed and attached to EVERY hit
 regardless of `in_force`, so a plain search result still explains why a hit is
 historically superseded. `kb_search` hits do NOT carry `contradicts` /
 `contradicted_by`; those are kb_get-only.
+
+#### Derivation: `derived_from` is surfaced, never acted on
+
+A document may declare `derived_from` (SPEC.md section 4.2, format `0.5`):
+the documents its guidance was drawn from. A document has **left force**
+(is retired) when it is graph-excluded, its `status` is `deprecated`,
+`superseded` or `rejected`, or it is expired. `rejected` counts deliberately:
+deriving from an explicitly rejected document is itself worth surfacing.
+`draft`, `proposed`, upcoming and memory-inbox documents are not retired,
+because they never governed. `kb_get` returns three lists of ids, sorted,
+deduped and dangling-safe:
+
+- `derived_from`: the document's own `derived_from` targets that exist.
+- `derived_from_retired`: the subset of `derived_from` that is retired.
+  Non-empty only while this document is itself in force.
+- `dependents_to_review`: the documents in force (the full computed
+  `in_force` predicate) whose `derived_from` names this one. Non-empty only
+  while this document is retired.
+
+Verbose `kb_get` always carries all three; compact `kb_get` omits each when
+empty, so a document without derivation relationships keeps its exact compact
+shape. MCP `kb_get` and REST `GET /api/v1/get/{id}` share one implementation.
+Nothing is filtered or demoted: `derived_from` never changes any document's
+`in_force`, `kb_search` or `kb_consult` results, ranking, or the
+`graph_excluded_docs` counter, and `kb_search` hits do not carry these lists.
+A dependent of a retired source can therefore still be returned by
+`kb_consult` with no cue; `kb lint` (a warning on both ends) and `kb_get` are
+where a person sees it. `data-olympus lint` reports the same condition as a
+warning, never an error, because a source can retire by expiry.
 
 ## Validity: expired docs leave default results
 

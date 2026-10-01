@@ -280,8 +280,12 @@ def kb_get_fn(
     # Full computed in-force predicate (issues #109 + #110 slice 2): status
     # class AND validity window AND not-inbox AND not-graph-excluded, matching
     # the in_force=True retrieval filter exactly.
-    in_force = doc.id not in _graph_excluded_ids(idx, today) and is_in_force(
+    graph_excluded = _graph_excluded_ids(idx, today)
+    in_force = doc.id not in graph_excluded and is_in_force(
         doc.status, doc.valid_from, doc.valid_until, today, is_inbox=doc.is_inbox,
+    )
+    derived_from_retired, dependents_to_review = _derivation_review(
+        idx, doc, today=today, graph_excluded=graph_excluded, in_force=in_force,
     )
     return GetResponse(
         id=doc.id,
@@ -306,7 +310,57 @@ def kb_get_fn(
         superseded_by=list(doc.superseded_by),
         contradicts=list(doc.contradicts),
         contradicted_by=list(doc.contradicted_by),
+        derived_from=list(getattr(doc, "derived_from", ())),
+        derived_from_retired=derived_from_retired,
+        dependents_to_review=dependents_to_review,
     )
+
+
+def _derivation_review(
+    idx: Index,
+    doc: object,
+    *,
+    today: str,
+    graph_excluded: set[str],
+    in_force: bool,
+) -> tuple[list[str], list[str]]:
+    """``(derived_from_retired, dependents_to_review)`` for one document
+    (issue #300). Reads only; never filters, demotes or writes anything.
+
+    The retired test is :func:`format.validate.is_retired` and the in-force
+    test is the same full predicate as ``in_force`` above (status class AND
+    validity window AND not-inbox AND not-graph-excluded), evaluated with the
+    request's ``today`` and the graph-excluded set already fetched, so the
+    wall-clock logic stays in one place. Duck-typed: a test double without the
+    relationship attributes or ``lifecycle_states`` surfaces nothing.
+    """
+    from data_olympus.format.validate import is_in_force, is_retired
+
+    sources = list(getattr(doc, "derived_from", ()))
+    dependents = list(getattr(doc, "derived_by", ()))
+    retired_self = is_retired(
+        getattr(doc, "status", ""), getattr(doc, "valid_until", ""), today,
+        graph_excluded=getattr(doc, "id", "") in graph_excluded,
+    )
+    wanted = (sources if in_force else []) + (dependents if retired_self else [])
+    states_fn = getattr(idx, "lifecycle_states", None)
+    if not wanted or states_fn is None:
+        return [], []
+    states = states_fn(sorted(set(wanted)))
+    retired_sources = sorted({
+        s for s in sources if in_force and s in states and is_retired(
+            states[s].status, states[s].valid_until, today,
+            graph_excluded=s in graph_excluded,
+        )
+    })
+    to_review = sorted({
+        d for d in dependents if retired_self and d in states
+        and d not in graph_excluded and is_in_force(
+            states[d].status, states[d].valid_from, states[d].valid_until, today,
+            is_inbox=states[d].is_inbox,
+        )
+    })
+    return retired_sources, to_review
 
 
 def kb_list_fn(*, idx: Index, tier: str, category: str | None = None) -> ListResponse:
