@@ -99,3 +99,26 @@ def test_release_planning_selects_a_coherent_issue_batch() -> None:
     assert "before implementation" in planning
     assert "No action" in planning
     assert "fixes, new capabilities, and improvements" in planning
+
+
+def test_derived_from_is_documented_on_every_surface() -> None:
+    """Issue #300, acceptance check 16."""
+    spec = _read("SPEC.md")
+    section_42 = spec.split("### 4.2", 1)[1].split("### 4.3", 1)[0]
+    section_9 = spec.split("## 9.", 1)[1].split("## 10.", 1)[0]
+    section_10 = spec.split("## 10.", 1)[1].split("## 11.", 1)[0]
+    for text in (section_42, section_9, section_10):
+        assert "derived_from" in text
+    for field in ("derived_from_retired", "dependents_to_review"):
+        assert field in section_42
+    assert "**Version:** 0.5" in spec
+    assert "`0.5`" in section_10
+    assert "rejected" in section_42.split("derived_from_retired", 1)[0] or (
+        "`rejected`" in section_42)
+
+    for doc in ("docs/serving.md", "docs/okf-profile.md"):
+        text = _read(doc)
+        for field in ("derived_from", "derived_from_retired", "dependents_to_review"):
+            assert field in text, (doc, field)
+    serving = _read("docs/serving.md")
+    assert "never filtered" in serving or "nothing is filtered" in serving.lower()

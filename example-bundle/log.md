@@ -4,6 +4,15 @@ Changes are listed newest-first, grouped by date.
 
 ---
 
+## 2026-10-01 (0.11.0: derived_from demonstration, format 0.5)
+
+Changed:
+
+- `workflows/WF-001-review-flow.md` declares `derived_from: STD-U-002`: the
+  review flow applies that standard's criteria, so if `STD-U-002` ever leaves
+  force, `kb lint` and `kb_get` name `WF-001` for a person to review.
+- The root `index.md` declares `spec_version: "0.5"`.
+
 ## 2026-07-03 (0.3.0: lifecycle and applies_when demonstration)
 
 Added the remaining concept types and lifecycle mechanics referenced in

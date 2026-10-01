@@ -502,6 +502,24 @@ class IndexedDoc:
     superseded_by: tuple[str, ...] = ()
     contradicts: tuple[str, ...] = ()
     contradicted_by: tuple[str, ...] = ()
+    # `derived_from` surfacing (issue #300): this doc's own resolving
+    # `derived_from` targets and the raw reverse (every doc whose
+    # `derived_from` names this one), both sorted and dangling-safe. Whether a
+    # neighbour is retired or in force is decided by kb_get_fn, where the
+    # wall-clock and graph-exclusion inputs already live.
+    derived_from: tuple[str, ...] = ()
+    derived_by: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleState:
+    """The inputs to the in-force and retired predicates for one doc (issue
+    #300), read in a batch for a document's `derived_from` neighbours."""
+
+    status: str
+    valid_from: str
+    valid_until: str
+    is_inbox: bool
 
 
 class DuplicateIdError(ValueError):
@@ -1214,6 +1232,11 @@ class Index:
                     edge_rows.add((doc_id, "superseded_by", doc.superseded_by))
                 for target in doc.contradicts:
                     edge_rows.add((doc_id, "contradicts", target))
+                # Issue #300: `derived_from` shares the table under its own
+                # `rel`. Every edges query filters on `rel`, so these rows can
+                # never reach graph exclusion or supersession surfacing.
+                for target in doc.derived_from:
+                    edge_rows.add((doc_id, "derived_from", target))
                 if build_embeddings:
                     # Embed title + applies_when + tags + description + body: the
                     # retrievable semantic content PLUS the curated intent
@@ -2201,8 +2224,13 @@ class Index:
                 contradicted_by = _edges_targeting(conn, "contradicts", [id]).get(
                     id, []
                 )
+                derived_from = sorted(set(
+                    _edges_from(conn, "derived_from", [id]).get(id, [])))
+                derived_by = sorted(set(
+                    _edges_targeting(conn, "derived_from", [id]).get(id, [])))
             except sqlite3.Error:
                 superseded_by, contradicts, contradicted_by = [], [], []
+                derived_from, derived_by = [], []
         except sqlite3.Error:
             return None
         finally:
@@ -2234,7 +2262,40 @@ class Index:
             superseded_by=tuple(superseded_by),
             contradicts=tuple(contradicts),
             contradicted_by=tuple(contradicted_by),
+            derived_from=tuple(derived_from),
+            derived_by=tuple(derived_by),
         )
+
+    def lifecycle_states(
+        self, ids: builtins.list[str],
+    ) -> dict[str, LifecycleState]:
+        """``{id: LifecycleState}`` for the given ids, in one query (issue
+        #300). Ids without a ``docs`` row are omitted. Returns an empty dict
+        when the index cannot be read, so surfacing degrades to silence rather
+        than failing the ``kb_get`` it decorates."""
+        if not ids:
+            return {}
+        placeholders = ", ".join("?" for _ in ids)
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT id, status, valid_from, valid_until, is_inbox FROM docs "
+                f"WHERE id IN ({placeholders})",
+                list(ids),
+            ).fetchall()
+        except sqlite3.Error:
+            return {}
+        finally:
+            conn.close()
+        return {
+            r["id"]: LifecycleState(
+                status=r["status"] or "",
+                valid_from=r["valid_from"] or "",
+                valid_until=r["valid_until"] or "",
+                is_inbox=bool(r["is_inbox"]),
+            )
+            for r in rows
+        }
 
     def id_to_path_map(self) -> dict[str, str]:
         """Return ``{doc_id: path}`` for every indexed document.

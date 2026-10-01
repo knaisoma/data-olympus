@@ -277,3 +277,73 @@ def test_unchanged_unusual_malformed_values_are_accepted(tmp_path, value) -> Non
     repo = _repo(tmp_path, {"universal/a.md": _doc("A", value)})
     edited = _doc("A", value).replace("# A\n", "# A\nMore.\n")
     assert "malformed_supersedes" not in _codes(_validate(repo, "universal/a.md", edited))
+
+
+# ---------------------------------------------------------------------------
+# derived_from (issue #300, acceptance check 14)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["GHOST", "[A, GHOST]"])
+def test_new_unresolved_derived_from_target_is_rejected(tmp_path, value) -> None:
+    repo = _repo(tmp_path, {"universal/a.md": _doc("A")})
+    result = _validate(repo, "universal/b.md", _doc("B", f"derived_from: {value}\n"))
+    assert "unresolved_derived_from_target" in _codes(result)
+    message = next(e["message"] for e in result.errors
+                   if e["code"] == "unresolved_derived_from_target")
+    assert "'derived_from'" in message and "GHOST" in message
+
+
+@pytest.mark.parametrize("line", [
+    "derived_from: 123\n", "derived_from: [123, A]\n", "derived_from: {a: b}\n",
+    'derived_from: " "\n',
+])
+def test_new_malformed_derived_from_is_rejected(tmp_path, line) -> None:
+    repo = _repo(tmp_path, {"universal/a.md": _doc("A")})
+    result = _validate(repo, "universal/b.md", _doc("B", line))
+    assert "malformed_derived_from" in _codes(result)
+    message = next(e["message"] for e in result.errors if e["code"] == "malformed_derived_from")
+    assert "a concept id string or a list of concept id strings" in message
+
+
+def test_superseded_by_malformed_message_stays_scalar(tmp_path) -> None:
+    repo = _repo(tmp_path, {"universal/a.md": _doc("A")})
+    result = _validate(repo, "universal/b.md", _doc("B", "superseded_by: [A]\n"))
+    message = next(e["message"] for e in result.errors
+                   if e["code"] == "malformed_superseded_by")
+    assert message.endswith("must be a single concept id string")
+
+
+def test_resolving_derived_from_target_passes_in_both_shapes(tmp_path) -> None:
+    repo = _repo(tmp_path, {"universal/a.md": _doc("A")})
+    assert _validate(repo, "universal/b.md", _doc("B", "derived_from: A\n")).ok
+    assert _validate(repo, "universal/b.md", _doc("B", "derived_from: [A]\n")).ok
+
+
+def test_unchanged_legacy_derived_from_target_passes(tmp_path) -> None:
+    repo = _repo(tmp_path, {"universal/b.md": _doc("B", "derived_from: GHOST\n")})
+    edited = _doc("B", "derived_from: GHOST\n").replace("# B\n", "# B\nMore.\n")
+    assert "unresolved_derived_from_target" not in _codes(
+        _validate(repo, "universal/b.md", edited))
+
+
+def test_retired_source_never_rejects_a_write(tmp_path) -> None:
+    repo = _repo(tmp_path, {
+        "universal/a.md": _doc("A", "superseded_by: C\n", status="superseded"),
+        "universal/c.md": _doc("C", "supersedes: A\n"),
+        "universal/d.md": _doc("D", status="deprecated"),
+        "universal/b.md": _doc("B", "derived_from: [A, D]\n"),
+    })
+    # Editing the dependent keeps passing although both sources are retired.
+    edited = _doc("B", "derived_from: [A, D]\n").replace("# B\n", "# B\nMore.\n")
+    assert _validate(repo, "universal/b.md", edited).ok
+    # Retiring a source that has in-force dependents is never refused.
+    retire = _doc("D", status="rejected")
+    assert _validate(repo, "universal/d.md", retire).ok
+    # A new dependent of an already retired source is admitted too.
+    assert _validate(repo, "universal/e.md", _doc("E", "derived_from: D\n")).ok
+
+
+def test_derived_from_codes_are_snapshot_dependent() -> None:
+    assert {"unresolved_derived_from_target", "malformed_derived_from"} <= (
+        SNAPSHOT_DEPENDENT_CODES)

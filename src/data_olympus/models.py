@@ -355,6 +355,16 @@ class GetResponse(BaseModel):
     superseded_by: list[str] = []
     contradicts: list[str] = []
     contradicted_by: list[str] = []
+    # `derived_from` surfacing (issue #300), ids only, sorted, dangling-safe.
+    # ``derived_from`` is this doc's own resolving targets.
+    # ``derived_from_retired`` is the subset that has left force, non-empty
+    # only while this doc is itself in force. ``dependents_to_review`` lists
+    # the in-force docs whose `derived_from` names this one, non-empty only
+    # while this doc is retired. A cue for a person: nothing is filtered,
+    # demoted or invalidated because of these lists.
+    derived_from: list[str] = []
+    derived_from_retired: list[str] = []
+    dependents_to_review: list[str] = []
 
     def compact_dump(self) -> dict[str, object]:
         """Token-lean kb_get response (issue #65).
@@ -373,7 +383,10 @@ class GetResponse(BaseModel):
         a doc has no ``last_verified`` either and reports ``freshness:
         "stale"``, issue #142) and ``superseded_by`` / ``contradicts`` /
         ``contradicted_by`` (issue #110 slice 2: omitted when empty, same
-        deviation-only pattern). ``verbose=True`` restores the full shape.
+        deviation-only pattern), and likewise ``derived_from`` /
+        ``derived_from_retired`` / ``dependents_to_review`` (issue #300), so a
+        document without derivation relationships keeps its exact compact
+        shape. ``verbose=True`` restores the full shape.
 
         ``in_force`` is emitted deviation-only, i.e. ONLY when False (issue
         #109, codex review blocker): compact kb_get shows the RAW frontmatter
@@ -412,6 +425,12 @@ class GetResponse(BaseModel):
             d["contradicts"] = list(self.contradicts)
         if self.contradicted_by:
             d["contradicted_by"] = list(self.contradicted_by)
+        if self.derived_from:
+            d["derived_from"] = list(self.derived_from)
+        if self.derived_from_retired:
+            d["derived_from_retired"] = list(self.derived_from_retired)
+        if self.dependents_to_review:
+            d["dependents_to_review"] = list(self.dependents_to_review)
         if not self.in_force:
             d["in_force"] = False
         return d

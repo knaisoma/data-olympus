@@ -84,3 +84,29 @@ def test_schema_version_bumped_for_edges_table(tmp_kb: Path, tmp_index_path: Pat
         f"schema_version must be '11' (v9 edges table, v10 validity columns, "
         f"v11 is_inbox column); got {row[0]!r}"
     )
+
+
+def test_edges_table_stores_derived_from_rows_and_never_surfaces_dangling(
+    tmp_path: Path, tmp_index_path: Path,
+) -> None:
+    """Issue #300, acceptance check 8."""
+    kb = tmp_path / "kb"
+    d = kb / "universal" / "foundation"
+    d.mkdir(parents=True)
+    (d / "STD-1.md").write_text("---\nid: STD-1\ntier: T1\ntype: standard\nstatus: active\n"
+                                "---\n# One\n")
+    (d / "STD-2.md").write_text("---\nid: STD-2\ntier: T1\ntype: standard\nstatus: active\n"
+                                "derived_from:\n  - STD-1\n  - GHOST\n---\n# Two\n")
+    idx = Index(tmp_index_path)
+    idx.build(kb, source_commit="x")
+    assert _edge_rows(tmp_index_path) == {
+        ("STD-2", "derived_from", "STD-1"),
+        ("STD-2", "derived_from", "GHOST"),
+    }
+    doc = idx.get("STD-2")
+    assert doc is not None
+    assert doc.derived_from == ("STD-1",)
+    assert idx.get("STD-1").derived_by == ("STD-2",)  # type: ignore[union-attr]
+    # The new rows never reach supersession or contradiction surfacing.
+    assert doc.superseded_by == () and doc.contradicts == () and doc.contradicted_by == ()
+    assert idx.graph_excluded_ids(today="2026-07-08") == set()

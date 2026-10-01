@@ -31,6 +31,9 @@ class ParsedDoc:
     supersedes: list[str] = field(default_factory=list)
     superseded_by: str | None = None
     contradicts: list[str] = field(default_factory=list)
+    # Issue #300: the documents this one's guidance was drawn from. Surfaced
+    # when a source leaves force, never acted on automatically.
+    derived_from: list[str] = field(default_factory=list)
     # validity/freshness (issue #107): all dates normalized to ISO YYYY-MM-DD.
     # A malformed value anywhere in the ``validity`` block fails the WHOLE
     # block open (every field here is "" and ``validity_malformed`` is True),
@@ -50,7 +53,7 @@ def _as_str_list(value: object) -> list[str]:
 
 def _as_id_list(value: object) -> list[str]:
     """Normalize a decision-chain reference field (``supersedes``,
-    ``contradicts``) authored as either a single scalar ID or a list of IDs
+    ``contradicts``, ``derived_from``) authored as either a single scalar ID or a list of IDs
     into a list of strings (issue #110).
 
     This is the lenient, index-time normalization: any shape that isn't
@@ -143,6 +146,7 @@ def parse_text_checked(path: Path, text: str) -> tuple[ParsedDoc, bool]:
         supersedes=_as_id_list(fm.get("supersedes")),
         superseded_by=superseded_by,
         contradicts=_as_id_list(fm.get("contradicts")),
+        derived_from=_as_id_list(fm.get("derived_from")),
         valid_from=valid_from,
         valid_until=valid_until,
         last_verified=last_verified,

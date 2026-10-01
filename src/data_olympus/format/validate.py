@@ -26,6 +26,15 @@ STATUSES = frozenset(
 # real KB does not silently drop those docs (issue #68).
 IN_FORCE_STATUSES = frozenset({"active", "accepted", "approved"})
 
+# The retired status class (issue #300): a document with one of these statuses
+# has left force. ``rejected`` counts as retired DELIBERATELY: a rejected
+# document never governed, but deriving guidance from an explicitly rejected
+# document is itself worth surfacing to a person. ``draft`` and ``proposed``
+# are deliberately NOT retired: they never governed and nobody decided against
+# them, so they are not "leaving" force. Consulted only through
+# :func:`is_retired`.
+RETIRED_STATUSES = frozenset({"deprecated", "superseded", "rejected"})
+
 # --- validity / freshness (issue #107) --------------------------------------
 #
 # Optional nested ``validity`` frontmatter object (concept-level only):
@@ -133,6 +142,30 @@ def is_in_force(
     if status not in IN_FORCE_STATUSES:
         return False
     return not is_expired(valid_until, today) and not is_upcoming(valid_from, today)
+
+
+def is_retired(
+    status: str,
+    valid_until: str | None,
+    today: str,
+    *,
+    graph_excluded: bool = False,
+) -> bool:
+    """Single-sourced "has left force" predicate for ``derived_from`` surfacing
+    (issue #300).
+
+    A document is retired when it is graph-excluded (the target of a
+    ``supersedes`` edge from an in-force source, which covers the forgotten
+    status flip), OR its ``status`` is in :data:`RETIRED_STATUSES` (which
+    includes ``rejected`` on purpose, see there), OR it is expired. Draft,
+    proposed, upcoming and memory-inbox documents are not retired: they never
+    governed. ``kb_get`` and ``kb lint`` both decide retirement here; they only
+    differ in how they learn ``graph_excluded``. Retirement only ever produces
+    a cue for a person; nothing is filtered, demoted or rewritten because of it.
+    """
+    if graph_excluded or status in RETIRED_STATUSES:
+        return True
+    return is_expired(valid_until, today)
 
 
 # --- memory-inbox in-force floor (issue #109) --------------------------------
