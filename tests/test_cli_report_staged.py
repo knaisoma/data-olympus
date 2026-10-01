@@ -23,8 +23,9 @@ def _git(repo: Path, *args: str) -> None:
 
 
 @contextmanager
-def _stub_audit(consult_ts: float) -> Iterator[str]:
-    """A tiny audit server that always returns one consult at `consult_ts`.
+def _stub_audit(consult_ts: float, **extra: object) -> Iterator[str]:
+    """A tiny audit server that always returns one consult at `consult_ts`,
+    carrying any `extra` fields (for example its coverage set).
 
     It ignores the `since` query param on purpose: the recency gate must be the
     CLI's correlation window, not just a server-side filter. So if the staged
@@ -37,6 +38,7 @@ def _stub_audit(consult_ts: float) -> Iterator[str]:
             "target_path": "proj",
             "agent_identity": "codex",
             "source_session": "s",
+            **extra,
         }],
     }).encode()
 
@@ -109,12 +111,17 @@ def _stage_governed(tmp_path: Path) -> Path:
     return repo
 
 
-def _run_staged(repo: Path, endpoint: str, window: int) -> subprocess.CompletedProcess[str]:
+def _run_staged(
+    repo: Path, endpoint: str, window: int, *args: str, clearance: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "KB_ENDPOINT": endpoint}
+    env.pop("KB_GATE_CLEARANCE", None)
+    if clearance is not None:
+        env["KB_GATE_CLEARANCE"] = clearance
     return subprocess.run(
         [sys.executable, "-m", "data_olympus.cli.main", "report",
          "--workspace", "proj", "--staged", "--fail-on-unverified",
-         "--window-sec", str(window)],
+         "--window-sec", str(window), *args],
         cwd=str(repo), capture_output=True, text=True, env=env)
 
 
@@ -150,3 +157,49 @@ def test_report_git_error_is_not_clean(tmp_path):
         cwd=str(repo), capture_output=True, text=True, env=env)
     assert r.returncode == 2  # git error, not a clean repo
     assert "fatal" in r.stderr.lower() or "unknown revision" in r.stderr.lower()
+
+
+# --- issue #309: the staged gate judges coverage like the live gate ---------
+
+
+def test_staged_consult_that_does_not_cover_the_change_fails(tmp_path):
+    repo = _stage_governed(tmp_path)
+    now = float(int(time.time()))
+    with _stub_audit(consult_ts=now, coverage=["keyword:schema"]) as endpoint:
+        r = _run_staged(repo, endpoint, 3600, "--json")
+    assert r.returncode == 3, r.stderr
+    body = json.loads(r.stdout)
+    assert body["unverified"][0]["uncovered"] == ["path:pyproject.toml"]
+
+
+def test_staged_consult_that_covers_the_change_passes(tmp_path):
+    repo = _stage_governed(tmp_path)
+    now = float(int(time.time()))
+    with _stub_audit(consult_ts=now, coverage=["keyword:dependency"]) as endpoint:
+        r = _run_staged(repo, endpoint, 3600)
+    assert r.returncode == 0, r.stderr
+
+
+def test_staged_pair_clearance_keeps_timing_only(tmp_path):
+    repo = _stage_governed(tmp_path)
+    now = float(int(time.time()))
+    with _stub_audit(consult_ts=now, coverage=["keyword:schema"]) as endpoint:
+        r = _run_staged(repo, endpoint, 3600, clearance="pair")
+    assert r.returncode == 0, r.stderr
+
+
+def test_staged_legacy_consult_is_reported_as_timing_only(tmp_path):
+    repo = _stage_governed(tmp_path)
+    now = float(int(time.time()))
+    with _stub_audit(consult_ts=now) as endpoint:  # no coverage field: legacy row
+        r = _run_staged(repo, endpoint, 3600, "--json")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["timing_only"] == ["STAGED"]
+
+
+def test_staged_invalid_clearance_fails_naming_the_setting(tmp_path):
+    repo = _stage_governed(tmp_path)
+    with _stub_audit(consult_ts=float(int(time.time()))) as endpoint:
+        r = _run_staged(repo, endpoint, 3600, clearance="loose")
+    assert r.returncode == 2
+    assert "KB_GATE_CLEARANCE" in r.stderr

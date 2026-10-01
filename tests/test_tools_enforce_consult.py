@@ -95,3 +95,31 @@ def test_consult_never_surfaces_non_in_force_docs(tmp_path) -> None:
     assert "DOC-PROPOSED" not in ids
     assert "DOC-SUPERSEDED" not in ids
     assert "DOC-INBOX" not in ids
+
+
+def test_consult_audit_event_records_coverage_and_keeps_reason(tmp_path) -> None:
+    """Issue #309: the consult row records what the consult covered, so the
+    report can apply the gate's coverage rule; ``reason`` is unchanged."""
+    al = AuditLog(log_path=str(tmp_path / "events.log"))
+    kb_consult_fn(
+        idx=_FakeIndex(), classifier=IntentClassifier(), ledger=ConsultationLedger(),
+        workspace="proj", intent="edit pyproject.toml to add a dependency",
+        source_session="s1", agent_identity="claude",
+        ttl_sec=300.0, now=1000.0, audit_log=al,
+    )
+    (ev,) = [e for e in al.iter_filtered() if e["event_type"] == "consult"]
+    assert ev["reason"] == "keyword:dependency"
+    assert ev["coverage"] == ["keyword:dependency", "path:pyproject.toml"]
+
+
+def test_consult_audit_event_records_empty_coverage(tmp_path) -> None:
+    """A consult that covers nothing records an empty list, which the report
+    tells apart from a row written before coverage was recorded."""
+    al = AuditLog(log_path=str(tmp_path / "events.log"))
+    kb_consult_fn(
+        idx=_FakeIndex(), classifier=IntentClassifier(), ledger=ConsultationLedger(),
+        workspace="proj", intent="say hello", source_session="s1",
+        agent_identity="claude", ttl_sec=300.0, now=1000.0, audit_log=al,
+    )
+    (ev,) = [e for e in al.iter_filtered() if e["event_type"] == "consult"]
+    assert ev["coverage"] == []

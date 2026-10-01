@@ -649,6 +649,12 @@ class AuditEvent(BaseModel):
     # see governed_lane.py).
     demotion_reason: str | None = None
     injection_suspect: bool | None = None
+    # Enforcement consult rows (issue #309): the trigger (explicit or
+    # prompt_hook) and the consult's coverage set. ``coverage`` is None on a
+    # row written before it was recorded, which `kb enforce report` judges by
+    # timing only.
+    trigger: str | None = None
+    coverage: list[str] | None = None
     # Tamper-evident chain fields (present on events appended with chaining).
     event_id: str | None = None
     prev_hash: str | None = None

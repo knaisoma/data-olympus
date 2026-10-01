@@ -44,11 +44,20 @@ def _deny_instruction(
 ) -> str:
     """The copy-pasteable remediation an agent must run to clear the gate. Echoes
     the exact workspace key and session id (the one parameter an agent cannot
-    guess) so the fix does not require the agent to invent either value."""
+    guess) so the fix does not require the agent to invent either value. Each
+    argument is a Python string literal (``repr``), so the call still parses
+    when a value holds a quote character (issue #309)."""
     return (
-        f"Call kb_consult(workspace='{workspace}', source_session='{session_id}', "
-        f"intent='{intent}') then retry."
+        f"Call kb_consult(workspace={workspace!r}, source_session={session_id!r}, "
+        f"intent={intent!r}) then retry."
     )
+
+
+def _quote(value: str) -> str:
+    """``value`` wrapped in the first quote character it does not contain, so
+    the consult classifier reads it back as one quoted span."""
+    q = next((c for c in "\"'`" if c not in value), '"')
+    return f"{q}{value}{q}"
 
 
 def _suggest_intent(
@@ -62,9 +71,9 @@ def _suggest_intent(
     for sig in uncovered:
         kind, _, value = sig.partition(":")
         if kind == "path" and action_path:
-            part = f'edit "{action_path}"'
+            part = f"edit {_quote(action_path)}"
         elif kind == "command":
-            part = f'run "{classifier.command_pattern(sig) or value}"'
+            part = f"run {_quote(classifier.command_pattern(sig) or value)}"
         else:
             part = value
         if part not in parts:
@@ -149,6 +158,9 @@ def kb_consult_fn(
             "agent_identity": agent_identity, "source_session": source_session,
             "target_path": workspace, "trigger": trigger,
             "reason": ",".join(result.signals) if result.signals else "",
+            # Issue #309: what this consult covered, so `kb enforce report`
+            # can judge a commit by the same coverage rule as the live gate.
+            "coverage": coverage,
         })
     pending_actions = pending_actions_for(getattr(idx, "maintenance_state", None))
     # Governed-lane feedback loop (issue #112): when THIS session has demoted

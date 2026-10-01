@@ -85,10 +85,19 @@ path or use a mapped keyword for those.
 unaffected. The `reason` lists every uncovered signal and ends with one
 copy-pasteable `kb_consult(...)` call whose `intent` covers all of them
 together, leading with the exact path when a path signal is uncovered and
-quoting the command fragment when a command signal is. The `gate_block` audit
+quoting the command fragment when a command signal is. The path or fragment is
+wrapped in a quote character it does not contain, and each argument of the call
+is written as a Python string literal, so the call still parses when a path
+holds a quote character. The `gate_block` audit
 event keeps `status: consult_required` and adds an `uncovered` field holding the
 signal list, so `kb_compliance` counts are unchanged and a mismatch is
 countable.
+
+**Audit.** Every `consult` audit event records the consult's coverage set in a
+`coverage` field (an empty list when it covers nothing) next to its `trigger`;
+`reason` still holds the classifier signals of the intent. `kb enforce report`
+reads this field to judge commits by the same rule as the gate (see "Detection
+floor" below).
 
 **Not a security boundary.** An agent can name every keyword in one intent and
 cover everything. The gate makes consulting the governing rules the path of
@@ -282,8 +291,26 @@ kb enforce report [--workspace W] [--range A..B | --since S] \
 `data-olympus report` is the same command (the `kb enforce report` route
 delegates straight to it). The report parses governed commits from `git log`
 (reusing the same path classifier the gates use), then correlates them against
-`consult` events fetched from the existing `GET /api/v1/audit`. It reuses that
-endpoint as-is: there is no server change for this feature.
+`consult` events fetched from `GET /api/v1/audit`.
+
+A governed commit is judged by the gate's clearance rule, read from
+`KB_GATE_CLEARANCE` in the environment where the report runs:
+
+- Under `intent` (the default), the commit is verified only when the explicit
+  consults inside its window together cover every signal of its governed
+  paths, by the same coverage and family rules as the live gate. Consults in
+  the window combine as fresh consults do at the gate, and a prompt-hook
+  consult covers nothing. An unverified commit lists its uncovered signals
+  (`uncovered` in `--json`).
+- A `consult` audit row written before coverage was recorded has no `coverage`
+  field, so what it covered is unknown. When such a row is in the window and
+  the recorded coverage does not settle the commit, the commit is verified by
+  timing alone, as before, and the report says so: a `TIMING ONLY` line in the
+  text output and the commit's sha in `timing_only` in `--json`.
+- Under `pair`, any consult in the window verifies the commit, the behaviour
+  before coverage was recorded.
+
+The `--json` output also carries `clearance`, the rule it applied.
 
 Flags:
 
@@ -305,8 +332,9 @@ Exit codes:
   `--fail-on-unverified` was not passed).
 - `3`: returned only with `--fail-on-unverified`, when at least one unverified
   governed change is found.
-- `2`: a git error (for example a bad `--range`). The command does not mistake
-  a git failure for a clean repo.
+- `2`: a git error (for example a bad `--range`), or a `KB_GATE_CLEARANCE`
+  value other than `intent` or `pair`. The command does not mistake a git
+  failure for a clean repo.
 
 ### The opt-in git hook
 
@@ -347,18 +375,22 @@ session-to-commit link. State the limits plainly:
   outside the time window, or a consult recorded under a different workspace
   label.
 - False negatives (a governed change that goes unreported): a change whose path
-  the classifier does not consider governed.
-- Coverage is not checked here. Since #296 the live gate clears a governed
-  action only when a fresh consult covered its signals; the report still
-  counts any consult in the window, whatever it covered. It is a detection
-  floor for agents the gate cannot hook, so it reports less than the gate
-  would refuse, never more.
+  the classifier does not consider governed, or a commit judged by timing only
+  against a consult row written before coverage was recorded.
+- The window is not a session. A consult by another agent in the same
+  workspace and window counts toward a commit's coverage, where the live gate
+  counts only the acting session's consults.
+- `KB_GATE_CLEARANCE` is read where the report runs, not from the server. Set
+  it to the server's value, or the report applies a different rule than the
+  gate.
 
 When the audit endpoint is unreachable, the command degrades to warn: it lists
 the governed changes it found and marks the consult state as unknown rather
 than crashing. A post-commit warn hook never crashes a commit. The
-`--staged`/`--block` gate requires a consult within the window to pass, so a
-stale consult (outside the window) does not let a governed commit through.
+`--staged`/`--block` gate requires a consult within the window that covers the
+staged governed paths (any consult in the window under `pair`), so neither a
+stale consult (outside the window) nor one about another topic lets a governed
+commit through.
 
 ## Hardening and observability (slice 4)
 
