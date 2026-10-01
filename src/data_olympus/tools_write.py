@@ -648,8 +648,11 @@ def _writing_rule_gate(
             raise _WriteRejected(ProposeResponse(
                 status="rejected_writing_rule", target_path=target_path,
                 reason=reason)) from exc
-        _log.warning("writing-rule check failed for %s; committing in warn mode: %s",
-                     target_path, reason)
+        # The log names neither the path nor the exception text: both can carry
+        # caller content (a decode error quotes bytes). The audit event records
+        # the path and the response carries the reason.
+        _log.warning("writing-rule check failed (%s); committing in warn mode",
+                     type(exc).__name__)
         return [reason]
     if not findings:
         return []
@@ -660,8 +663,7 @@ def _writing_rule_gate(
                     "rewrite them, or end a genuine quotation with "
                     "<!-- prose-lint: allow -->"),
             writing_rule_findings=findings))
-    _log.warning("writing-rule findings on %s committed in warn mode: %d",
-                 target_path, len(findings))
+    _log.warning("writing-rule findings committed in warn mode: %d", len(findings))
     return findings
 
 

@@ -237,6 +237,10 @@ def test_warn_mode_commits_and_reports_in_the_response_audit_and_log(
     assert any('"writing_rules": "warned:em-dash@7"' in r for r in rows), rows
     assert not any(DASH in r for r in rows), "the audit log must not carry excerpts"
     assert any("writing-rule findings" in r.getMessage() for r in caplog.records)
+    # The log carries the count only: no path, no excerpt (CodeQL
+    # py/clear-text-logging-sensitive-data; the audit event holds the path).
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("STD-U-001" in m or DASH in m for m in messages), messages
 
 
 def test_off_mode_never_computes_the_diff(tmp_path, monkeypatch) -> None:

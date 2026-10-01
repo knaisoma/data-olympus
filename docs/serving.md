@@ -385,7 +385,8 @@ section so concurrent writes cannot corrupt each other:
   `writing_rule_findings` entries of the form `line <n>: <rule>: <excerpt>`;
   in the default `warn` mode the write commits, the findings are returned in the
   same field, the audit event records the rule names and line numbers (never
-  the excerpts), and a WARNING is logged. Because it runs after the secret
+  the excerpts), and a WARNING with the finding count is logged (never the
+  path or the text). Because it runs after the secret
   scan, a postimage carrying both a credential and a finding is still reported
   as the redacted `rejected_secret_detected`. A failure of the check itself,
   including an existing target that is not valid UTF-8, rejects in `enforce`
