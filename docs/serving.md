@@ -92,13 +92,20 @@ trigram, auth, audit rotation):
 - `KB_WRITING_RULES_EXCLUDE_PATHS`: comma-separated `fnmatch` globs of target
   paths the writing-rule gate skips, matched like `KB_WRITE_BLOCK_PATHS`
   (default empty).
-- `KB_SECRET_SCAN_EXTRA_PATTERNS`: comma-separated additional regexes the
-  secret-scanning gate (issue #71) checks alongside its built-in pattern set
-  (see "Write serialization and integrity gates" above). Each entry is scanned
-  as its own named pattern (`custom_1`, `custom_2`, ...); an invalid regex, or
-  one with the classic nested-quantifier ReDoS shape, is logged and skipped
-  rather than raised, and every accepted pattern runs with a hard 1-second
-  match timeout. Empty by default (no extra patterns).
+- `KB_SECRET_SCAN_EXTRA_PATTERNS`: additional regexes the secret-scanning gate
+  (issue #71) checks alongside its built-in pattern set (see "Write
+  serialization and integrity gates" above). Write it either as a JSON array
+  of strings (`["ACME_[A-Z0-9]{20,40}", "INTERNAL-[0-9]{6}"]`) or
+  comma-separated. In the comma form a comma inside `{...}` or `[...]` does
+  not separate patterns, so `ACME_[A-Z0-9]{20,40}` stays one pattern, and a
+  backslash-escaped comma (`\,`) never separates. A value that parses as a
+  JSON array is read as JSON. Each entry is scanned as its own named pattern
+  (`custom_1`, `custom_2`, ...). The setting is parsed once at startup:
+  an entry that is not a non-empty string, is not a valid regex, or has the
+  classic nested-quantifier ReDoS shape fails startup with an error naming
+  the setting and the entry number (not the pattern text). Every accepted
+  pattern runs with a hard 1-second match timeout. Empty by default (no extra
+  patterns).
 - `KB_DISABLE_VERSION_CHECK`: truthy (`1`, `true`, `yes`, `on`) disables the
   public PyPI/GitHub version check completely. Use this for air-gapped
   deployments. Default is off.
