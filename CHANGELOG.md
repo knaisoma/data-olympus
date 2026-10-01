@@ -44,6 +44,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+* **A consult now clears only the governed actions it covers** (#296). The
+  enforcement gate used to clear any governed action after any fresh explicit
+  consult in the session, whatever that consult was about. Each consult now
+  records the keywords, command fragments and paths its intent names, and a
+  governed action is allowed only when all of its signals are covered by a
+  fresh consult, directly or through a small family mapping (a "dependency"
+  consult covers manifest edits and install commands; a "schema" or
+  "migration" consult covers migration and SQL files). Coverage from several
+  fresh consults combines, and each part expires on its own TTL. Naming the
+  action's own path or command always clears it. A denial still answers
+  `consult_required`; its reason lists the uncovered signals and suggests one
+  intent that covers them all, and the `gate_block` audit event gains an
+  `uncovered` field. Upgrade note: `KB_GATE_CLEARANCE=intent` is the new
+  default; set `KB_GATE_CLEARANCE=pair` to keep the previous rule. An invalid
+  value fails startup. A session that consulted before the upgrade needs one
+  new consult.
+
 * **fastembed 0.8.1 for the optional embeddings extra** (#298). It fixes a
   path traversal in model archive extraction that could write outside the
   model cache, and a padding regression on mixed-length batches. Upgrade
