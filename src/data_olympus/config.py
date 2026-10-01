@@ -92,6 +92,11 @@ class Config:
     auth_token: str = ""
     auth_principals: list[dict[str, Any]] = field(default_factory=list)
     consult_ttl_sec: int = 300
+    # What a fresh explicit consult clears (KB_GATE_CLEARANCE, issue #296):
+    # "intent" clears only the governed actions the consult's intent covers;
+    # "pair" restores the earlier rule, any fresh explicit consult for the
+    # (session, workspace) pair clears every governed action. Validated at load.
+    gate_clearance: str = "intent"
     ledger_path: str = "/state/ledger.json"
     # Maintenance ledger (issue #113): committed frontmatter-only markdown doc
     # recording corpus-state audit flags (missing `status`, recently-expired /
@@ -297,6 +302,24 @@ def _load_git_branch(raw: str) -> str:
     return branch
 
 
+def _load_gate_clearance(raw: str) -> str:
+    """Validate KB_GATE_CLEARANCE. Blank means unset and gets ``intent``; the
+    value is case-insensitive; anything other than ``intent`` or ``pair`` raises
+    ValueError so startup fails naming the setting, rather than an enforcement
+    setting silently doing something other than what the operator wrote."""
+    from data_olympus.enforce_policy import GATE_CLEARANCE_INTENT, GATE_CLEARANCE_MODES
+
+    value = raw.strip().lower()
+    if not value:
+        return GATE_CLEARANCE_INTENT
+    if value not in GATE_CLEARANCE_MODES:
+        raise ValueError(
+            f"KB_GATE_CLEARANCE must be one of {', '.join(GATE_CLEARANCE_MODES)}; "
+            f"got {raw!r}"
+        )
+    return value
+
+
 def _load_status_weights(raw: str) -> dict[str, float] | None:
     """Parse KB_STATUS_WEIGHTS: a JSON object of ``{status: weight}``.
 
@@ -496,6 +519,7 @@ def load_config() -> Config:
     from data_olympus.principals import parse_principals_env
     auth_principals = parse_principals_env(os.getenv("KB_AUTH_PRINCIPALS", ""))
     consult_ttl_sec = int(os.getenv("KB_CONSULT_TTL_SEC", "300"))
+    gate_clearance = _load_gate_clearance(os.getenv("KB_GATE_CLEARANCE", ""))
     ledger_path = os.getenv("KB_LEDGER_PATH", "/state/ledger.json")
     maintenance_ledger_path = os.getenv(
         "KB_MAINTENANCE_LEDGER_PATH", "tooling/maintenance-ledger.md"
@@ -594,6 +618,7 @@ def load_config() -> Config:
         auth_token=auth_token,
         auth_principals=auth_principals,
         consult_ttl_sec=consult_ttl_sec,
+        gate_clearance=gate_clearance,
         ledger_path=ledger_path,
         maintenance_ledger_path=maintenance_ledger_path,
         maintenance_recently_expired_days=maintenance_recently_expired_days,

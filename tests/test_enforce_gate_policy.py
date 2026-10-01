@@ -5,11 +5,16 @@ The gate must mean "the agent explicitly consulted", not "an HTTP call happened
 this session". These tests pin that policy: an explicit consult clears the gate,
 a prompt_hook consult does not, a non-governed explicit consult still clears, TTL
 expiry re-blocks, and a prompt_hook consult never downgrades a fresh explicit one.
+
+They run under KB_GATE_CLEARANCE=pair, the pre-#296 rule, which must keep
+reproducing these results unchanged. Intent clearance is covered in
+test_gate_intent_clearance.py.
 """
 from __future__ import annotations
 
 from data_olympus.enforce_policy import (
     EXPLICIT_TRIGGER,
+    GATE_CLEARANCE_PAIR,
     PROMPT_HOOK_TRIGGER,
     ConsultationLedger,
     IntentClassifier,
@@ -31,6 +36,7 @@ def _gate(led: ConsultationLedger, *, now: float, path="/p/pyproject.toml"):
         classifier=IntentClassifier(), ledger=led,
         workspace="proj", session_id="s1", tool_name="Edit",
         action_path=path, action_diff="", now=now, ttl_sec=300.0,
+        clearance=GATE_CLEARANCE_PAIR,
     )
 
 
@@ -137,6 +143,7 @@ def test_deny_reason_contains_session_and_workspace_and_instruction() -> None:
         classifier=IntentClassifier(), ledger=led,
         workspace="my-proj", session_id="sess-xyz", tool_name="Edit",
         action_path="/p/pyproject.toml", action_diff="", now=1000.0, ttl_sec=300.0,
+        clearance=GATE_CLEARANCE_PAIR,
     )
     assert resp.verdict == "consult_required"
     assert "my-proj" in resp.reason

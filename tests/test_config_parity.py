@@ -85,6 +85,7 @@ def _mutate(cfg: Config, tmp_path: Path) -> Config:
             changes[name] = str(tmp_path / f"parity-{name}") if is_path else f"parity-{name}"
     changes["tool_discovery_mode"] = "all" if cfg.tool_discovery_mode == "search" else "search"
     changes["kb_git_branch"] = "trunk"
+    changes["gate_clearance"] = "pair"
     changes["maintenance_ledger_path"] = "tooling/parity-ledger.md"
     changes["write_block_tiers"] = ["T4"]
     changes["trusted_proxies"] = ["10.0.0.9"]
@@ -152,6 +153,7 @@ def test_env_settings_reach_the_objects_the_server_builds(
     monkeypatch.setenv("KB_PENDING_CLAIM_TTL_SEC", "4321")
     monkeypatch.setenv("KB_TRIGRAM_MODE", "on")
     monkeypatch.setenv("KB_TRIGRAM_FALLBACK_THRESHOLD", "7")
+    monkeypatch.setenv("KB_GATE_CLEARANCE", "pair")
 
     captured = _build_and_capture(load_config(), monkeypatch)
     running, idx, ledger = captured["config"], captured["idx"], captured["ledger"]
@@ -160,6 +162,7 @@ def test_env_settings_reach_the_objects_the_server_builds(
     assert running.pending_claim_ttl_sec == 4321
     assert running.trigram_fallback_enabled is True
     assert running.trigram_fallback_threshold == 7
+    assert running.gate_clearance == "pair"
     assert idx.trigram_fallback is True
     assert idx.trigram_fallback_threshold == 7
     # The ledger keeps retention private; it is the value the eviction uses.

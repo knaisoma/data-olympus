@@ -898,7 +898,7 @@ def register_routes(
                 action_path=body.get("action_path"),
                 action_diff=body.get("action_diff", ""),
                 now=_time.time(), ttl_sec=state.config.consult_ttl_sec,
-                audit_log=state.audit_log,
+                audit_log=state.audit_log, clearance=state.config.gate_clearance,
             )
             return JSONResponse(resp.model_dump())
 

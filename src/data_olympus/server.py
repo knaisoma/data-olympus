@@ -1334,7 +1334,7 @@ def build_app(
                 workspace=workspace, session_id=session_id, tool_name=tool_name,
                 action_path=action_path, action_diff=action_diff,
                 now=_time.time(), ttl_sec=state.config.consult_ttl_sec,
-                audit_log=state.audit_log,
+                audit_log=state.audit_log, clearance=state.config.gate_clearance,
             )
             return resp.model_dump()
 
