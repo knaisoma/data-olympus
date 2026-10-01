@@ -338,7 +338,7 @@ _EXPECTED = {
     "rejected_rate_limited": (429, 200),
     "rejected_secret_detected": (422, 422),
     "rejected_stale_base": (409, 409),
-    "rejected_symlink_escape": (400, 200),
+    "rejected_symlink_escape": (400, 400),
     "rejected_too_many_files": (413, 200),
     "rejected_writing_rule": (422, 422),
 }
