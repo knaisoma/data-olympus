@@ -105,3 +105,34 @@ def test_verbose_matches_legacy_model_dump() -> None:
         assert r.verbose_tokens >= r.compact_tokens, (
             f"{r.label}: verbose {r.verbose_tokens} < compact {r.compact_tokens} (modes swapped?)"
         )
+
+
+def test_kb_get_compact_unchanged_without_derived_from_and_verbose_carries_lists(
+    tmp_path,  # noqa: ANN001
+) -> None:
+    """Issue #300, acceptance check 10: a document with no `derived_from`
+    relationship keeps its exact compact key set and order (so its compact JSON
+    is byte for byte what it was), while verbose always carries the three
+    lists."""
+    import json
+    from pathlib import Path
+
+    from data_olympus.index import Index
+    from data_olympus.tools_read import kb_get_fn, shape_response
+
+    root = Path(__file__).resolve().parents[1]
+    idx = Index(tmp_path / "idx.db")
+    idx.build(root / "example-bundle", source_commit="x")
+    resp = kb_get_fn(idx=idx, id="STD-U-004", today="2026-07-08")
+    compact = shape_response(resp, verbose=False)
+    assert list(compact) == [
+        "id", "title", "tier", "category", "status", "type", "tags", "applies_when",
+        "description", "content_markdown", "last_modified", "source_commit",
+    ]
+    legacy = {k: v for k, v in resp.compact_dump().items()
+              if k not in {"derived_from", "derived_from_retired", "dependents_to_review"}}
+    assert json.dumps(compact) == json.dumps(legacy)
+    verbose = shape_response(resp, verbose=True)
+    assert verbose["derived_from"] == []
+    assert verbose["derived_from_retired"] == []
+    assert verbose["dependents_to_review"] == []

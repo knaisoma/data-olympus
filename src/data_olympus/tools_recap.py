@@ -45,6 +45,7 @@ def kb_session_recap_fn(
     committed = 0
     demoted = 0
     rejected = 0
+    capture_derived = 0
     for ev in audit_log.iter_filtered(
         include_rotated=True, max_scan_events=max_scan_events,
     ):
@@ -55,6 +56,14 @@ def kb_session_recap_fn(
             committed += 1
         elif status == "pending_confirmation":
             demoted += 1
+        # issue #141: a memory proposal that carried a capture envelope and
+        # was committed or parked. Rejections never carry the envelope.
+        if (
+            status in ("committed", "pending_confirmation")
+            and ev.get("event_type") == "propose_memory"
+            and ev.get("capture")
+        ):
+            capture_derived += 1
         elif isinstance(status, str) and status.startswith("rejected"):
             rejected += 1
     return SessionRecapResponse(
@@ -62,4 +71,5 @@ def kb_session_recap_fn(
         committed=committed,
         demoted_to_pending=demoted,
         rejected=rejected,
+        capture_derived=capture_derived,
     )

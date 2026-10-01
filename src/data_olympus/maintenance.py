@@ -493,6 +493,10 @@ def maybe_update_ledger(
             confidence=1.0,
             push_meta={"source_session": _MAINTENANCE_SOURCE_SESSION,
                        "agent_identity": _MAINTENANCE_AGENT_IDENTITY},
+            # The ledger quotes corpus ids and paths an agent never wrote here,
+            # so the writing rules would stall it forever (issue #283). The
+            # skip is recorded in the audit event below as machine_rendered.
+            writing_rule_exempt=True,
         )
     except Exception as exc:  # noqa: BLE001 - best-effort; never break refresh/serving
         # The memo is deliberately NOT set here, so the next pull-loop tick
@@ -518,6 +522,7 @@ def maybe_update_ledger(
                 "status": "committed", "target_path": ledger_path,
                 "agent_identity": _MAINTENANCE_AGENT_IDENTITY,
                 "commit_sha": sha,
+                "writing_rules": "skipped:machine_rendered",
             })
     _log.info("maintenance ledger updated: %s (push_state=%s)", sha, push_state)
     return sha

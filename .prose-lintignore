@@ -1,4 +1,5 @@
-# Paths excluded from scripts/prose_lint.py, one path prefix or exact path per
+# Paths excluded from the writing-rule gate (scripts/prose_lint.py,
+# src/data_olympus/_vendor/prose_lint.py), one path prefix or exact path per
 # line. Exclusions are for text this project does not author, for machine
 # output, or for bytes something else binds. Never for authored prose that
 # happens to be inconvenient to fix.

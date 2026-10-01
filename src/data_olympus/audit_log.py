@@ -258,7 +258,19 @@ class AuditLog:
                     ev = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if since is not None and float(ev.get("ts", 0)) < since:
+                if not isinstance(ev, dict):
+                    # A hand-edited line that is valid JSON but not an object
+                    # cannot be filtered; dropped like an undecodable one.
+                    if since is None and agent is None and status is None:
+                        yield ev
+                    continue
+                ts = ev.get("ts", 0)
+                if since is not None and (
+                    isinstance(ts, bool) or not isinstance(ts, (int, float))
+                ):
+                    # No real-number ts, so no place in a time window (#310).
+                    continue
+                if since is not None and ts < since:
                     # Events are appended in time order, so within a segment a
                     # reverse scan that reaches an older-than-``since`` event has
                     # no newer matches left below it; and every rotated segment is

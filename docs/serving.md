@@ -35,8 +35,8 @@ does not churn:
   `opencode serve`, leaks event listeners. Set a long read timeout and disable
   response buffering on the `/mcp` path (see `deploy/k8s/ingress.yaml` for the
   nginx annotations).
-- **Session reaping.** FastMCP does not reap the transport a client leaves behind
-  when it disconnects without sending `DELETE`. The server runs its own reaper
+- **Session reaping.** The MCP SDK only expires a transport a client leaves
+  behind after 30 minutes without a request. The server runs its own reaper
   (`session_metrics`): the activity middleware keeps a session non-idle for as
   long as its SSE stream is open, and `KB_SESSION_IDLE_TIMEOUT_SEC` (default
   `300`) terminates a session only after its stream has actually closed.
@@ -84,22 +84,46 @@ trigram, auth, audit rotation):
 - `KB_PENDING_TIMEOUT_SEC`: age after which an unresolved pending proposal is
   auto-expired by the pending GC loop (default `86400`, i.e. 24h). Each expiry
   emits an audit event.
-- `KB_SECRET_SCAN_EXTRA_PATTERNS`: comma-separated additional regexes the
-  secret-scanning gate (issue #71) checks alongside its built-in pattern set
-  (see "Write serialization and integrity gates" above). Each entry is scanned
-  as its own named pattern (`custom_1`, `custom_2`, ...); an invalid regex, or
-  one with the classic nested-quantifier ReDoS shape, is logged and skipped
-  rather than raised, and every accepted pattern runs with a hard 1-second
-  match timeout. Empty by default (no extra patterns).
-- `KB_DISABLE_VERSION_CHECK`: truthy (`1`, `true`, `yes`, `on`) disables the
+- `KB_WRITING_RULES_MODE`: how the writing-rule gate treats the lines a write
+  adds (default `warn`, which commits and reports the findings). `enforce`
+  rejects such a write as `rejected_writing_rule`, and `off` skips the check.
+  Any other value fails startup with the accepted values named. See
+  "Write serialization and integrity gates" below.
+- `KB_WRITING_RULES_EXCLUDE_PATHS`: comma-separated `fnmatch` globs of target
+  paths the writing-rule gate skips, matched like `KB_WRITE_BLOCK_PATHS`
+  (default empty).
+- `KB_SECRET_SCAN_EXTRA_PATTERNS`: additional regexes the secret-scanning gate
+  (issue #71) checks alongside its built-in pattern set (see "Write
+  serialization and integrity gates" above). Write it either as a JSON array
+  of strings (`["ACME_[A-Z0-9]{20,40}", "INTERNAL-[0-9]{6}"]`) or
+  comma-separated. In the comma form a comma inside `{...}` or `[...]` does
+  not separate patterns, so `ACME_[A-Z0-9]{20,40}` stays one pattern, and a
+  backslash-escaped comma (`\,`) never separates. A value that parses as a
+  JSON array is read as JSON. Each entry is scanned as its own named pattern
+  (`custom_1`, `custom_2`, ...). The setting is parsed once at startup:
+  an entry that is not a non-empty string, is not a valid regex, or has the
+  classic nested-quantifier ReDoS shape fails startup with an error naming
+  the setting and the entry number (not the pattern text). Every accepted
+  pattern runs with a hard 1-second match timeout. Empty by default (no extra
+  patterns).
+- `KB_DISABLE_VERSION_CHECK`: `1`, `true`, `yes`, or `on` disables the
   public PyPI/GitHub version check completely. Use this for air-gapped
-  deployments. Default is off.
+  deployments. `0`, `false`, `no`, or `off` keeps it enabled, as does leaving
+  the setting unset or empty (the default). Values are case-insensitive and
+  surrounding whitespace is ignored; any other value stops startup with an
+  error naming the setting, so a typo cannot leave the outbound check running.
 - `KB_VERSION_CHECK_INTERVAL_SEC`: how often the background task refreshes the
   cached latest-version result (default `86400`, i.e. 24h). The health request
   path never performs the outbound lookup.
 - `KB_GOVERNED_LANE_PROTECTION`: governed-lane write protection (issue #112),
   default `on`; set `off` to restore the exact pre-#112 behavior (see
   "Governed-lane write protection" below).
+- `KB_GATE_CLEARANCE` (default `intent`): what a fresh explicit consult
+  clears at the enforcement gate. `intent` clears only the governed actions the
+  consult's intent covers; `pair` restores the earlier rule, under which any
+  fresh explicit consult for the session and workspace clears every governed
+  action. Any other value fails startup naming the setting. See
+  `docs/enforcement.md` for the coverage rule and the family mapping.
 - `KB_TOOL_DISCOVERY_MODE`: MCP catalog exposure mode. `search` is the default;
   `all` restores the complete native catalog in `tools/list`. Any other value
   fails startup.
@@ -147,8 +171,12 @@ set and refreshes its own index snapshot from the same git remote as the single
 writer. Run as many replicas as you need for read throughput; the single
 write-enabled instance remains the only owner of the git remote.
 
-`KB_READ_ONLY` is a truthy flag: `1`, `true`, `yes`, or `on` (case-insensitive)
-enable it; unset or anything else keeps the default read-write behaviour.
+`KB_READ_ONLY` accepts `1`, `true`, `yes`, or `on` to enable read-only mode,
+and `0`, `false`, `no`, or `off` for the default read-write behaviour, which
+also applies when the setting is unset or empty. Values are case-insensitive
+and surrounding whitespace is ignored. Any other value, such as `ture` or
+`enabled`, stops startup with an error naming the setting, so a mistyped value
+cannot start a replica with the write pipeline running.
 
 See `deploy/k8s/read-replica/` for a ready-to-apply `Deployment` (not the
 StatefulSet writer) that runs N read replicas with per-pod ephemeral clone +
@@ -242,7 +270,9 @@ section so concurrent writes cannot corrupt each other:
   count, and an id the same write removes does not either). Otherwise the write
   is refused as `rejected_invalid_document` with `unresolved_supersedes_target`
   or `unresolved_superseded_by_target` at the start of the reason, or
-  `malformed_supersedes` / `malformed_superseded_by` for a wrong shape. Target
+  `malformed_supersedes` / `malformed_superseded_by` for a wrong shape. A
+  `derived_from` target follows the same rule (`unresolved_derived_from_target`,
+  `malformed_derived_from`); a source that has retired never causes a refusal. Target
   strings are compared exactly as written, so `" TARGET "` does not resolve to
   `TARGET`, and a blank or whitespace-only target is refused as malformed (lint
   ignores such a value rather than reporting it). A target left unchanged from the committed version of the same file,
@@ -260,12 +290,27 @@ section so concurrent writes cannot corrupt each other:
   (`A.supersedes: B`, `B.superseded_by: A`) cannot both be approved as written:
   approve A with `edited_text` that omits the edge to B, approve B, then propose
   the edge on A again.
-- **Bootstrap rejection order (issue #259).** After the earlier path, size and
-  rate-limit refusals (which are unchanged and carry no `reason`), a bundle's
+- **Bootstrap scope.** Onboarding bootstrap creates new files under the
+  workspace or component it onboards, and nothing else. Every target path
+  must lie under `projects/<workspace>/`, or under
+  `projects/<workspace>/components/<component>/` when a component is given,
+  whatever the onboarding state; a bundle with any other path is refused as
+  `rejected_path_not_indexable_or_blocked`, listing those paths, before any
+  pending entry or commit is made. A bootstrap of a `partial` workspace is
+  still narrowed to the missing canonical files first. At commit time a
+  target that already exists in the session worktree refuses the whole
+  bundle as `rejected_already_onboarded`, so a bootstrap never replaces a
+  file. To change an existing document, use `kb_propose_edit`. The commit
+  subject names every path the bootstrap writes.
+- **Bootstrap rejection order (issue #259).** A bundle with an empty `files`
+  list is refused first, as `rejected_empty_bundle` (HTTP 400), before any claim,
+  rate-limit slot, commit or pending entry (issue #311). After the earlier path,
+  size and rate-limit refusals (which are unchanged and carry no `reason`), a bundle's
   commit-time checks run in a fixed order and refuse at the first failure:
   every file's path and postimage are secret-scanned first (so no later
   diagnostic can echo credential-shaped content), then duplicate ids inside the
-  bundle, then each file's containment and content validation in file order.
+  bundle, then each file's containment, existing-target and content
+  validation in file order.
   Supersession targets resolve against the committed tree with the whole bundle
   applied, so a successor and its predecessor created in the same bundle are
   accepted. A secret-scan, duplicate-id or content-validation refusal carries
@@ -283,6 +328,10 @@ section so concurrent writes cannot corrupt each other:
   `rejected_stale_base` rather than committed against a possibly-stale base; the
   marker cannot be verified, and the push-path rebase recovery is not an
   equivalent safety net (a compatible rebase would still publish the stale write).
+  `base_commit` must be `HEAD` or a commit id of 7 to 64 lowercase hex
+  characters (abbreviated or full, SHA-1 or SHA-256); any other value, such as
+  a branch name or a revision expression, is refused as `rejected_invalid_base`
+  when the proposal is made, with a reason that does not repeat the value.
   A bare `base_commit` of `HEAD` is advisory (no per-file expectation), and when
   no marker is supplied the pre-0.3.0 behavior is preserved (a refresh failure is
   non-fatal; the push path's non-FF recovery publishes the commit).
@@ -356,6 +405,33 @@ section so concurrent writes cannot corrupt each other:
   `regex` engine with a hard 1-second match timeout, so a catastrophic
   pattern the load-time check misses is bounded at scan time (logged and
   skipped) instead of hanging the single-writer write path.
+- A **writing-rule gate** (issue #283) runs after the secret scan and before
+  content validation, on the same commit paths. It applies the project's own
+  raw writing rules (no em-dash, no en-dash used as one, no agent authorship
+  credit; the rules CI enforces through `scripts/prose_lint.py`) to the lines
+  the write ADDS, so an edit never fails on text it did not write. A line counts
+  as added when it occurs more often in the postimage than in the target's
+  current content on the refreshed base (curly quotes folded first), so moving
+  an existing line is not adding it, while a new offending line is always
+  caught. A line ending in `<!-- prose-lint: allow -->` is exempt and keeps
+  the marker in the committed text. Rules are checked on raw lines, including
+  inside code fences. In `enforce` mode a finding rejects the write
+  `rejected_writing_rule` (HTTP 422 on propose and resolve) with
+  `writing_rule_findings` entries of the form `line <n>: <rule>: <excerpt>`;
+  in the default `warn` mode the write commits, the findings are returned in the
+  same field, the audit event records the rule names and line numbers (never
+  the excerpts), and a WARNING with the finding count is logged (never the
+  path or the text). Because it runs after the secret
+  scan, a postimage carrying both a credential and a finding is still reported
+  as the redacted `rejected_secret_detected`. A failure of the check itself,
+  including an existing target that is not valid UTF-8, rejects in `enforce`
+  and is reported as a warning in `warn`; it is never silently skipped. A
+  rejected resolve puts the pending entry back, as other gate rejections do.
+  The machine-rendered maintenance ledger is exempt (it quotes corpus ids and
+  paths no agent wrote there), recorded in its audit event as
+  `skipped:machine_rendered`; that exemption is reachable from no MCP or REST
+  call. Configure it with `KB_WRITING_RULES_MODE` (default `warn`) and
+  `KB_WRITING_RULES_EXCLUDE_PATHS` (see "Core configuration reference").
 
 ## Governed-lane write protection (`KB_GOVERNED_LANE_PROTECTION`, issue #112)
 
@@ -573,7 +649,7 @@ drafts.
 **What this boundary does not cover.** Only the POSTIMAGE is owner-scoped.
 `GET /api/v1/pending` and `kb_list_pending` remain visible to every
 authenticated principal and carry each entry's `target_path`, `reason`,
-`evidence` and identities. Those are content-derived: a target path can name
+`evidence`, `capture` and identities. Those are content-derived: a target path can name
 what a draft is about, and an evidence string can quote it. The secret scanner
 redacts credential-shaped values, not ordinary confidential text. So the pending
 queue's metadata is shared within a deployment, deliberately and as it always
@@ -584,6 +660,127 @@ A postimage the secret scanner flagged is withheld from everyone except a
 `resolve` principal. The proposer already held that content, but handing it back
 would turn the queue into a place to retrieve a credential from. The response
 still names the matched pattern, so the caller learns why.
+
+### Capture provenance on proposed memories
+
+A memory distilled from a passive capture, such as a hook event or an external
+session transcript, can say so. `kb_propose_memory` and
+`POST /api/v1/propose/memory` accept an optional `capture` object that labels the
+proposal as evidence-derived, binds it to the exact source event and proposal
+bytes, and names the transformation that produced it. The captured raw event
+stays outside data-olympus: only identifiers, hashes and enumerated values enter
+the store.
+
+The envelope is provenance, not authority. It adds no status, it does not force
+review, and it does not change what `in_force` returns. A capture-derived memory
+is rendered with status `proposed` under the memory inbox like any other memory,
+so it is never in force and never returned by `kb_consult`, whether it parks or
+auto-commits at high confidence.
+
+| field | required | format |
+|---|---|---|
+| `capture_source` | yes | `[a-z0-9][a-z0-9_.-]{0,63}`, for example `claude_code.hook` |
+| `capture_event_id` | yes | `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`, which fits UUID, ULID and `urn:` ids |
+| `source_event_hash` | yes | `sha256:` followed by 64 lowercase hex characters |
+| `transformation` | yes | `[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,127}`, naming the transformer and its version, for example `automem.distill/1.4.2` |
+| `raw_retention` | yes | one of `discarded`, `redacted`, `retained` |
+| `capture_session` | no | same format as `capture_event_id` |
+| `classification` | no | one of `fact`, `decision`, `preference`, `task_state`, `noise` |
+| `derived_memory_hash` | no | `sha256:` followed by 64 lowercase hex characters |
+
+Every value is an ASCII token matched in full, so no value can hold whitespace,
+a newline, a quote or prose. `capture_session` is the session that produced the
+captured event; the top-level `source_session` is still the session making the
+proposal. An explicit `null` on an optional field reads as absent, and a `null`
+`capture` means no envelope.
+
+The server always computes `derived_memory_hash` as `sha256:` of the UTF-8 bytes
+of `text` exactly as submitted, with no normalization. A caller that supplies the
+field must supply that same value, which binds the proposal bytes in transit.
+Matching hashes show that neither side changed; they do not prove that the
+memory was derived from the event, which is why `transformation` is required:
+the reviewer checks the derivation claim against the named step.
+
+Validation runs before the path, blocklist and rate-limit checks, so a refused
+envelope costs no rate-limit token. A credential-shaped value anywhere in the
+envelope, including under an unknown key, is refused as
+`rejected_secret_detected` with the pattern name only, and nothing is parked or
+committed. Every other problem (a non-object, `{}`, an unknown key, a missing
+required field, a value of the wrong type, format or enumeration, or a
+`derived_memory_hash` that does not match `text`) is refused as
+`rejected_invalid_capture`. Neither reason ever repeats a submitted value. Over
+REST, `rejected_invalid_capture` is HTTP 400 and `rejected_secret_detected` is
+422. `POST /api/v1/propose/edit` refuses a `capture` key with
+`rejected_invalid_capture` and HTTP 400, because an edit labels no new memory.
+
+An accepted envelope, with the computed `derived_memory_hash`, is written:
+
+- into the memory's frontmatter as a nested `capture` mapping, after `evidence`,
+  through the same YAML serializer as every other server-rendered key, so it
+  survives an auto-commit and counts against `KB_MAX_TEXT_BYTES`;
+- into the pending entry, where `kb_list_pending`, `GET /api/v1/pending`,
+  `kb_get_pending` and `GET /api/v1/pending/<pending_id>` return it as `capture`
+  (`null` when the proposal had none, or when a stored value is malformed);
+- onto the `committed` and `pending_confirmation` audit events for the proposal.
+  A refused envelope's audit event carries the status and reason only.
+
+`kb_session_recap` and `GET /api/v1/session-recap` count the session's committed
+or parked memory proposals that carried an envelope as `capture_derived`.
+
+**An operator edit keeps the label.** On resolve, `edited_text` replaces the
+whole proposed document, so the server re-attaches the stored envelope to what
+it commits, on approve and on edit. An edit that supplies its own frontmatter
+keeps it, with `capture` set to the stored envelope; an edit that supplies a body
+only, which is what `kb resolve` hands the operator, keeps the original
+proposal's frontmatter. The re-attached `derived_memory_hash` is still the one
+computed over the submitted text, so when it no longer matches the committed
+body, that mismatch is the record that a human changed it. The size cap and the
+secret scan on `edited_text` judge the bytes after re-attachment.
+
+Passive hook ingestion. A capture hook records a tool event, hashes it, discards
+the raw payload, and proposes the distilled memory at low confidence so a person
+reviews it:
+
+```json
+{
+  "text": "Integration tests in this repository need the staging database.",
+  "tags": ["testing"],
+  "source_session": "distiller-7",
+  "agent_identity": "automem",
+  "confidence": 0.4,
+  "capture": {
+    "capture_source": "claude_code.hook",
+    "capture_event_id": "01J9ZK3Q7R8S9T0V1W2X3Y4Z5A",
+    "source_event_hash": "sha256:3f9c0e5d1b7a2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6",
+    "transformation": "automem.distill/1.4.2",
+    "raw_retention": "discarded",
+    "classification": "fact"
+  }
+}
+```
+
+External-session transcript ingestion. An importer reads a transcript from
+another tool, keeps a redacted copy in its own store, and names the session the
+transcript came from:
+
+```json
+{
+  "text": "The team chose weekly release trains over continuous deployment.",
+  "tags": ["release"],
+  "source_session": "importer-run-12",
+  "agent_identity": "transcript-importer",
+  "confidence": 0.5,
+  "capture": {
+    "capture_source": "codex.transcript",
+    "capture_event_id": "urn:transcript:2026-10-01:message:42",
+    "capture_session": "codex-session-8c1f",
+    "source_event_hash": "sha256:9a8b7c6d5e4f30211203f4e5d6c7b8a99a8b7c6d5e4f30211203f4e5d6c7b8a9",
+    "transformation": "transcript-import/0.3.0",
+    "raw_retention": "redacted",
+    "classification": "decision"
+  }
+}
+```
 
 ### Non-fast-forward push recovery
 
@@ -664,17 +861,20 @@ GC is conservative and coupled to the push queue:
 Each session-less `POST /mcp` handshake makes the underlying MCP SDK create a
 transport, register it in an in-memory session table, and start a task that
 blocks waiting for further messages on that session. The SDK removes a session
-only on an explicit client `DELETE`, on the session task crashing, or on server
-shutdown. It also supports an idle timeout, but only when its session manager is
-constructed with one, and FastMCP does not wire one through: under its default
-construction the idle timeout is unset, so nothing reaps idle sessions.
+on an explicit client `DELETE`, on the session task crashing, on server
+shutdown, and, since MCP SDK 1.30, once the session has had no request in flight
+for 30 minutes. A request being served or an open `GET` stream holds the
+session. FastMCP builds the SDK's session manager without overriding that
+window, so it applies to this server as a backstop.
 
 Consequence: a client that handshakes and drops the connection without sending
 `DELETE` (the common cause of repeated "Created new transport with session ID"
-log lines) leaves its transport resident. Over long uptime the session table
-grows without bound and leaks memory and tasks.
+log lines) leaves its transport resident for at least half an hour, and a burst
+of such handshakes can fill the session table. The SDK also caps the table at
+10000 concurrent sessions and answers a request that would open another one
+with HTTP 503 until room frees up.
 
-data-olympus closes this two ways:
+data-olympus bounds this more tightly in two ways:
 
 - Observability: `health` reports `live_sessions`, the current live transport
   count (or `null` before the HTTP app has started serving). The server also
@@ -683,9 +883,19 @@ data-olympus closes this two ways:
 - Bound: a background reaper terminates sessions idle beyond
   `KB_SESSION_IDLE_TIMEOUT_SEC` (default `300`, five minutes). It scans every
   `KB_SESSION_REAP_INTERVAL_SEC` (default `60`). Set
-  `KB_SESSION_IDLE_TIMEOUT_SEC=0` to disable reaping and keep observability
-  only. Termination uses the SDK's own `terminate()` path, so a client that
-  reconnects simply gets a fresh session.
+  `KB_SESSION_IDLE_TIMEOUT_SEC=0` to disable this reaper and keep observability
+  only. Termination uses the SDK's own `terminate()` path, so the session leaves
+  the table and a client that reconnects simply gets a fresh session.
+
+The SDK's 30 minute expiry stays active whatever these settings are, so
+disabling the reaper, or setting a window longer than 1800 seconds, leaves the
+SDK expiring sessions that have had nothing in flight for 30 minutes. Both
+mechanisms treat a session with an open `GET` stream as live, so neither ends a
+connected client's session while the other keeps it. With the default five
+minute window and one minute scan the reaper acts long before the SDK would,
+and an abandoned session stays in the table for at most six minutes, so
+reaching the 10000 session cap takes clients abandoning about 28 sessions a
+second, sustained.
 
 The reaper works on elapsed time since a session's last activity stamp, not on
 whether its connection is open. The clock advances on every request carrying
@@ -860,6 +1070,35 @@ regardless of `in_force`, so a plain search result still explains why a hit is
 historically superseded. `kb_search` hits do NOT carry `contradicts` /
 `contradicted_by`; those are kb_get-only.
 
+#### Derivation: `derived_from` is surfaced, never acted on
+
+A document may declare `derived_from` (SPEC.md section 4.2, format `0.5`):
+the documents its guidance was drawn from. A document has **left force**
+(is retired) when it is graph-excluded, its `status` is `deprecated`,
+`superseded` or `rejected`, or it is expired. `rejected` counts deliberately:
+deriving from an explicitly rejected document is itself worth surfacing.
+`draft`, `proposed`, upcoming and memory-inbox documents are not retired,
+because they never governed. `kb_get` returns three lists of ids, sorted,
+deduped and dangling-safe:
+
+- `derived_from`: the document's own `derived_from` targets that exist.
+- `derived_from_retired`: the subset of `derived_from` that is retired.
+  Non-empty only while this document is itself in force.
+- `dependents_to_review`: the documents in force (the full computed
+  `in_force` predicate) whose `derived_from` names this one. Non-empty only
+  while this document is retired.
+
+Verbose `kb_get` always carries all three; compact `kb_get` omits each when
+empty, so a document without derivation relationships keeps its exact compact
+shape. MCP `kb_get` and REST `GET /api/v1/get/{id}` share one implementation.
+Nothing is filtered or demoted: `derived_from` never changes any document's
+`in_force`, `kb_search` or `kb_consult` results, ranking, or the
+`graph_excluded_docs` counter, and `kb_search` hits do not carry these lists.
+A dependent of a retired source can therefore still be returned by
+`kb_consult` with no cue; `kb lint` (a warning on both ends) and `kb_get` are
+where a person sees it. `data-olympus lint` reports the same condition as a
+warning, never an error, because a source can retire by expiry.
+
 ## Validity: expired docs leave default results
 
 Independent of `in_force`, a doc past its `validity.valid_until` date is
@@ -991,6 +1230,13 @@ default is deployment-neutral and covers `universal/`, `tech-stacks/<stack>/`,
 `memory/accepted/`), `tooling/`, `templates/`, and `projects/<name>/`
 (with `components/<component>/` for T4).
 
+Every path under `universal/` is T1. The subdirectories `foundation/`,
+`quality/`, `security/`, `infrastructure/`, `database/`, `api/`, and
+`services/` take their own name as the category; any other path under
+`universal/`, such as `universal/README.md` or `universal/process/x.md`, has
+the category `universal`. A path outside every prefix in the table gets the
+tier and category `meta`.
+
 A bundle that uses a different directory layout overrides the defaults at deploy
 time, with no code change:
 
@@ -1003,6 +1249,18 @@ time, with no code change:
   rejected by the structural rule.
 - `KB_MEMORY_INBOX_PREFIX`: directory new memory proposals are written under
   (default `memory/inbox/`).
+
+A document's frontmatter `tier` or `category`, when present, overrides the
+path-derived value in the index, so search facets and listings use it. The
+write blocklist (`KB_WRITE_BLOCK_TIERS`) ignores that override and classifies
+the target by path, so an author cannot declare a document out of a blocked
+tier. `data-olympus lint <bundle>` reports each disagreement as a warning that
+names the path-implied value, using the same taxonomy (`KB_TAXONOMY_PATH` when
+set). The warning never changes the exit code. Because the frontmatter
+vocabulary has no spelling for the meta path tiers (`decisions`, `workflows`,
+`memory`, `tooling`, `templates`, or an unmatched path), a declared `meta`
+satisfies them. If `KB_TAXONOMY_PATH` cannot be loaded, lint prints a notice
+on stderr and skips this check.
 
 ## Synonym / acronym query expansion
 
@@ -1168,9 +1426,11 @@ or not the tick rebuilt (`malloc_trim(0)`, which walks every arena, so memory
 freed by request handlers between rebuilds is covered as well). The pin is
 process-wide, and it also stops glibc adjusting its mmap threshold, so large
 blocks keep being served by `mmap` and returned on free rather than cached in
-an arena. If you set the trim threshold yourself, through
-`MALLOC_TRIM_THRESHOLD_` or `glibc.malloc.trim_threshold` in `GLIBC_TUNABLES`,
-the server leaves your value alone. In a separate probe on a heap with four
+an arena. If you set the trim threshold yourself, through a non-empty
+`MALLOC_TRIM_THRESHOLD_` or a `glibc.malloc.trim_threshold=<value>` entry in
+`GLIBC_TUNABLES`, the server leaves your value alone. A bare or empty
+`glibc.malloc.trim_threshold` entry is not a setting, because glibc ignores a
+tunable without a value, so the server pins the threshold as usual. In a separate probe on a heap with four
 worker arenas, one `malloc_trim(0)` usually took between 0.1 and 2.3 ms, with
 a slowest observed call of 12 ms; it runs on the refresh executor thread, once
 per tick. This is best-effort: glibc
@@ -1226,7 +1486,9 @@ the gate require a fresh explicit consultation before such an action, without
 waiting for that class to appear in a release.
 
 This changes only WHAT is classified as governed. It does not change the rule
-that only a fresh explicit consultation clears the gate.
+that only a fresh explicit consultation clears the gate. Under the default
+`KB_GATE_CLEARANCE=intent`, an operator addition has no keyword mapping: a
+consult covers it by naming the keyword, path or command fragment in its intent.
 
 ## Trigram fuzzy-match fallback
 
@@ -1253,7 +1515,13 @@ capability model, enforced on **both** the REST routes and the MCP write tools:
 - `KB_AUTH_TOKEN` registers a single full-capability `operator` principal.
 - `KB_AUTH_PRINCIPALS` (JSON) registers per-agent tokens with explicit
   capabilities; a principal lacking `auto_commit` has its proposals clamped to
-  pending regardless of the client-asserted confidence.
+  pending regardless of the client-asserted confidence. When set, it must be
+  a non-empty JSON list of objects, each with a non-empty string `token`.
+  Anything else (invalid JSON, a single object, an entry that is not an
+  object, or an entry without a usable `token`, such as a misspelled key)
+  fails startup with an error naming `KB_AUTH_PRINCIPALS` and, where it
+  applies, the entry number. The error never repeats the value. This holds
+  whether or not `KB_AUTH_TOKEN` is also set.
 
 When auth is configured, write, enforcement, and observability routes require a
 capable principal; read routes (`search`/`get`/`list`/`outline`/`health`) stay

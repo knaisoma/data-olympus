@@ -223,8 +223,24 @@ def historical_source_tree_problems(
     return []
 
 
+RECEIPT_TAG_PATTERN = "benchmarks/receipt-*"
+
+
+def _receipt_tags_at(repo_root: Path, source_commit: str) -> list[str]:
+    """Receipt tags whose commit is exactly ``source_commit``, annotated or not."""
+    probe = subprocess.run(
+        ["git", "tag", "--list", RECEIPT_TAG_PATTERN, "--points-at", source_commit],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        return []
+    return [line for line in probe.stdout.splitlines() if line.strip()]
+
+
 def ancestry_problems(document: object, repo_root: Path, base_ref: str) -> list[str]:
-    """The measured commit must already be reachable from the base branch.
+    """The measured commit must stay resolvable once the pull request merges.
 
     A receipt refreshed inside a pull request naturally names a commit on the PR
     branch. A squash merge replaces those commits with one new commit, so the
@@ -233,6 +249,13 @@ def ancestry_problems(document: object, repo_root: Path, base_ref: str) -> list[
     checks above then fail on ``main`` although they passed on the pull request,
     and a reproduction following ``benchmarks/README.md`` cannot check out the
     revision the numbers were measured at (issue #268).
+
+    A change to a benchmark corpus cannot follow the land-first route, because
+    corpora are compared with the current tree rather than at the measured
+    commit: the receipt has to be re-measured inside the same pull request. A
+    ``benchmarks/receipt-*`` tag on exactly the measured commit keeps that
+    commit in every clone after the squash merge, so it is accepted in place of
+    reachability from the base. The other checks still apply in full.
 
     Only runs when a base ref is supplied, which is the pull-request case. On
     ``main`` there is nothing to compare against: the commit is on the branch
@@ -254,6 +277,8 @@ def ancestry_problems(document: object, repo_root: Path, base_ref: str) -> list[
     )
     if probe.returncode == 0:
         return []
+    if probe.returncode == 1 and _receipt_tags_at(repo_root, source_commit):
+        return []
     if probe.returncode != 1:
         # Neither reachable nor unreachable: one of the two revisions does not
         # resolve. Report that distinctly so a shallow clone or a missing base
@@ -264,12 +289,15 @@ def ancestry_problems(document: object, repo_root: Path, base_ref: str) -> list[
             f"from {base_ref}: {detail}"
         ]
     return [
-        f"source_commit {source_commit} is not reachable from {base_ref}. "
-        "A squash merge removes branch commits from the base branch, so this "
-        "receipt would become unresolvable once merged. Measure the receipt at "
-        "a commit that is already on the base branch: land a change that alters "
-        "measured inputs first and re-measure in a follow-up, or measure at the "
-        "pull request's base when the measured inputs are unchanged."
+        f"source_commit {source_commit} is not reachable from {base_ref} and "
+        f"no {RECEIPT_TAG_PATTERN} tag points at it. A squash merge removes "
+        "branch commits from the base branch, so this receipt would become "
+        "unresolvable once merged. Measure the receipt at a commit that is "
+        "already on the base branch: land a change that alters measured source "
+        "or the lock first and re-measure in a follow-up, or measure at the "
+        "pull request's base when the measured inputs are unchanged. A change "
+        "to a benchmark corpus is measured on the branch instead, and that "
+        f"commit is pushed as a {RECEIPT_TAG_PATTERN} tag."
     ]
 
 

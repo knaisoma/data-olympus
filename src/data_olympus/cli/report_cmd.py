@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from data_olympus.config import _load_gate_clearance
 from data_olympus.enforce_policy import IntentClassifier
 from data_olympus.report import (
     GovernedCommit,
@@ -127,6 +128,13 @@ def run_report(
     emit_events: bool = False,
 ) -> int:
     classifier = IntentClassifier()
+    # The same setting, and validation, as the live gate (issue #309): under
+    # "pair" the report keeps judging by timing only.
+    try:
+        clearance = _load_gate_clearance(os.getenv("KB_GATE_CLEARANCE", ""))
+    except ValueError as exc:
+        print(f"[KB] error: {exc}", file=sys.stderr)
+        return 2
     endpoint = os.getenv("KB_ENDPOINT", "http://localhost:8080")
     token = os.getenv("KB_AUTH_TOKEN", "")
 
@@ -156,7 +164,10 @@ def run_report(
     reachable, events = _fetch_audit(endpoint, token, since_ts)
     consults = extract_consults(events, workspace) if reachable else []
 
-    report = correlate(commits, consults, window_sec=window_sec)
+    report = correlate(
+        commits, consults, window_sec=window_sec,
+        classifier=classifier, clearance=clearance,
+    )
 
     if as_json:
         body = json.loads(format_report(report, as_json=True))

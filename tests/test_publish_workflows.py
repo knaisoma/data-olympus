@@ -94,6 +94,41 @@ def test_tag_release_publishes_pypi_inline():
     assert "promote-image" in doc["jobs"]["release"]["needs"]
 
 
+def test_stable_promotion_publishes_the_mcp_registry_entry_last() -> None:
+    """Issue #303: the registry entry is published by the stable workflow with
+    GitHub OIDC, after the GitHub release, from the released source, with a
+    pinned and hash-verified publisher and a read-back of the listed version."""
+    doc = _load("tag-release.yml")
+    job = doc["jobs"]["publish-mcp-registry"]
+    # Runs after everything else, so a registry outage cannot block a release.
+    assert {"publish-pypi", "release"} <= set(job["needs"])
+    assert "publish-mcp-registry" not in str(
+        [j.get("needs") for name, j in doc["jobs"].items() if name != "publish-mcp-registry"]
+    )
+    # OIDC only: no secrets, no token, and nothing beyond read and id-token.
+    assert job["permissions"] == {"contents": "read", "id-token": "write"}
+    assert "secrets." not in str(job)
+    assert "environment" not in job
+    checkout = next(s for s in job["steps"] if "actions/checkout" in str(s.get("uses", "")))
+    assert checkout["with"]["ref"] == "${{ needs.resolve-rc.outputs.source_sha }}"
+    commands = "\n".join(str(s.get("run", "")) for s in job["steps"])
+    # server.json must describe the released version, in both fields.
+    assert "'.version' server.json" in commands
+    assert "'.packages[0].version' server.json" in commands
+    assert "mcp-name: ${SERVER_NAME}" in commands
+    # Pinned publisher, verified by SHA256, never `latest`.
+    assert "releases/latest" not in commands
+    assert "sha256sum -c" in commands
+    assert len(job["env"]["MCP_PUBLISHER_SHA256"]) == 64
+    assert job["env"]["MCP_PUBLISHER_VERSION"].startswith("v")
+    assert "login github-oidc" in commands
+    assert "mcp-publisher publish" in commands
+    # Re-runnable and read back: skip an existing version, then confirm it is listed.
+    assert "already in the registry" in commands
+    assert "registry does not list" in commands
+    assert "continue-on-error" not in str(job)
+
+
 def test_stable_promotion_is_explicit_and_tag_follows_approved_pypi() -> None:
     doc = _load("tag-release.yml")
     triggers = doc.get("on", doc.get(True))

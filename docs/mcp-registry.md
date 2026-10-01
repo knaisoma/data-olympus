@@ -1,11 +1,13 @@
 # Official MCP Registry notes
 
 Data Olympus is not published in the official registry at
-<https://registry.modelcontextprotocol.io> yet. Two searches of its v0 API,
-`?search=data-olympus` and `?search=knaisoma`, returned zero servers on 2026-09-12.
+<https://registry.modelcontextprotocol.io> yet. A search of its v0 API,
+`?search=data-olympus`, returned zero servers on 2026-10-01.
 
-This file records what publication needs, so the work is a checklist rather than a
-research task. It is the registry equivalent of [`glama.md`](./glama.md).
+From the release after 0.10.0, the stable promotion workflow publishes the entry
+itself (see "Automated publication" below). This file records what publication
+needs and keeps the manual checklist as a fallback. It is the registry equivalent of
+[`glama.md`](./glama.md).
 
 ## Why it matters
 
@@ -56,16 +58,37 @@ from a schema that validates.
 
 **Publication authenticates as a person or as CI.** The `mcp-publisher` flow signs in
 with GitHub OAuth for an `io.github.*` namespace, or uses GitHub OIDC when it runs from
-Actions. Neither path is a file change, so it is a deliberate step by a maintainer or a
-workflow, not something a docs PR completes.
+Actions. A person can publish under `io.github.knaisoma/*` only if their membership of
+the organization is public; otherwise the registry grants only their personal
+namespace and refuses the publish with 403. OIDC authorizes by the repository owner, so
+the workflow does not depend on anyone's membership visibility.
 
-## Checklist for whoever publishes
+## Automated publication
+
+The `publish-mcp-registry` job in `.github/workflows/tag-release.yml` (issue #303) runs
+after the GitHub release, from the released source revision. It:
+
+1. refuses unless both `server.json` versions equal the released version;
+2. reads that version's PyPI description and refuses unless it carries the exact
+   `mcp-name` marker (the check in step 3 below);
+3. installs a pinned `mcp-publisher` release and verifies its SHA256 before running it;
+4. signs in with `mcp-publisher login github-oidc` and publishes, skipping the publish
+   when the registry already lists that version, so a re-run is safe;
+5. reads the entry back from the registry API, filtered by version, and fails unless it
+   is listed.
+
+It runs last on purpose: a registry outage cannot hold back PyPI, the image or the
+GitHub release, and a failure is visible in the run and can be re-run on its own. To
+move to a newer publisher, change `MCP_PUBLISHER_VERSION` and `MCP_PUBLISHER_SHA256`
+together, taking the digest from the registry release's published asset.
+
+## Manual checklist (fallback)
 
 1. Cut a release whose PyPI description contains the `mcp-name` marker.
 2. Set **both** version fields in `server.json` to that release: the top-level `version`
    and `packages[0].version`. Leaving the package pinned to 0.7.3 or earlier points the
    entry at a description that does not carry the marker. Then re-validate the file
-   against the published schema. Both fields are pinned to `0.10.0`, so this step is
+   against the published schema. Both fields are pinned to `0.11.0`, so this step is
    already done for that release and is only owed again on the next one.
 3. Confirm that the pinned release's own description carries the exact marker. Run from
    the repository root:

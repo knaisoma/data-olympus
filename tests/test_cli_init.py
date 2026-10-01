@@ -278,3 +278,10 @@ def test_scaffold_spec_version_tracks_current_format() -> None:
     m = re.search(r'^spec_version:\s*"([^"]+)"', bundle_index, re.MULTILINE)
     assert m is not None
     assert m.group(1) == SPEC_VERSION
+
+
+def test_scaffold_spec_version_is_0_5() -> None:
+    """Issue #300 adds the optional `derived_from` field: format 0.5."""
+    from data_olympus.scaffold import SPEC_VERSION
+
+    assert SPEC_VERSION == "0.5"

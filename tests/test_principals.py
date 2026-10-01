@@ -1,6 +1,8 @@
 """Unit tests for the Principal / PrincipalRegistry identity+capability model."""
 from __future__ import annotations
 
+import pytest
+
 from data_olympus.principals import (
     ALL_CAPABILITIES,
     ANONYMOUS,
@@ -114,13 +116,27 @@ def test_cleanup_plan_is_auth_required() -> None:
     assert "kb_gate_check" in AUTH_REQUIRED_TOOLS
 
 
-def test_parse_principals_env_tolerates_garbage() -> None:
+def test_parse_principals_env_accepts_empty_and_valid_values() -> None:
     assert parse_principals_env("") == []
-    assert parse_principals_env("not json") == []
-    assert parse_principals_env('{"not": "a list"}') == []
+    assert parse_principals_env("  ") == []
     assert parse_principals_env('[{"name":"a","token":"t"}]') == [
         {"name": "a", "token": "t"}
     ]
+
+
+@pytest.mark.parametrize("raw", [
+    "not json",
+    '{"not": "a list"}',
+    "[]",
+    '["a"]',
+    '[{"name":"a","tokens":"t"}]',
+    '[{"name":"a","token":""}]',
+    '[{"name":"a","token":7}]',
+    '[{"name":"a","token":"t"},{"name":"b"}]',
+])
+def test_parse_principals_env_rejects_unusable_values(raw: str) -> None:
+    with pytest.raises(ValueError, match="KB_AUTH_PRINCIPALS"):
+        parse_principals_env(raw)
 
 
 def test_principal_names_must_be_unique() -> None:

@@ -124,3 +124,17 @@ def test_cli_warn_keeps_cycle_and_malformed_errors(tmp_path) -> None:
     _write(tmp_path / "a.md", "A", "supersedes: 123\n")
     _write(tmp_path / "b.md", "B")
     assert main(["lint", str(tmp_path), "--unresolved-targets", "warn"]) == 1
+
+
+def test_unresolved_derived_from_target_follows_the_supersession_rule(tmp_path) -> None:
+    """Issue #300, acceptance check 2."""
+    b = _write(tmp_path / "sub" / "b.md", "B", "derived_from: OUTSIDE\n")
+    _write(tmp_path / "outside" / "o.md", "OUTSIDE")
+    assert _severities(lint_files([b]), b, "derived_from") == ["error"]
+    assert _severities(lint_files([b], unresolved_severity="warn"), b, "derived_from") == [
+        "warning"]
+    assert _severities(lint_files([b], resolve_ids={"OUTSIDE"}), b, "derived_from") == []
+    sub = str(tmp_path / "sub")
+    assert main(["lint", sub]) == 1
+    assert main(["lint", sub, "--unresolved-targets", "warn"]) == 0
+    assert main(["lint", sub, "--resolve-root", str(tmp_path)]) == 0

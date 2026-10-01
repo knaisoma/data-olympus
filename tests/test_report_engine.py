@@ -98,3 +98,105 @@ def test_format_report_json_and_text() -> None:
     assert j["unverified"][0]["sha"] == "aaa"
     text = format_report(rep, as_json=False)
     assert "aaa" in text and "1" in text
+
+
+# --- issue #309: the report judges consult coverage like the live gate -------
+
+
+def _commit(*files: str, sha: str = "aaa", ts: int = 1000) -> GovernedCommit:
+    return GovernedCommit(sha=sha, ts=ts, author="d", files=list(files))
+
+
+def _consult(*coverage: str, ts: float = 990.0, trigger: str = "explicit") -> Consult:
+    return Consult(ts=ts, agent_identity="codex", source_session="s1",
+                   coverage=tuple(coverage), trigger=trigger)
+
+
+def _legacy(ts: float = 990.0) -> Consult:
+    return Consult(ts=ts, agent_identity="codex", source_session="s1")
+
+
+def test_extract_consults_reads_coverage_and_trigger() -> None:
+    events = [
+        {"ts": 990.0, "event_type": "consult", "target_path": "proj",
+         "trigger": "prompt_hook", "coverage": ["keyword:schema"]},
+        {"ts": 991.0, "event_type": "consult", "target_path": "proj",
+         "coverage": None},
+        {"ts": 992.0, "event_type": "consult", "target_path": "proj"},
+    ]
+    new, null_row, legacy = extract_consults(events, workspace="proj")
+    assert new.coverage == ("keyword:schema",)
+    assert new.trigger == "prompt_hook"
+    assert null_row.coverage is None
+    assert legacy.coverage is None
+    assert legacy.trigger == "explicit"
+
+
+def test_a_schema_consult_does_not_verify_a_manifest_commit() -> None:
+    rep = correlate([_commit("pyproject.toml")], [_consult("keyword:schema")],
+                    window_sec=3600)
+    assert [c.sha for c in rep.unverified] == ["aaa"]
+    assert rep.uncovered == {"aaa": ["path:pyproject.toml"]}
+    j = json.loads(format_report(rep, as_json=True))
+    assert j["unverified"][0]["uncovered"] == ["path:pyproject.toml"]
+    assert "path:pyproject.toml" in format_report(rep, as_json=False)
+
+
+def test_a_dependency_consult_verifies_manifest_commits_by_family() -> None:
+    commit = _commit("pyproject.toml", "services/api/go.mod", "README.md")
+    rep = correlate([commit], [_consult("keyword:dependency")], window_sec=3600)
+    assert [c.sha for c in rep.verified] == ["aaa"]
+    assert rep.timing_only == []
+
+
+def test_every_signal_of_the_commit_must_be_covered() -> None:
+    commit = _commit("pyproject.toml", "db/migrations/0001.sql")
+    rep = correlate([commit], [_consult("keyword:dependency")], window_sec=3600)
+    assert rep.uncovered == {"aaa": ["path:*/migrations/*"]}
+
+
+def test_consults_in_the_window_combine_like_fresh_consults_at_the_gate() -> None:
+    commit = _commit("pyproject.toml", "db/migrations/0001.sql")
+    consults = [_consult("keyword:dependency", ts=980.0),
+                _consult("keyword:migration", ts=990.0)]
+    rep = correlate([commit], consults, window_sec=3600)
+    assert [c.sha for c in rep.verified] == ["aaa"]
+
+
+def test_a_covering_consult_outside_the_window_does_not_verify() -> None:
+    rep = correlate([_commit("pyproject.toml", ts=10000)],
+                    [_consult("keyword:dependency", ts=100.0)], window_sec=3600)
+    assert [c.sha for c in rep.unverified] == ["aaa"]
+
+
+def test_a_prompt_hook_consult_never_covers_as_at_the_gate() -> None:
+    rep = correlate([_commit("pyproject.toml")],
+                    [_consult("keyword:dependency", trigger="prompt_hook")],
+                    window_sec=3600)
+    assert [c.sha for c in rep.unverified] == ["aaa"]
+
+
+def test_a_legacy_consult_keeps_timing_only_and_says_so() -> None:
+    rep = correlate([_commit("pyproject.toml")], [_legacy()], window_sec=3600)
+    assert [c.sha for c in rep.verified] == ["aaa"]
+    assert [c.sha for c in rep.timing_only] == ["aaa"]
+    j = json.loads(format_report(rep, as_json=True))
+    assert j["timing_only"] == ["aaa"]
+    assert "timing only" in format_report(rep, as_json=False)
+
+
+def test_a_covering_consult_is_preferred_over_a_legacy_one() -> None:
+    rep = correlate([_commit("pyproject.toml")],
+                    [_legacy(), _consult("keyword:dependency")], window_sec=3600)
+    assert [c.sha for c in rep.verified] == ["aaa"]
+    assert rep.timing_only == []
+
+
+def test_pair_clearance_keeps_timing_only_behaviour() -> None:
+    rep = correlate([_commit("pyproject.toml")], [_consult("keyword:schema")],
+                    window_sec=3600, clearance="pair")
+    assert [c.sha for c in rep.verified] == ["aaa"]
+    assert rep.uncovered == {}
+    j = json.loads(format_report(rep, as_json=True))
+    assert j["clearance"] == "pair"
+    assert "unverified" in j and "uncovered" not in json.dumps(j["unverified"])

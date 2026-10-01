@@ -1,6 +1,8 @@
 """Pydantic models for MCP tool responses. Slice 2A scope: read tools only."""
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 # Status values that mean "this guidance currently applies" (the in-force class,
@@ -355,6 +357,16 @@ class GetResponse(BaseModel):
     superseded_by: list[str] = []
     contradicts: list[str] = []
     contradicted_by: list[str] = []
+    # `derived_from` surfacing (issue #300), ids only, sorted, dangling-safe.
+    # ``derived_from`` is this doc's own resolving targets.
+    # ``derived_from_retired`` is the subset that has left force, non-empty
+    # only while this doc is itself in force. ``dependents_to_review`` lists
+    # the in-force docs whose `derived_from` names this one, non-empty only
+    # while this doc is retired. A cue for a person: nothing is filtered,
+    # demoted or invalidated because of these lists.
+    derived_from: list[str] = []
+    derived_from_retired: list[str] = []
+    dependents_to_review: list[str] = []
 
     def compact_dump(self) -> dict[str, object]:
         """Token-lean kb_get response (issue #65).
@@ -373,7 +385,10 @@ class GetResponse(BaseModel):
         a doc has no ``last_verified`` either and reports ``freshness:
         "stale"``, issue #142) and ``superseded_by`` / ``contradicts`` /
         ``contradicted_by`` (issue #110 slice 2: omitted when empty, same
-        deviation-only pattern). ``verbose=True`` restores the full shape.
+        deviation-only pattern), and likewise ``derived_from`` /
+        ``derived_from_retired`` / ``dependents_to_review`` (issue #300), so a
+        document without derivation relationships keeps its exact compact
+        shape. ``verbose=True`` restores the full shape.
 
         ``in_force`` is emitted deviation-only, i.e. ONLY when False (issue
         #109, codex review blocker): compact kb_get shows the RAW frontmatter
@@ -412,6 +427,12 @@ class GetResponse(BaseModel):
             d["contradicts"] = list(self.contradicts)
         if self.contradicted_by:
             d["contradicted_by"] = list(self.contradicted_by)
+        if self.derived_from:
+            d["derived_from"] = list(self.derived_from)
+        if self.derived_from_retired:
+            d["derived_from_retired"] = list(self.derived_from_retired)
+        if self.dependents_to_review:
+            d["dependents_to_review"] = list(self.dependents_to_review)
         if not self.in_force:
             d["in_force"] = False
         return d
@@ -458,6 +479,27 @@ class ProposeMemoryRequest(BaseModel):
     agent_identity: str
     confidence: float
     evidence: list[str] = []
+    # Capture provenance envelope (issue #141); validated by the tool, which
+    # rejects anything but an object with the documented fields.
+    capture: dict[str, Any] | None = None
+
+
+class CaptureEnvelope(BaseModel):
+    """Capture provenance on a proposed memory (issue #141).
+
+    Identifiers, hashes and enums only: the captured raw event stays outside
+    the store. ``derived_memory_hash`` is the server-computed ``sha256:`` of
+    the text as submitted; it does not describe an operator's later edit.
+    """
+
+    capture_source: str
+    capture_event_id: str
+    source_event_hash: str
+    transformation: str
+    raw_retention: str
+    capture_session: str | None = None
+    classification: str | None = None
+    derived_memory_hash: str
 
 
 class ProposeEditRequest(BaseModel):
@@ -494,6 +536,11 @@ class ProposeResponse(BaseModel):
     # read failure -- and the rule fails closed). None on every other outcome
     # (including a plain low-confidence pending_confirmation).
     demotion_reason: str | None = None
+    # Writing rules on the postimage (issue #283), one "line <n>: <rule>:
+    # <excerpt>" entry per finding on an ADDED line. Set with status
+    # rejected_writing_rule in enforce mode, and alongside "committed" in warn
+    # mode, where the write proceeds and the findings are reported.
+    writing_rule_findings: list[str] | None = None
 
 
 class ResolvePendingRequest(BaseModel):
@@ -520,6 +567,11 @@ class ResolvePendingResponse(BaseModel):
     # entry landed, else "enqueue_failed_recovery_pending" (the commit is durable
     # but is recovered by in-process/startup recovery, not queued this attempt).
     push_state: str | None = None
+    # Writing rules on the postimage (issue #283), one "line <n>: <rule>:
+    # <excerpt>" entry per finding on an ADDED line. Set with status
+    # rejected_writing_rule in enforce mode, and alongside "committed" in warn
+    # mode, where the write proceeds and the findings are reported.
+    writing_rule_findings: list[str] | None = None
 
 
 class PendingDetailResponse(BaseModel):
@@ -545,6 +597,8 @@ class PendingDetailResponse(BaseModel):
     created_at: float | None = None
     reason: str | None = None
     matching_pattern: str | None = None
+    # Capture provenance (issue #141), on ``ok`` only.
+    capture: CaptureEnvelope | None = None
 
 
 class ContestDetail(BaseModel):
@@ -601,6 +655,9 @@ class PendingEntry(BaseModel):
     # metadata distinct from the proposal's original operational reason.
     intent: str | None = None
     contest: ContestDetail | None = None
+    # Capture provenance (issue #141): None when the proposal carried no
+    # envelope, or when the stored one is malformed.
+    capture: CaptureEnvelope | None = None
 
 
 class PendingListResponse(BaseModel):
@@ -639,6 +696,16 @@ class AuditEvent(BaseModel):
     # see governed_lane.py).
     demotion_reason: str | None = None
     injection_suspect: bool | None = None
+    # Enforcement consult rows (issue #309): the trigger (explicit or
+    # prompt_hook) and the consult's coverage set. ``coverage`` is None on a
+    # row written before it was recorded, which `kb enforce report` judges by
+    # timing only.
+    trigger: str | None = None
+    coverage: list[str] | None = None
+    # Capture provenance (issue #141), on committed and pending_confirmation
+    # propose_memory events only. Identifiers, hashes and enums. Typed loosely
+    # so a damaged log line cannot fail a whole audit query.
+    capture: dict[str, Any] | None = None
     # Tamper-evident chain fields (present on events appended with chaining).
     event_id: str | None = None
     prev_hash: str | None = None
@@ -649,6 +716,9 @@ class AuditResponse(BaseModel):
     events: list[AuditEvent]
     returned: int
     limit_hit: bool = False
+    # Lines in the read window that could not be read as an event (issue
+    # #310), skipped rather than failing the whole query.
+    skipped: int = 0
 
 
 class CurateEntry(BaseModel):
@@ -694,6 +764,9 @@ class SessionRecapResponse(BaseModel):
     committed: int = 0
     demoted_to_pending: int = 0
     rejected: int = 0
+    # issue #141: this session's committed or parked memory proposals that
+    # carried a capture provenance envelope. 0 for events that predate it.
+    capture_derived: int = 0
 
 
 class AuditVerifyResponse(BaseModel):
@@ -736,6 +809,9 @@ class ComplianceResponse(BaseModel):
 
     counts: dict[str, int] = {}
     by_agent: dict[str, dict[str, int]] = {}
+    # Enforcement events that could not be attributed to an agent because the
+    # line is malformed (issue #310), skipped rather than failing the query.
+    skipped: int = 0
 
 
 class RecordEventResponse(BaseModel):

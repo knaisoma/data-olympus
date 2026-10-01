@@ -319,3 +319,88 @@ jobs:
             gh release create "$TAG" --target "$SOURCE_SHA" --title "$TAG" \
               --generate-notes dist/* release-provenance.json
           fi
+
+  publish-mcp-registry:
+    # Last on purpose: a registry outage must not hold back PyPI, the image or
+    # the GitHub release. A failure here is visible and the job can be re-run.
+    needs: [decide, resolve-rc, publish-pypi, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MCP_PUBLISHER_VERSION: v1.8.1
+      MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+      REGISTRY: https://registry.modelcontextprotocol.io
+      VERSION: ${{ needs.decide.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve-rc.outputs.source_sha }}
+      - name: Check server.json and the PyPI ownership marker
+        run: |
+          test "$(jq -er '.version' server.json)" = "$VERSION"
+          test "$(jq -er '.packages[0].version' server.json)" = "$VERSION"
+          SERVER_NAME="$(jq -er '.name' server.json)"
+          for attempt in $(seq 1 12); do
+            if curl -fsS "https://pypi.org/pypi/data-olympus/${VERSION}/json" \
+                -o /tmp/pypi.json; then
+              break
+            fi
+            test "$attempt" -lt 12
+            sleep 5
+          done
+          jq -e --arg marker "<!-- mcp-name: ${SERVER_NAME} -->" \
+            '(.info.description // "") | contains($marker)' /tmp/pypi.json
+          echo "SERVER_NAME=$SERVER_NAME" >> "$GITHUB_ENV"
+      - name: Install the pinned mcp-publisher
+        run: |
+          curl -fsSL -o /tmp/mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_SHA256}  /tmp/mcp-publisher.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/mcp-publisher.tar.gz -C /tmp mcp-publisher
+          /tmp/mcp-publisher --help >/dev/null
+      - name: Publish the registry entry with GitHub OIDC
+        run: |
+          # A failed read must never look like "not listed": retry it, then
+          # stop rather than publish blind. The version filter keeps a long
+          # history from paging the release out; the unfiltered search is a
+          # second opinion in case the filter's semantics change.
+          registry_query() {
+            for _ in $(seq 1 6); do
+              # A 200 whose body is not the expected shape is a failed read too.
+              if curl -fsS --get "$REGISTRY/v0/servers" "$@" -o /tmp/registry.json \
+                  && jq -r --arg name "$SERVER_NAME" \
+                    '.servers[] | (.server // .) | select(.name == $name) | .version' \
+                    /tmp/registry.json > /tmp/registry-versions.txt; then
+                cat /tmp/registry-versions.txt
+                return 0
+              fi
+              sleep 5
+            done
+            echo "cannot read the registry API at $REGISTRY" >&2
+            return 1
+          }
+          is_listed() {
+            local filtered unfiltered
+            filtered="$(registry_query --data-urlencode "search=$SERVER_NAME" \
+              --data-urlencode "version=$VERSION")" || exit 1
+            grep -qx "$VERSION" <<<"$filtered" && return 0
+            unfiltered="$(registry_query --data-urlencode "search=$SERVER_NAME")" || exit 1
+            grep -qx "$VERSION" <<<"$unfiltered"
+          }
+          if is_listed; then
+            echo "$SERVER_NAME $VERSION is already in the registry; not publishing again"
+          else
+            /tmp/mcp-publisher login github-oidc
+            /tmp/mcp-publisher publish
+          fi
+          for _ in $(seq 1 12); do
+            if is_listed; then
+              echo "registry lists $SERVER_NAME $VERSION"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "registry does not list $SERVER_NAME $VERSION after publishing" >&2
+          exit 1

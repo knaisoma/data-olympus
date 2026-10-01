@@ -68,6 +68,7 @@ from data_olympus.tools_read import (
     shape_response,
 )
 from data_olympus.worktrees import WorktreeRegistry
+from data_olympus.writing_rules import policy_from_config
 
 log = logging.getLogger("data_olympus")
 
@@ -184,6 +185,17 @@ EvidenceParam = Annotated[
 ContestParam = Annotated[
     dict[str, Any] | None,
     Field(description="Optional contest declaration with contradicts and optional reason."),
+]
+CaptureParam = Annotated[
+    dict[str, Any] | None,
+    Field(description=(
+        "Optional capture provenance envelope for a memory distilled from a "
+        "passive capture: capture_source, capture_event_id, source_event_hash "
+        "(sha256:<64 hex>), transformation and raw_retention (discarded, "
+        "redacted or retained) are required; capture_session, classification "
+        "and derived_memory_hash are optional. Identifiers and hashes only, "
+        "never raw content."
+    )),
 ]
 TargetPathParam = Annotated[
     str,
@@ -467,6 +479,8 @@ def build_app(
     audit_log_path: str | None = None,
     write_block_tiers: list[str] | None = None,
     write_block_paths: list[str] | None = None,
+    writing_rules_mode: str = "warn",
+    writing_rules_exclude_paths: list[str] | None = None,
     confidence_threshold: float = 0.85,
     rate_limit_per_hour: int = 100,
     rate_limit_per_ip_per_hour: int = 0,
@@ -530,6 +544,8 @@ def build_app(
         push_queue_root=push_queue_root,
         write_block_tiers=write_block_tiers or [],
         write_block_paths=write_block_paths or [],
+        writing_rules_mode=writing_rules_mode,
+        writing_rules_exclude_paths=list(writing_rules_exclude_paths or []),
         rate_limit_per_hour=rate_limit_per_hour,
         rate_limit_per_ip_per_hour=rate_limit_per_ip_per_hour,
         gate_check_rate_limit_per_hour=gate_check_rate_limit_per_hour,
@@ -943,6 +959,13 @@ def build_app(
         document is still returned, with its full `validity` object and a
         computed `freshness` indicator (`stale`/`expired`/`upcoming`).
 
+        Derivation cues (ids only, for a person to review; nothing is filtered
+        or demoted because of them): `derived_from` lists the documents this
+        one draws from; `derived_from_retired` lists those that have left
+        force, only while this document is itself in force; and
+        `dependents_to_review` lists the in-force documents that derive from
+        this one, only while this document is retired.
+
         verbose: False (default) returns the full `content_markdown` body (kb_get
         exists to read the doc) with a trimmed envelope: `path`,
         `git_remote_url`, and `last_modified_source` are dropped and empty
@@ -1057,6 +1080,7 @@ def build_app(
             text: TextParam, tags: TagsParam, source_session: SourceSessionParam,
             agent_identity: AgentIdentityParam, confidence: ConfidenceParam,
             evidence: EvidenceParam = None,
+            capture: CaptureParam = None,
         ) -> dict[str, object]:
             """Propose a new memory file. High confidence auto-commits and
             enqueues for push; low confidence enters the pending queue for operator
@@ -1064,7 +1088,11 @@ def build_app(
 
             evidence: optional supporting-context strings (max 10 items, 500
             chars each), rendered into the memory's frontmatter and surfaced by
-            kb_pending."""
+            kb_pending.
+
+            capture: optional provenance envelope labelling the memory as
+            derived from a captured event. It is a label, not authority: the
+            memory is still a proposed inbox document and never in force."""
             if state.worktrees is None or state.push_queue is None or state.pending is None:
                 return {"status": "write_pipeline_disabled"}
             assert state.worktrees is not None
@@ -1085,7 +1113,9 @@ def build_app(
                 proposer_principal=_current_principal.get().name,
                 max_text_bytes=state.config.max_text_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                writing_rules=policy_from_config(state.config),
                 evidence=evidence,
+                capture=capture,
             )
             return resp.model_dump()
 
@@ -1132,6 +1162,7 @@ def build_app(
                 proposer_principal=_current_principal.get().name,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                writing_rules=policy_from_config(state.config),
                 evidence=evidence,
                 contest=contest,
             )
@@ -1171,6 +1202,7 @@ def build_app(
                 # cap here so the two surfaces match.
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                writing_rules=policy_from_config(state.config),
                 override_secret_scan=override_secret_scan,
             )
             return resp.model_dump()
@@ -1178,7 +1210,10 @@ def build_app(
         @app.tool(title="KB List Pending", annotations=READ_ONLY_TOOL)
         def kb_list_pending() -> dict[str, object]:
             """List currently pending proposals awaiting operator decision."""
-            assert state.pending is not None
+            if state.pending is None:
+                # No write pipeline (KB_REMOTE_URL unset): nothing can be
+                # parked, so the queue is empty, as the REST route answers.
+                return {"pending": []}
             from data_olympus.tools_write import kb_list_pending_fn
             resp = kb_list_pending_fn(pending=state.pending)
             return resp.model_dump()
@@ -1189,7 +1224,14 @@ def build_app(
             the principal that made the proposal, or to one that could resolve
             it. The content is PENDING: it is not in force and governs nothing
             until approved."""
-            assert state.pending is not None
+            if state.pending is None:
+                # No write pipeline: no entry can exist, so answer not_found
+                # as the REST route does rather than failing the call.
+                from data_olympus.models import PendingDetailResponse
+                from data_olympus.tools_write import _PENDING_NOTE
+                return PendingDetailResponse(
+                    status="not_found", pending_id=pending_id, note=_PENDING_NOTE,
+                ).model_dump()
             from data_olympus.principals import CAP_RESOLVE
             from data_olympus.tools_write import kb_get_pending_fn
             principal = _current_principal.get()
@@ -1207,7 +1249,9 @@ def build_app(
         ) -> dict[str, object]:
             """Return recent audit events, most-recent first. Optional filters:
             since (unix ts), agent (agent_identity), status (event status)."""
-            assert state.audit_log is not None
+            if state.audit_log is None:
+                # No audit log configured: no events, as the REST route answers.
+                return {"events": [], "returned": 0, "limit_hit": False, "skipped": 0}
             from data_olympus.tools_audit import kb_audit_fn
             resp = kb_audit_fn(audit_log=state.audit_log, since=since,
                               agent=agent, status=status, limit=limit)
@@ -1263,6 +1307,7 @@ def build_app(
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 max_files=state.config.max_bootstrap_files,
                 serializer=state.write_serializer,
+                writing_rules=policy_from_config(state.config),
             )
             return resp.model_dump()
 
@@ -1325,7 +1370,7 @@ def build_app(
                 workspace=workspace, session_id=session_id, tool_name=tool_name,
                 action_path=action_path, action_diff=action_diff,
                 now=_time.time(), ttl_sec=state.config.consult_ttl_sec,
-                audit_log=state.audit_log,
+                audit_log=state.audit_log, clearance=state.config.gate_clearance,
             )
             return resp.model_dump()
 
@@ -1338,7 +1383,7 @@ def build_app(
             period; use `kb_audit` instead when you need the raw event log or
             per-event details."""
             if state.audit_log is None:
-                return {"counts": {}, "by_agent": {}}
+                return {"counts": {}, "by_agent": {}, "skipped": 0}
             from data_olympus.tools_enforce import kb_compliance_fn
             resp = kb_compliance_fn(audit_log=state.audit_log, since=since, agent=agent)
             return resp.model_dump()
@@ -1417,6 +1462,11 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         problem = corpus_path_problem(config)
         if problem is not None:
             raise NotADirectoryError(problem)
+    # The secret-scan gate is process-wide: one server process serves one
+    # Config, so the parsed extra patterns are installed once here. Building a
+    # second app with a different Config in the same process replaces them.
+    from data_olympus.write_gate import configure_extra_secret_patterns
+    configure_extra_secret_patterns(config.secret_scan_extra_patterns)
     return build_app(
         # Issue #257: the shipped entry point could not reach the classifier's
         # own constructor arguments, so an operator had no way to govern an
@@ -1435,6 +1485,8 @@ def build_app_from_config(config: Config, *, bootstrap_now: bool = True) -> Fast
         audit_log_path=config.audit_log_path,
         write_block_tiers=list(config.write_block_tiers),
         write_block_paths=list(config.write_block_paths),
+        writing_rules_mode=config.writing_rules_mode,
+        writing_rules_exclude_paths=list(config.writing_rules_exclude_paths),
         confidence_threshold=config.confidence_threshold,
         rate_limit_per_hour=config.rate_limit_per_hour,
         rate_limit_per_ip_per_hour=config.rate_limit_per_ip_per_hour,

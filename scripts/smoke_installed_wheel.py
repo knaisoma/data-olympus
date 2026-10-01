@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import socket
@@ -57,6 +58,13 @@ required = {
 missing = sorted(name for name in required if not (root / name).is_file())
 assert not missing, missing
 assert root.name == "_bin", root
+
+# The write pipeline's writing-rule gate (#283) imports its rules from the
+# installed package, not from a repository checkout.
+from data_olympus.writing_rules import added_line_findings
+
+findings = added_line_findings(preimage="", postimage="a \u2014 b\n")
+assert [f.rule for f in findings] == ["em-dash"], findings
 """
 
 _VERSION_PROBE = r"""
@@ -196,6 +204,54 @@ def _probe_server(
             _stop(process)
 
 
+def _probe_writing_rules(
+    *, server: Path, scratch: Path, bundle: Path, base_env: dict[str, str],
+) -> None:
+    """The wheel-installed server refuses an offending write in enforce mode
+    (#283): the packaged rules are wired into the running write pipeline, with
+    no repository checkout on the path."""
+    remote = scratch / "remote.git"
+    _run(["git", "clone", "-q", "--bare", str(bundle), str(remote)],
+         cwd=scratch, env=base_env)
+    port = _free_port()
+    endpoint = f"http://127.0.0.1:{port}"
+    env = _server_env(base_env, scratch, bundle, port, "write")
+    env.update({"KB_REMOTE_URL": str(remote), "KB_WRITING_RULES_MODE": "enforce",
+                "KB_TOOL_DISCOVERY_MODE": "all"})
+    log_path = scratch / "server-write.log"
+    with log_path.open("w+", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            [str(server)], cwd=scratch, env=env, stdout=log,
+            stderr=subprocess.STDOUT, text=True,
+        )
+        try:
+            _wait_for_health(endpoint, process)
+            body = json.dumps({
+                "text": "a memory \u2014 with a dash", "tags": [],
+                "source_session": "wheel-smoke", "agent_identity": "smoke",
+                "confidence": 0.9,
+            }).encode()
+            request = urllib.request.Request(
+                endpoint + "/api/v1/propose/memory", data=body,
+                headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+                    code, payload = response.status, response.read()
+            except urllib.error.HTTPError as exc:
+                code, payload = exc.code, exc.read()
+            result = json.loads(payload)
+            if code != 422 or result.get("status") != "rejected_writing_rule":
+                raise RuntimeError(
+                    f"writing-rule probe expected 422 rejected_writing_rule, "
+                    f"got {code} {result}")
+        except Exception as exc:
+            log.flush()
+            log.seek(0)
+            raise RuntimeError(f"{exc}\nserver log:\n{log.read()}") from exc
+        finally:
+            _stop(process)
+
+
 def run(artifact: Path, root: Path, expected_version: str) -> None:
     artifact = artifact.resolve()
     is_distribution = artifact.suffix == ".whl" or artifact.name.endswith(".tar.gz")
@@ -249,6 +305,9 @@ def run(artifact: Path, root: Path, expected_version: str) -> None:
             bundle=bundle,
             base_env=isolated_env,
             mode="all",
+        )
+        _probe_writing_rules(
+            server=server, scratch=scratch, bundle=bundle, base_env=isolated_env,
         )
     finally:
         shutil.rmtree(scratch, ignore_errors=True)

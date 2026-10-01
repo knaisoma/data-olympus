@@ -27,10 +27,89 @@ A prompt-hook consult never downgrades a still-fresh explicit consult on the sam
 interleaved prompt-hook consults cannot un-clear a gate an explicit consult
 cleared.
 
-There is no deadlock for legitimately non-governed intents: `kb_gate_check` only
-requires a consult for actions the classifier deems governed, and any explicit
-consult (governed or not) records a fresh explicit timestamp, so an agent can
-always clear the gate by calling `kb_consult` and then retrying.
+`kb_gate_check` only requires a consult for actions the classifier deems
+governed. Which explicit consults clear a governed action depends on
+`KB_GATE_CLEARANCE`, described in the next section.
+
+## Clearance is bound to the consulted intent (issue #296)
+
+Under `KB_GATE_CLEARANCE=intent`, the default, a fresh explicit consult clears
+only the governed actions its intent covers. A consult about the database schema
+no longer clears a `pip install` that follows it inside the TTL.
+
+Each explicit consult records a coverage set computed from its `intent` text:
+
+- the keyword signals (`keyword:<kw>`) the classifier finds in the intent;
+- a `command:<fragment>` signal for each governed command fragment the intent
+  contains, by the same substring rule the gate applies to a Bash command;
+- a `path:<glob>` signal for each whitespace or quote delimited token of the
+  intent, computed by the same path matcher the gate applies to `action_path`.
+  A quoted span counts as one token, so a path containing spaces can be named.
+
+Coverage accumulates per `(session_id, workspace)`: several fresh consults on
+different topics all count, and each signal expires on its own TTL. A
+prompt-hook consult never adds coverage. A governed action is allowed when
+EVERY one of its signals is covered by a fresh coverage signal, either directly
+or through the family mapping below. An action that is both a dependency
+manifest edit and an install command needs both covered; one dependency consult
+does that through the mapping.
+
+Path signals are compared by family, the glob with one leading `*/` removed, so
+`path:*/go.mod` (a nested `services/api/go.mod`) and `path:go.mod` are the same
+family, `go.mod`.
+
+The family mapping lets a topical consult cover the actions it plainly governs,
+without the agent reciting file paths:
+
+| Action signal | Covered by any of |
+| --- | --- |
+| `path:` dependency manifest families (`pyproject.toml`, `package.json`, `requirements*.txt`, `go.mod`, `Cargo.toml`, `pom.xml`) | `keyword:dependency`, `dependencies`, `package`, `library` |
+| `command:` built-in install fragments | the same four keywords |
+| `path:` families `migrations/*` and `migration/*` | `keyword:migration`, `migrate`, `schema` |
+| `path:` families `schema/*`, `schema.sql` and `*.sql` | `keyword:schema`, `migration`, `migrate` |
+| `path:` families `Dockerfile` and `docker-compose*.yml` | the same family only |
+| `keyword:<kw>` from a Bash action | the same keyword only |
+
+Operator additions (`KB_GOVERNED_EXTRA_*`) have no mapping and are covered by
+the same signal only.
+
+**No deadlock.** Every governed action stays clearable: an intent that contains
+the action's path exactly as the gate saw it, or the command fragment, or the
+keyword, reproduces the action's signal through the same function. A basename
+also works for a manifest family that has a bare twin (`Cargo.toml` clears a
+nested `crates/x/Cargo.toml`), but not for `pom.xml`, which is governed only
+when nested, or for a directory family such as `migrations/*`; name the full
+path or use a mapped keyword for those.
+
+**Denial.** The verdict stays `consult_required`, so hooks and installers are
+unaffected. The `reason` lists every uncovered signal and ends with one
+copy-pasteable `kb_consult(...)` call whose `intent` covers all of them
+together, leading with the exact path when a path signal is uncovered and
+quoting the command fragment when a command signal is. The path or fragment is
+wrapped in a quote character it does not contain, and each argument of the call
+is written as a Python string literal, so the call still parses when a path
+holds a quote character. The `gate_block` audit
+event keeps `status: consult_required` and adds an `uncovered` field holding the
+signal list, so `kb_compliance` counts are unchanged and a mismatch is
+countable.
+
+**Audit.** Every `consult` audit event records the consult's coverage set in a
+`coverage` field (an empty list when it covers nothing) next to its `trigger`;
+`reason` still holds the classifier signals of the intent. `kb enforce report`
+reads this field to judge commits by the same rule as the gate (see "Detection
+floor" below).
+
+**Not a security boundary.** An agent can name every keyword in one intent and
+cover everything. The gate makes consulting the governing rules the path of
+least resistance; it does not authenticate intent. A consult still retrieves
+the rules for the intent it states, so an over-broad intent returns a broad
+rule set.
+
+**Migration.** `KB_GATE_CLEARANCE=pair` restores the earlier rule exactly: any
+fresh explicit consult for the `(session_id, workspace)` pair, governed or not,
+clears every governed action. A ledger written before this change has no
+recorded coverage, so under `intent` a session that consulted before the
+upgrade needs one new consult before its next governed action.
 
 ## Retrieval is hard-filtered to the in-force class (issue #109)
 
@@ -67,15 +146,28 @@ surface via plain `kb_search`/`kb_get`.
   The response echoes `session_id` and `workspace` (the exact gate key) alongside
   the verdict and reason, so a blocked MCP caller can build the clearing
   `kb_consult` call without guessing the session id. When blocked, `reason`
-  contains a copy-pasteable `kb_consult(...)` instruction.
+  contains a copy-pasteable `kb_consult(...)` instruction and, under intent
+  clearance, the uncovered signals and an intent that covers them.
 - `GET /api/v1/compliance`: aggregated enforcement-event counts.
 
 The same three are exposed as the `kb_consult`, `kb_gate_check`, and
 `kb_compliance` MCP tools.
 
+Over REST, each body field named above must be a JSON string when present, and
+only `action_path` may also be null, matching the MCP tools' typed parameters.
+Any other value is refused with HTTP 400 naming the field, and nothing is
+recorded (issue #310). `kb_audit` and `kb_compliance` (MCP and REST) skip an
+audit line they cannot read, such as one an earlier release accepted with a
+numeric field, and report how many in a `skipped` count instead of failing.
+
 ## Configuration
 
 - `KB_CONSULT_TTL_SEC` (default 300): how long a consultation stays fresh.
+- `KB_GATE_CLEARANCE` (default `intent`): what a fresh explicit consult clears.
+  `intent` clears only the governed actions the consult's intent covers (see
+  above); `pair` clears every governed action for the `(session_id, workspace)`
+  pair, the behaviour before issue #296. Case-insensitive; blank means unset;
+  any other value fails startup naming the setting.
 - `KB_ENFORCE_FAIL_MODE` (default `open`): hook behaviour when the server is
   unreachable. `open` allows the action with a warning; `closed` blocks it.
 
@@ -206,8 +298,26 @@ kb enforce report [--workspace W] [--range A..B | --since S] \
 `data-olympus report` is the same command (the `kb enforce report` route
 delegates straight to it). The report parses governed commits from `git log`
 (reusing the same path classifier the gates use), then correlates them against
-`consult` events fetched from the existing `GET /api/v1/audit`. It reuses that
-endpoint as-is: there is no server change for this feature.
+`consult` events fetched from `GET /api/v1/audit`.
+
+A governed commit is judged by the gate's clearance rule, read from
+`KB_GATE_CLEARANCE` in the environment where the report runs:
+
+- Under `intent` (the default), the commit is verified only when the explicit
+  consults inside its window together cover every signal of its governed
+  paths, by the same coverage and family rules as the live gate. Consults in
+  the window combine as fresh consults do at the gate, and a prompt-hook
+  consult covers nothing. An unverified commit lists its uncovered signals
+  (`uncovered` in `--json`).
+- A `consult` audit row written before coverage was recorded has no `coverage`
+  field, so what it covered is unknown. When such a row is in the window and
+  the recorded coverage does not settle the commit, the commit is verified by
+  timing alone, as before, and the report says so: a `TIMING ONLY` line in the
+  text output and the commit's sha in `timing_only` in `--json`.
+- Under `pair`, any consult in the window verifies the commit, the behaviour
+  before coverage was recorded.
+
+The `--json` output also carries `clearance`, the rule it applied.
 
 Flags:
 
@@ -229,8 +339,9 @@ Exit codes:
   `--fail-on-unverified` was not passed).
 - `3`: returned only with `--fail-on-unverified`, when at least one unverified
   governed change is found.
-- `2`: a git error (for example a bad `--range`). The command does not mistake
-  a git failure for a clean repo.
+- `2`: a git error (for example a bad `--range`), or a `KB_GATE_CLEARANCE`
+  value other than `intent` or `pair`. The command does not mistake a git
+  failure for a clean repo.
 
 ### The opt-in git hook
 
@@ -271,13 +382,22 @@ session-to-commit link. State the limits plainly:
   outside the time window, or a consult recorded under a different workspace
   label.
 - False negatives (a governed change that goes unreported): a change whose path
-  the classifier does not consider governed.
+  the classifier does not consider governed, or a commit judged by timing only
+  against a consult row written before coverage was recorded.
+- The window is not a session. A consult by another agent in the same
+  workspace and window counts toward a commit's coverage, where the live gate
+  counts only the acting session's consults.
+- `KB_GATE_CLEARANCE` is read where the report runs, not from the server. Set
+  it to the server's value, or the report applies a different rule than the
+  gate.
 
 When the audit endpoint is unreachable, the command degrades to warn: it lists
 the governed changes it found and marks the consult state as unknown rather
 than crashing. A post-commit warn hook never crashes a commit. The
-`--staged`/`--block` gate requires a consult within the window to pass, so a
-stale consult (outside the window) does not let a governed commit through.
+`--staged`/`--block` gate requires a consult within the window that covers the
+staged governed paths (any consult in the window under `pair`), so neither a
+stale consult (outside the window) nor one about another topic lets a governed
+commit through.
 
 ## Hardening and observability (slice 4)
 

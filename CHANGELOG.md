@@ -12,6 +12,216 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-05
+
+### Added
+
+* **`derived_from`: name the dependents of a retired document** (#300). A
+  document may declare `derived_from`, a concept id or a list of ids its
+  guidance was drawn from. When a source leaves force (graph-excluded,
+  `deprecated`, `superseded`, `rejected` or expired), `kb_get` names the
+  in-force dependents on the source (`dependents_to_review`) and the retired
+  sources on the dependent (`derived_from_retired`), and `data-olympus lint`
+  warns on both ends. `rejected` counts as retired on purpose; `draft` and
+  `proposed` never governed and do not. It is a cue for a person: nothing is
+  filtered, demoted, ranked or invalidated, and `kb_search` and `kb_consult`
+  are unchanged. Lint errors on a malformed or unresolved target (downgradable
+  with `--unresolved-targets warn`), self-reference, derivation cycles, and
+  deriving from a document the same document supersedes; the write path
+  refuses a newly introduced unresolved or malformed target but never a write
+  because a source retired. The format moves to `0.5`, a backward-compatible
+  addition; no migration.
+* **Capture provenance on memory proposals** (first slice of #141). Memory
+  proposals accept an optional `capture` envelope for a memory distilled from a
+  passive capture such as a hook event or an external transcript:
+  `capture_source`, `capture_event_id`, `source_event_hash`,
+  `transformation` and `raw_retention` are required, and `capture_session`,
+  `classification` and a server-verified `derived_memory_hash` are optional.
+  It holds identifiers, hashes and enums only. It is written to the memory's
+  frontmatter, shown in the pending listing and readback, recorded in the
+  committed and pending audit events, and counted by the session recap as
+  `capture_derived`; an operator edit at resolve keeps it. It is a label, not
+  authority: it never forces review and never makes a memory in force. An
+  invalid envelope is refused as `rejected_invalid_capture` (HTTP 400) and a
+  credential-shaped value as `rejected_secret_detected`.
+
+* **Writing rules on the documents agents write** (#283). The write pipeline
+  now applies the project's raw writing rules (no em-dash, no en-dash used as
+  one, no agent authorship credit) to the lines a write ADDS, on every commit
+  path: propose memory, propose edit, resolve, and onboarding bootstrap. A
+  write never fails on text it did not add: a line counts as added only when it
+  occurs more often in the postimage than in the target's current content, so
+  moving an existing line is not adding it, while a new offending line is
+  always caught. A line ending in `<!-- prose-lint: allow -->` is exempt.
+  `KB_WRITING_RULES_MODE` selects `enforce` (reject as
+  `rejected_writing_rule`, HTTP 422), `warn` (the default: commit, return the
+  findings in `writing_rule_findings`, record rule names and line numbers in
+  the audit event, and log a warning) or `off`; an unknown value fails startup.
+  `KB_WRITING_RULES_EXCLUDE_PATHS` skips paths by glob. The check runs after
+  the secret scan, so a postimage with both a credential and a finding is
+  still reported as the redacted secret rejection, and a failure of the check
+  itself rejects in `enforce` rather than being skipped. The machine-rendered
+  maintenance ledger is exempt through its own call path, which no client can
+  reach. Upgrade note: the default `warn` changes nothing for existing writes;
+  set `enforce` once a knowledge base adopts these rules.
+
+* **The stable release now publishes the MCP Registry entry** (#303, part of
+  #111). After the GitHub release, the promotion workflow signs in to the
+  official registry with GitHub OIDC and publishes `server.json` as
+  `io.github.knaisoma/data-olympus`, then reads the entry back. It first checks
+  that `server.json` names the released version and that the release's PyPI
+  description carries the ownership marker, and it runs a pinned,
+  hash-verified `mcp-publisher`. No secret or personal sign-in is involved.
+
+### Changed
+
+* **MCP SDK 1.30.0, Starlette 1.7.0, uvicorn 0.54.0 and sse-starlette 3.5.0**,
+  with a direct `mcp>=1.30.0,<2` requirement. The MCP SDK now closes a
+  streamable HTTP session that has had no request in flight for 30 minutes and
+  holds at most 10000 sessions (HTTP 503 beyond that); an open SSE stream keeps
+  a session alive. See Upgrading in the release notes.
+* **Onboarding bootstrap creates only new files under the workspace it
+  onboards.** Every target must lie under `projects/<workspace>/`, or under
+  `projects/<workspace>/components/<component>/` when a component is given,
+  in every onboarding state; other paths are refused as
+  `rejected_path_not_indexable_or_blocked`, and a target that already exists is
+  refused at commit time as `rejected_already_onboarded`. Use
+  `kb_propose_edit` to change an existing document. The bootstrap commit
+  subject lists every path written.
+* **`kb_propose_edit` accepts `base_commit` only as `HEAD` (or `head`) or a
+  commit id** of 7 to 64 lowercase hex characters. Any other value is refused
+  as `rejected_invalid_base` and is not recorded.
+* **Configuration is checked at startup where it used to be ignored.** A set
+  but unusable `KB_AUTH_PRINCIPALS` (invalid JSON, not a list, an empty list,
+  an entry that is not an object or has no non-empty `token`) stops startup
+  with an error naming the setting and entry number. `KB_SECRET_SCAN_EXTRA_PATTERNS`
+  is parsed once at startup, accepts a JSON array of patterns, no longer
+  splits a pattern at a comma inside `{...}` or `[...]` (so
+  `ACME_[A-Z0-9]{20,40}` stays one pattern), and an invalid or
+  nested-quantifier pattern stops startup instead of being skipped.
+  `KB_READ_ONLY` and `KB_DISABLE_VERSION_CHECK` accept `1`, `true`, `yes`,
+  `on`, `0`, `false`, `no` and `off` (case-insensitive) and stop startup on
+  any other value (#314).
+* **The benchmark receipt guard accepts a measured commit held by a
+  `benchmarks/receipt-*` tag.** A change to a benchmark corpus has to be
+  re-measured in its own pull request, because corpora are compared with the
+  current tree, and a squash merge then removes the measured commit from
+  `main`. A receipt tag pointing exactly at that commit keeps it resolvable, so
+  the pull request check accepts it; the other receipt checks are unchanged.
+  `benchmarks/README.md` describes the three refresh routes.
+* **Every path under `universal/` is tier T1 in the default taxonomy.** Only
+  seven `universal/` subdirectories were classified; any other path there,
+  such as `universal/README.md`, fell through to `meta`. Those seven keep their
+  categories, other paths get the category `universal`, and the CLI fallback
+  matches. Search facets for those documents move from `meta` to T1, and
+  `KB_WRITE_BLOCK_TIERS=T1` now covers the whole of `universal/`.
+
+* **`kb enforce report` judges consult coverage like the live gate** (#309).
+  The report and its `--staged` commit gate count a governed commit as
+  verified only when the explicit consults in the window cover every signal of
+  its governed paths, with the same family rules as the gate. The `consult`
+  audit event records the consult's `coverage`, and the audit API now returns
+  it with `trigger`. Rows written before this release keep timing-only
+  judgement and are reported as `TIMING ONLY` (`timing_only` in `--json`);
+  `KB_GATE_CLEARANCE=pair` keeps timing-only behaviour throughout, and an
+  invalid value makes the report exit 2. The gate's suggested `kb_consult`
+  call now stays well formed for a path containing a quote character.
+* **`data-olympus lint` warns when frontmatter disagrees with the path
+  taxonomy** (#304). A document whose declared `tier` or `category` differs
+  from what its path implies (honouring `KB_TAXONOMY_PATH`) gets a warning
+  naming the path value, because the index uses the declared value while the
+  write blocklist governs writes by the path tier. It is never an error and
+  never changes the exit code.
+
+* **A consult now clears only the governed actions it covers** (#296). The
+  enforcement gate used to clear any governed action after any fresh explicit
+  consult in the session, whatever that consult was about. Each consult now
+  records the keywords, command fragments and paths its intent names, and a
+  governed action is allowed only when all of its signals are covered by a
+  fresh consult, directly or through a small family mapping (a "dependency"
+  consult covers manifest edits and install commands; a "schema" or
+  "migration" consult covers migration and SQL files). Coverage from several
+  fresh consults combines, and each part expires on its own TTL. Naming the
+  action's own path or command always clears it. A denial still answers
+  `consult_required`; its reason lists the uncovered signals and suggests one
+  intent that covers them all, and the `gate_block` audit event gains an
+  `uncovered` field. Upgrade note: `KB_GATE_CLEARANCE=intent` is the new
+  default; set `KB_GATE_CLEARANCE=pair` to keep the previous rule. An invalid
+  value fails startup. A session that consulted before the upgrade needs one
+  new consult.
+
+* **fastembed 0.8.1 for the optional embeddings extra** (#298). It fixes a
+  path traversal in model archive extraction that could write outside the
+  model cache, and a padding regression on mixed-length batches. Upgrade
+  note: fastembed now resolves the default `BAAI/bge-small-en-v1.5` (and
+  `BAAI/bge-base-en-v1.5`) to a repository name with different casing, so on
+  a case-sensitive filesystem the cached model is not reused and downloads
+  once more. A deployment with `KB_EMBEDDINGS_MODE=on` that runs without
+  network access must refresh its model cache before upgrading, or startup
+  fails with the model unavailable. Lexical-only deployments are unaffected.
+* ruff 0.16.9 for development (#297).
+* **The CLI's fallback taxonomy is held to the index's** (#304). The
+  dependency-free search fallback (`bin/_kb_fallback.py`) keeps its own copy of
+  the path taxonomy; tests now assert that both copies list the same rules in
+  the same order and classify the same paths identically, including with a
+  custom `KB_TAXONOMY_PATH`. A comment was the only thing aligning them before.
+* **The writing-rule linter ships inside the package** (groundwork for #283).
+  The vendored gate moved from `scripts/prose_lint.py` to
+  `data_olympus._vendor.prose_lint`, so the installed server can apply the same
+  rules the CI gate applies. `scripts/prose_lint.py` remains as a shim that
+  runs it and now needs the package installed, so run it as
+  `uv run python scripts/prose_lint.py <path>`.
+
+### Fixed
+
+* **A session closed by the idle reaper now leaves the session table.** With
+  MCP SDK 1.29.1, reaped sessions stayed listed, so `live_sessions` in health
+  never decreased and the closed session objects were kept until restart.
+* **REST routes refuse a non-string value in a string field** (#310) with HTTP
+  400 naming the field, and record nothing. Previously consult and record
+  event could write such a value to the audit log, after which the audit and
+  compliance readers failed. `kb_audit` and `kb_compliance` now skip a
+  malformed audit line and report it in a new `skipped` count.
+* **An empty bootstrap bundle is refused** as `rejected_empty_bundle` (HTTP
+  400) before any claim, rate-limit slot, commit or pending entry (#311).
+  Previously it answered 500, or reported a pending bootstrap that was never
+  parked.
+* **Without `KB_REMOTE_URL`, the MCP tools `kb_list_pending`,
+  `kb_get_pending` and `kb_audit` answer like their REST equivalents** instead
+  of failing with an empty tool error (#312).
+* **REST resolve answers 400, not 200, for a symlink-escape refusal** (#313).
+
+* **REST resolve no longer answers 200 for an unknown decision** (#307). A
+  `decision` other than `approve`, `reject` or `edit` (for example the typo
+  `aprove`) returned HTTP 200 with `status: rejected_bad_decision`, so a client
+  checking only the status code read it as applied. It is now HTTP 400. A test
+  pins the HTTP code of every status the write tools can return, so a new one
+  cannot fall through to a default unnoticed.
+
+* **A bare `glibc.malloc.trim_threshold` tunable no longer stops the trim
+  threshold pin** (#302). The server leaves the trim threshold alone when the
+  operator has set it, and it treated any `glibc.malloc.trim_threshold` entry
+  in `GLIBC_TUNABLES` as such a setting, including one with no `=value`. glibc
+  ignores a tunable without a value, so under that malformed configuration
+  nobody set the threshold and the memory retention fixed in 0.10.0 (#284)
+  came back. Only an entry with a non-empty value now counts.
+
+### Security
+
+* **PyJWT 2.15.1** (GHSA-r6x4-923q-g947, GHSA-w2cx-738m-mc7w, both high). The
+  version 0.10.0 resolved, 2.13.0, could accept public key material, such as a
+  JWK container or a BOM-prefixed key, as an HMAC secret. PyJWT reaches Data
+  Olympus only through the MCP SDK's optional crypto extra, and Data Olympus
+  does not call it directly; the lock now resolves the fixed release.
+* **urllib3 2.8.0** (GHSA-8988-9cw3-xx77 and GHSA-vxq7-64xx-v4gw, high;
+  GHSA-gh4c-6fx4-qh6g, medium): HTTPS proxy TLS settings could be ignored, and
+  a chunked response could make the client buffer an unbounded line. urllib3
+  reaches Data Olympus only through `requests`, which the optional embeddings
+  extra uses to download its model. Upstream notes that a
+  configuration relying on destination TLS settings for an HTTPS proxy may need
+  `proxy_ssl_context` instead.
+* **cryptography 50.0.2**, whose wheels are built against OpenSSL 4.0.3.
+
 ## [0.10.0] - 2026-09-28
 
 ### Added

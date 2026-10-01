@@ -397,6 +397,8 @@ SNAPSHOT_DEPENDENT_CODES: frozenset[str] = frozenset({
     "unresolved_superseded_by_target",
     "malformed_supersedes",
     "malformed_superseded_by",
+    "unresolved_derived_from_target",
+    "malformed_derived_from",
     "unresolved_target_unverifiable",
 })
 """Validation codes whose answer depends on the committed tree, so an
@@ -405,7 +407,15 @@ index-only prediction must not treat them as a certain rejection."""
 _RELATIONSHIP_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("supersedes", "unresolved_supersedes_target", "malformed_supersedes"),
     ("superseded_by", "unresolved_superseded_by_target", "malformed_superseded_by"),
+    # Issue #300: a new `derived_from` edge must resolve like a supersession
+    # target. Retirement of a source never rejects a write; it is surfaced by
+    # kb_get and kb lint only.
+    ("derived_from", "unresolved_derived_from_target", "malformed_derived_from"),
 )
+
+# Relationship fields authored as a scalar id or a list of ids. Every other
+# relationship field in _RELATIONSHIP_FIELDS (`superseded_by`) is scalar only.
+_LIST_OR_SCALAR_FIELDS: frozenset[str] = frozenset({"supersedes", "derived_from"})
 
 
 def _strict_equal(
@@ -466,7 +476,7 @@ def _relationship_targets(field: str, value: object) -> tuple[list[str], bool]:
     """Targets of a present, non-null relationship field exactly as authored,
     and whether the shape is malformed. A blank or whitespace-only string is not
     a concept id and makes the value malformed in either shape."""
-    if field == "supersedes":
+    if field in _LIST_OR_SCALAR_FIELDS:
         items = [value] if isinstance(value, str) else value
         if not isinstance(items, list) or not all(isinstance(v, str) for v in items):
             return [], True
@@ -522,15 +532,18 @@ def _supersession_errors(
     transaction: Mapping[str, str] | None,
 ) -> list[dict[str, str]]:
     """Issue #259: a write may not newly introduce a ``supersedes`` or
-    ``superseded_by`` target that is absent from the commit being made, nor a
-    newly malformed value. Targets and malformed values carried over unchanged
-    from the committed version of the same path keep passing."""
-    if all(fm.get(field) is None for field, _unresolved, _malformed in _RELATIONSHIP_FIELDS):
+    ``superseded_by`` target (or, issue #300, a ``derived_from`` target) that
+    is absent from the commit being made, nor a newly malformed value. Targets
+    and malformed values carried over unchanged from the committed version of
+    the same path keep passing."""
+    present = [field for field, _unresolved, _malformed in _RELATIONSHIP_FIELDS
+               if fm.get(field) is not None]
+    if not present:
         return []
     unverifiable = {
-        "field": "supersedes", "code": "unresolved_target_unverifiable",
+        "field": present[0], "code": "unresolved_target_unverifiable",
         "message": ("unresolved_target_unverifiable: the committed tree could not "
-                    "be read, so supersession targets cannot be verified; retry"),
+                    "be read, so relationship targets cannot be verified; retry"),
     }
     try:
         preimage = snapshot.frontmatter(target_path) or {}
@@ -547,7 +560,8 @@ def _supersession_errors(
         if post_malformed:
             if pre is None or not _strict_equal(post, pre):
                 expected = ("a concept id string or a list of concept id strings"
-                            if field == "supersedes" else "a single concept id string")
+                            if field in _LIST_OR_SCALAR_FIELDS
+                            else "a single concept id string")
                 errors.append({
                     "field": field, "code": malformed_code,
                     "message": f"{malformed_code}: '{field}' must be {expected}",
@@ -937,16 +951,86 @@ def _looks_redos_prone(pattern_src: str) -> bool:
     return bool(_REDOS_NESTED_QUANTIFIER_RE.search(pattern_src))
 
 
-def load_extra_secret_patterns(
-    env_value: str | None = None,
+_EXTRA_PATTERNS_ENV = "KB_SECRET_SCAN_EXTRA_PATTERNS"
+
+
+def _split_comma_form(raw: str) -> list[str]:
+    """Split the comma form of ``KB_SECRET_SCAN_EXTRA_PATTERNS``.
+
+    A comma separates patterns only outside ``{...}`` and ``[...]``, so a
+    bounded quantifier (``{20,40}``) or a comma in a character class stays in
+    its pattern. A backslash-escaped character never splits or changes depth.
+    A ``]`` directly after ``[`` or ``[^`` is a literal, as in the regex
+    syntax. Surrounding whitespace is stripped and empty pieces are dropped."""
+    pieces: list[str] = []
+    buf: list[str] = []
+    brace_depth = 0
+    in_class = False
+    class_body_start = 0
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch == "\\" and i + 1 < len(raw):
+            buf.append(raw[i:i + 2])
+            i += 2
+            continue
+        if in_class:
+            if ch == "]" and i > class_body_start:
+                in_class = False
+        elif ch == "[":
+            in_class = True
+            class_body_start = i + 1
+            if raw[i + 1:i + 2] == "^":
+                class_body_start += 1
+        elif ch == "{":
+            brace_depth += 1
+        elif ch == "}" and brace_depth > 0:
+            brace_depth -= 1
+        elif ch == "," and brace_depth == 0:
+            pieces.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    pieces.append("".join(buf))
+    return [p.strip() for p in pieces if p.strip()]
+
+
+def split_extra_secret_patterns(raw: str) -> list[object]:
+    """Return the pattern entries of a ``KB_SECRET_SCAN_EXTRA_PATTERNS`` value.
+
+    Two forms are accepted. A value that parses as a JSON array is read as
+    that array, one pattern per element, so any regex can be written without
+    escaping commas. Any other value is the comma form (see
+    :func:`_split_comma_form`). JSON entries are returned as parsed, so a
+    non-string entry is reported by the caller rather than coerced here."""
+    import json
+
+    stripped = (raw or "").strip()
+    if not stripped:
+        return []
+    if stripped.startswith("["):
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, list):
+            return list(data)
+    return list(_split_comma_form(stripped))
+
+
+def compile_extra_secret_patterns(
+    entries: Sequence[object], *, strict: bool,
 ) -> list[tuple[str, Any]]:
-    """Parse ``KB_SECRET_SCAN_EXTRA_PATTERNS``: a comma-separated list of extra
-    regexes an operator wants scanned in addition to the built-in set. Each
-    entry becomes its own named pattern (``custom_1``, ``custom_2``, ...). An
-    invalid regex is logged and SKIPPED, never raised, so one operator typo in
-    the env var cannot crash the write path. A pattern with the classic
-    nested-quantifier ReDoS shape (see :func:`_looks_redos_prone`) is also
-    logged and skipped at load time.
+    """Compile pattern entries into named ``(custom_N, pattern)`` pairs.
+
+    ``strict`` (startup): an entry that is not a non-empty string, has the
+    nested-quantifier ReDoS shape (see :func:`_looks_redos_prone`), or is not
+    a valid regex raises ``ValueError`` naming the setting and the 1-based
+    entry number, never the pattern text. Not strict (the environment
+    fallback): such an entry is logged by number and skipped, so the write
+    path never crashes on it.
 
     Custom patterns are compiled with the third-party ``regex`` engine, NOT
     stdlib ``re``, because ``regex`` supports a hard per-call match timeout:
@@ -956,33 +1040,64 @@ def load_extra_secret_patterns(
     write path (stdlib ``re`` cannot be interrupted once matching)."""
     import regex as regex_mod
 
-    raw = (
-        env_value if env_value is not None
-        else os.environ.get("KB_SECRET_SCAN_EXTRA_PATTERNS", "")
-    )
     out: list[tuple[str, Any]] = []
-    for piece in raw.split(","):
-        pattern_src = piece.strip()
-        if not pattern_src:
-            continue
-        if _looks_redos_prone(pattern_src):
-            _log.warning(
-                "KB_SECRET_SCAN_EXTRA_PATTERNS entry %r has a nested-quantifier "
-                "shape that risks catastrophic backtracking and will be "
-                "skipped; rewrite it without a quantifier nested inside a "
-                "quantified group", pattern_src,
-            )
-            continue
-        try:
-            compiled = regex_mod.compile(pattern_src)
-        except regex_mod.error as exc:
-            _log.warning(
-                "KB_SECRET_SCAN_EXTRA_PATTERNS entry %r is not a valid regex "
-                "and will be skipped: %s", pattern_src, exc,
-            )
+    for number, entry in enumerate(entries, start=1):
+        problem: str | None = None
+        compiled: Any = None
+        if not isinstance(entry, str) or not entry.strip():
+            problem = "is not a non-empty string"
+        elif _looks_redos_prone(entry):
+            problem = ("has a nested-quantifier shape that risks catastrophic "
+                       "backtracking; rewrite it without a quantifier nested "
+                       "inside a quantified group")
+        else:
+            try:
+                compiled = regex_mod.compile(entry)
+            except regex_mod.error:
+                problem = "is not a valid regular expression"
+        if problem is not None:
+            message = f"{_EXTRA_PATTERNS_ENV} entry {number} {problem}"
+            if strict:
+                raise ValueError(message)
+            _log.warning("%s; it is skipped", message)
             continue
         out.append((f"custom_{len(out) + 1}", compiled))
     return out
+
+
+# The operator's extra patterns as loaded at startup (Config ->
+# ``configure_extra_secret_patterns``). None means "not configured" (library
+# use, tests): the scan then parses the environment on each call instead.
+_configured_extra_patterns: list[tuple[str, Any]] | None = None
+
+
+def configure_extra_secret_patterns(entries: Sequence[str] | None) -> None:
+    """Install the startup-parsed extra patterns for every later scan.
+
+    Called by the server with ``Config.secret_scan_extra_patterns``, which
+    ``load_config`` already validated. ``None`` restores the environment
+    fallback."""
+    global _configured_extra_patterns
+    _configured_extra_patterns = (
+        None if entries is None
+        else compile_extra_secret_patterns(list(entries), strict=True)
+    )
+
+
+def load_extra_secret_patterns(
+    env_value: str | None = None,
+) -> list[tuple[str, Any]]:
+    """Parse ``KB_SECRET_SCAN_EXTRA_PATTERNS`` leniently: the fallback used
+    when no configuration was loaded. Same forms as the startup parser (a
+    JSON array, or comma-separated with commas inside ``{...}``/``[...]``
+    kept), but an unusable entry is logged and SKIPPED, never raised, so one
+    operator typo cannot crash the write path. The server validates the
+    setting strictly at startup instead (``config.load_config``)."""
+    raw = (
+        env_value if env_value is not None
+        else os.environ.get(_EXTRA_PATTERNS_ENV, "")
+    )
+    return compile_extra_secret_patterns(split_extra_secret_patterns(raw), strict=False)
 
 
 def _first_custom_match_start(pattern: Any, postimage: str) -> int | None:
@@ -1012,9 +1127,10 @@ def scan_postimage_for_secrets(
 ) -> SecretScanResult:
     """Scan ``postimage`` for credential-shaped content (issue #71).
 
-    Checks the built-in pattern set plus ``extra_patterns`` (default: parsed
-    fresh from ``KB_SECRET_SCAN_EXTRA_PATTERNS`` on every call, so a changed env
-    var takes effect without threading config through every caller). Returns
+    Checks the built-in pattern set plus ``extra_patterns`` (default: the
+    patterns the server loaded at startup via
+    :func:`configure_extra_secret_patterns`, or, when none were configured,
+    ``KB_SECRET_SCAN_EXTRA_PATTERNS`` parsed fresh on every call). Returns
     the EARLIEST match across all patterns. Only the pattern NAME and an
     approximate 1-indexed line number are returned in the result -- never the
     matched substring -- so a caller can safely put it in a tool response,
@@ -1039,10 +1155,12 @@ def scan_postimage_for_secrets(
         if best is None or match_start < best[0]:
             best = (match_start, name)
 
-    custom = (
-        extra_patterns if extra_patterns is not None
-        else load_extra_secret_patterns()
-    )
+    if extra_patterns is not None:
+        custom: Sequence[tuple[str, Any]] = extra_patterns
+    elif _configured_extra_patterns is not None:
+        custom = _configured_extra_patterns
+    else:
+        custom = load_extra_secret_patterns()
     for name, pattern in custom:
         match_start = _first_custom_match_start(pattern, postimage)
         if match_start is None:

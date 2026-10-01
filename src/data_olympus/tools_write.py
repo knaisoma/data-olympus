@@ -20,6 +20,7 @@ from data_olympus.auth import (
     path_rejection_reason,
     safe_join_under_root,
 )
+from data_olympus.capture import project_capture, reattach_capture, validate_capture
 from data_olympus.format.frontmatter import parse_frontmatter
 from data_olympus.governed_lane import (
     GovernedLaneVerdict,
@@ -27,6 +28,7 @@ from data_olympus.governed_lane import (
     governed_lane_protection_enabled,
 )
 from data_olympus.models import (
+    CaptureEnvelope,
     ContestDetail,
     PendingDetailResponse,
     PendingEntry,
@@ -50,6 +52,7 @@ from data_olympus.write_gate import (
     scan_postimage_for_secrets,
     validate_postimage,
 )
+from data_olympus.writing_rules import WritingRulesPolicy, added_line_findings
 
 if TYPE_CHECKING:
     from data_olympus.audit_log import AuditLog
@@ -244,12 +247,28 @@ def _validate_evidence(evidence: object) -> str | None:
 # up front instead. Absent (None or "") keeps meaning "no marker".
 _BLOB_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _FILE_HASH_RE = re.compile(r"[0-9a-f]{64}")
+# ``base_commit`` names the commit the caller read the target from: a full or
+# abbreviated commit id (SHA-1 or SHA-256 object format), or the advisory
+# ``HEAD``. Refs and revision expressions are not accepted.
+_BASE_COMMIT_RE = re.compile(r"[0-9a-f]{7,64}")
 
 
-def _validate_base_markers(base_blob_sha: object, target_file_hash: object) -> str | None:
+def _validate_base_markers(
+    base_blob_sha: object, target_file_hash: object, *, base_commit: object = None,
+) -> str | None:
     """Return a rejection reason naming the malformed field, else None.
 
-    The reason never includes the submitted value."""
+    The reason never includes the submitted value. A rejected marker is
+    therefore never stored: this runs before the pending enqueue and before
+    the compare-and-swap check, whose reasons quote ``base_commit``."""
+    base_commit_ok = (
+        base_commit is None or base_commit == ""
+        or (isinstance(base_commit, str) and (
+            base_commit in ("HEAD", "head") or _BASE_COMMIT_RE.fullmatch(base_commit)))
+    )
+    if not base_commit_ok:
+        return ("base_commit must be HEAD or a commit id: 7 to 64 lowercase "
+                "hex characters")
     checks = (
         ("base_blob_sha", base_blob_sha, _BLOB_SHA_RE,
          "the file's git blob id: 40 lowercase hex characters"),
@@ -482,9 +501,14 @@ def _emit_audit(
     evidence: list[str] | None = None,
     demotion_reason: str | None = None,
     injection_suspect: bool | None = None,
+    writing_rules: str | None = None,
+    capture: dict[str, str] | None = None,
 ) -> None:
     if audit_log is None:
         return
+    # Capture provenance (issue #141) is added only when present, so an event
+    # without an envelope keeps exactly the shape it had before.
+    extra: dict[str, Any] = {} if capture is None else {"capture": capture}
     # audit emission is best-effort; don't fail the write
     with contextlib.suppress(Exception):
         audit_log.append({
@@ -505,7 +529,22 @@ def _emit_audit(
             "evidence": evidence,
             "demotion_reason": demotion_reason,
             "injection_suspect": injection_suspect,
+            "writing_rules": writing_rules,
+            **extra,
         })
+
+
+def _rule_audit(findings: list[str] | None, outcome: str) -> str | None:
+    """Audit form of writing-rule findings: rule names and line numbers only.
+    Excerpts stay out of the audit log, so it never accumulates rejected prose
+    (issue #283)."""
+    if not findings:
+        return None
+    marks = []
+    for f in findings:
+        m = re.match(r"(?:[^:]+: )?line (\d+): ([^:\s]+):", f)
+        marks.append(f"{m.group(2)}@{m.group(1)}" if m else "check-failed")
+    return f"{outcome}:" + ",".join(marks)
 
 
 def _governed_lane_check(
@@ -593,6 +632,64 @@ class _WriteRejected(Exception):
         super().__init__(response.status)
 
 
+def _read_preimage(full_path: str) -> str:
+    """The target's current text, or "" for a new file. An existing target that
+    is not valid UTF-8 raises, so it can never pass as an empty preimage that
+    would treat the whole postimage as added (issue #283)."""
+    if not os.path.isfile(full_path):
+        return ""
+    with open(full_path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _writing_rule_gate(
+    *,
+    policy: WritingRulesPolicy | None,
+    target_path: str,
+    full_path: str,
+    postimage: str,
+) -> list[str]:
+    """Apply the writing rules to the lines ``postimage`` adds (issue #283).
+
+    Returns the rendered findings to report alongside a ``warn``-mode commit
+    (empty when clean, off, unconfigured or excluded). In ``enforce`` mode a
+    finding raises :class:`_WriteRejected` with ``rejected_writing_rule``.
+
+    The gate itself failing is never suppressed: an exception (an undecodable
+    target, a regex pathology, anything else) rejects in ``enforce`` and is
+    reported as a warning in ``warn``, so a broken gate cannot become a silently
+    absent one.
+    """
+    if policy is None or policy.mode == "off" or policy.excludes(target_path):
+        return []
+    try:
+        findings = [f.render() for f in added_line_findings(
+            preimage=_read_preimage(full_path), postimage=postimage)]
+    except Exception as exc:  # noqa: BLE001 - classified by mode below, never dropped
+        reason = f"writing-rule check failed: {type(exc).__name__}: {exc}"
+        if policy.mode == "enforce":
+            raise _WriteRejected(ProposeResponse(
+                status="rejected_writing_rule", target_path=target_path,
+                reason=reason)) from exc
+        # The log names neither the path nor the exception text: both can carry
+        # caller content (a decode error quotes bytes). The audit event records
+        # the path and the response carries the reason.
+        _log.warning("writing-rule check failed (%s); committing in warn mode",
+                     type(exc).__name__)
+        return [reason]
+    if not findings:
+        return []
+    if policy.mode == "enforce":
+        raise _WriteRejected(ProposeResponse(
+            status="rejected_writing_rule", target_path=target_path,
+            reason=(f"{len(findings)} writing-rule finding(s) on added lines; "
+                    "rewrite them, or end a genuine quotation with "
+                    "<!-- prose-lint: allow -->"),
+            writing_rule_findings=findings))
+    _log.warning("writing-rule findings committed in warn mode: %d", len(findings))
+    return findings
+
+
 class _WriteDemoted(Exception):
     """Internal control-flow signal (issue #112, codex round-2 blocker): the
     in-worktree governed-target backstop found the edit's target IN FORCE on
@@ -634,6 +731,8 @@ def _commit_in_worktree(
     secret_scan_override: bool = False,
     governed_target_check: bool = False,
     claim_recorder: _ClaimRecorder | None = None,
+    writing_rules: WritingRulesPolicy | None = None,
+    writing_rule_sink: list[str] | None = None,
 ) -> tuple[str, str, SecretMatch | None]:
     """Serialized write -> git add -> commit -> enqueue critical section.
 
@@ -815,6 +914,21 @@ def _commit_in_worktree(
                         ),
                         matching_pattern=secret_result.match.pattern_name,
                     ))
+
+            # 5-post. Writing rules on the lines this write ADDS (issue #283).
+            # After the secret scan, because a writing-rule rejection echoes the
+            # offending lines and a postimage that also carries a credential
+            # must still be rejected as the redacted rejected_secret_detected;
+            # before content validation, so the rejection names the rule rather
+            # than a schema complaint. The preimage is the target on the
+            # refreshed base, read here rather than borrowed from the governed
+            # backstop below, which not every caller runs. Warn-mode findings
+            # go to the caller through ``writing_rule_sink``.
+            rule_warnings = _writing_rule_gate(
+                policy=writing_rules, target_path=target_path,
+                full_path=full_path, postimage=postimage)
+            if writing_rule_sink is not None:
+                writing_rule_sink.extend(rule_warnings)
 
             # 5a. Content-validation gate (item 4). Pass the worktree so the
             # duplicate-id check also scans the committed tree (catches a
@@ -1140,6 +1254,10 @@ def commit_multifile_in_worktree(
     target_path_for_msg: str,
     confidence: float,
     push_meta: dict[str, Any] | None = None,
+    writing_rules: WritingRulesPolicy | None = None,
+    writing_rule_sink: list[str] | None = None,
+    writing_rule_exempt: bool = False,
+    new_files_only: bool = False,
 ) -> tuple[str, str]:
     """Serialized multi-file write -> add -> ONE commit -> enqueue (Codex Blocker 2).
 
@@ -1151,7 +1269,24 @@ def commit_multifile_in_worktree(
     commit. Rejection order: secret scan of the whole bundle, then intra-bundle
     duplicate ids, then per-file containment and content validation (issue
     #259). CAS is not applied here (bootstrap creates NEW files under a
-    not-yet-onboarded workspace; there is no base to compare). Returns
+    not-yet-onboarded workspace; there is no base to compare).
+
+    ``new_files_only`` makes that assumption a check: a target that already
+    exists in the refreshed worktree refuses the whole bundle as
+    ``rejected_already_onboarded`` during per-file containment, before
+    anything is written. It is passed True ONLY by onboarding bootstrap and is
+    on no MCP or REST surface. The maintenance ledger, which rewrites its own
+    existing file, leaves it False.
+
+    Writing rules (issue #283) apply after the secret scan, per file, against
+    what the worktree holds now (an absent file is an empty preimage). That is
+    only safe for today's callers, whose files are new or machine-rendered: a
+    future caller that edits an EXISTING file must move to the CAS-validated
+    single-file basis first. ``writing_rule_exempt`` skips them for a
+    machine-rendered bundle; it is passed True ONLY by
+    ``maintenance.maybe_update_ledger`` and is on no MCP or REST surface, so no
+    client can reach it. The identity assertion beside it is a tripwire for a
+    future in-tree misuse, not a control. Returns
     ``(commit_sha, push_state)``. Raises :class:`_WriteRejected` on a gate failure
     or :class:`PathLockBusyError` when any target path is already locked.
     """
@@ -1215,6 +1350,21 @@ def commit_multifile_in_worktree(
                     matching_pattern=secret_result.match.pattern_name,
                 ))
 
+        if writing_rule_exempt:
+            assert agent_identity == "data-olympus-system", (
+                "writing_rule_exempt is for the machine-rendered ledger only")
+        else:
+            for f in files:
+                tp, pi = f["target_path"], f["postimage"]
+                full = safe_join_under_root(wt.path, tp)
+                if full is None:
+                    continue  # containment rejects it below, without echoing text
+                rule_warnings = _writing_rule_gate(
+                    policy=writing_rules, target_path=tp, full_path=full,
+                    postimage=pi)
+                if writing_rule_sink is not None:
+                    writing_rule_sink.extend(f"{tp}: {w}" for w in rule_warnings)
+
         from data_olympus.write_gate import CommitSnapshot, _effective_doc_id
         seen_ids: dict[str, str] = {}
         for f in files:
@@ -1240,6 +1390,10 @@ def commit_multifile_in_worktree(
             if full is None:
                 raise _WriteRejected(ProposeResponse(
                     status="rejected_symlink_escape", target_path=tp))
+            if new_files_only and os.path.lexists(full):
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_already_onboarded", target_path=tp,
+                    reason="bootstrap creates new files only; the target exists"))
             vr = validate_postimage(
                 target_path=tp, postimage=pi, idx=idx, worktree_path=wt.path,
                 snapshot=snapshot, transaction=transaction)
@@ -1291,6 +1445,8 @@ def kb_propose_memory_fn(
     serializer: WriteSerializer | None = None,
     idx: Index | None = None,
     evidence: list[str] | None = None,
+    writing_rules: WritingRulesPolicy | None = None,
+    capture: object = None,
 ) -> ProposeResponse:
     """Propose a new memory file under the memory inbox prefix as
     <date>-<slug>-<uniq>.md.
@@ -1308,6 +1464,14 @@ def kb_propose_memory_fn(
     memory's frontmatter (so a credential-shaped item is caught by the SAME
     full-postimage secret scan below -- see ``_render_memory``), and persisted
     (redacted copy) in pending meta / audit events / ``kb_pending``.
+
+    ``capture`` (issue #141, optional): a capture provenance envelope, validated
+    by ``capture.validate_capture`` (secret scan first, then shape, then the
+    derived hash over ``text``). A rejection costs no rate-limit token. The
+    accepted envelope, with the server-computed ``derived_memory_hash``, is
+    rendered into the memory's frontmatter, stored in pending meta and carried
+    on the committed and pending audit events. It labels the proposal only: it
+    never forces pending and never changes ``status: proposed``.
     """
     # Normalize ONLY the None "not supplied" sentinel (codex re-review
     # blocker): `evidence or []` also coerced falsy non-lists ('' / {} /
@@ -1324,6 +1488,8 @@ def kb_propose_memory_fn(
     if evidence is None:
         evidence = []
     evidence_error = _validate_evidence(evidence)
+    capture_check = validate_capture(capture, text=text)
+    clean_capture = capture_check.envelope
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     # issue #71: the slug is derived VERBATIM from the caller's free text (no
     # redaction -- `_slugify` only lowercases and normalizes separators), so a
@@ -1355,6 +1521,25 @@ def kb_propose_memory_fn(
                                    "reason": evidence_error})
         return ProposeResponse(status="rejected_invalid_evidence",
                                reason=evidence_error, target_path=target_path)
+
+    # 0b. Capture envelope (issue #141), also before path, blocklist and rate
+    # limit. A credential-shaped value is rejected outright rather than
+    # redacted: identifiers and hashes have no review value worth parking.
+    # Neither rejection carries a submitted value, and neither audit event
+    # carries the envelope.
+    if capture_check.secret_pattern is not None:
+        reason = f"secret pattern '{capture_check.secret_pattern}' detected in capture"
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_secret_detected",
+                                   "reason": reason,
+                                   "matching_pattern": capture_check.secret_pattern})
+        return ProposeResponse(status="rejected_secret_detected", reason=reason,
+                               matching_pattern=capture_check.secret_pattern,
+                               target_path=target_path)
+    if capture_check.reason is not None:
+        _emit_audit(audit_log, **{**audit_base, "status": "rejected_invalid_capture",
+                                   "reason": capture_check.reason})
+        return ProposeResponse(status="rejected_invalid_capture",
+                               reason=capture_check.reason, target_path=target_path)
 
     # 1. Structural rule (cheap).
     if not is_writable_path(target_path):
@@ -1392,6 +1577,7 @@ def kb_propose_memory_fn(
     # body-only check (item 3).
     postimage = _render_memory(
         text=text, tags=tags, agent_identity=agent_identity, evidence=evidence,
+        capture=clean_capture,
     )
 
     # 4b. Payload size cap (reject before any disk side effect).
@@ -1449,6 +1635,11 @@ def kb_propose_memory_fn(
         # secret-shaped evidence item never reaches pending meta / audit / the
         # kb_pending response in the clear.
         safe_evidence = _redact_evidence(evidence)
+        # Capture (issue #141): stored only when supplied, so a proposal
+        # without one keeps exactly the meta it had before.
+        capture_meta: dict[str, Any] = (
+            {} if clean_capture is None else {"capture": clean_capture}
+        )
         try:
             pid = pending.enqueue(
                 proposal_type="memory",
@@ -1458,6 +1649,7 @@ def kb_propose_memory_fn(
                 base_blob_sha=None,
                 target_file_hash=None,
                 meta={
+                    **capture_meta,
                     "agent_identity": agent_identity,
                     "source_session": source_session,
                     # The AUTHENTICATED principal that made this proposal
@@ -1494,7 +1686,8 @@ def kb_propose_memory_fn(
                                    "pending_id": pid, "matching_pattern": flagged_pattern,
                                    "evidence": safe_evidence or None,
                                    "demotion_reason": demotion_reason,
-                                   "injection_suspect": bool(injection_matches) or None})
+                                   "injection_suspect": bool(injection_matches) or None,
+                                   "capture": clean_capture})
         if flagged_pattern is not None:
             return ProposeResponse(
                 status="pending_confirmation",
@@ -1539,6 +1732,7 @@ def kb_propose_memory_fn(
         )
 
     # High confidence: serialized commit + enqueue push (items 1, 4, 8).
+    rule_warnings: list[str] = []
     try:
         sha, push_state, _secret_override = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
@@ -1550,12 +1744,15 @@ def kb_propose_memory_fn(
             operator_confirmed=False,
             push_meta={"source_session": source_session,
                        "agent_identity": agent_identity},
+            writing_rules=writing_rules, writing_rule_sink=rule_warnings,
         )
     except _WriteRejected as rej:
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
                                    "reason": resp.reason,
-                                   "matching_pattern": resp.matching_pattern})
+                                   "matching_pattern": resp.matching_pattern,
+                                   "writing_rules": _rule_audit(
+                                       resp.writing_rule_findings, "rejected")})
         return resp
     except PathLockBusyError:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
@@ -1563,8 +1760,11 @@ def kb_propose_memory_fn(
                                target_path=target_path)
     _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha,
                                "evidence": _redact_evidence(evidence) or None,
-                               "injection_suspect": bool(injection_matches) or None})
-    return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state)
+                               "injection_suspect": bool(injection_matches) or None,
+                               "writing_rules": _rule_audit(rule_warnings, "warned"),
+                               "capture": clean_capture})
+    return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state,
+                           writing_rule_findings=rule_warnings or None)
 
 
 def _render_memory(
@@ -1573,6 +1773,7 @@ def _render_memory(
     tags: list[str],
     agent_identity: str,
     evidence: list[str] | None = None,
+    capture: Mapping[str, str] | None = None,
 ) -> str:
     """Render a memory file: YAML frontmatter block + body.
 
@@ -1608,6 +1809,11 @@ def _render_memory(
     input, and a principal named ``human:alice`` must not be recorded as the
     human author of agent-written content. The proposer stays in
     ``created_by``.
+
+    ``capture`` (optional, issue #141) is the validated provenance envelope,
+    rendered after ``evidence`` as a nested mapping through the same
+    ``safe_dump``, so no value can forge a top-level key such as ``status``.
+    Absent, the output is byte-identical to a memory without one.
     """
     import yaml
 
@@ -1626,6 +1832,8 @@ def _render_memory(
         fm["tags"] = [str(t) for t in tags]
     if evidence:
         fm["evidence"] = [str(e) for e in evidence]
+    if capture is not None:
+        fm["capture"] = {str(k): str(v) for k, v in capture.items()}
     dumped = yaml.safe_dump(
         fm, sort_keys=False, default_flow_style=False, allow_unicode=True
     )
@@ -1658,6 +1866,7 @@ def kb_propose_edit_fn(
     idx: Index | None = None,
     evidence: list[str] | None = None,
     contest: Mapping[str, Any] | None = None,
+    writing_rules: WritingRulesPolicy | None = None,
 ) -> ProposeResponse:
     """Propose an edit to an existing (or new) file under target_path.
 
@@ -1778,7 +1987,8 @@ def kb_propose_edit_fn(
         )
         return contest_error
 
-    base_marker_error = _validate_base_markers(base_blob_sha, target_file_hash)
+    base_marker_error = _validate_base_markers(
+        base_blob_sha, target_file_hash, base_commit=base_commit)
     if base_marker_error is not None:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_invalid_base",
                                    "reason": base_marker_error})
@@ -1967,6 +2177,7 @@ def kb_propose_edit_fn(
     # CURRENT bytes on the refreshed base, closing the index-lag window the
     # tool-layer check above cannot see. Enabled exactly when protection is
     # on; a _WriteDemoted raised there parks the proposal below.
+    rule_warnings: list[str] = []
     try:
         sha, push_state, _secret_override = _commit_in_worktree(
             worktrees=worktrees, push_queue=push_queue, pending=pending,
@@ -1981,6 +2192,7 @@ def kb_propose_edit_fn(
             push_meta={"source_session": source_session,
                        "agent_identity": agent_identity, "reason": reason},
             governed_target_check=governed_lane_protection_enabled(),
+            writing_rules=writing_rules, writing_rule_sink=rule_warnings,
         )
     except _WriteDemoted as dem:
         return _park(dem.demotion_reason)
@@ -1988,7 +2200,9 @@ def kb_propose_edit_fn(
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
                                    "reason": resp.reason or reason,
-                                   "matching_pattern": resp.matching_pattern})
+                                   "matching_pattern": resp.matching_pattern,
+                                   "writing_rules": _rule_audit(
+                                       resp.writing_rule_findings, "rejected")})
         return resp
     except PathLockBusyError:
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_path_lock_busy"})
@@ -1996,8 +2210,10 @@ def kb_propose_edit_fn(
                                target_path=target_path)
     _emit_audit(audit_log, **{**audit_base, "status": "committed", "commit_sha": sha,
                                "evidence": safe_evidence or None,
-                               "injection_suspect": bool(injection_matches) or None})
-    return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state)
+                               "injection_suspect": bool(injection_matches) or None,
+                               "writing_rules": _rule_audit(rule_warnings, "warned")})
+    return ProposeResponse(status="committed", commit_sha=sha, push_state=push_state,
+                           writing_rule_findings=rule_warnings or None)
 
 
 def kb_resolve_pending_fn(
@@ -2015,6 +2231,7 @@ def kb_resolve_pending_fn(
     serializer: WriteSerializer | None = None,
     idx: Index | None = None,
     override_secret_scan: bool = False,
+    writing_rules: WritingRulesPolicy | None = None,
 ) -> ResolvePendingResponse:
     """Resolve a pending proposal. ``override_secret_scan`` (default False) is
     the operator's explicit, conscious override of the issue #71 secret-
@@ -2062,6 +2279,14 @@ def kb_resolve_pending_fn(
     if decision not in ("approve", "edit"):
         _emit_audit(audit_log, **{**audit_base, "status": "rejected_bad_decision"})
         return ResolvePendingResponse(status="rejected_bad_decision")
+
+    # Capture provenance (issue #141): ``edited_text`` replaces the whole
+    # proposed document, so an operator edit would drop the ``capture:`` label.
+    # Re-attach the envelope stored in pending meta, on approve and on edit,
+    # BEFORE the size cap and the secret scan below so both judge the bytes
+    # that will actually be committed, and before the claim so the claim
+    # records the digest of those bytes.
+    edited_text = _with_capture_reattached(pending, pending_id, edited_text)
 
     # ``edited_text`` becomes the committed postimage, bypassing the cap the
     # propose path enforced on the original postimage (item 2). Enforce it here
@@ -2132,6 +2357,7 @@ def kb_resolve_pending_fn(
     recorder = _ClaimRecorder(
         pending=pending, pending_id=pending_id, claim_token=resolved.claim_token,
     )
+    rule_warnings: list[str] = []
     try:
         sha, push_state, secret_override = _commit_in_worktree(
             claim_recorder=recorder,
@@ -2152,6 +2378,7 @@ def kb_resolve_pending_fn(
             lock_owner=f"resolve:{pending_id}",
             hold_path_lock=True,
             secret_scan_override=override_secret_scan,
+            writing_rules=writing_rules, writing_rule_sink=rule_warnings,
         )
     except _WriteRejected as rej:
         # Gate rejected BEFORE anything was written, so nothing committed. Put
@@ -2162,8 +2389,12 @@ def kb_resolve_pending_fn(
         resp = rej.response
         _emit_audit(audit_log, **{**audit_base, "status": resp.status,
                                    "reason": resp.reason,
-                                   "matching_pattern": resp.matching_pattern})
-        return ResolvePendingResponse(status=resp.status, reason=resp.reason)
+                                   "matching_pattern": resp.matching_pattern,
+                                   "writing_rules": _rule_audit(
+                                       resp.writing_rule_findings, "rejected")})
+        return ResolvePendingResponse(
+            status=resp.status, reason=resp.reason,
+            writing_rule_findings=resp.writing_rule_findings)
     except _WriteOutcomeUnknown:
         # A commit MAY exist. Do not restore: that would offer an
         # already-applied decision for approval a second time. The claim record
@@ -2208,10 +2439,58 @@ def kb_resolve_pending_fn(
     if secret_override is not None:
         audit_extra["secret_scan_override"] = True
         audit_extra["matching_pattern"] = secret_override.pattern_name
+    if rule_warnings:
+        audit_extra["writing_rules"] = _rule_audit(rule_warnings, "warned")
     _emit_audit(audit_log, **{**audit_base, "status": "committed",
                                "commit_sha": sha, **audit_extra})
     return ResolvePendingResponse(status="committed", commit_sha=sha,
-                                  push_state=push_state)
+                                  push_state=push_state,
+                                  writing_rule_findings=rule_warnings or None)
+
+
+def _with_capture_reattached(
+    pending: PendingQueue, pending_id: str, edited_text: str | None,
+) -> str | None:
+    """The text to commit on resolve, with the stored capture envelope kept.
+
+    Returns ``edited_text`` unchanged when the entry is not a memory proposal
+    carrying a well-formed envelope, or cannot be read here (the claim below
+    then reports the entry's real state). On a plain approve, ``None`` is kept
+    whenever the stored postimage already carries the envelope, which is the
+    normal case, so the reviewed bytes are committed exactly.
+
+    The envelope's ``derived_memory_hash`` is the one computed at propose time
+    over the submitted text. It is deliberately not recomputed: when the
+    operator edited the body, the mismatch is the record of that edit.
+    """
+    try:
+        entry = pending.get(pending_id)
+    except Exception:  # noqa: BLE001 - the claim decides not-found / resolved
+        return edited_text
+    if not isinstance(entry, Mapping) or entry.get("proposal_type") != "memory":
+        return edited_text
+    meta = entry.get("meta")
+    envelope = project_capture(meta.get("capture")) if isinstance(meta, Mapping) else None
+    original = entry.get("postimage")
+    if envelope is None or not isinstance(original, str):
+        return edited_text
+    base = original if edited_text is None else edited_text
+    attached = reattach_capture(base, envelope, original=original)
+    if edited_text is None and attached == original:
+        return None
+    return attached
+
+
+def _capture_or_none(value: object) -> CaptureEnvelope | None:
+    """Tolerant model construction for a stored envelope: anything malformed
+    reads as absent rather than failing the response it sits in."""
+    envelope = project_capture(value)
+    if envelope is None:
+        return None
+    try:
+        return CaptureEnvelope(**envelope)
+    except Exception:  # noqa: BLE001 - a read projection never raises
+        return None
 
 
 _PENDING_NOTE = (
@@ -2258,7 +2537,12 @@ def kb_get_pending_fn(
         return PendingDetailResponse(
             status="not_found", pending_id=pending_id, note=_PENDING_NOTE,
         )
-    meta = entry.get("meta") or {}
+    # A record whose meta is not a mapping (damaged, or written by something
+    # else) reads as carrying no metadata: no recorded proposer, so it is
+    # resolver-only, and no capture.
+    meta = entry.get("meta")
+    if not isinstance(meta, Mapping):
+        meta = {}
     owner = meta.get("proposer_principal") or ""
     if not can_resolve and (not owner or owner != principal_name):
         return PendingDetailResponse(
@@ -2287,6 +2571,10 @@ def kb_get_pending_fn(
         created_at=entry.get("enqueued_at"),
         reason=_render_safe(meta.get("reason")),
         matching_pattern=_render_safe(meta.get("matching_pattern")),
+        # issue #141: the capture envelope, already shown by the listing to
+        # every authenticated principal, so this adds no exposure. Malformed
+        # stored meta reads as None.
+        capture=_capture_or_none(meta.get("capture")),
     )
 
 
@@ -2317,6 +2605,9 @@ def kb_list_pending_fn(*, pending: PendingQueue) -> PendingListResponse:
                     if e.get("contest") is not None
                     else None
                 ),
+                # issue #141: tolerant, so one malformed record never takes
+                # the listing down.
+                capture=_capture_or_none(e.get("capture")),
             )
             for e in pending.list()
         ]

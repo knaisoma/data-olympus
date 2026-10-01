@@ -42,3 +42,10 @@ def test_resolve_refusals_are_client_errors_not_200() -> None:
 
 def test_propose_encoding_refusal_is_a_client_error() -> None:
     assert _propose_status("rejected_invalid_encoding") == 400
+
+
+def test_invalid_capture_is_a_client_error_on_both_maps() -> None:
+    """Issue #141: an invalid capture envelope is a client input error on the
+    propose route, and must not fall through to 200 on the resolve map."""
+    assert _propose_status("rejected_invalid_capture") == 400
+    assert _resolve_status("rejected_invalid_capture") == 400

@@ -1,6 +1,6 @@
 [project]
 name = "data-olympus"
-version = "0.10.0"
+version = "0.11.0"
 description = "Governance-grade knowledge-base format (OKF-compatible) plus CLI and single-writer MCP server"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -22,6 +22,9 @@ classifiers = [
 dependencies = [
     "pyyaml>=6.0",
     "fastmcp>=3.4.4,<4",
+    # Direct floor: 1.30 removes sessions the idle reaper terminates from the
+    # SDK session table (0.11.0 relies on it; fastmcp alone allows >=1.24).
+    "mcp>=1.30.0,<2",
     "pydantic>=2.9",
     # The secret-scanning gate (issue #71) runs operator-supplied
     # KB_SECRET_SCAN_EXTRA_PATTERNS through the `regex` engine because it
@@ -125,6 +128,15 @@ select = ["E", "F", "I", "B", "UP", "ARG", "SIM", "TCH", "RET"]
 [tool.mypy]
 strict = true
 python_version = "3.13"
+
+# Vendored code whose bytes an upstream source owns (see the sync contract in
+# src/data_olympus/_vendor/prose_lint.py). It cannot be retyped here, so strict
+# mode's untyped-definition check is relaxed for it alone; every other strict
+# check still applies, so a real type error in a sync still fails CI.
+[[tool.mypy.overrides]]
+module = "data_olympus._vendor.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

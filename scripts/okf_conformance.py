@@ -176,9 +176,17 @@ def _scratch_parent(project_root: Path) -> Path:
 
 
 def consume_data_olympus(
-    pin: ReferencePin, project_root: Path, upstream_root: Path
+    pin: ReferencePin,
+    project_root: Path,
+    upstream_root: Path,
+    *,
+    bundle_root: Path | None = None,
 ) -> dict[str, object]:
-    """Run the pinned upstream reference consumer over the Data Olympus bundle."""
+    """Run the pinned upstream reference consumer over a Data Olympus bundle.
+
+    ``bundle_root`` defaults to ``example-bundle``; tests pass a fixture bundle
+    to prove tolerance of a governance extension the example bundle does not
+    carry."""
     upstream_root = upstream_root.resolve()
     actual_commit = subprocess.run(
         ["git", "-C", str(upstream_root), "rev-parse", "HEAD"],
@@ -192,7 +200,7 @@ def consume_data_olympus(
     _verify_file(upstream_root / pin.license.path, pin.license.sha256, label="upstream license")
 
     source_root = upstream_root / pin.consumer_path
-    bundle_root = project_root / "example-bundle"
+    bundle_root = (bundle_root or project_root / "example-bundle").resolve()
     expected = sum(
         1 for path in bundle_root.rglob("*.md") if path.name != "index.md"
     )

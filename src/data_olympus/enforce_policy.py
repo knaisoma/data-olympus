@@ -45,6 +45,67 @@ GOVERNED_COMMAND_PATTERNS: tuple[str, ...] = (
     "go get", "cargo add", "gem install", "bundle add",
 )
 
+# Gate clearance modes (KB_GATE_CLEARANCE, issue #296). "intent": a governed
+# action is allowed only when every one of its signals is covered by a fresh
+# explicit consult's coverage set. "pair": the pre-#296 rule, any fresh explicit
+# consult for the (session, workspace) pair clears every governed action.
+GATE_CLEARANCE_INTENT = "intent"
+GATE_CLEARANCE_PAIR = "pair"
+GATE_CLEARANCE_MODES: tuple[str, ...] = (GATE_CLEARANCE_INTENT, GATE_CLEARANCE_PAIR)
+
+_DEPENDENCY_KEYWORDS = ("dependency", "dependencies", "package", "library")
+_MIGRATION_KEYWORDS = ("migration", "migrate", "schema")
+_SCHEMA_KEYWORDS = ("schema", "migration", "migrate")
+
+# Which consult keywords cover an action signal's family (see signal_family),
+# so a topical consult ("add a dependency") clears the actions it plainly
+# governs without the agent reciting file paths. Families absent here (the
+# Dockerfile and docker-compose families, a Bash action's own keywords, and
+# every operator extra) are covered only by the same family, which a consult
+# reaches by naming the path, command fragment or keyword in its intent.
+SIGNAL_FAMILY_COVERAGE: dict[str, tuple[str, ...]] = {
+    **{f"path:{fam}": _DEPENDENCY_KEYWORDS for fam in (
+        "pyproject.toml", "package.json", "requirements*.txt", "go.mod",
+        "Cargo.toml", "pom.xml",
+    )},
+    **{f"command:{pat.strip()}": _DEPENDENCY_KEYWORDS
+       for pat in GOVERNED_COMMAND_PATTERNS},
+    "path:migrations/*": _MIGRATION_KEYWORDS,
+    "path:migration/*": _MIGRATION_KEYWORDS,
+    "path:schema/*": _SCHEMA_KEYWORDS,
+    "path:schema.sql": _SCHEMA_KEYWORDS,
+    "path:*.sql": _SCHEMA_KEYWORDS,
+}
+
+# Delimiters of a path token inside a consult intent: whitespace and quotes. A
+# quoted span is also taken whole, so a path containing spaces can be named.
+_TOKEN_SPLIT = re.compile(r"[\s'\"`]+")
+_QUOTED_SPAN = re.compile(r"'([^']+)'|\"([^\"]+)\"|`([^`]+)`")
+
+
+def signal_family(signal: str) -> str:
+    """The comparison key of a signal: a path glob with one leading ``*/``
+    removed, so ``path:*/go.mod`` and ``path:go.mod`` are one family. Any other
+    signal is its own family."""
+    if signal.startswith("path:*/"):
+        return "path:" + signal[len("path:*/"):]
+    return signal
+
+
+def uncovered_signals(signals: list[str], coverage: set[str]) -> list[str]:
+    """The action signals that no coverage signal clears, directly or through
+    SIGNAL_FAMILY_COVERAGE. Order follows ``signals``."""
+    families = {signal_family(c) for c in coverage}
+    out = []
+    for sig in signals:
+        fam = signal_family(sig)
+        if fam in families:
+            continue
+        if any(f"keyword:{kw}" in families for kw in SIGNAL_FAMILY_COVERAGE.get(fam, ())):
+            continue
+        out.append(sig)
+    return out
+
 
 @dataclass(frozen=True)
 class ClassifyResult:
@@ -81,7 +142,6 @@ class IntentClassifier:
         action_path: str | None = None,
         action_diff: str = "",
     ) -> ClassifyResult:
-        signals: list[str] = []
         # Free-text keyword signals always scan `intent` (a short, deliberate
         # statement of what the agent is about to do - kb_consult's argument -
         # so a keyword there is a real signal). They scan `action_diff` too,
@@ -97,21 +157,56 @@ class IntentClassifier:
         # net still applies there - dropping it entirely would silently lose
         # the only governed-decision signal for those two tool shapes.
         text = intent.lower() if action_path else f"{intent} {action_diff}".lower()
-        for kw, rx in self._keyword_res:
-            if rx.search(text):
-                signals.append(f"keyword:{kw}")
-        diff_lower = action_diff.lower()
-        for pat in self._command_patterns:
-            if pat in diff_lower:
-                signals.append(f"command:{pat.strip()}")
+        signals = self._keyword_signals(text) + self._command_signals(action_diff)
         if action_path:
-            p = action_path.replace("\\", "/")
-            base = p.rsplit("/", 1)[-1]
-            for glob in self._path_globs:
-                if fnmatch.fnmatch(p, glob) or fnmatch.fnmatch(base, glob):
-                    signals.append(f"path:{glob}")
-                    break
+            path_signal = self._path_signal(action_path)
+            if path_signal is not None:
+                signals.append(path_signal)
         return ClassifyResult(is_governed_decision=bool(signals), signals=signals)
+
+    def coverage(self, intent: str) -> list[str]:
+        """The signals a consult with this ``intent`` covers (issue #296).
+
+        Keyword signals as ``classify`` reports them, command signals by the
+        same substring rule the gate applies to ``action_diff``, and a path
+        signal for each whitespace or quote delimited token, computed by the
+        same matcher the gate applies to ``action_path``. Naming an action's
+        path or command fragment therefore always reproduces its signal, which
+        is what keeps every governed action clearable."""
+        signals = self._keyword_signals(intent.lower()) + self._command_signals(intent)
+        tokens = [t for t in _TOKEN_SPLIT.split(intent) if t]
+        # A path ending a sentence ("edit go.mod.") is tried without the
+        # trailing punctuation as well; the raw token is still tried first.
+        tokens += [t.rstrip(".,;:!?)") for t in tokens]
+        tokens += [next(g for g in m.groups() if g) for m in _QUOTED_SPAN.finditer(intent)]
+        for token in tokens:
+            path_signal = self._path_signal(token)
+            if path_signal is not None and path_signal not in signals:
+                signals.append(path_signal)
+        return signals
+
+    def command_pattern(self, signal: str) -> str | None:
+        """The configured fragment behind a ``command:`` signal, untrimmed, so a
+        suggested intent quoting it matches by the same substring rule."""
+        for pat in self._command_patterns:
+            if signal == f"command:{pat.strip()}":
+                return pat
+        return None
+
+    def _keyword_signals(self, text: str) -> list[str]:
+        return [f"keyword:{kw}" for kw, rx in self._keyword_res if rx.search(text)]
+
+    def _command_signals(self, text: str) -> list[str]:
+        lower = text.lower()
+        return [f"command:{pat.strip()}" for pat in self._command_patterns if pat in lower]
+
+    def _path_signal(self, path: str) -> str | None:
+        p = path.replace("\\", "/")
+        base = p.rsplit("/", 1)[-1]
+        for glob in self._path_globs:
+            if fnmatch.fnmatch(p, glob) or fnmatch.fnmatch(base, glob):
+                return f"path:{glob}"
+        return None
 
 
 # Consultation trigger provenance. "explicit" is a deliberate agent call to
@@ -137,6 +232,10 @@ class LedgerEntry:
     consulted_at: float
     rule_ids: list[str]
     explicit_at: float | None = None
+    # Issue #296: each coverage signal of an explicit consult, mapped to the
+    # time of the last explicit consult that produced it. Merged across
+    # consults and expired per signal, so several fresh topics all count.
+    explicit_signals: dict[str, float] = field(default_factory=dict)
 
 
 log = logging.getLogger("data_olympus")
@@ -198,10 +297,18 @@ class ConsultationLedger:
                 # spuriously re-block a session that already consulted.
                 consulted_at = float(row["consulted_at"])
                 explicit_at = row.get("explicit_at", consulted_at)
+                # A ledger persisted before issue #296 has no explicit_signals:
+                # its rows cover nothing under intent clearance until the next
+                # consult, and still clear under pair clearance.
+                explicit_signals = {
+                    str(sig): float(ts)
+                    for sig, ts in (row.get("explicit_signals") or {}).items()
+                }
                 self._entries[key] = LedgerEntry(
                     consulted_at=consulted_at,
                     rule_ids=list(row.get("rule_ids", [])),
                     explicit_at=None if explicit_at is None else float(explicit_at),
+                    explicit_signals=explicit_signals,
                 )
         except Exception as exc:  # noqa: BLE001 - corrupt file -> empty, never crash
             log.warning("consultation ledger at %s unreadable, starting empty: %s",
@@ -214,7 +321,7 @@ class ConsultationLedger:
         rows = [
             {"session_id": s, "workspace": w,
              "consulted_at": e.consulted_at, "rule_ids": e.rule_ids,
-             "explicit_at": e.explicit_at}
+             "explicit_at": e.explicit_at, "explicit_signals": e.explicit_signals}
             for (s, w), e in self._entries.items()
         ]
         d = os.path.dirname(self._path) or "."
@@ -242,6 +349,10 @@ class ConsultationLedger:
         self._entries = {
             key: e for key, e in self._entries.items() if e.consulted_at >= cutoff
         }
+        for e in self._entries.values():
+            e.explicit_signals = {
+                sig: ts for sig, ts in e.explicit_signals.items() if ts >= cutoff
+            }
         self._enforce_cap()
 
     def _enforce_cap(self) -> None:
@@ -262,6 +373,7 @@ class ConsultationLedger:
         rule_ids: list[str],
         now: float,
         trigger: str = EXPLICIT_TRIGGER,
+        signals: list[str] | None = None,
     ) -> None:
         """Record a consultation. ``trigger`` is EXPLICIT_TRIGGER (a deliberate
         agent consult that clears the gate) or PROMPT_HOOK_TRIGGER (an installer
@@ -269,15 +381,20 @@ class ConsultationLedger:
 
         A prompt-hook record refreshes ``consulted_at`` (row liveness/audit) but
         carries forward any existing ``explicit_at`` so it cannot downgrade a
-        still-fresh explicit consult into a non-clearing one."""
+        still-fresh explicit consult into a non-clearing one. ``signals`` is the
+        consult's coverage set; an explicit record merges it into
+        ``explicit_signals`` at ``now``, a prompt-hook record never adds to it."""
         with self._lock:
             prior = self._entries.get((session_id, workspace))
+            explicit_signals = dict(prior.explicit_signals) if prior is not None else {}
             if trigger == EXPLICIT_TRIGGER:
                 explicit_at: float | None = now
+                explicit_signals.update(dict.fromkeys(signals or (), now))
             else:
                 explicit_at = prior.explicit_at if prior is not None else None
             self._entries[(session_id, workspace)] = LedgerEntry(
-                consulted_at=now, rule_ids=list(rule_ids), explicit_at=explicit_at
+                consulted_at=now, rule_ids=list(rule_ids), explicit_at=explicit_at,
+                explicit_signals=explicit_signals,
             )
             self._evict(now)
             self._save()
@@ -306,6 +423,19 @@ class ConsultationLedger:
         if ts is None:
             return False
         return (now - ts) <= ttl_sec
+
+    def fresh_signals(
+        self, *, session_id: str, workspace: str, now: float, ttl_sec: float,
+    ) -> set[str]:
+        """The coverage signals of explicit consults within ``ttl_sec``."""
+        with self._lock:
+            entry = self._entries.get((session_id, workspace))
+            if entry is None:
+                return set()
+            return {
+                sig for sig, ts in entry.explicit_signals.items()
+                if (now - ts) <= ttl_sec
+            }
 
     def get(self, *, session_id: str, workspace: str) -> LedgerEntry | None:
         with self._lock:

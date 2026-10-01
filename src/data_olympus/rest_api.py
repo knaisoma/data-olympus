@@ -26,6 +26,7 @@ from data_olympus.tools_read import (
     kb_search_fn,
     shape_response,
 )
+from data_olympus.writing_rules import policy_from_config
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -194,6 +195,57 @@ def _missing_fields_response(body: object, required: list[str]) -> JSONResponse 
     return None
 
 
+def _string_fields_response(
+    body: dict[str, Any], fields: list[str], *, nullable: tuple[str, ...] = (),
+) -> JSONResponse | None:
+    """Return a 400 JSONResponse naming every listed field whose value is not a
+    string, or None when all are acceptable (issue #310).
+
+    An absent field is acceptable; the handler applies its default. A field in
+    ``nullable`` may also be an explicit null, which is the same set the MCP
+    tools type as optional. Without this check a non-string value either raised
+    inside the handler (an opaque HTTP 500, the class _missing_fields_response
+    closed for absent fields) or, worse, was accepted and written to the audit
+    log, after which the audit and compliance readers failed while that line
+    stayed in their read window. The MCP surface never had the gap because its
+    typed parameters reject such values; this gives REST the same contract.
+    Presence of required fields is checked first by _missing_fields_response.
+    """
+    bad = [
+        f for f in fields
+        if f in body and not isinstance(body[f], str)
+        and not (body[f] is None and f in nullable)
+    ]
+    if bad:
+        return JSONResponse(
+            {"error": "bad_request",
+             "message": f"field(s) must be a string: {', '.join(bad)}"},
+            status_code=400,
+        )
+    return None
+
+
+def _bootstrap_files_response(files: object) -> JSONResponse | None:
+    """Return a 400 JSONResponse unless ``files`` is a list of objects that each
+    carry a string ``target_path`` and ``postimage`` (issue #310), the shape the
+    MCP bootstrap tool's typed parameter enforces. An empty list passes here and
+    is refused by the bootstrap itself as ``rejected_empty_bundle``."""
+    ok = isinstance(files, list) and all(
+        isinstance(f, dict)
+        and isinstance(f.get("target_path"), str)
+        and isinstance(f.get("postimage"), str)
+        for f in files
+    )
+    if not ok:
+        return JSONResponse(
+            {"error": "bad_request",
+             "message": "files must be a list of objects with string "
+                        "target_path and postimage"},
+            status_code=400,
+        )
+    return None
+
+
 def _parse_confidence(body: dict[str, Any]) -> tuple[float, JSONResponse | None]:
     """Coerce body['confidence'] to float, returning a 400 JSONResponse instead
     of letting a non-numeric value raise ValueError/TypeError -> HTTP 500 (the
@@ -269,11 +321,16 @@ def _propose_status(status: str) -> int:
         return 423
     if status == "rejected_contest_index_unavailable":
         return 503
-    if status in ("rejected_invalid_document", "rejected_secret_detected"):
-        # The postimage failed the content-validation or secret-scanning gate
-        # (issue #71). 422 Unprocessable.
+    if status in ("rejected_invalid_document", "rejected_secret_detected",
+                  "rejected_writing_rule"):
+        # The postimage failed the content-validation, secret-scanning (issue
+        # #71) or writing-rule (issue #283) gate. 422 Unprocessable.
         return 422
-    if status == "rejected_invalid_contest":
+    if status in ("rejected_invalid_contest", "rejected_empty_bundle",
+                  "rejected_invalid_capture"):
+        # Client input errors: a malformed contest, a bootstrap with no files
+        # (issue #311) or a malformed capture envelope (issue #141), refused
+        # before anything was claimed or written.
         return 400
     return 400
 
@@ -289,14 +346,19 @@ def _resolve_status(status: str) -> int:
         return 409
     if status == "rejected_stale_base":
         return 409
-    if status in ("rejected_invalid_document", "rejected_secret_detected"):
+    if status in ("rejected_invalid_document", "rejected_secret_detected",
+                  "rejected_writing_rule"):
         return 422
-    if status == "rejected_invalid_encoding":
+    if status in ("rejected_invalid_encoding", "rejected_bad_decision",
+                  "rejected_symlink_escape", "rejected_invalid_capture"):
         # A client input error, refused before the claim. It must not share the
         # fall-through 200 below, or a caller checking only the status code
-        # reads a refused decision as an applied one.
+        # reads a refused decision as an applied one. An unknown decision (for
+        # example a typo of "approve") is the same class, and so is a target
+        # that escapes the knowledge base through a symlink: nothing was
+        # committed, so it answers 400 here as it does on propose.
         return 400
-    if status in ("rejected", "rejected_symlink_escape"):
+    if status == "rejected":
         return 200
     return 200
 
@@ -625,6 +687,10 @@ def register_routes(
                 body, ["text", "source_session", "agent_identity", "confidence"],
             )) is not None:
                 return bad
+            if (bad := _string_fields_response(
+                body, ["text", "source_session", "agent_identity"],
+            )) is not None:
+                return bad
             confidence, bad = _parse_confidence(body)
             if bad is not None:
                 return bad
@@ -658,7 +724,9 @@ def register_routes(
                 proposer_principal=principal.name,
                 max_text_bytes=state.config.max_text_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                writing_rules=policy_from_config(state.config),
                 evidence=body.get("evidence", []),
+                capture=body.get("capture"),
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)
@@ -679,9 +747,28 @@ def register_routes(
                  "source_session", "agent_identity", "confidence"],
             )) is not None:
                 return bad
+            # base_blob_sha and target_file_hash are left to the write path's
+            # base-marker validation, which already refuses a malformed value
+            # as rejected_invalid_base without echoing it (issue #263).
+            if (bad := _string_fields_response(
+                body,
+                ["target_path", "postimage", "base_commit", "reason",
+                 "source_session", "agent_identity"],
+            )) is not None:
+                return bad
             confidence, bad = _parse_confidence(body)
             if bad is not None:
                 return bad
+            if "capture" in body:
+                # issue #141: provenance labels a NEW memory; an edit has no
+                # capture envelope. Refused rather than silently ignored.
+                return JSONResponse(
+                    {
+                        "status": "rejected_invalid_capture",
+                        "reason": "capture is not supported for edit proposals",
+                    },
+                    status_code=400,
+                )
             assert state.worktrees is not None
             assert state.push_queue is not None
             assert state.pending is not None
@@ -708,6 +795,7 @@ def register_routes(
                 proposer_principal=principal.name,
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 serializer=state.write_serializer, idx=state.idx,
+                writing_rules=policy_from_config(state.config),
                 evidence=body.get("evidence", []),
                 contest=body.get("contest"),
             )
@@ -744,6 +832,7 @@ def register_routes(
                     audit_log=state.audit_log,
                     max_postimage_bytes=state.config.max_postimage_bytes,
                     serializer=state.write_serializer, idx=state.idx,
+                    writing_rules=policy_from_config(state.config),
                     override_secret_scan=bool(body.get("override_secret_scan", False)),
                 )
             except PendingNotFoundError:
@@ -801,7 +890,8 @@ def register_routes(
             if denied is not None:
                 return denied
             if state.audit_log is None:
-                return JSONResponse({"events": [], "returned": 0, "limit_hit": False})
+                return JSONResponse(
+                    {"events": [], "returned": 0, "limit_hit": False, "skipped": 0})
             from data_olympus.tools_audit import kb_audit_fn
             qp = request.query_params
             since, bad = _parse_numeric_qp(qp, "since", float)
@@ -841,6 +931,11 @@ def register_routes(
                 return big
             if (bad := _missing_fields_response(
                 body, ["workspace", "source_session"],
+            )) is not None:
+                return bad
+            if (bad := _string_fields_response(
+                body,
+                ["workspace", "intent", "source_session", "agent_identity", "trigger"],
             )) is not None:
                 return bad
             resp = await _offload(
@@ -883,6 +978,12 @@ def register_routes(
                 body, ["workspace", "session_id"],
             )) is not None:
                 return bad
+            if (bad := _string_fields_response(
+                body,
+                ["workspace", "session_id", "tool_name", "action_path", "action_diff"],
+                nullable=("action_path",),
+            )) is not None:
+                return bad
             resp = await _offload(
                 kb_gate_check_fn,
                 classifier=state.classifier, ledger=state.ledger,
@@ -891,7 +992,7 @@ def register_routes(
                 action_path=body.get("action_path"),
                 action_diff=body.get("action_diff", ""),
                 now=_time.time(), ttl_sec=state.config.consult_ttl_sec,
-                audit_log=state.audit_log,
+                audit_log=state.audit_log, clearance=state.config.gate_clearance,
             )
             return JSONResponse(resp.model_dump())
 
@@ -903,7 +1004,7 @@ def register_routes(
             if denied is not None:
                 return denied
             if state.audit_log is None:
-                return JSONResponse({"counts": {}, "by_agent": {}})
+                return JSONResponse({"counts": {}, "by_agent": {}, "skipped": 0})
             from data_olympus.tools_enforce import kb_compliance_fn
             qp = request.query_params
             since, bad = _parse_numeric_qp(qp, "since", float)
@@ -954,6 +1055,11 @@ def register_routes(
                 return big
             if (bad := _missing_fields_response(body, ["event_type", "workspace"])) is not None:
                 return bad
+            if (bad := _string_fields_response(
+                body,
+                ["event_type", "workspace", "agent_identity", "source_session", "reason"],
+            )) is not None:
+                return bad
             from data_olympus.tools_enforce import kb_record_event_fn
             try:
                 resp = await _offload(
@@ -999,6 +1105,15 @@ def register_routes(
                        "agent_identity", "confidence"],
             )) is not None:
                 return bad
+            if (bad := _string_fields_response(
+                body,
+                ["workspace", "component", "workspace_remote_url",
+                 "component_remote_url", "source_session", "agent_identity"],
+                nullable=("component", "workspace_remote_url", "component_remote_url"),
+            )) is not None:
+                return bad
+            if (bad := _bootstrap_files_response(body["files"])) is not None:
+                return bad
             confidence, bad = _parse_confidence(body)
             if bad is not None:
                 return bad
@@ -1029,6 +1144,7 @@ def register_routes(
                 max_postimage_bytes=state.config.max_postimage_bytes,
                 max_files=state.config.max_bootstrap_files,
                 serializer=state.write_serializer,
+                writing_rules=policy_from_config(state.config),
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)
@@ -1064,6 +1180,10 @@ def register_routes(
         if big is not None:
             return big
         if (bad := _missing_fields_response(body, ["workspace", "local_files"])) is not None:
+            return bad
+        if (bad := _string_fields_response(
+            body, ["workspace", "component"], nullable=("component",),
+        )) is not None:
             return bad
         from data_olympus.tools_onboarding import CleanupInputError, kb_cleanup_plan_fn
         try:

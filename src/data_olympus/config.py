@@ -35,6 +35,11 @@ class Config:
     push_queue_root: str = "/state/push-queue"
     write_block_tiers: list[str] = field(default_factory=list)
     write_block_paths: list[str] = field(default_factory=list)
+    # Writing rules on write-pipeline postimages (issue #283): "enforce",
+    # "warn" (report findings, still commit) or "off"; and fnmatch globs of
+    # target paths the rules skip, matched like write_block_paths.
+    writing_rules_mode: str = "warn"
+    writing_rules_exclude_paths: list[str] = field(default_factory=list)
     rate_limit_per_hour: int = 100
     rate_limit_per_ip_per_hour: int = 0
     # Separate ceiling for the high-frequency /api/v1/gate/check route (the
@@ -68,6 +73,9 @@ class Config:
     governed_extra_keywords: tuple[str, ...] = ()
     governed_extra_path_globs: tuple[str, ...] = ()
     governed_extra_command_patterns: tuple[str, ...] = ()
+    # Operator-supplied secret-scan regexes (KB_SECRET_SCAN_EXTRA_PATTERNS),
+    # validated at load and installed into the scan gate by the server.
+    secret_scan_extra_patterns: tuple[str, ...] = ()
     worktree_idle_sec: int = 3600
     git_key_path: str = "/tmp/git-key"
     # Branch of the knowledge-base repository the server fetches, fast-forwards,
@@ -87,6 +95,11 @@ class Config:
     auth_token: str = ""
     auth_principals: list[dict[str, Any]] = field(default_factory=list)
     consult_ttl_sec: int = 300
+    # What a fresh explicit consult clears (KB_GATE_CLEARANCE, issue #296):
+    # "intent" clears only the governed actions the consult's intent covers;
+    # "pair" restores the earlier rule, any fresh explicit consult for the
+    # (session, workspace) pair clears every governed action. Validated at load.
+    gate_clearance: str = "intent"
     ledger_path: str = "/state/ledger.json"
     # Maintenance ledger (issue #113): committed frontmatter-only markdown doc
     # recording corpus-state audit flags (missing `status`, recently-expired /
@@ -292,6 +305,24 @@ def _load_git_branch(raw: str) -> str:
     return branch
 
 
+def _load_gate_clearance(raw: str) -> str:
+    """Validate KB_GATE_CLEARANCE. Blank means unset and gets ``intent``; the
+    value is case-insensitive; anything other than ``intent`` or ``pair`` raises
+    ValueError so startup fails naming the setting, rather than an enforcement
+    setting silently doing something other than what the operator wrote."""
+    from data_olympus.enforce_policy import GATE_CLEARANCE_INTENT, GATE_CLEARANCE_MODES
+
+    value = raw.strip().lower()
+    if not value:
+        return GATE_CLEARANCE_INTENT
+    if value not in GATE_CLEARANCE_MODES:
+        raise ValueError(
+            f"KB_GATE_CLEARANCE must be one of {', '.join(GATE_CLEARANCE_MODES)}; "
+            f"got {raw!r}"
+        )
+    return value
+
+
 def _load_status_weights(raw: str) -> dict[str, float] | None:
     """Parse KB_STATUS_WEIGHTS: a JSON object of ``{status: weight}``.
 
@@ -378,6 +409,29 @@ def _env_bool(raw: str) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+_STRICT_BOOL_TRUE = ("1", "true", "yes", "on")
+_STRICT_BOOL_FALSE = ("0", "false", "no", "off")
+
+
+def _env_bool_strict(name: str) -> bool:
+    """Parse a boolean setting that must not misread a typo (issue #314).
+
+    True for 1/true/yes/on, False for 0/false/no/off, case-insensitive with
+    surrounding whitespace ignored. Unset or blank means the default (False).
+    Anything else raises ValueError so startup fails naming the setting,
+    rather than a mistyped value silently reading as false."""
+    raw = os.getenv(name, "")
+    value = raw.strip().lower()
+    if not value or value in _STRICT_BOOL_FALSE:
+        return False
+    if value in _STRICT_BOOL_TRUE:
+        return True
+    raise ValueError(
+        f"{name} must be one of {', '.join(_STRICT_BOOL_TRUE + _STRICT_BOOL_FALSE)} "
+        f"(case-insensitive), or unset; got {raw!r}"
+    )
+
+
 # Bounds on the operator-supplied governed vocabulary (issue #257). The
 # classifier runs on EVERY classified action and compiles a regex per keyword,
 # so an unbounded list is operator-induced latency: a 10,000-keyword
@@ -427,6 +481,20 @@ def _csv_tuple(name: str) -> tuple[str, ...]:
     return entries
 
 
+def _load_secret_scan_extra_patterns(raw: str) -> tuple[str, ...]:
+    """Parse and validate ``KB_SECRET_SCAN_EXTRA_PATTERNS`` (a JSON array of
+    strings, or the comma form). An unusable entry raises ``ValueError``
+    naming the setting and the entry number."""
+    from data_olympus.write_gate import (
+        compile_extra_secret_patterns,
+        split_extra_secret_patterns,
+    )
+
+    entries = split_extra_secret_patterns(raw)
+    compile_extra_secret_patterns(entries, strict=True)
+    return tuple(str(e) for e in entries)
+
+
 def load_config() -> Config:
     """Load configuration from environment, applying defaults."""
     threshold = float(os.environ.get("KB_CONFIDENCE_THRESHOLD", "0.85"))
@@ -439,6 +507,12 @@ def load_config() -> Config:
     push_queue_root = os.getenv("KB_PUSH_QUEUE_ROOT", "/state/push-queue")
     write_block_tiers = _split_csv(os.getenv("KB_WRITE_BLOCK_TIERS", ""))
     write_block_paths = _split_csv(os.getenv("KB_WRITE_BLOCK_PATHS", ""))
+    from data_olympus.writing_rules import parse_mode
+    # A typo is refused here with the accepted values named, never defaulted,
+    # so it cannot silently become the permissive mode.
+    writing_rules_mode = parse_mode(os.getenv("KB_WRITING_RULES_MODE", "warn"))
+    writing_rules_exclude_paths = _split_csv(
+        os.getenv("KB_WRITING_RULES_EXCLUDE_PATHS", ""))
     rate_limit_per_hour = int(os.getenv("KB_RATE_LIMIT_PER_HOUR", "100"))
     rate_limit_per_ip_per_hour = int(os.getenv("KB_RATE_LIMIT_PER_IP_PER_HOUR", "0"))
     gate_check_rate_limit_per_hour = int(os.getenv("KB_GATE_CHECK_RATE_LIMIT_PER_HOUR", "0"))
@@ -475,6 +549,9 @@ def load_config() -> Config:
     governed_extra_keywords = _csv_tuple("KB_GOVERNED_EXTRA_KEYWORDS")
     governed_extra_path_globs = _csv_tuple("KB_GOVERNED_EXTRA_PATH_GLOBS")
     governed_extra_command_patterns = _csv_tuple("KB_GOVERNED_EXTRA_COMMAND_PATTERNS")
+    secret_scan_extra_patterns = _load_secret_scan_extra_patterns(
+        os.getenv("KB_SECRET_SCAN_EXTRA_PATTERNS", "")
+    )
     worktree_idle_sec = int(os.getenv("KB_WORKTREE_IDLE_SEC", "3600"))
     git_key_path = os.getenv("KB_GIT_KEY_PATH", "/tmp/git-key")
     kb_git_branch = _load_git_branch(os.getenv("KB_GIT_BRANCH", ""))
@@ -483,8 +560,10 @@ def load_config() -> Config:
     audit_max_bytes = int(os.getenv("KB_AUDIT_MAX_BYTES", "0"))
     auth_token = os.getenv("KB_AUTH_TOKEN", "")
     from data_olympus.principals import parse_principals_env
+    # Raises when set but malformed: dropping it could leave auth off.
     auth_principals = parse_principals_env(os.getenv("KB_AUTH_PRINCIPALS", ""))
     consult_ttl_sec = int(os.getenv("KB_CONSULT_TTL_SEC", "300"))
+    gate_clearance = _load_gate_clearance(os.getenv("KB_GATE_CLEARANCE", ""))
     ledger_path = os.getenv("KB_LEDGER_PATH", "/state/ledger.json")
     maintenance_ledger_path = os.getenv(
         "KB_MAINTENANCE_LEDGER_PATH", "tooling/maintenance-ledger.md"
@@ -505,7 +584,7 @@ def load_config() -> Config:
     session_reap_interval_sec = int(os.getenv("KB_SESSION_REAP_INTERVAL_SEC", "60"))
     session_touch_interval_sec = int(os.getenv("KB_SESSION_TOUCH_INTERVAL_SEC", "30"))
     status_weights = _load_status_weights(os.getenv("KB_STATUS_WEIGHTS", ""))
-    read_only = _env_bool(os.getenv("KB_READ_ONLY", ""))
+    read_only = _env_bool_strict("KB_READ_ONLY")
     tool_discovery_mode = load_tool_discovery_mode(
         os.getenv("KB_TOOL_DISCOVERY_MODE", "search")
     )
@@ -535,7 +614,7 @@ def load_config() -> Config:
     emb_cfg = _embeddings_config()
     trusted_proxies = _split_csv(os.getenv("KB_TRUSTED_PROXIES", ""))
     public_hostnames = _split_csv(os.getenv("KB_PUBLIC_HOSTNAMES", ""))
-    disable_version_check = _env_bool(os.getenv("KB_DISABLE_VERSION_CHECK", ""))
+    disable_version_check = _env_bool_strict("KB_DISABLE_VERSION_CHECK")
     version_check_interval_sec = int(
         os.getenv("KB_VERSION_CHECK_INTERVAL_SEC", "86400")
     )
@@ -558,6 +637,8 @@ def load_config() -> Config:
         push_queue_root=push_queue_root,
         write_block_tiers=write_block_tiers,
         write_block_paths=write_block_paths,
+        writing_rules_mode=writing_rules_mode,
+        writing_rules_exclude_paths=writing_rules_exclude_paths,
         rate_limit_per_hour=rate_limit_per_hour,
         rate_limit_per_ip_per_hour=rate_limit_per_ip_per_hour,
         gate_check_rate_limit_per_hour=gate_check_rate_limit_per_hour,
@@ -572,6 +653,7 @@ def load_config() -> Config:
         governed_extra_keywords=governed_extra_keywords,
         governed_extra_path_globs=governed_extra_path_globs,
         governed_extra_command_patterns=governed_extra_command_patterns,
+        secret_scan_extra_patterns=secret_scan_extra_patterns,
         worktree_idle_sec=worktree_idle_sec,
         git_key_path=git_key_path,
         kb_git_branch=kb_git_branch,
@@ -581,6 +663,7 @@ def load_config() -> Config:
         auth_token=auth_token,
         auth_principals=auth_principals,
         consult_ttl_sec=consult_ttl_sec,
+        gate_clearance=gate_clearance,
         ledger_path=ledger_path,
         maintenance_ledger_path=maintenance_ledger_path,
         maintenance_recently_expired_days=maintenance_recently_expired_days,

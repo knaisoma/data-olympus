@@ -41,8 +41,9 @@ _EXCLUDED = {".git", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv",
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _LIST_RE = re.compile(r"^\[(.*)\]$")
 
-# Mirror of src/data_olympus/index.py _DEFAULT_PATH_RULES and its
-# KB_TAXONOMY_PATH loader. If you update one, update the other. See SPEC.md.
+# Mirror of src/data_olympus/index.py _DEFAULT_PATH_RULES, its KB_TAXONOMY_PATH
+# loader and _classify_by_path. This script must run without the package, so
+# it keeps its own copy; tests/test_taxonomy_parity.py fails if they drift.
 _DEFAULT_PATH_RULES: list[tuple[str, str, str]] = [
     # T1 Universal, applies to every project, every stack.
     ("universal/foundation/",       "T1", "foundation"),
@@ -52,6 +53,10 @@ _DEFAULT_PATH_RULES: list[tuple[str, str, str]] = [
     ("universal/database/",         "T1", "database"),
     ("universal/api/",              "T1", "api"),
     ("universal/services/",         "T1", "services"),
+    # Every other path under universal/ (a loose file such as
+    # universal/README.md, or a subdirectory not listed above) is still T1.
+    # Must stay after the specific rules: the first matching prefix wins.
+    ("universal/",                   "T1", "universal"),
 
     # T2 Stack-specific, classified dynamically: tech-stacks/<stack>/...
     ("tech-stacks/",                 "T2", "stack"),

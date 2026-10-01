@@ -196,3 +196,37 @@ def test_okf_pin_freshness_workflow_only_manages_one_issue() -> None:
     assert "pin.commit === upstreamSha" not in script
     assert "fs.write" not in script
     assert "git push" not in script
+
+
+DERIVED_FROM_FIXTURE = ROOT / "tests" / "fixtures" / "okf-derived-from"
+
+
+def test_derived_from_fixture_bundle_carries_the_key_and_lints_clean() -> None:
+    """Issue #300, acceptance check 15: a dedicated fixture bundle carries
+    `derived_from` (scalar and list forms) so the pinned OKF consumer run below
+    proves an OKF consumer tolerates the key rather than asserting it. It is a
+    fixture, not an `example-bundle` concept, so the benchmark corpora stay
+    unchanged."""
+    from data_olympus.format import Document, discover_bundle_files, lint_files
+
+    files = discover_bundle_files(DERIVED_FROM_FIXTURE)
+    values = [Document.load(p).frontmatter.get("derived_from") for p in files]
+    assert any(isinstance(v, str) for v in values)
+    assert any(isinstance(v, list) for v in values)
+    results = lint_files(files, root=DERIVED_FROM_FIXTURE, today="2026-07-08")
+    assert not [f for fs in results.values() for f in fs if f.severity == "error"]
+    # The fixture exercises the surfacing path too: a retired source with an
+    # in-force dependent yields the review warning on both ends.
+    assert sum(f.field == "derived_from" for fs in results.values() for f in fs) == 2
+
+
+def test_pinned_consumer_reads_derived_from_fixture_when_checkout_present() -> None:
+    upstream = ROOT / "to-delete" / "okf-reference"
+    if not (upstream / ".git").exists():
+        pytest.skip("pinned OKF checkout not present (CI checks it out before tests)")
+    module = _module()
+    result = module.consume_data_olympus(
+        module.load_reference(REFERENCE), ROOT, upstream, bundle_root=DERIVED_FROM_FIXTURE,
+    )
+    assert result["verified"] is True
+    assert result["concepts"] == 3
