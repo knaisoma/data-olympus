@@ -200,3 +200,63 @@ async def test_the_audit_readers_skip_a_malformed_line_and_count_it(
     assert mcp_audit.structured_content["returned"] == 1
     assert not mcp_compliance.is_error, mcp_compliance.content
     assert mcp_compliance.structured_content["skipped"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [
+    "?since=0.5", "?agent=claude", "?status=recorded"])
+async def test_a_filtered_audit_read_survives_a_line_it_cannot_evaluate(
+    tmp_kb, tmp_index_path, tmp_path, monkeypatch, query,
+) -> None:
+    """A hand-edited line whose ``ts`` is not a number, or that is not an
+    object at all, is dropped by a filtered read instead of failing it."""
+    _git_kb(tmp_kb, monkeypatch)
+    path = tmp_path / "audit.log"
+    path.write_text(
+        '{"ts": 3.0, "event_type": "consult", "status": "recorded", '
+        '"agent_identity": "claude", "source_session": "s", "target_path": "w"}\n'
+        '{"ts": "yesterday", "event_type": "consult", "status": "recorded", '
+        '"agent_identity": "claude"}\n'
+        '{"ts": null, "event_type": "consult"}\n'
+        '{"ts": true, "event_type": "consult"}\n'
+        '5\n'
+        '["x"]\n',
+        encoding="utf-8")
+    app = _app(tmp_kb, tmp_index_path, tmp_path)
+    transport = httpx.ASGITransport(app=app.http_app(), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        audit = await client.get(f"/api/v1/audit{query}")
+        compliance = await client.get(f"/api/v1/compliance{query}")
+    assert audit.status_code == 200, audit.text
+    assert [e["ts"] for e in audit.json()["events"]] == [3.0]
+    assert compliance.status_code == 200, compliance.text
+    # Only a time window needs ``ts``: without one, compliance never reads it,
+    # so the line with a malformed ts still counts. Compliance takes no status
+    # filter, so ``?status=`` reads every object line, agentless ones included.
+    expected = {
+        "?since=0.5": {"claude": {"consult": 1}},
+        "?agent=claude": {"claude": {"consult": 2}},
+        "?status=recorded": {"claude": {"consult": 2}, "unknown": {"consult": 2}},
+    }[query]
+    assert compliance.json()["by_agent"] == expected
+    assert compliance.json()["skipped"] == (2 if query == "?status=recorded" else 0)
+
+
+@pytest.mark.asyncio
+async def test_compliance_counts_a_falsy_non_string_agent_as_skipped(
+    tmp_kb, tmp_index_path, tmp_path, monkeypatch,
+) -> None:
+    """A malformed agent such as ``0`` or ``[]`` is skipped and counted, not
+    attributed to ``unknown``; only a missing or empty agent is."""
+    _git_kb(tmp_kb, monkeypatch)
+    log = AuditLog(log_path=str(tmp_path / "audit.log"))
+    for agent in (0, [], False):
+        log.append({"ts": 1.0, "event_type": "consult", "agent_identity": agent})
+    log.append({"ts": 2.0, "event_type": "consult", "agent_identity": ""})
+    app = _app(tmp_kb, tmp_index_path, tmp_path)
+    transport = httpx.ASGITransport(app=app.http_app(), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        compliance = await client.get("/api/v1/compliance")
+    assert compliance.status_code == 200, compliance.text
+    assert compliance.json()["by_agent"] == {"unknown": {"consult": 1}}
+    assert compliance.json()["skipped"] == 3

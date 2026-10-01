@@ -310,10 +310,14 @@ def kb_compliance_fn(
     for ev in audit_log.iter_filtered(
         since=since, agent=agent, include_rotated=since is not None,
     ):
+        if not isinstance(ev, dict):
+            skipped += 1
+            continue
         et = ev.get("event_type", "")
         if et not in ENFORCE_EVENT_TYPES:
             continue
-        who = ev.get("agent_identity") or "unknown"
+        raw = ev.get("agent_identity")
+        who = raw if raw is not None and raw != "" else "unknown"
         if not isinstance(who, str):
             # A malformed line (issue #310) cannot be attributed to an agent.
             # Skip and count it rather than failing the whole aggregate.
