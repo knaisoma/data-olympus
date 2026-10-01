@@ -1,9 +1,14 @@
 # tests/test_tools_enforce_gate.py
-"""Tests for kb_gate_check_fn."""
+"""Tests for kb_gate_check_fn under KB_GATE_CLEARANCE=pair, the pre-#296 rule,
+which must keep reproducing these results unchanged."""
 from __future__ import annotations
 
 from data_olympus.audit_log import AuditLog
-from data_olympus.enforce_policy import ConsultationLedger, IntentClassifier
+from data_olympus.enforce_policy import (
+    GATE_CLEARANCE_PAIR,
+    ConsultationLedger,
+    IntentClassifier,
+)
 from data_olympus.tools_enforce import kb_gate_check_fn
 
 
@@ -12,7 +17,7 @@ def test_non_governed_action_allows_without_consult() -> None:
         classifier=IntentClassifier(), ledger=ConsultationLedger(),
         workspace="proj", session_id="s1", tool_name="Edit",
         action_path="/p/src/util/strings.py", action_diff="",
-        now=1000.0, ttl_sec=300.0,
+        now=1000.0, ttl_sec=300.0, clearance=GATE_CLEARANCE_PAIR,
     )
     assert resp.verdict == "allow"
 
@@ -23,7 +28,7 @@ def test_governed_action_without_consult_requires_consult(tmp_path) -> None:
         classifier=IntentClassifier(), ledger=ConsultationLedger(),
         workspace="proj", session_id="s1", tool_name="Edit",
         action_path="/p/pyproject.toml", action_diff="",
-        now=1000.0, ttl_sec=300.0, audit_log=al,
+        now=1000.0, ttl_sec=300.0, audit_log=al, clearance=GATE_CLEARANCE_PAIR,
     )
     assert resp.verdict == "consult_required"
     events = list(al.iter_filtered())
@@ -37,6 +42,6 @@ def test_governed_action_with_fresh_consult_allows() -> None:
         classifier=IntentClassifier(), ledger=led,
         workspace="proj", session_id="s1", tool_name="Edit",
         action_path="/p/pyproject.toml", action_diff="",
-        now=1100.0, ttl_sec=300.0,
+        now=1100.0, ttl_sec=300.0, clearance=GATE_CLEARANCE_PAIR,
     )
     assert resp.verdict == "allow"

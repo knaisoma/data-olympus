@@ -2,6 +2,8 @@
 """Config tests for enforcement settings."""
 from __future__ import annotations
 
+import pytest
+
 from data_olympus.config import load_config
 
 
@@ -132,3 +134,25 @@ def test_governed_vocabulary_configuration_is_bounded(monkeypatch, caplog) -> No
     # Duplicates cost work on every call and add nothing.
     monkeypatch.setenv("KB_GOVERNED_EXTRA_KEYWORDS", "alpha, alpha ,beta,alpha")
     assert load_config().governed_extra_keywords == ("alpha", "beta")
+
+
+def test_gate_clearance_defaults_to_intent(monkeypatch) -> None:  # noqa: ANN001
+    """Issue #296: a consult clears only the actions its intent covers."""
+    monkeypatch.delenv("KB_GATE_CLEARANCE", raising=False)
+    assert load_config().gate_clearance == "intent"
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    ("pair", "pair"), ("intent", "intent"), (" PAIR ", "pair"), ("", "intent"),
+    ("   ", "intent"),
+])
+def test_gate_clearance_from_env(monkeypatch, raw: str, expected: str) -> None:  # noqa: ANN001
+    monkeypatch.setenv("KB_GATE_CLEARANCE", raw)
+    assert load_config().gate_clearance == expected
+
+
+@pytest.mark.parametrize("bad", ["strict", "pairs", "off", "intent,pair"])
+def test_invalid_gate_clearance_fails_naming_the_setting(monkeypatch, bad: str) -> None:  # noqa: ANN001
+    monkeypatch.setenv("KB_GATE_CLEARANCE", bad)
+    with pytest.raises(ValueError, match="KB_GATE_CLEARANCE"):
+        load_config()

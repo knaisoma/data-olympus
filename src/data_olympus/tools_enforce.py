@@ -7,7 +7,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from data_olympus.enforce_policy import EXPLICIT_TRIGGER, PROMPT_HOOK_TRIGGER
+from data_olympus.enforce_policy import (
+    EXPLICIT_TRIGGER,
+    GATE_CLEARANCE_INTENT,
+    GATE_CLEARANCE_PAIR,
+    PROMPT_HOOK_TRIGGER,
+    uncovered_signals,
+)
 from data_olympus.maintenance import pending_actions_for
 from data_olympus.models import (
     ComplianceResponse,
@@ -33,14 +39,39 @@ ENFORCE_EVENT_TYPES = (
 _TRIGGERS = (EXPLICIT_TRIGGER, PROMPT_HOOK_TRIGGER)
 
 
-def _deny_instruction(*, workspace: str, session_id: str) -> str:
+def _deny_instruction(
+    *, workspace: str, session_id: str, intent: str = "<what you are doing>",
+) -> str:
     """The copy-pasteable remediation an agent must run to clear the gate. Echoes
     the exact workspace key and session id (the one parameter an agent cannot
     guess) so the fix does not require the agent to invent either value."""
     return (
         f"Call kb_consult(workspace='{workspace}', source_session='{session_id}', "
-        f"intent='<what you are doing>') then retry."
+        f"intent='{intent}') then retry."
     )
+
+
+def _suggest_intent(
+    uncovered: list[str], *, classifier: IntentClassifier, action_path: str | None,
+) -> str:
+    """ONE intent whose coverage set clears every uncovered signal: the exact
+    path for a path signal (the only place a path signal can come from), the
+    quoted command fragment for a command signal, the keyword itself for a
+    keyword signal."""
+    parts: list[str] = []
+    for sig in uncovered:
+        kind, _, value = sig.partition(":")
+        if kind == "path" and action_path:
+            part = f'edit "{action_path}"'
+        elif kind == "command":
+            part = f'run "{classifier.command_pattern(sig) or value}"'
+        else:
+            part = value
+        if part not in parts:
+            parts.append(part)
+    # A path signal leads, so the agent sees first the one thing it must name.
+    parts.sort(key=lambda p: not p.startswith("edit "))
+    return "; ".join(parts)
 
 
 def kb_consult_fn(
@@ -85,6 +116,10 @@ def kb_consult_fn(
     """
     trigger = trigger if trigger in _TRIGGERS else EXPLICIT_TRIGGER
     result = classifier.classify(intent=intent)
+    # Issue #296: what this consult covers, which the gate compares an action's
+    # signals against under intent clearance. Wider than ``result.signals``: it
+    # also holds the command fragments and paths the intent names.
+    coverage = classifier.coverage(intent)
     rules = []
     rule_ids: list[str] = []
     if result.is_governed_decision:
@@ -106,7 +141,7 @@ def kb_consult_fn(
         rule_ids = [h.id for h in search.hits]
     ledger.record(
         session_id=source_session, workspace=workspace, rule_ids=rule_ids, now=now,
-        trigger=trigger,
+        trigger=trigger, signals=coverage,
     )
     if audit_log is not None:
         audit_log.append({
@@ -176,9 +211,16 @@ def kb_gate_check_fn(
     now: float,
     ttl_sec: float,
     audit_log: AuditLog | None = None,
+    clearance: str = GATE_CLEARANCE_INTENT,
 ) -> GateCheckResponse:
     """Decide whether a pending code action may proceed. Governed actions require
-    a fresh consultation on record for (session_id, workspace)."""
+    a fresh explicit consultation on record for (session_id, workspace).
+
+    Under ``clearance="intent"`` (KB_GATE_CLEARANCE, issue #296) that
+    consultation must also cover every signal of the action, directly or
+    through the family mapping in ``enforce_policy``; a denial names the
+    uncovered signals and suggests one intent that covers them all. Under
+    ``"pair"`` any fresh explicit consult clears, the pre-#296 rule."""
     result = classifier.classify(action_path=action_path, action_diff=action_diff)
     if not result.is_governed_decision:
         return GateCheckResponse(
@@ -189,11 +231,17 @@ def kb_gate_check_fn(
     # auto-consult is recorded (audit/compliance) but never satisfies this check,
     # so the gate means "the agent explicitly consulted", not "an HTTP call
     # happened this session".
-    fresh = ledger.is_fresh(
-        session_id=session_id, workspace=workspace, now=now, ttl_sec=ttl_sec,
-        require_explicit=True,
-    )
-    if fresh:
+    if clearance == GATE_CLEARANCE_PAIR:
+        fresh = ledger.is_fresh(
+            session_id=session_id, workspace=workspace, now=now, ttl_sec=ttl_sec,
+            require_explicit=True,
+        )
+        uncovered = [] if fresh else list(result.signals)
+    else:
+        uncovered = uncovered_signals(result.signals, ledger.fresh_signals(
+            session_id=session_id, workspace=workspace, now=now, ttl_sec=ttl_sec,
+        ))
+    if not uncovered:
         if audit_log is not None:
             audit_log.append({
                 "ts": now, "event_type": "gate_allow", "status": "allow",
@@ -208,14 +256,26 @@ def kb_gate_check_fn(
         audit_log.append({
             "ts": now, "event_type": "gate_block", "status": "consult_required",
             "source_session": session_id, "target_path": action_path or workspace,
-            "reason": ",".join(result.signals),
+            "reason": ",".join(result.signals), "uncovered": uncovered,
         })
-    return GateCheckResponse(
-        verdict="consult_required",
-        reason=(
+    if clearance == GATE_CLEARANCE_PAIR:
+        reason = (
             "governed action without a fresh explicit consultation. "
             + _deny_instruction(workspace=workspace, session_id=session_id)
-        ),
+        )
+    else:
+        reason = (
+            "governed action not covered by a fresh explicit consultation; "
+            f"uncovered signals: {', '.join(uncovered)}. "
+            + _deny_instruction(
+                workspace=workspace, session_id=session_id,
+                intent=_suggest_intent(
+                    uncovered, classifier=classifier, action_path=action_path,
+                ),
+            )
+        )
+    return GateCheckResponse(
+        verdict="consult_required", reason=reason,
         session_id=session_id, workspace=workspace,
     )
 
