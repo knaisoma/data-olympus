@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from .document import Document
-from .validate import IN_FORCE_STATUSES, RESERVED, Finding, validate_document
+from .validate import IN_FORCE_STATUSES, RESERVED, TIERS, Finding, validate_document
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -79,6 +79,8 @@ def lint_files(
     *,
     resolve_ids: Collection[str] = (),
     unresolved_severity: str = "error",
+    root: str | Path | None = None,
+    path_rules: tuple[tuple[str, str, str], ...] | None = None,
 ) -> dict[Path, list[Finding]]:
     """Validate an already-discovered list of concept files. Returns {path:
     findings} for any file that produced at least one finding.
@@ -97,6 +99,11 @@ def lint_files(
     relationship context (``--resolve-root``). ``unresolved_severity`` is
     ``"error"`` (format 0.4) or ``"warn"`` (transitional) for an unresolved
     `supersedes` / `superseded_by` target only.
+
+    ``root`` (issue #304) is the bundle root the files were discovered under.
+    When given, a declared ``tier`` or ``category`` that disagrees with the
+    path taxonomy is reported as a warning. ``path_rules`` is the taxonomy to
+    use; ``None`` loads the active one (``KB_TAXONOMY_PATH`` or the default).
     """
     results: dict[Path, list[Finding]] = {}
     docs: dict[Path, Document] = {}
@@ -112,7 +119,63 @@ def lint_files(
     ).items():
         results.setdefault(path, []).extend(findings)
 
+    if root is not None:
+        for path, findings in _taxonomy_findings(docs, Path(root), path_rules).items():
+            results.setdefault(path, []).extend(findings)
+
     return results
+
+
+# ---------------------------------------------------------------------------
+# Frontmatter tier/category vs path taxonomy (issue #304)
+# ---------------------------------------------------------------------------
+#
+# The index honours a declared `tier` / `category` over the path-derived value
+# (an intentional override), but the write blocklist (KB_WRITE_BLOCK_TIERS)
+# classifies a target by path alone. A disagreement is therefore reported, as
+# a warning only, so authors see which tier governs writes to the document.
+# The path taxonomy also assigns meta tiers (`decisions`, `memory`, ...) that
+# the frontmatter vocabulary can only spell as `meta`, so `meta` satisfies any
+# path tier outside that vocabulary.
+
+
+def _taxonomy_findings(
+    docs: dict[Path, Document],
+    root: Path,
+    path_rules: tuple[tuple[str, str, str], ...] | None,
+) -> dict[Path, list[Finding]]:
+    # Lazy import: the index module imports this package.
+    from data_olympus.index import _classify_by_path, _load_path_rules
+
+    rules = path_rules if path_rules is not None else _load_path_rules()
+    findings: dict[Path, list[Finding]] = defaultdict(list)
+    for path, doc in docs.items():
+        try:
+            rel = path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        path_tier, path_category = _classify_by_path(rel, rules)
+        tier = doc.frontmatter.get("tier")
+        # An invalid tier is already an enum error; do not pile on.
+        if isinstance(tier, str) and tier in TIERS:
+            expected = path_tier if path_tier in TIERS else "meta"
+            if tier != expected:
+                findings[path].append(Finding(
+                    "warning", "tier",
+                    f"frontmatter tier {tier!r} disagrees with the path taxonomy, "
+                    f"which implies tier {path_tier!r}; the index uses {tier!r}, but "
+                    "the write blocklist (KB_WRITE_BLOCK_TIERS) classifies by path, "
+                    f"so writes to this document are governed as {path_tier!r}",
+                ))
+        category = doc.frontmatter.get("category")
+        if isinstance(category, str) and category and category != path_category:
+            findings[path].append(Finding(
+                "warning", "category",
+                f"frontmatter category {category!r} disagrees with the path "
+                f"taxonomy, which implies category {path_category!r}; the index "
+                f"uses {category!r}",
+            ))
+    return findings
 
 
 # ---------------------------------------------------------------------------
@@ -408,10 +471,11 @@ def lint_bundle(
     file that produced at least one finding.
 
     File discovery (which files are validated vs skipped) is delegated to
-    `discover_bundle_files`.
+    `discover_bundle_files`. The path-taxonomy check (issue #304) runs against
+    the active taxonomy; a malformed ``KB_TAXONOMY_PATH`` raises ValueError.
     """
     return lint_files(discover_bundle_files(root), resolve_ids=resolve_ids,
-                      unresolved_severity=unresolved_severity)
+                      unresolved_severity=unresolved_severity, root=root)
 
 
 def collect_ids(root: str | Path) -> set[str]:

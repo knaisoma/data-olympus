@@ -31,8 +31,20 @@ def _cmd_lint(args: argparse.Namespace) -> int:
         print(f"error: no concept files to lint under {root}", file=sys.stderr)
         return 1
     resolve_ids = collect_ids(args.resolve_root) if args.resolve_root is not None else set()
+    # Issue #304: compare frontmatter tier/category with the path taxonomy. A
+    # broken KB_TAXONOMY_PATH skips that advisory check rather than failing lint.
+    from data_olympus.index import _load_path_rules
+    taxonomy_root: Path | None = root
+    path_rules = None
+    try:
+        path_rules = _load_path_rules()
+    except (OSError, ValueError) as exc:
+        taxonomy_root = None
+        print(f"warning: path taxonomy check skipped, KB_TAXONOMY_PATH is unusable: {exc}",
+              file=sys.stderr)
     results = lint_files(linted, resolve_ids=resolve_ids,
-                         unresolved_severity=args.unresolved_targets)
+                         unresolved_severity=args.unresolved_targets,
+                         root=taxonomy_root, path_rules=path_rules)
     error_files = 0
     total_errors = 0
     for path in sorted(results):

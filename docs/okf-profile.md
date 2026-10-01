@@ -70,7 +70,7 @@ lint coverage; the table's lint column is authoritative per field.
 | `id` | Yes | error (missing) | Stable symbolic identifier, decoupled from path (`SPEC.md` section 4.2). |
 | `type` | Yes | error (missing or not in `{decision, memory, project, reference, standard, workflow}`) | Controlled vocabulary, `format.validate.TYPES`. |
 | `status` | Yes | error (missing or not in `{draft, active, deprecated, superseded, proposed, accepted, rejected}`) | `format.validate.STATUSES`; lint-required since the `0.1` draft. What v0.4.0 added (issue #114) is write-path enforcement for new documents; see the note below. |
-| `tier` | Yes | error (missing or not in `{T1, T2, T3, T4, meta}`) | `format.validate.TIERS`. |
+| `tier` | Yes | error (missing or not in `{T1, T2, T3, T4, meta}`); warning when it disagrees with the path taxonomy (a declared `category` is checked the same way) | `format.validate.TIERS`. The index honours a declared value; the write blocklist classifies by path (issue #304). |
 | `applies_when` | Recommended | none today (see caveat below) | Highest-weight indexed field for `kb_search`; feeds the abstention gate. Not yet in `kb lint`'s checked field set. |
 | `supersedes` | Optional | error on malformed shape/self-reference/cycle or a target that does not resolve (format 0.4); warning on asymmetric pair or a path-shaped target that resolves | Scalar ID or list of IDs, normalized to a list (issue #110). |
 | `superseded_by` | Optional | error on malformed shape/self-reference or a target that does not resolve (format 0.4); warning on asymmetric pair or a path-shaped target that resolves, or set while status is in-force | Scalar ID only (issue #110). |
@@ -307,7 +307,7 @@ OKF consumer choke on this" and "what does data-olympus tooling do with it".
 | `id` | yes (unknown key) | error if missing | Stable cross-reference target, decoupled from path. Conformance requires an authored `id`; for a non-conformant doc with none, the reference index derives an effective id from the path (`index._derive_id_from_path`) so the doc stays addressable (a fallback for broken input, not a sanctioned authoring mode). |
 | `type` | partially (OKF defines the key, not the vocabulary) | error if missing/invalid | Controlled vocabulary layered on OKF's minimal `type` field. |
 | `status` | partially (OKF v0.2 defines a `status` key with its own lifecycle vocabulary: draft, stable, deprecated) | error if missing/invalid | Drives `IN_FORCE_STATUSES` class membership; absence is the #114 migration hazard. The governance vocabulary differs from OKF's, so an OKF v0.2 consumer sees values it must tolerate; OKF lifecycle values map to `draft` on import. |
-| `tier` | yes (unknown key) | error if missing/invalid | Scope classification; not evaluated by retrieval logic itself. |
+| `tier` | yes (unknown key) | error if missing/invalid; warning if it disagrees with the path taxonomy | Scope classification; not evaluated by retrieval logic itself. |
 | `title` | yes (OKF recommends it) | warning if missing | Boosted in `kb_search` alongside `applies_when`; part of the abstention gate's discriminating column set. |
 | `description` | yes (OKF recommends it) | warning if missing | Indexed below `title`/`applies_when`; deliberately excluded from the abstention gate. |
 | `applies_when` | yes (unknown key) | none (documented, not lint-checked) | Highest-weight `kb_search` field; feeds the abstention gate. |
