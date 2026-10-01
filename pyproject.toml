@@ -126,6 +126,15 @@ select = ["E", "F", "I", "B", "UP", "ARG", "SIM", "TCH", "RET"]
 strict = true
 python_version = "3.13"
 
+# Vendored code whose bytes an upstream source owns (see the sync contract in
+# src/data_olympus/_vendor/prose_lint.py). It cannot be retyped here, so strict
+# mode's untyped-definition check is relaxed for it alone; every other strict
+# check still applies, so a real type error in a sync still fails CI.
+[[tool.mypy.overrides]]
+module = "data_olympus._vendor.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

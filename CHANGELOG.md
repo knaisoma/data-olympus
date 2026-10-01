@@ -34,6 +34,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   network access must refresh its model cache before upgrading, or startup
   fails with the model unavailable. Lexical-only deployments are unaffected.
 * ruff 0.16.9 for development (#297).
+* **The writing-rule linter ships inside the package** (groundwork for #283).
+  The vendored gate moved from `scripts/prose_lint.py` to
+  `data_olympus._vendor.prose_lint`, so the installed server can apply the same
+  rules the CI gate applies. `scripts/prose_lint.py` remains as a shim that
+  runs it and now needs the package installed, so run it as
+  `uv run python scripts/prose_lint.py <path>`.
 
 ### Fixed
 
