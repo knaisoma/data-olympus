@@ -29,11 +29,8 @@ from __future__ import annotations
 
 import hmac
 import json
-import logging
 from dataclasses import dataclass
 from typing import Any
-
-log = logging.getLogger("data_olympus")
 
 CAP_READ = "read"
 CAP_PROPOSE = "propose"
@@ -117,20 +114,41 @@ def _extract_bearer(auth_header: str | None) -> str | None:
 
 
 def parse_principals_env(raw: str) -> list[dict[str, Any]]:
-    """Parse a ``KB_AUTH_PRINCIPALS`` JSON value. Empty / malformed input degrades
-    to an empty list (logged) so a bad config never crashes startup."""
+    """Parse a ``KB_AUTH_PRINCIPALS`` JSON value.
+
+    Unset or blank means no per-agent principals. Any other value must be a
+    JSON list of objects, each with a non-empty string ``token``; otherwise
+    this raises ``ValueError`` naming the setting and, where it applies, the
+    1-based entry number. The message never repeats the value, which carries
+    tokens. A malformed value fails startup rather than being dropped,
+    because dropping it can leave authentication off entirely."""
     raw = (raw or "").strip()
     if not raw:
         return []
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        log.warning("KB_AUTH_PRINCIPALS is not valid JSON; ignoring: %s", exc)
-        return []
+    except json.JSONDecodeError:
+        raise ValueError(
+            "KB_AUTH_PRINCIPALS is not valid JSON; expected a list of "
+            '{"name", "token", "capabilities"} objects'
+        ) from None
     if not isinstance(data, list):
-        log.warning("KB_AUTH_PRINCIPALS must be a JSON list; ignoring")
-        return []
-    return [d for d in data if isinstance(d, dict)]
+        raise ValueError("KB_AUTH_PRINCIPALS must be a JSON list of objects")
+    if not data:
+        raise ValueError(
+            "KB_AUTH_PRINCIPALS is an empty list; unset it, or list at least "
+            "one principal"
+        )
+    for number, entry in enumerate(data, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"KB_AUTH_PRINCIPALS entry {number} is not an object")
+        token = entry.get("token")
+        if not isinstance(token, str) or not token.strip():
+            raise ValueError(
+                f"KB_AUTH_PRINCIPALS entry {number} has no non-empty string "
+                "'token'"
+            )
+    return data
 
 
 class PrincipalRegistry:

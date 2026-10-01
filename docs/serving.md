@@ -1354,7 +1354,13 @@ capability model, enforced on **both** the REST routes and the MCP write tools:
 - `KB_AUTH_TOKEN` registers a single full-capability `operator` principal.
 - `KB_AUTH_PRINCIPALS` (JSON) registers per-agent tokens with explicit
   capabilities; a principal lacking `auto_commit` has its proposals clamped to
-  pending regardless of the client-asserted confidence.
+  pending regardless of the client-asserted confidence. When set, it must be
+  a non-empty JSON list of objects, each with a non-empty string `token`.
+  Anything else (invalid JSON, a single object, an entry that is not an
+  object, or an entry without a usable `token`, such as a misspelled key)
+  fails startup with an error naming `KB_AUTH_PRINCIPALS` and, where it
+  applies, the entry number. The error never repeats the value. This holds
+  whether or not `KB_AUTH_TOKEN` is also set.
 
 When auth is configured, write, enforcement, and observability routes require a
 capable principal; read routes (`search`/`get`/`list`/`outline`/`health`) stay
