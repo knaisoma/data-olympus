@@ -12,15 +12,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-* **A bare `glibc.malloc.trim_threshold` tunable no longer stops the trim
-  threshold pin** (#302). The server leaves the trim threshold alone when the
-  operator has set it, and it treated any `glibc.malloc.trim_threshold` entry
-  in `GLIBC_TUNABLES` as such a setting, including one with no `=value`. glibc
-  ignores a tunable without a value, so under that malformed configuration
-  nobody set the threshold and the memory retention fixed in 0.10.0 (#284)
-  came back. Only an entry with a non-empty value now counts.
+* **The stable release now publishes the MCP Registry entry** (#303, part of
+  #111). After the GitHub release, the promotion workflow signs in to the
+  official registry with GitHub OIDC and publishes `server.json` as
+  `io.github.knaisoma/data-olympus`, then reads the entry back. It first checks
+  that `server.json` names the released version and that the release's PyPI
+  description carries the ownership marker, and it runs a pinned,
+  hash-verified `mcp-publisher`. No secret or personal sign-in is involved.
 
 ### Changed
 
@@ -34,6 +34,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   network access must refresh its model cache before upgrading, or startup
   fails with the model unavailable. Lexical-only deployments are unaffected.
 * ruff 0.16.9 for development (#297).
+
+### Fixed
+
+* **A bare `glibc.malloc.trim_threshold` tunable no longer stops the trim
+  threshold pin** (#302). The server leaves the trim threshold alone when the
+  operator has set it, and it treated any `glibc.malloc.trim_threshold` entry
+  in `GLIBC_TUNABLES` as such a setting, including one with no `=value`. glibc
+  ignores a tunable without a value, so under that malformed configuration
+  nobody set the threshold and the memory retention fixed in 0.10.0 (#284)
+  came back. Only an entry with a non-empty value now counts.
 
 ## [0.10.0] - 2026-09-28
 
