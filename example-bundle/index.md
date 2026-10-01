@@ -7,8 +7,8 @@ okf_version: "0.2"
 An example data-olympus bundle demonstrating the full tier hierarchy (T1-T4 and
 meta), all six supported concept types (`standard`, `decision`, `workflow`,
 `project`, `memory`, `reference`), a live supersession pair (`status:
-superseded` / `supersedes` / `superseded_by`), a `derived_from` relationship,
-`applies_when` retrieval triggers, and cross-links between concepts.
+superseded` / `supersedes` / `superseded_by`), `applies_when` retrieval
+triggers, and cross-links between concepts.
 
 See [log.md](log.md) for the change history of this bundle.
 

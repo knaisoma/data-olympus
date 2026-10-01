@@ -104,8 +104,9 @@ def lint_files(
     In addition to the per-file schema checks (`validate_document`), this
     builds an in-memory id map over `files` and cross-checks the typed
     lifecycle-relationship fields `supersedes` / `superseded_by` / `contradicts`
-    (issue #110, slice 1) and `derived_from` (issue #300). Cross-file findings only appear here (and via
-    `lint_bundle`, which delegates to this function); single-file validation
+    (issue #110, slice 1) and `derived_from` (issue #300). Cross-file
+    findings only appear here (and via `lint_bundle`, which delegates to this
+    function); single-file validation
     via `validate_document` is unaffected.
 
     ``resolve_ids`` (issue #259) adds ids that count as existing for
