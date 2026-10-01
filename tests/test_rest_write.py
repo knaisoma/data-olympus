@@ -320,3 +320,94 @@ async def test_rest_propose_edit_returns_the_unresolved_target_code(http_app) ->
     body = resp.json()
     assert body["status"] == "rejected_invalid_document", body
     assert body["reason"].startswith("unresolved_supersedes_target: ")
+
+
+# ---- issue #141: capture provenance envelope ----
+
+_CAPTURE = {
+    "capture_source": "claude_code.hook",
+    "capture_event_id": "evt-0001",
+    "source_event_hash": "sha256:" + "f" * 64,
+    "transformation": "automem.distill/1.4.2",
+    "raw_retention": "discarded",
+}
+
+
+@pytest.mark.asyncio
+async def test_rest_propose_memory_passes_capture_through(http_app) -> None:
+    """Acceptance checks 4 and 10: the REST memory route forwards capture, the
+    listing (kb_list_pending_fn's projection) carries it, and the detail route
+    returns it on ok."""
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        parked = await client.post(
+            "/api/v1/propose/memory",
+            json={"text": "captured", "tags": [], "source_session": "s",
+                  "agent_identity": "claude", "confidence": 0.3,
+                  "capture": _CAPTURE},
+        )
+        assert parked.status_code == 202, parked.json()
+        pid = parked.json()["pending_id"]
+        listing = await client.get("/api/v1/pending")
+        detail = await client.get(f"/api/v1/pending/{pid}")
+
+    import hashlib
+    expected = {**_CAPTURE, "capture_session": None, "classification": None,
+                "derived_memory_hash": "sha256:" + hashlib.sha256(b"captured").hexdigest()}
+    [entry] = listing.json()["pending"]
+    assert entry["capture"] == expected
+    assert detail.status_code == 200
+    assert detail.json()["capture"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capture", [
+    {}, [], "x", {**_CAPTURE, "raw_retention": "forever"},
+    {**_CAPTURE, "unexpected": "y"},
+])
+async def test_rest_propose_memory_invalid_capture_is_400(http_app, capture) -> None:
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/propose/memory",
+            json={"text": "captured", "tags": [], "source_session": "s",
+                  "agent_identity": "claude", "confidence": 0.9,
+                  "capture": capture},
+        )
+        listing = await client.get("/api/v1/pending")
+    assert resp.status_code == 400
+    assert resp.json()["status"] == "rejected_invalid_capture"
+    assert listing.json()["pending"] == []
+
+
+@pytest.mark.asyncio
+async def test_rest_propose_memory_without_capture_lists_capture_null(http_app) -> None:
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/api/v1/propose/memory",
+            json={"text": "plain", "tags": [], "source_session": "s",
+                  "agent_identity": "claude", "confidence": 0.3},
+        )
+        listing = await client.get("/api/v1/pending")
+    [entry] = listing.json()["pending"]
+    assert entry["capture"] is None
+
+
+@pytest.mark.asyncio
+async def test_rest_propose_edit_refuses_capture(http_app) -> None:
+    transport = httpx.ASGITransport(app=http_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/propose/edit",
+            json={"target_path": "universal/foundation/x.md",
+                  "postimage": "---\nstatus: draft\n---\nbody\n",
+                  "base_commit": "HEAD", "source_session": "s",
+                  "agent_identity": "claude", "confidence": 0.3,
+                  "capture": _CAPTURE},
+        )
+    assert resp.status_code == 400
+    assert resp.json() == {
+        "status": "rejected_invalid_capture",
+        "reason": "capture is not supported for edit proposals",
+    }

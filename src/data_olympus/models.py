@@ -1,6 +1,8 @@
 """Pydantic models for MCP tool responses. Slice 2A scope: read tools only."""
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 # Status values that mean "this guidance currently applies" (the in-force class,
@@ -458,6 +460,27 @@ class ProposeMemoryRequest(BaseModel):
     agent_identity: str
     confidence: float
     evidence: list[str] = []
+    # Capture provenance envelope (issue #141); validated by the tool, which
+    # rejects anything but an object with the documented fields.
+    capture: dict[str, Any] | None = None
+
+
+class CaptureEnvelope(BaseModel):
+    """Capture provenance on a proposed memory (issue #141).
+
+    Identifiers, hashes and enums only: the captured raw event stays outside
+    the store. ``derived_memory_hash`` is the server-computed ``sha256:`` of
+    the text as submitted; it does not describe an operator's later edit.
+    """
+
+    capture_source: str
+    capture_event_id: str
+    source_event_hash: str
+    transformation: str
+    raw_retention: str
+    capture_session: str | None = None
+    classification: str | None = None
+    derived_memory_hash: str
 
 
 class ProposeEditRequest(BaseModel):
@@ -555,6 +578,8 @@ class PendingDetailResponse(BaseModel):
     created_at: float | None = None
     reason: str | None = None
     matching_pattern: str | None = None
+    # Capture provenance (issue #141), on ``ok`` only.
+    capture: CaptureEnvelope | None = None
 
 
 class ContestDetail(BaseModel):
@@ -611,6 +636,9 @@ class PendingEntry(BaseModel):
     # metadata distinct from the proposal's original operational reason.
     intent: str | None = None
     contest: ContestDetail | None = None
+    # Capture provenance (issue #141): None when the proposal carried no
+    # envelope, or when the stored one is malformed.
+    capture: CaptureEnvelope | None = None
 
 
 class PendingListResponse(BaseModel):
@@ -655,6 +683,10 @@ class AuditEvent(BaseModel):
     # timing only.
     trigger: str | None = None
     coverage: list[str] | None = None
+    # Capture provenance (issue #141), on committed and pending_confirmation
+    # propose_memory events only. Identifiers, hashes and enums. Typed loosely
+    # so a damaged log line cannot fail a whole audit query.
+    capture: dict[str, Any] | None = None
     # Tamper-evident chain fields (present on events appended with chaining).
     event_id: str | None = None
     prev_hash: str | None = None
@@ -713,6 +745,9 @@ class SessionRecapResponse(BaseModel):
     committed: int = 0
     demoted_to_pending: int = 0
     rejected: int = 0
+    # issue #141: this session's committed or parked memory proposals that
+    # carried a capture provenance envelope. 0 for events that predate it.
+    capture_derived: int = 0
 
 
 class AuditVerifyResponse(BaseModel):

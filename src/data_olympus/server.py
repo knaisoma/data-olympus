@@ -186,6 +186,17 @@ ContestParam = Annotated[
     dict[str, Any] | None,
     Field(description="Optional contest declaration with contradicts and optional reason."),
 ]
+CaptureParam = Annotated[
+    dict[str, Any] | None,
+    Field(description=(
+        "Optional capture provenance envelope for a memory distilled from a "
+        "passive capture: capture_source, capture_event_id, source_event_hash "
+        "(sha256:<64 hex>), transformation and raw_retention (discarded, "
+        "redacted or retained) are required; capture_session, classification "
+        "and derived_memory_hash are optional. Identifiers and hashes only, "
+        "never raw content."
+    )),
+]
 TargetPathParam = Annotated[
     str,
     Field(description="KB-relative markdown path to create or edit."),
@@ -1062,6 +1073,7 @@ def build_app(
             text: TextParam, tags: TagsParam, source_session: SourceSessionParam,
             agent_identity: AgentIdentityParam, confidence: ConfidenceParam,
             evidence: EvidenceParam = None,
+            capture: CaptureParam = None,
         ) -> dict[str, object]:
             """Propose a new memory file. High confidence auto-commits and
             enqueues for push; low confidence enters the pending queue for operator
@@ -1069,7 +1081,11 @@ def build_app(
 
             evidence: optional supporting-context strings (max 10 items, 500
             chars each), rendered into the memory's frontmatter and surfaced by
-            kb_pending."""
+            kb_pending.
+
+            capture: optional provenance envelope labelling the memory as
+            derived from a captured event. It is a label, not authority: the
+            memory is still a proposed inbox document and never in force."""
             if state.worktrees is None or state.push_queue is None or state.pending is None:
                 return {"status": "write_pipeline_disabled"}
             assert state.worktrees is not None
@@ -1092,6 +1108,7 @@ def build_app(
                 serializer=state.write_serializer, idx=state.idx,
                 writing_rules=policy_from_config(state.config),
                 evidence=evidence,
+                capture=capture,
             )
             return resp.model_dump()
 

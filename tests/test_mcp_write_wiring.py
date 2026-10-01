@@ -229,3 +229,45 @@ async def test_mcp_pending_and_audit_tools_answer_without_a_remote(
     assert audited.structured_content["events"] == []
     assert audited.structured_content["returned"] == 0
     assert audited.structured_content["limit_hit"] is False
+
+
+_CAPTURE = {
+    "capture_source": "codex.transcript",
+    "capture_event_id": "evt-77",
+    "source_event_hash": "sha256:" + "9" * 64,
+    "transformation": "automem.distill/1.4.2",
+    "raw_retention": "redacted",
+}
+
+
+@pytest.mark.asyncio
+async def test_mcp_propose_memory_accepts_and_forwards_capture(
+    tmp_git_kb: Path, tmp_path: Path,
+) -> None:
+    """Issue #141, acceptance check 11: the MCP tool exposes ``capture``,
+    forwards it to the pipeline, and the listing and readback carry it. The
+    tool schema rejects an unknown argument, so a successful call with
+    ``capture`` is itself the proof that the parameter is exposed."""
+    app = _app_with_pipeline(tmp_git_kb, tmp_path)
+    async with Client(app) as client:
+        park = await client.call_tool("kb_propose_memory", {
+            "text": "captured note", "tags": [], "source_session": "s",
+            "agent_identity": "claude", "confidence": 0.3, "capture": _CAPTURE,
+        })
+        assert park.data["status"] == "pending_confirmation", park.data
+        listing = await client.call_tool("kb_list_pending", {})
+        detail = await client.call_tool("kb_get_pending", {
+            "pending_id": park.data["pending_id"],
+        })
+        recap = await client.call_tool("kb_session_recap", {"source_session": "s"})
+        bad = await client.call_tool("kb_propose_memory", {
+            "text": "captured note", "tags": [], "source_session": "s",
+            "agent_identity": "claude", "confidence": 0.3,
+            "capture": {**_CAPTURE, "raw_retention": "forever"},
+        })
+
+    [entry] = listing.data["pending"]
+    assert entry["capture"]["capture_event_id"] == "evt-77"
+    assert detail.data["capture"]["capture_event_id"] == "evt-77"
+    assert recap.data["capture_derived"] == 1
+    assert bad.data["status"] == "rejected_invalid_capture"

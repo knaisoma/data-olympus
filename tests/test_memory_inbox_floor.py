@@ -200,3 +200,81 @@ def test_compact_get_flags_inbox_doc_not_in_force(
     idx = _idx(tmp_path, tmp_index_path)
     doc = kb_get_fn(idx=idx, id="DOC-INBOX-ACTIVE", today="2026-06-01")
     assert doc.compact_dump()["in_force"] is False
+
+
+# --- issue #141: a capture-derived memory that auto-commits stays out of force
+
+
+def test_capture_derived_memory_commits_labelled_and_not_in_force(
+    tmp_path: Path, tmp_index_path: Path, monkeypatch,
+) -> None:
+    """A capture envelope is a label, not authority. With the operator's
+    label-only decision a high-confidence capture-derived memory auto-commits,
+    so the floor is what keeps it out of force: it is ``status: proposed``
+    under the memory inbox, carries every envelope field, and in_force
+    retrieval does not return it."""
+    import hashlib
+    import os
+    import subprocess
+    from pathlib import Path as RuntimePath
+
+    from data_olympus.auth import PathBlocklist
+    from data_olympus.format.frontmatter import parse_frontmatter
+    from data_olympus.git_ops import GitOps
+    from data_olympus.pending import PendingQueue
+    from data_olympus.push_queue import PushQueue
+    from data_olympus.rate_limit import SlidingWindowLimiter
+    from data_olympus.tools_write import kb_propose_memory_fn
+    from data_olympus.worktrees import WorktreeRegistry
+
+    for k in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(k, "t")
+    for k in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(k, "t@e.com")
+    repo = tmp_path / "main"
+    repo.mkdir()
+    env = {**os.environ}
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=repo, check=True, env=env)
+    (repo / "seed.md").write_text("seed")
+    subprocess.run(["git", "add", "seed.md"], cwd=repo, check=True, env=env)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, env=env)
+    reg = WorktreeRegistry(git=GitOps(repo), worktree_root=str(tmp_path / "wts"))
+
+    text = "Widgetry load tests run against the staging cluster."
+    capture = {
+        "capture_source": "claude_code.hook",
+        "capture_event_id": "01J9ZK3Q7R8S9T0V1W2X3Y4Z5A",
+        "source_event_hash": "sha256:" + "c" * 64,
+        "transformation": "automem.distill/1.4.2",
+        "raw_retention": "discarded",
+        "capture_session": "sess-1",
+        "classification": "fact",
+    }
+    resp = kb_propose_memory_fn(
+        text=text, tags=[], source_session="s", agent_identity="claude",
+        confidence=0.99, confidence_threshold=0.85, worktrees=reg,
+        push_queue=PushQueue(queue_root=str(tmp_path / "pq")),
+        pending=PendingQueue(pending_root=str(tmp_path / "pending")),
+        rate_limiter=SlidingWindowLimiter(max_per_hour=10),
+        blocklist=PathBlocklist(tier_blocks=[], path_blocks=[]),
+        remote_addr="1.2.3.4", capture=capture,
+    )
+    assert resp.status == "committed"
+
+    wt = reg.get_or_create(source_session="s", agent_identity="claude")
+    [path] = subprocess.check_output(
+        ["git", "-C", wt.path, "show", "--name-only", "--format=", resp.commit_sha],
+        text=True,
+    ).split()
+    assert path.startswith("memory/inbox/")
+    fm, _body = parse_frontmatter((RuntimePath(wt.path) / path).read_text())
+    assert fm["status"] == "proposed"
+    assert fm["capture"] == {
+        **capture,
+        "derived_memory_hash": "sha256:" + hashlib.sha256(text.encode()).hexdigest(),
+    }
+
+    idx = Index(tmp_index_path)
+    idx.build(RuntimePath(wt.path), source_commit="test")
+    assert any(h.path == path for h in idx.search("widgetry", limit=20))
+    assert all(h.path != path for h in idx.search("widgetry", limit=20, in_force=True))

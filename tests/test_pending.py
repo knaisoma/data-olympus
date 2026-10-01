@@ -1584,3 +1584,65 @@ def test_temp_files_are_invisible_to_reclaim_stale_auto_commit_locks(
     removed = q.reclaim_stale_auto_commit_locks(max_age_sec=600)
     assert removed == 0
     assert os.path.exists(stray)
+
+
+# ---- issue #141: capture provenance in the listing projection ----
+
+_STORED_CAPTURE = {
+    "capture_source": "claude_code.hook",
+    "capture_event_id": "evt-1",
+    "source_event_hash": "sha256:" + "d" * 64,
+    "transformation": "automem.distill/1.4.2",
+    "raw_retention": "retained",
+    "derived_memory_hash": "sha256:" + "e" * 64,
+}
+
+
+def test_list_surfaces_a_stored_capture(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pid = q.enqueue(
+        proposal_type="memory", target_path="memory/inbox/a.md",
+        postimage="a", base_commit="c", base_blob_sha=None, target_file_hash=None,
+        meta={"confidence": 0.3, "capture": _STORED_CAPTURE},
+    )
+    entry = next(e for e in q.list() if e["pending_id"] == pid)
+    assert entry["capture"] == _STORED_CAPTURE
+
+
+def test_list_reads_absent_capture_as_none(tmp_path) -> None:
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    pid = q.enqueue(
+        proposal_type="memory", target_path="memory/inbox/a.md",
+        postimage="a", base_commit="c", base_blob_sha=None, target_file_hash=None,
+        meta={"confidence": 0.3},
+    )
+    entry = next(e for e in q.list() if e["pending_id"] == pid)
+    assert entry["capture"] is None
+
+
+@pytest.mark.parametrize("stored", [
+    "not an object", ["a", "list"], 7, {},
+    {"capture_source": "x"},
+    {**_STORED_CAPTURE, "unknown": "x"},
+    {**_STORED_CAPTURE, "capture_event_id": ["nested"]},
+    {**_STORED_CAPTURE, "raw_retention": "forever"},
+    {k: v for k, v in _STORED_CAPTURE.items() if k != "derived_memory_hash"},
+], ids=["string", "list", "number", "empty", "partial", "unknown_key",
+        "nested", "bad_enum", "no_derived_hash"])
+def test_malformed_legacy_capture_does_not_break_the_listing(tmp_path, stored) -> None:
+    """Acceptance check 15: one damaged record reads as capture None and every
+    other entry is still listed."""
+    q = PendingQueue(pending_root=str(tmp_path / "p"))
+    bad = q.enqueue(
+        proposal_type="memory", target_path="memory/inbox/bad.md",
+        postimage="a", base_commit="c", base_blob_sha=None, target_file_hash=None,
+        meta={"confidence": 0.3, "capture": stored},
+    )
+    good = q.enqueue(
+        proposal_type="memory", target_path="memory/inbox/good.md",
+        postimage="b", base_commit="c", base_blob_sha=None, target_file_hash=None,
+        meta={"confidence": 0.3, "capture": _STORED_CAPTURE},
+    )
+    listed = {e["pending_id"]: e for e in q.list()}
+    assert listed[bad]["capture"] is None
+    assert listed[good]["capture"] == _STORED_CAPTURE

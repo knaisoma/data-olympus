@@ -57,6 +57,40 @@ def test_recap_empty_session_is_all_zero(tmp_path) -> None:
     assert recap.rejected == 0
 
 
+
+def test_recap_counts_capture_derived_memory_proposals(tmp_path) -> None:
+    """Issue #141: committed or parked memory proposals that carried a capture
+    envelope. Rejections never carry one, edits cannot, and events written
+    before the field existed count 0."""
+    audit = _audit(tmp_path)
+    cap = {"capture_source": "claude_code.hook"}
+    audit.append({"ts": 1.0, "event_type": "propose_memory", "status": "committed",
+                  "source_session": "s1", "capture": cap})
+    audit.append({"ts": 2.0, "event_type": "propose_memory",
+                  "status": "pending_confirmation", "source_session": "s1",
+                  "capture": cap})
+    audit.append({"ts": 3.0, "event_type": "propose_memory", "status": "committed",
+                  "source_session": "s1"})
+    audit.append({"ts": 4.0, "event_type": "propose_memory",
+                  "status": "rejected_invalid_capture", "source_session": "s1"})
+    audit.append({"ts": 5.0, "event_type": "propose_edit", "status": "committed",
+                  "source_session": "s1", "capture": cap})
+    audit.append({"ts": 6.0, "event_type": "propose_memory", "status": "committed",
+                  "source_session": "s2", "capture": cap})
+
+    recap = kb_session_recap_fn(audit_log=audit, source_session="s1")
+    assert recap.capture_derived == 2
+    assert recap.committed == 3
+    assert recap.rejected == 1
+
+
+def test_recap_capture_derived_is_zero_without_the_field(tmp_path) -> None:
+    audit = _audit(tmp_path)
+    audit.append({"ts": 1.0, "event_type": "propose_memory", "status": "committed",
+                  "source_session": "s1"})
+    assert kb_session_recap_fn(audit_log=audit, source_session="s1").capture_derived == 0
+    assert kb_session_recap_fn(audit_log=audit, source_session="none").capture_derived == 0
+
 def test_consult_pending_actions_includes_demoted_writes_item(tmp_path) -> None:
     audit = _audit(tmp_path)
     audit.append({"ts": 1.0, "event_type": "propose_edit", "status": "pending_confirmation",

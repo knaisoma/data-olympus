@@ -220,3 +220,37 @@ async def test_bootstrap_records_ownership_a_nonresolver_can_use(app) -> None:
     assert "bootstrap body" in owner.json()["postimage"]
     # And it is genuinely scoped, not simply open.
     assert stranger.status_code == 403, stranger.json()
+
+
+@pytest.mark.asyncio
+async def test_pending_readback_returns_capture_on_ok_not_on_forbidden(app) -> None:
+    """Issue #141, acceptance check 4: the detail route carries the capture
+    envelope only on a readable (ok) response."""
+    capture = {
+        "capture_source": "claude_code.hook",
+        "capture_event_id": "evt-0001",
+        "source_event_hash": "sha256:" + "f" * 64,
+        "transformation": "automem.distill/1.4.2",
+        "raw_retention": "discarded",
+    }
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        parked = await client.post(
+            "/api/v1/propose/memory",
+            headers={"Authorization": "Bearer ptok"},
+            json={"text": "captured draft", "tags": [], "source_session": "session-A",
+                  "agent_identity": "claude", "confidence": 0.4, "capture": capture},
+        )
+        assert parked.json()["status"] == "pending_confirmation", parked.json()
+        pid = parked.json()["pending_id"]
+        own = await client.get(
+            f"/api/v1/pending/{pid}", headers={"Authorization": "Bearer ptok"},
+        )
+        other = await client.get(
+            f"/api/v1/pending/{pid}", headers={"Authorization": "Bearer rtok"},
+        )
+
+    assert own.status_code == 200
+    assert own.json()["capture"]["capture_event_id"] == "evt-0001"
+    assert other.status_code == 403
+    assert other.json()["capture"] is None

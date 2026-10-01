@@ -326,9 +326,11 @@ def _propose_status(status: str) -> int:
         # The postimage failed the content-validation, secret-scanning (issue
         # #71) or writing-rule (issue #283) gate. 422 Unprocessable.
         return 422
-    if status in ("rejected_invalid_contest", "rejected_empty_bundle"):
-        # Client input errors: a malformed contest, or a bootstrap with no
-        # files (issue #311), refused before anything was claimed or written.
+    if status in ("rejected_invalid_contest", "rejected_empty_bundle",
+                  "rejected_invalid_capture"):
+        # Client input errors: a malformed contest, a bootstrap with no files
+        # (issue #311) or a malformed capture envelope (issue #141), refused
+        # before anything was claimed or written.
         return 400
     return 400
 
@@ -348,7 +350,7 @@ def _resolve_status(status: str) -> int:
                   "rejected_writing_rule"):
         return 422
     if status in ("rejected_invalid_encoding", "rejected_bad_decision",
-                  "rejected_symlink_escape"):
+                  "rejected_symlink_escape", "rejected_invalid_capture"):
         # A client input error, refused before the claim. It must not share the
         # fall-through 200 below, or a caller checking only the status code
         # reads a refused decision as an applied one. An unknown decision (for
@@ -724,6 +726,7 @@ def register_routes(
                 serializer=state.write_serializer, idx=state.idx,
                 writing_rules=policy_from_config(state.config),
                 evidence=body.get("evidence", []),
+                capture=body.get("capture"),
             )
             status = _propose_status(resp.status)
             return JSONResponse(resp.model_dump(), status_code=status)
@@ -756,6 +759,16 @@ def register_routes(
             confidence, bad = _parse_confidence(body)
             if bad is not None:
                 return bad
+            if "capture" in body:
+                # issue #141: provenance labels a NEW memory; an edit has no
+                # capture envelope. Refused rather than silently ignored.
+                return JSONResponse(
+                    {
+                        "status": "rejected_invalid_capture",
+                        "reason": "capture is not supported for edit proposals",
+                    },
+                    status_code=400,
+                )
             assert state.worktrees is not None
             assert state.push_queue is not None
             assert state.pending is not None
