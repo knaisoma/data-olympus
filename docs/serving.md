@@ -614,7 +614,7 @@ drafts.
 **What this boundary does not cover.** Only the POSTIMAGE is owner-scoped.
 `GET /api/v1/pending` and `kb_list_pending` remain visible to every
 authenticated principal and carry each entry's `target_path`, `reason`,
-`evidence` and identities. Those are content-derived: a target path can name
+`evidence`, `capture` and identities. Those are content-derived: a target path can name
 what a draft is about, and an evidence string can quote it. The secret scanner
 redacts credential-shaped values, not ordinary confidential text. So the pending
 queue's metadata is shared within a deployment, deliberately and as it always
@@ -625,6 +625,127 @@ A postimage the secret scanner flagged is withheld from everyone except a
 `resolve` principal. The proposer already held that content, but handing it back
 would turn the queue into a place to retrieve a credential from. The response
 still names the matched pattern, so the caller learns why.
+
+### Capture provenance on proposed memories
+
+A memory distilled from a passive capture, such as a hook event or an external
+session transcript, can say so. `kb_propose_memory` and
+`POST /api/v1/propose/memory` accept an optional `capture` object that labels the
+proposal as evidence-derived, binds it to the exact source event and proposal
+bytes, and names the transformation that produced it. The captured raw event
+stays outside data-olympus: only identifiers, hashes and enumerated values enter
+the store.
+
+The envelope is provenance, not authority. It adds no status, it does not force
+review, and it does not change what `in_force` returns. A capture-derived memory
+is rendered with status `proposed` under the memory inbox like any other memory,
+so it is never in force and never returned by `kb_consult`, whether it parks or
+auto-commits at high confidence.
+
+| field | required | format |
+|---|---|---|
+| `capture_source` | yes | `[a-z0-9][a-z0-9_.-]{0,63}`, for example `claude_code.hook` |
+| `capture_event_id` | yes | `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`, which fits UUID, ULID and `urn:` ids |
+| `source_event_hash` | yes | `sha256:` followed by 64 lowercase hex characters |
+| `transformation` | yes | `[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,127}`, naming the transformer and its version, for example `automem.distill/1.4.2` |
+| `raw_retention` | yes | one of `discarded`, `redacted`, `retained` |
+| `capture_session` | no | same format as `capture_event_id` |
+| `classification` | no | one of `fact`, `decision`, `preference`, `task_state`, `noise` |
+| `derived_memory_hash` | no | `sha256:` followed by 64 lowercase hex characters |
+
+Every value is an ASCII token matched in full, so no value can hold whitespace,
+a newline, a quote or prose. `capture_session` is the session that produced the
+captured event; the top-level `source_session` is still the session making the
+proposal. An explicit `null` on an optional field reads as absent, and a `null`
+`capture` means no envelope.
+
+The server always computes `derived_memory_hash` as `sha256:` of the UTF-8 bytes
+of `text` exactly as submitted, with no normalization. A caller that supplies the
+field must supply that same value, which binds the proposal bytes in transit.
+Matching hashes show that neither side changed; they do not prove that the
+memory was derived from the event, which is why `transformation` is required:
+the reviewer checks the derivation claim against the named step.
+
+Validation runs before the path, blocklist and rate-limit checks, so a refused
+envelope costs no rate-limit token. A credential-shaped value anywhere in the
+envelope, including under an unknown key, is refused as
+`rejected_secret_detected` with the pattern name only, and nothing is parked or
+committed. Every other problem (a non-object, `{}`, an unknown key, a missing
+required field, a value of the wrong type, format or enumeration, or a
+`derived_memory_hash` that does not match `text`) is refused as
+`rejected_invalid_capture`. Neither reason ever repeats a submitted value. Over
+REST, `rejected_invalid_capture` is HTTP 400 and `rejected_secret_detected` is
+422. `POST /api/v1/propose/edit` refuses a `capture` key with
+`rejected_invalid_capture` and HTTP 400, because an edit labels no new memory.
+
+An accepted envelope, with the computed `derived_memory_hash`, is written:
+
+- into the memory's frontmatter as a nested `capture` mapping, after `evidence`,
+  through the same YAML serializer as every other server-rendered key, so it
+  survives an auto-commit and counts against `KB_MAX_TEXT_BYTES`;
+- into the pending entry, where `kb_list_pending`, `GET /api/v1/pending`,
+  `kb_get_pending` and `GET /api/v1/pending/<pending_id>` return it as `capture`
+  (`null` when the proposal had none, or when a stored value is malformed);
+- onto the `committed` and `pending_confirmation` audit events for the proposal.
+  A refused envelope's audit event carries the status and reason only.
+
+`kb_session_recap` and `GET /api/v1/session-recap` count the session's committed
+or parked memory proposals that carried an envelope as `capture_derived`.
+
+**An operator edit keeps the label.** On resolve, `edited_text` replaces the
+whole proposed document, so the server re-attaches the stored envelope to what
+it commits, on approve and on edit. An edit that supplies its own frontmatter
+keeps it, with `capture` set to the stored envelope; an edit that supplies a body
+only, which is what `kb resolve` hands the operator, keeps the original
+proposal's frontmatter. The re-attached `derived_memory_hash` is still the one
+computed over the submitted text, so when it no longer matches the committed
+body, that mismatch is the record that a human changed it. The size cap and the
+secret scan on `edited_text` judge the bytes after re-attachment.
+
+Passive hook ingestion. A capture hook records a tool event, hashes it, discards
+the raw payload, and proposes the distilled memory at low confidence so a person
+reviews it:
+
+```json
+{
+  "text": "Integration tests in this repository need the staging database.",
+  "tags": ["testing"],
+  "source_session": "distiller-7",
+  "agent_identity": "automem",
+  "confidence": 0.4,
+  "capture": {
+    "capture_source": "claude_code.hook",
+    "capture_event_id": "01J9ZK3Q7R8S9T0V1W2X3Y4Z5A",
+    "source_event_hash": "sha256:3f9c0e5d1b7a2c4e6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6",
+    "transformation": "automem.distill/1.4.2",
+    "raw_retention": "discarded",
+    "classification": "fact"
+  }
+}
+```
+
+External-session transcript ingestion. An importer reads a transcript from
+another tool, keeps a redacted copy in its own store, and names the session the
+transcript came from:
+
+```json
+{
+  "text": "The team chose weekly release trains over continuous deployment.",
+  "tags": ["release"],
+  "source_session": "importer-run-12",
+  "agent_identity": "transcript-importer",
+  "confidence": 0.5,
+  "capture": {
+    "capture_source": "codex.transcript",
+    "capture_event_id": "urn:transcript:2026-10-01:message:42",
+    "capture_session": "codex-session-8c1f",
+    "source_event_hash": "sha256:9a8b7c6d5e4f30211203f4e5d6c7b8a99a8b7c6d5e4f30211203f4e5d6c7b8a9",
+    "transformation": "transcript-import/0.3.0",
+    "raw_retention": "redacted",
+    "classification": "decision"
+  }
+}
+```
 
 ### Non-fast-forward push recovery
 
