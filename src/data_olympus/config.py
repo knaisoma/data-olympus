@@ -406,6 +406,29 @@ def _env_bool(raw: str) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+_STRICT_BOOL_TRUE = ("1", "true", "yes", "on")
+_STRICT_BOOL_FALSE = ("0", "false", "no", "off")
+
+
+def _env_bool_strict(name: str) -> bool:
+    """Parse a boolean setting that must not misread a typo (issue #314).
+
+    True for 1/true/yes/on, False for 0/false/no/off, case-insensitive with
+    surrounding whitespace ignored. Unset or blank means the default (False).
+    Anything else raises ValueError so startup fails naming the setting,
+    rather than a mistyped value silently reading as false."""
+    raw = os.getenv(name, "")
+    value = raw.strip().lower()
+    if not value or value in _STRICT_BOOL_FALSE:
+        return False
+    if value in _STRICT_BOOL_TRUE:
+        return True
+    raise ValueError(
+        f"{name} must be one of {', '.join(_STRICT_BOOL_TRUE + _STRICT_BOOL_FALSE)} "
+        f"(case-insensitive), or unset; got {raw!r}"
+    )
+
+
 # Bounds on the operator-supplied governed vocabulary (issue #257). The
 # classifier runs on EVERY classified action and compiles a regex per keyword,
 # so an unbounded list is operator-induced latency: a 10,000-keyword
@@ -540,7 +563,7 @@ def load_config() -> Config:
     session_reap_interval_sec = int(os.getenv("KB_SESSION_REAP_INTERVAL_SEC", "60"))
     session_touch_interval_sec = int(os.getenv("KB_SESSION_TOUCH_INTERVAL_SEC", "30"))
     status_weights = _load_status_weights(os.getenv("KB_STATUS_WEIGHTS", ""))
-    read_only = _env_bool(os.getenv("KB_READ_ONLY", ""))
+    read_only = _env_bool_strict("KB_READ_ONLY")
     tool_discovery_mode = load_tool_discovery_mode(
         os.getenv("KB_TOOL_DISCOVERY_MODE", "search")
     )
@@ -570,7 +593,7 @@ def load_config() -> Config:
     emb_cfg = _embeddings_config()
     trusted_proxies = _split_csv(os.getenv("KB_TRUSTED_PROXIES", ""))
     public_hostnames = _split_csv(os.getenv("KB_PUBLIC_HOSTNAMES", ""))
-    disable_version_check = _env_bool(os.getenv("KB_DISABLE_VERSION_CHECK", ""))
+    disable_version_check = _env_bool_strict("KB_DISABLE_VERSION_CHECK")
     version_check_interval_sec = int(
         os.getenv("KB_VERSION_CHECK_INTERVAL_SEC", "86400")
     )
