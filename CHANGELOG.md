@@ -22,6 +22,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nobody set the threshold and the memory retention fixed in 0.10.0 (#284)
   came back. Only an entry with a non-empty value now counts.
 
+### Changed
+
+* **fastembed 0.8.1 for the optional embeddings extra** (#298). It fixes a
+  path traversal in model archive extraction that could write outside the
+  model cache, and a padding regression on mixed-length batches. Upgrade
+  note: fastembed now resolves the default `BAAI/bge-small-en-v1.5` (and
+  `BAAI/bge-base-en-v1.5`) to a repository name with different casing, so on
+  a case-sensitive filesystem the cached model is not reused and downloads
+  once more. A deployment with `KB_EMBEDDINGS_MODE=on` that runs without
+  network access must refresh its model cache before upgrading, or startup
+  fails with the model unavailable. Lexical-only deployments are unaffected.
+* ruff 0.16.9 for development (#297).
+
 ## [0.10.0] - 2026-09-28
 
 ### Added
