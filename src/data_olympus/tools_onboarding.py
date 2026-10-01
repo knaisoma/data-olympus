@@ -273,7 +273,10 @@ def _bootstrap_admitted(
 
     On ``partial`` state, ``files`` is narrowed to only those whose canonical
     basename is one of ``status_obj.missing_files`` so an existing committed file
-    is never overwritten (item 1)."""
+    is never overwritten (item 1). In every state, each target must lie under
+    the root being onboarded (``projects/{workspace}/``, or the component root
+    when a component is given), and the commit refuses a target that already
+    exists, so a bootstrap only ever creates new files inside its own root."""
     from data_olympus.auth import (
         is_writable_path,
         normalize_target_path,
@@ -287,12 +290,12 @@ def _bootstrap_admitted(
     # letting the onboarding endpoint overwrite a file in a different project or
     # component (codex Blocker). missing_files holds bare canonical filenames; the
     # allowed set is exactly those filenames under this workspace/component root.
+    base = (
+        f"projects/{workspace}/components/{component}/"
+        if component
+        else f"projects/{workspace}/"
+    )
     if status_obj.state == "partial":
-        base = (
-            f"projects/{workspace}/components/{component}/"
-            if component
-            else f"projects/{workspace}/"
-        )
         allowed = {base + name for name in status_obj.missing_files}
         kept: list[dict[str, str]] = []
         for f in files:
@@ -361,6 +364,20 @@ def _bootstrap_admitted(
             rejected_paths=rejected,
         )
     files = canonical_files
+
+    # Scope: a bootstrap writes only under the root it onboards, whatever the
+    # state. Checked on the canonical paths, after the path secret scan above,
+    # so a refused path is echoed only once it is known to be safe to echo. On
+    # ``partial`` this is already implied by the narrowing to missing files.
+    outside = [f["target_path"] for f in files if not f["target_path"].startswith(base)]
+    if outside:
+        return BootstrapResponse(
+            status="rejected_path_not_indexable_or_blocked",
+            rejected_paths=outside,
+            reason=_redacted_reason(
+                f"bootstrap writes only under {base}; move these files there "
+                f"or propose them with kb_propose_edit"),
+        )
 
     if not rate_limiter.allow(remote_addr=remote_addr, agent_identity=agent_identity):
         return BootstrapResponse(status="rejected_rate_limited")
@@ -595,7 +612,8 @@ def _bootstrap_admitted(
         commit_multifile_in_worktree,
     )
     subject = (f"bootstrap: workspace={workspace}, component={component or ''}, "
-               f"{len(files)} files")
+               f"{len(files)} files: "
+               + ", ".join(f["target_path"] for f in files))
     tier = "T4" if component else "T3"
     path_for_msg = (f"projects/{workspace}/"
                     + (f"components/{component}/" if component else ""))
@@ -609,6 +627,7 @@ def _bootstrap_admitted(
             push_meta={"source_session": source_session,
                        "agent_identity": agent_identity, "bootstrap": True},
             writing_rules=writing_rules,
+            new_files_only=True,
         )
     except _WriteRejected as rej:
         resp = rej.response
