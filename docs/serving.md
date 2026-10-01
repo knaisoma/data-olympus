@@ -274,8 +274,10 @@ section so concurrent writes cannot corrupt each other:
   (`A.supersedes: B`, `B.superseded_by: A`) cannot both be approved as written:
   approve A with `edited_text` that omits the edge to B, approve B, then propose
   the edge on A again.
-- **Bootstrap rejection order (issue #259).** After the earlier path, size and
-  rate-limit refusals (which are unchanged and carry no `reason`), a bundle's
+- **Bootstrap rejection order (issue #259).** A bundle with an empty `files`
+  list is refused first, as `rejected_empty_bundle` (HTTP 400), before any claim,
+  rate-limit slot, commit or pending entry (issue #311). After the earlier path,
+  size and rate-limit refusals (which are unchanged and carry no `reason`), a bundle's
   commit-time checks run in a fixed order and refuse at the first failure:
   every file's path and postimage are secret-scanned first (so no later
   diagnostic can echo credential-shaped content), then duplicate ids inside the

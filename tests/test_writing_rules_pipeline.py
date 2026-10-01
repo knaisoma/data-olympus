@@ -323,6 +323,7 @@ _EXPECTED = {
     "rejected_bad_decision": (400, 400),
     "rejected_contest_index_unavailable": (503, 200),
     "rejected_edited_text_too_large": (400, 413),
+    "rejected_empty_bundle": (400, 200),
     "rejected_invalid_base": (400, 200),
     "rejected_invalid_contest": (400, 200),
     "rejected_invalid_document": (422, 422),
