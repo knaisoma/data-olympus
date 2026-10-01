@@ -6,6 +6,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 _SOURCE_COMMIT = "1" * 40
 
 
@@ -865,6 +867,49 @@ def test_docs_guard_accepts_receipt_commit_reachable_from_base(
     base = _git(root, "rev-parse", "--abbrev-ref", "HEAD")
 
     assert check_benchmark_docs.receipt_problems(root, base_ref=base) == []
+
+
+@pytest.mark.parametrize("annotated", [False, True])
+def test_docs_guard_accepts_branch_commit_held_by_a_receipt_tag(
+    tmp_path: Path, annotated: bool,
+) -> None:
+    """A corpus change must be measured inside its own PR, since corpora are
+    compared with the current tree. A ``benchmarks/receipt-*`` tag on the
+    measured commit keeps it resolvable after a squash merge, so the guard
+    accepts it in place of reachability from the base."""
+    from scripts import check_benchmark_docs
+
+    root, _ = _committed_benchmark_repo(tmp_path)
+    base = _rebind_receipt_on_branch(root, "pr-branch")
+    head = _git(root, "rev-parse", "HEAD")
+    tag = ["-a", "-m", "receipt"] if annotated else []
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@e.invalid",
+         "tag", *tag, "benchmarks/receipt-9.9.9", head)
+
+    assert check_benchmark_docs.receipt_problems(root, base_ref=base) == []
+
+
+@pytest.mark.parametrize("name, on_parent", [
+    ("v9.9.9", False),
+    ("benchmarks/receipt-9.9.9", True),
+    ("benchmarks/other-9.9.9", False),
+])
+def test_docs_guard_rejects_a_tag_that_does_not_hold_the_measured_commit(
+    tmp_path: Path, name: str, on_parent: bool,
+) -> None:
+    """Only a receipt tag pointing exactly at ``source_commit`` counts. Any
+    other tag name, or a receipt tag on a different commit, leaves the
+    branch-only commit rejected."""
+    from scripts import check_benchmark_docs
+
+    root, _ = _committed_benchmark_repo(tmp_path)
+    base = _rebind_receipt_on_branch(root, "pr-branch")
+    target = _git(root, "rev-parse", "HEAD~1" if on_parent else "HEAD")
+    _git(root, "tag", name, target)
+
+    problems = check_benchmark_docs.receipt_problems(root, base_ref=base)
+    assert any("reachable" in p for p in problems), problems
+    assert any("benchmarks/receipt-" in p for p in problems), problems
 
 
 def test_base_ref_prefers_the_remote_tracking_branch(

@@ -102,6 +102,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `KB_READ_ONLY` and `KB_DISABLE_VERSION_CHECK` accept `1`, `true`, `yes`,
   `on`, `0`, `false`, `no` and `off` (case-insensitive) and stop startup on
   any other value (#314).
+* **The benchmark receipt guard accepts a measured commit held by a
+  `benchmarks/receipt-*` tag.** A change to a benchmark corpus has to be
+  re-measured in its own pull request, because corpora are compared with the
+  current tree, and a squash merge then removes the measured commit from
+  `main`. A receipt tag pointing exactly at that commit keeps it resolvable, so
+  the pull request check accepts it; the other receipt checks are unchanged.
+  `benchmarks/README.md` describes the three refresh routes.
 * **Every path under `universal/` is tier T1 in the default taxonomy.** Only
   seven `universal/` subdirectories were classified; any other path there,
   such as `universal/README.md`, fell through to `meta`. Those seven keep their

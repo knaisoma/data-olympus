@@ -196,9 +196,10 @@ in `docs/comparison.md § Quantified comparison`.
 
 ## Refreshing the receipt
 
-`source_commit` must name a commit that is already on `main`. CI enforces this
-on every pull request: a receipt naming a commit that the base branch cannot
-reach fails the benchmark-docs guard.
+`source_commit` must name a commit that is already on `main`, or one held by a
+`benchmarks/receipt-*` tag. CI enforces this on every pull request: a receipt
+naming a commit that the base branch cannot reach and no receipt tag points at
+fails the benchmark-docs guard.
 
 The reason is that this repository squash-merges. A squash merge replaces a
 branch's commits with a single new one, so a receipt measured at a commit on
@@ -207,13 +208,22 @@ time, and becomes unresolvable entirely once the branch is deleted. The guard
 would then pass on the pull request and fail on `main`, and the reproduction
 recipe below could not check out the measured revision.
 
-So refresh a receipt one of two ways:
+So refresh a receipt one of three ways:
 
 * **The measured inputs are unchanged.** Measure at the pull request's base
   commit, which is already on `main`.
 * **The change alters measured inputs** (benchmark code, the product source it
   measures, or the dependency lock). Land that change first, then re-measure in
-  a follow-up pull request at its merge commit.
+  a follow-up pull request at its merge commit. This works because the guard
+  compares source and lock at the measured commit, not in the current tree.
+* **The change alters a benchmark corpus** (`benchmarks/corpus/`,
+  `example-bundle/`, or another file listed under `inputs.corpora`). Corpora
+  are compared with the current tree, so the receipt must be re-measured in the
+  same pull request, at a commit on its branch. Push a tag named
+  `benchmarks/receipt-<version>` pointing exactly at that commit, for example
+  `benchmarks/receipt-0.11.0`. A clone fetches the tag, so the commit stays
+  resolvable after the squash merge and the guard accepts it. Never delete or
+  move a receipt tag that a committed receipt names.
 
 ## Publishing a reproduction, and reporting a discrepancy
 
