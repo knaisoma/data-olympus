@@ -176,8 +176,10 @@ names the in-force dependents (`dependents_to_review`) and the retired sources
 deliberately, because deriving from an explicitly rejected document is worth
 surfacing; `draft` and `proposed` never governed and do not count. Nothing is
 filtered or demoted, and every edges query filters on `rel`, so the new rows
-cannot enter graph exclusion. One `example-bundle` concept carries the field,
-so the pinned OKF consumer run exercises it.
+cannot enter graph exclusion. The fixture bundle
+`tests/fixtures/okf-derived-from/` carries the field in both forms, and CI
+feeds it to the pinned OKF reference consumer, so tolerance is exercised
+rather than asserted.
 
 ### `validity`: freshness metadata with hard expiry semantics
 
@@ -334,7 +336,7 @@ OKF consumer choke on this" and "what does data-olympus tooling do with it".
 | `supersedes` | yes (unknown key) | error (shape/self/cycle/unresolved target), warning (asymmetric/path-shaped resolving) | Extracted into the `edges` table; source of the in-force-source graph-exclusion guard. |
 | `superseded_by` | yes (unknown key) | error (shape/self/unresolved target), warning (asymmetric/path-shaped resolving/in-force) | Same edges table; surfaced on `kb_get`/compact hits (deviation-only). |
 | `contradicts` | yes (unknown key) | error (shape), warning (dangling/path-shaped/in-force pair) | Annotation only; never filters or ranks. |
-| `derived_from` | yes (unknown key; exercised by the pinned consumer run over `example-bundle`) | error (shape/self/cycle/unresolved target/also superseded by this document), warning (path-shaped resolving; in-force document deriving from a retired one) | Same edges table under `rel = 'derived_from'`; surfaced on `kb_get` only, never filters or ranks. |
+| `derived_from` | yes (unknown key; exercised by the pinned consumer run over `tests/fixtures/okf-derived-from/`) | error (shape/self/cycle/unresolved target/also superseded by this document), warning (path-shaped resolving; in-force document deriving from a retired one) | Same edges table under `rel = 'derived_from'`; surfaced on `kb_get` only, never filters or ranks. |
 | `owner` | yes (unknown key) | none | Documented convention; no tooling reads it. |
 | `validity` (and sub-fields) | yes (unknown key) | warning only (malformed value, `recheck_by` past, `valid_until` past while in-force) | Drives `in_force` and default-search exclusion for expiry; `recheck_by` drives `freshness: stale` only. |
 | `in_force` (runtime) | n/a (never in frontmatter) | n/a | Serving-envelope only; MUST NOT be treated as bundle content. |
