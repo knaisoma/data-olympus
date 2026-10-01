@@ -16,6 +16,35 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+* **`derived_from`: name the dependents of a retired document** (#300). A
+  document may declare `derived_from`, a concept id or a list of ids its
+  guidance was drawn from. When a source leaves force (graph-excluded,
+  `deprecated`, `superseded`, `rejected` or expired), `kb_get` names the
+  in-force dependents on the source (`dependents_to_review`) and the retired
+  sources on the dependent (`derived_from_retired`), and `data-olympus lint`
+  warns on both ends. `rejected` counts as retired on purpose; `draft` and
+  `proposed` never governed and do not. It is a cue for a person: nothing is
+  filtered, demoted, ranked or invalidated, and `kb_search` and `kb_consult`
+  are unchanged. Lint errors on a malformed or unresolved target (downgradable
+  with `--unresolved-targets warn`), self-reference, derivation cycles, and
+  deriving from a document the same document supersedes; the write path
+  refuses a newly introduced unresolved or malformed target but never a write
+  because a source retired. The format moves to `0.5`, a backward-compatible
+  addition; no migration.
+* **Capture provenance on memory proposals** (first slice of #141). Memory
+  proposals accept an optional `capture` envelope for a memory distilled from a
+  passive capture such as a hook event or an external transcript:
+  `capture_source`, `capture_event_id`, `source_event_hash`,
+  `transformation` and `raw_retention` are required, and `capture_session`,
+  `classification` and a server-verified `derived_memory_hash` are optional.
+  It holds identifiers, hashes and enums only. It is written to the memory's
+  frontmatter, shown in the pending listing and readback, recorded in the
+  committed and pending audit events, and counted by the session recap as
+  `capture_derived`; an operator edit at resolve keeps it. It is a label, not
+  authority: it never forces review and never makes a memory in force. An
+  invalid envelope is refused as `rejected_invalid_capture` (HTTP 400) and a
+  credential-shaped value as `rejected_secret_detected`.
+
 * **Writing rules on the documents agents write** (#283). The write pipeline
   now applies the project's raw writing rules (no em-dash, no en-dash used as
   one, no agent authorship credit) to the lines a write ADDS, on every commit
@@ -45,6 +74,40 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hash-verified `mcp-publisher`. No secret or personal sign-in is involved.
 
 ### Changed
+
+* **MCP SDK 1.30.0, Starlette 1.7.0, uvicorn 0.54.0 and sse-starlette 3.5.0**,
+  with a direct `mcp>=1.30.0,<2` requirement. The MCP SDK now closes a
+  streamable HTTP session that has had no request in flight for 30 minutes and
+  holds at most 10000 sessions (HTTP 503 beyond that); an open SSE stream keeps
+  a session alive. See Upgrading in the release notes.
+* **Onboarding bootstrap creates only new files under the workspace it
+  onboards.** Every target must lie under `projects/<workspace>/`, or under
+  `projects/<workspace>/components/<component>/` when a component is given,
+  in every onboarding state; other paths are refused as
+  `rejected_path_not_indexable_or_blocked`, and a target that already exists is
+  refused at commit time as `rejected_already_onboarded`. Use
+  `kb_propose_edit` to change an existing document. The bootstrap commit
+  subject lists every path written.
+* **`kb_propose_edit` accepts `base_commit` only as `HEAD` (or `head`) or a
+  commit id** of 7 to 64 lowercase hex characters. Any other value is refused
+  as `rejected_invalid_base` and is not recorded.
+* **Configuration is checked at startup where it used to be ignored.** A set
+  but unusable `KB_AUTH_PRINCIPALS` (invalid JSON, not a list, an empty list,
+  an entry that is not an object or has no non-empty `token`) stops startup
+  with an error naming the setting and entry number. `KB_SECRET_SCAN_EXTRA_PATTERNS`
+  is parsed once at startup, accepts a JSON array of patterns, no longer
+  splits a pattern at a comma inside `{...}` or `[...]` (so
+  `ACME_[A-Z0-9]{20,40}` stays one pattern), and an invalid or
+  nested-quantifier pattern stops startup instead of being skipped.
+  `KB_READ_ONLY` and `KB_DISABLE_VERSION_CHECK` accept `1`, `true`, `yes`,
+  `on`, `0`, `false`, `no` and `off` (case-insensitive) and stop startup on
+  any other value (#314).
+* **Every path under `universal/` is tier T1 in the default taxonomy.** Only
+  seven `universal/` subdirectories were classified; any other path there,
+  such as `universal/README.md`, fell through to `meta`. Those seven keep their
+  categories, other paths get the category `universal`, and the CLI fallback
+  matches. Search facets for those documents move from `meta` to T1, and
+  `KB_WRITE_BLOCK_TIERS=T1` now covers the whole of `universal/`.
 
 * **`kb enforce report` judges consult coverage like the live gate** (#309).
   The report and its `--staged` commit gate count a governed commit as
@@ -103,6 +166,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `uv run python scripts/prose_lint.py <path>`.
 
 ### Fixed
+
+* **A session closed by the idle reaper now leaves the session table.** With
+  MCP SDK 1.29.1, reaped sessions stayed listed, so `live_sessions` in health
+  never decreased and the closed session objects were kept until restart.
+* **REST routes refuse a non-string value in a string field** (#310) with HTTP
+  400 naming the field, and record nothing. Previously consult and record
+  event could write such a value to the audit log, after which the audit and
+  compliance readers failed. `kb_audit` and `kb_compliance` now skip a
+  malformed audit line and report it in a new `skipped` count.
+* **An empty bootstrap bundle is refused** as `rejected_empty_bundle` (HTTP
+  400) before any claim, rate-limit slot, commit or pending entry (#311).
+  Previously it answered 500, or reported a pending bootstrap that was never
+  parked.
+* **Without `KB_REMOTE_URL`, the MCP tools `kb_list_pending`,
+  `kb_get_pending` and `kb_audit` answer like their REST equivalents** instead
+  of failing with an empty tool error (#312).
+* **REST resolve answers 400, not 200, for a symlink-escape refusal** (#313).
 
 * **REST resolve no longer answers 200 for an unknown decision** (#307). A
   `decision` other than `approve`, `reject` or `edit` (for example the typo
