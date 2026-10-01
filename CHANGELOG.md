@@ -58,6 +58,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   JWK container or a BOM-prefixed key, as an HMAC secret. PyJWT reaches Data
   Olympus only through the MCP SDK's optional crypto extra, and Data Olympus
   does not call it directly; the lock now resolves the fixed release.
+* **urllib3 2.8.0** (GHSA-8988-9cw3-xx77 and GHSA-vxq7-64xx-v4gw, high;
+  GHSA-gh4c-6fx4-qh6g, medium): HTTPS proxy TLS settings could be ignored, and
+  a chunked response could make the client buffer an unbounded line. urllib3
+  reaches Data Olympus only through `requests`, which the optional embeddings
+  extra uses to download its model.
+* **cryptography 50.0.2**, whose wheels are built against OpenSSL 4.0.3.
 
 ## [0.10.0] - 2026-09-28
 
