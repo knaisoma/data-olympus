@@ -246,6 +246,10 @@ _DEFAULT_PATH_RULES: tuple[tuple[str, str, str], ...] = (
     ("universal/database/",         "T1", "database"),
     ("universal/api/",              "T1", "api"),
     ("universal/services/",         "T1", "services"),
+    # Every other path under universal/ (a loose file such as
+    # universal/README.md, or a subdirectory not listed above) is still T1.
+    # Must stay after the specific rules: the first matching prefix wins.
+    ("universal/",                   "T1", "universal"),
 
     # T2 Stack-specific, classified dynamically: tech-stacks/<stack>/...
     ("tech-stacks/",                 "T2", "stack"),

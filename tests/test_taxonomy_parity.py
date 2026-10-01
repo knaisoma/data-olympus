@@ -29,6 +29,8 @@ REPRESENTATIVE_PATHS: tuple[str, ...] = (
     "universal/foundation/STD-U-001.md",
     "universal/services/x.md",
     "universal/unlisted/x.md",
+    "universal/README.md",
+    "universal/",
     # T4: projects/<name>/components/<component>/...
     "projects/acme/components/billing/rules.md",
     "projects/acme/components/billing/deep/nested.md",

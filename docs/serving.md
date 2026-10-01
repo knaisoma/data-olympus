@@ -1045,6 +1045,13 @@ default is deployment-neutral and covers `universal/`, `tech-stacks/<stack>/`,
 `memory/accepted/`), `tooling/`, `templates/`, and `projects/<name>/`
 (with `components/<component>/` for T4).
 
+Every path under `universal/` is T1. The subdirectories `foundation/`,
+`quality/`, `security/`, `infrastructure/`, `database/`, `api/`, and
+`services/` take their own name as the category; any other path under
+`universal/`, such as `universal/README.md` or `universal/process/x.md`, has
+the category `universal`. A path outside every prefix in the table gets the
+tier and category `meta`.
+
 A bundle that uses a different directory layout overrides the defaults at deploy
 time, with no code change:
 
