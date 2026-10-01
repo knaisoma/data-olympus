@@ -281,12 +281,25 @@ section so concurrent writes cannot corrupt each other:
   (`A.supersedes: B`, `B.superseded_by: A`) cannot both be approved as written:
   approve A with `edited_text` that omits the edge to B, approve B, then propose
   the edge on A again.
+- **Bootstrap scope.** Onboarding bootstrap creates new files under the
+  workspace or component it onboards, and nothing else. Every target path
+  must lie under `projects/<workspace>/`, or under
+  `projects/<workspace>/components/<component>/` when a component is given,
+  whatever the onboarding state; a bundle with any other path is refused as
+  `rejected_path_not_indexable_or_blocked`, listing those paths, before any
+  pending entry or commit is made. A bootstrap of a `partial` workspace is
+  still narrowed to the missing canonical files first. At commit time a
+  target that already exists in the session worktree refuses the whole
+  bundle as `rejected_already_onboarded`, so a bootstrap never replaces a
+  file. To change an existing document, use `kb_propose_edit`. The commit
+  subject names every path the bootstrap writes.
 - **Bootstrap rejection order (issue #259).** After the earlier path, size and
   rate-limit refusals (which are unchanged and carry no `reason`), a bundle's
   commit-time checks run in a fixed order and refuse at the first failure:
   every file's path and postimage are secret-scanned first (so no later
   diagnostic can echo credential-shaped content), then duplicate ids inside the
-  bundle, then each file's containment and content validation in file order.
+  bundle, then each file's containment, existing-target and content
+  validation in file order.
   Supersession targets resolve against the committed tree with the whole bundle
   applied, so a successor and its predecessor created in the same bundle are
   accepted. A secret-scan, duplicate-id or content-validation refusal carries

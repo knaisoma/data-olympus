@@ -1234,6 +1234,7 @@ def commit_multifile_in_worktree(
     writing_rules: WritingRulesPolicy | None = None,
     writing_rule_sink: list[str] | None = None,
     writing_rule_exempt: bool = False,
+    new_files_only: bool = False,
 ) -> tuple[str, str]:
     """Serialized multi-file write -> add -> ONE commit -> enqueue (Codex Blocker 2).
 
@@ -1246,6 +1247,13 @@ def commit_multifile_in_worktree(
     duplicate ids, then per-file containment and content validation (issue
     #259). CAS is not applied here (bootstrap creates NEW files under a
     not-yet-onboarded workspace; there is no base to compare).
+
+    ``new_files_only`` makes that assumption a check: a target that already
+    exists in the refreshed worktree refuses the whole bundle as
+    ``rejected_already_onboarded`` during per-file containment, before
+    anything is written. It is passed True ONLY by onboarding bootstrap and is
+    on no MCP or REST surface. The maintenance ledger, which rewrites its own
+    existing file, leaves it False.
 
     Writing rules (issue #283) apply after the secret scan, per file, against
     what the worktree holds now (an absent file is an empty preimage). That is
@@ -1359,6 +1367,10 @@ def commit_multifile_in_worktree(
             if full is None:
                 raise _WriteRejected(ProposeResponse(
                     status="rejected_symlink_escape", target_path=tp))
+            if new_files_only and os.path.lexists(full):
+                raise _WriteRejected(ProposeResponse(
+                    status="rejected_already_onboarded", target_path=tp,
+                    reason="bootstrap creates new files only; the target exists"))
             vr = validate_postimage(
                 target_path=tp, postimage=pi, idx=idx, worktree_path=wt.path,
                 snapshot=snapshot, transaction=transaction)
