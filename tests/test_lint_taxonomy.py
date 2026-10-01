@@ -148,3 +148,17 @@ def test_cli_malformed_taxonomy_skips_the_check_without_failing(tmp_path, monkey
     assert code == 0
     assert "warning: tier:" not in captured.out
     assert "KB_TAXONOMY_PATH" in captured.err
+
+
+def test_t1_under_an_unlisted_universal_subdirectory_is_not_flagged(tmp_path):
+    # Every path under universal/ is T1 by default, not only the seven listed
+    # subdirectories, so a T1 declaration there agrees with the path.
+    p = _write(tmp_path, "universal/process/STD-U-900.md", tier="T1", category="universal")
+    assert _taxonomy(lint_bundle(tmp_path), p) == []
+
+
+def test_meta_under_universal_is_flagged_as_t1(tmp_path):
+    p = _write(tmp_path, "universal/README.md", tier="meta")
+    found = _taxonomy(lint_bundle(tmp_path), p)
+    assert [f.field for f in found] == ["tier"]
+    assert "'T1'" in found[0].message
