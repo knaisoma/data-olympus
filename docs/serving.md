@@ -99,9 +99,12 @@ trigram, auth, audit rotation):
   one with the classic nested-quantifier ReDoS shape, is logged and skipped
   rather than raised, and every accepted pattern runs with a hard 1-second
   match timeout. Empty by default (no extra patterns).
-- `KB_DISABLE_VERSION_CHECK`: truthy (`1`, `true`, `yes`, `on`) disables the
+- `KB_DISABLE_VERSION_CHECK`: `1`, `true`, `yes`, or `on` disables the
   public PyPI/GitHub version check completely. Use this for air-gapped
-  deployments. Default is off.
+  deployments. `0`, `false`, `no`, or `off` keeps it enabled, as does leaving
+  the setting unset or empty (the default). Values are case-insensitive and
+  surrounding whitespace is ignored; any other value stops startup with an
+  error naming the setting, so a typo cannot leave the outbound check running.
 - `KB_VERSION_CHECK_INTERVAL_SEC`: how often the background task refreshes the
   cached latest-version result (default `86400`, i.e. 24h). The health request
   path never performs the outbound lookup.
@@ -161,8 +164,12 @@ set and refreshes its own index snapshot from the same git remote as the single
 writer. Run as many replicas as you need for read throughput; the single
 write-enabled instance remains the only owner of the git remote.
 
-`KB_READ_ONLY` is a truthy flag: `1`, `true`, `yes`, or `on` (case-insensitive)
-enable it; unset or anything else keeps the default read-write behaviour.
+`KB_READ_ONLY` accepts `1`, `true`, `yes`, or `on` to enable read-only mode,
+and `0`, `false`, `no`, or `off` for the default read-write behaviour, which
+also applies when the setting is unset or empty. Values are case-insensitive
+and surrounding whitespace is ignored. Any other value, such as `ture` or
+`enabled`, stops startup with an error naming the setting, so a mistyped value
+cannot start a replica with the write pipeline running.
 
 See `deploy/k8s/read-replica/` for a ready-to-apply `Deployment` (not the
 StatefulSet writer) that runs N read replicas with per-pod ephemeral clone +
