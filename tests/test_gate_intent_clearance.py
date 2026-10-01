@@ -345,3 +345,30 @@ def test_pair_mode_clears_on_any_fresh_explicit_consult() -> None:
     assert _gate(led, diff="pip install requests",
                  clearance=GATE_CLEARANCE_PAIR).verdict == "allow"
     assert _gate(led, diff="pip install requests").verdict == "consult_required"
+
+
+# --- issue #309: a suggestion stays well formed for a quoted path -------------
+
+
+@pytest.mark.parametrize(
+    "path", ['ja"va/pom.xml', "it's/pom.xml", "a'b\"c/pom.xml"],
+)
+def test_suggestion_for_a_path_with_a_quote_parses_and_clears(path: str) -> None:
+    import ast
+
+    resp = _gate(ConsultationLedger(), path=path)
+    assert resp.verdict == "consult_required"
+    m = re.search(r"Call (kb_consult\(.*\)) then retry", resp.reason)
+    assert m is not None, resp.reason
+    call = ast.parse(m.group(1), mode="eval").body
+    assert isinstance(call, ast.Call)
+    kwargs = {k.arg: ast.literal_eval(k.value) for k in call.keywords}
+    assert kwargs["workspace"] == "proj"
+    assert kwargs["source_session"] == "s1"
+    intent = kwargs["intent"]
+    # The path is wrapped whole in a quote character it does not contain.
+    assert any(f"{q}{path}{q}" in intent for q in "\"'`" if q not in path), intent
+
+    led = ConsultationLedger()
+    _consult(led, intent)
+    assert _gate(led, path=path).verdict == "allow"
