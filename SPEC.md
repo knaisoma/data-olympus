@@ -180,6 +180,27 @@ A structured `relationships:` block (grouping these fields under one key, possib
 - **A health counter, `graph_excluded_docs`, reports the count of documents currently excluded by this rule**, alongside `malformed_frontmatter` and `malformed_validity` (section 8 / `kb_health`), so a forgotten status flip does not hide silently.
 - **Retirement is explainable.** `kb_get` always resolves a document regardless of in-force/graph-exclusion status (same as it already ignores expiry) and returns `superseded_by`: the union of the document's own frontmatter claim and any reverse `supersedes` edge naming it -- ONE consistent computed shape that covers both the honest self-declared case and the forgotten-status-flip case. `kb_get` also returns `contradicts` (the document's own list) and the computed reverse `contradicted_by`. Compact `kb_search` hits carry a deviation-only `superseded_by` (omitted when the document is not superseded), computed and attached to every hit regardless of `in_force` (same pattern as `freshness`). `contradicts` is annotation only: it is NEVER applied to filtering or ranking anywhere in the retrieval path.
 
+#### `capture`: capture provenance on memory documents
+
+`capture` is an optional nested mapping on `memory` documents. It records that the memory was distilled from a passively captured event (a hook event, an external session transcript) rather than written deliberately, binds it to that event and to the exact proposed text, and names the transformation that produced it. Its values are identifiers, hashes and enumerated values only; the captured raw event is never stored in the bundle.
+
+| field | required | value |
+|---|---|---|
+| `capture_source` | yes | the capture channel, a lowercase token such as `claude_code.hook` |
+| `capture_event_id` | yes | the captured event's identifier (a UUID, ULID or `urn:` id) |
+| `source_event_hash` | yes | `sha256:` followed by 64 lowercase hex characters, over the captured event |
+| `transformation` | yes | the transformer and its version, a token such as `automem.distill/1.4.2` |
+| `raw_retention` | yes | what happened to the raw event: `discarded`, `redacted` or `retained` |
+| `capture_session` | no | the session that produced the captured event |
+| `classification` | no | `fact`, `decision`, `preference`, `task_state` or `noise` |
+| `derived_memory_hash` | yes, when written by the reference implementation | `sha256:` followed by 64 lowercase hex characters, over the memory text as proposed |
+
+Three states stay separate. The captured event is evidence and lives outside the store. The memory derived from it is a candidate: its status is `proposed` and, under the memory inbox, it is never in force. Guidance exists only once a human promotes it. The envelope is provenance, not authority: it adds no status value and is never consulted by the in-force predicate.
+
+The two hashes establish integrity, not derivation. Matching hashes show that neither the event nor the proposed text changed; they cannot show that one was derived from the other, which is why `transformation` names the step a reviewer checks. `derived_memory_hash` describes the text as proposed: when a reviewer edits the memory before accepting it, the reference implementation keeps the envelope and its original hash, so a mismatch with the committed body records the human edit.
+
+`capture` is a profile extension. OKF consumers tolerate it as an unknown key (section 4.1), and the reference implementation does not index it.
+
 **Reserved-file exemption.** Files named `index.md`, `log.md`, or `template.md` in any directory are exempt from both required and recommended field validation. They may carry any frontmatter (or none at all), subject to the rules in sections 6 and 7.
 
 ### 4.3 Example concept document
