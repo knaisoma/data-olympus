@@ -79,6 +79,55 @@ except Exception:
     print("")' "$1" "$2"
 }
 
+format_deny_reason() {
+  # format_deny_reason <response-json> <workspace> <session>
+  # Sanitize before token matching and capping, for every output dialect.
+  # The 1200-character cap covers the whole message, not bytes; the retained
+  # server text can end mid-token or mid-repr when it is truncated.
+  python3 - "$1" "$2" "$3" <<'PY'
+import json
+import re
+import sys
+
+reason = json.loads(sys.argv[1]).get("reason")
+ws, session = sys.argv[2:4]
+prefix = "[KB] BLOCKED: "
+if isinstance(reason, str):
+    reason = "".join(
+        c if " " <= c <= "~" or (c.isalpha() and c.isprintable()) else " "
+        for c in reason
+    )
+if not isinstance(reason, str) or not reason.strip():
+    reason = (
+        "this is a governed change and no explicit consultation is on record. "
+        f"Call kb_consult(workspace={ws!r}, source_session={session!r}, "
+        "intent=" + repr("<what you are doing>") + ") then retry."
+    )
+identifiers = [f"workspace={ws!r}", f"source_session={session!r}"]
+# Match against the full sanitized reason so truncation cannot manufacture a
+# token boundary. Only matches wholly inside the retained text count.
+identifier_ends = {
+    value: [
+        match.end()
+        for match in re.finditer(r"(?<!\w)" + re.escape(value) + r"(?!\w)", reason)
+    ]
+    for value in identifiers
+}
+suffix = ""
+while True:
+    retained = reason[:max(0, 1200 - len(prefix) - len(suffix))]
+    missing = [
+        value for value in identifiers
+        if not any(end <= len(retained) for end in identifier_ends[value])
+    ]
+    updated = " (" + ", ".join(missing) + ")" if missing else ""
+    if updated == suffix:
+        break
+    suffix = updated
+print((prefix + retained + suffix)[:1200])
+PY
+}
+
 resolve_workspace() {
   # Echo a stable workspace label for cwd. Preference order:
   #   1. the MAIN git worktree basename, which is identical from the main
@@ -316,24 +365,7 @@ print(json.dumps({"workspace":sys.argv[1],"session_id":sys.argv[2],
       # The server supplies the uncovered signals and the exact clearing intent.
       # Reserve room for identifiers missing from the retained reason, including
       # when truncation removes them. Empty reasons keep the legacy guidance.
-      DENY="$(python3 -c 'import json,sys
-reason=json.loads(sys.argv[1]).get("reason")
-ws,session=sys.argv[2:4]
-prefix="[KB] BLOCKED: "
-if not isinstance(reason,str) or not reason.strip():
-    reason=("this is a governed change and no explicit consultation is on record. "
-            f"Call kb_consult(workspace={ws!r}, source_session={session!r}, "
-            "intent=" + repr("<what you are doing>") + ") then retry.")
-identifiers=[f"workspace={ws!r}", f"source_session={session!r}"]
-suffix=""
-while True:
-    retained=reason[:max(0,1200-len(prefix)-len(suffix))]
-    missing=[value for value in identifiers if value not in retained]
-    updated=" (" + ", ".join(missing) + ")" if missing else ""
-    if updated == suffix:
-        break
-    suffix=updated
-print((prefix+retained+suffix)[:1200])' "$RESP_BODY" "$WS" "$SESSION")"
+      DENY="$(format_deny_reason "$RESP_BODY" "$WS" "$SESSION")"
       emit_deny "$DENY"
     fi
     # Only reached when 2xx AND verdict == allow.

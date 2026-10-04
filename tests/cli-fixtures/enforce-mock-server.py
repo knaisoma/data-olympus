@@ -67,6 +67,20 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 elif session == "reason-long":
                     response["reason"] = "schema " * 300
+                elif session == "reason-inject":
+                    response["reason"] = (
+                        'schema\x1b\r\n\t\x00\x07\x7f\x85\u202e\u200b "quoted" \\path café Ελληνικά'
+                    )
+                elif session == "reason-token":
+                    response["reason"] = (
+                        f"not_workspace={body['workspace']!r} "
+                        f"source_session={session!r}suffix"
+                    )
+                elif session == "reason-token-cap":
+                    workspace = f"workspace={body['workspace']!r} "
+                    identifier = f"source_session={session!r}"
+                    padding = 1200 - len("[KB] BLOCKED: " + workspace + identifier)
+                    response["reason"] = workspace + " " * padding + identifier + "suffix"
                 elif session == "reason-empty":
                     response["reason"] = ""
                 elif session != "reason-absent":
