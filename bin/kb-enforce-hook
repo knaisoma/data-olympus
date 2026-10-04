@@ -6,6 +6,8 @@
 #   session-start  warm-up note (stdout -> context)
 #   user-prompt    POST /consult, print governing rules (stdout -> context)
 #   pre-tool       POST /gate/check, block (exit 2) on consult_required
+#                  Surface server reason, or generic consult guidance if empty;
+#                  retain workspace/session details, capped at 1200 characters.
 #   stop           no-op
 #
 # Environment:
@@ -311,11 +313,28 @@ print(json.dumps({"workspace":sys.argv[1],"session_id":sys.argv[2],
       exit 0
     fi
     if [[ "$VERDICT" == "consult_required" ]]; then
-      # Actionable deny: include the exact workspace key AND the session id (the
-      # one value the agent cannot guess) plus a copy-pasteable kb_consult call.
-      # A null/empty session_id echoes as empty (json_field already emits "" for
-      # JSON null), never the literal "None".
-      emit_deny "[KB] BLOCKED: this is a governed change and no explicit consultation is on record. Call kb_consult(workspace='$WS', source_session='$SESSION', intent='<what you are doing>') then retry."
+      # The server supplies the uncovered signals and the exact clearing intent.
+      # Reserve room for identifiers missing from the retained reason, including
+      # when truncation removes them. Empty reasons keep the legacy guidance.
+      DENY="$(python3 -c 'import json,sys
+reason=json.loads(sys.argv[1]).get("reason")
+ws,session=sys.argv[2:4]
+prefix="[KB] BLOCKED: "
+if not isinstance(reason,str) or not reason.strip():
+    reason=("this is a governed change and no explicit consultation is on record. "
+            f"Call kb_consult(workspace={ws!r}, source_session={session!r}, "
+            "intent=" + repr("<what you are doing>") + ") then retry.")
+identifiers=[f"workspace={ws!r}", f"source_session={session!r}"]
+suffix=""
+while True:
+    retained=reason[:max(0,1200-len(prefix)-len(suffix))]
+    missing=[value for value in identifiers if value not in retained]
+    updated=" (" + ", ".join(missing) + ")" if missing else ""
+    if updated == suffix:
+        break
+    suffix=updated
+print((prefix+retained+suffix)[:1200])' "$RESP_BODY" "$WS" "$SESSION")"
+      emit_deny "$DENY"
     fi
     # Only reached when 2xx AND verdict == allow.
     exit 0

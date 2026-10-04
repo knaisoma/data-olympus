@@ -12,6 +12,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* Preserve the gate server's reason and exact consultation intent in pre-tool
+  hook denials, retaining workspace/session details within a 1200-character cap.
+  Empty reasons continue to use the generic consultation guidance.
+
 ## [0.11.0] - 2026-10-05
 
 ### Added

@@ -57,9 +57,21 @@ class Handler(BaseHTTPRequestHandler):
             if "boom" in path:
                 self._send({"error": "internal_error", "verdict": "allow"}, 500)
             elif path.endswith("pyproject.toml") and body.get("session_id") != "allowme":
-                self._send({"verdict": "consult_required",
-                            "reason": "governed action; call kb_consult first",
-                            "rules": []})
+                response = {"verdict": "consult_required", "rules": []}
+                session = body.get("session_id")
+                if session == "reason-present":
+                    response["reason"] = (
+                        "uncovered signals: keyword:schema, keyword:auth. "
+                        f"Call kb_consult(workspace={body['workspace']!r}, "
+                        f"source_session={session!r}, intent='schema; auth') then retry."
+                    )
+                elif session == "reason-long":
+                    response["reason"] = "schema " * 300
+                elif session == "reason-empty":
+                    response["reason"] = ""
+                elif session != "reason-absent":
+                    response["reason"] = "governed action; call kb_consult first"
+                self._send(response)
             else:
                 self._send({"verdict": "allow", "reason": "ok", "rules": []})
         elif self.path == "/api/v1/audit/event":
