@@ -91,7 +91,10 @@ is written as a Python string literal, so the call still parses when a path
 holds a quote character. The `gate_block` audit
 event keeps `status: consult_required` and adds an `uncovered` field holding the
 signal list, so `kb_compliance` counts are unchanged and a mismatch is
-countable.
+countable. The pre-tool hook surfaces the server reason after `[KB] BLOCKED:`,
+retains workspace and session details when missing, and caps the message at
+1200 characters. An absent or empty reason falls back to generic consultation
+guidance.
 
 **Audit.** Every `consult` audit event records the consult's coverage set in a
 `coverage` field (an empty list when it covers nothing) next to its `trigger`;

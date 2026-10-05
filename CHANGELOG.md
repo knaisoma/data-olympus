@@ -12,6 +12,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* Preserve the gate server's uncovered signals and suggested consult intent in
+  pre-tool hook denials. Replace controls and characters outside printable ASCII
+  and Unicode letters with spaces for every dialect, then retain workspace/session
+  tokens within a 1200-character cap on the whole message. Empty reasons continue
+  to use the generic consultation guidance.
+
 ## [0.11.0] - 2026-10-05
 
 ### Added

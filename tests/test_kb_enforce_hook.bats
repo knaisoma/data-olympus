@@ -87,7 +87,7 @@ teardown() {
   # the workspace key inside a copy-pasteable kb_consult(...) call.
   run bash -c 'echo "{\"session_id\":\"blockme\",\"cwd\":\"/tmp/proj\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/proj/pyproject.toml\"}}" | "'"$HOOK"'" pre-tool'
   [ "$status" -eq 2 ]
-  [[ "$output" == *"kb_consult(workspace="* ]]
+  [[ "$output" == *"workspace="* ]]
   [[ "$output" == *"source_session='blockme'"* ]]
 }
 
@@ -98,6 +98,84 @@ teardown() {
   [ "$status" -eq 2 ]
   [[ "$output" != *"None"* ]]
   [[ "$output" == *"source_session=''"* ]]
+}
+
+@test "pre-tool surfaces the server reason verbatim" {
+  run bash -c 'printf "%s" "$1" | "$2" pre-tool' _ \
+    '{"session_id":"reason-present","cwd":"/tmp/proj","tool_name":"Edit","tool_input":{"file_path":"/tmp/proj/pyproject.toml"}}' "$HOOK"
+  [ "$status" -eq 2 ]
+  [ "$output" = "[KB] BLOCKED: uncovered signals: keyword:schema, keyword:auth. Call kb_consult(workspace='/tmp/proj', source_session='reason-present', intent='schema; auth') then retry." ]
+}
+
+@test "pre-tool falls back when the server reason is absent or empty" {
+  for session in reason-absent reason-empty; do
+    run bash -c 'printf "%s" "$1" | "$2" pre-tool' _ \
+      "{\"session_id\":\"$session\",\"cwd\":\"/tmp/proj\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/proj/pyproject.toml\"}}" "$HOOK"
+    [ "$status" -eq 2 ]
+    [ "$output" = "[KB] BLOCKED: this is a governed change and no explicit consultation is on record. Call kb_consult(workspace='/tmp/proj', source_session='$session', intent='<what you are doing>') then retry." ]
+  done
+}
+
+@test "pre-tool caps the reason at 1200 characters and retains missing identifiers" {
+  run bash -c 'printf "%s" "$1" | "$2" pre-tool' _ \
+    '{"session_id":"reason-long","cwd":"/tmp/proj","tool_name":"Edit","tool_input":{"file_path":"/tmp/proj/pyproject.toml"}}' "$HOOK"
+  [ "$status" -eq 2 ]
+  [ "${#output}" -eq 1200 ]
+  [[ "$output" == "[KB] BLOCKED: schema "* ]]
+  [[ "$output" == *"workspace='/tmp/proj'"* ]]
+  [[ "$output" == *"source_session='reason-long'"* ]]
+}
+
+@test "pre-tool sanitizes injection-shaped reasons on stderr for claude and codex" {
+  for agent in claude codex; do
+    run bash -c 'printf "%s" "$1" | "$2" pre-tool --agent "$3" >"$4" 2>"$5"' _ \
+      '{"session_id":"reason-inject","cwd":"/tmp/proj","tool_name":"Edit","tool_input":{"file_path":"/tmp/proj/pyproject.toml"}}' \
+      "$HOOK" "$agent" "$BATS_TEST_TMPDIR/stdout" "$BATS_TEST_TMPDIR/stderr"
+    [ "$status" -eq 2 ]
+    [ ! -s "$BATS_TEST_TMPDIR/stdout" ]
+    run python3 -c '
+import pathlib, sys
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+assert raw.endswith(b"\n")
+line = raw[:-1].decode()
+assert all(c.isprintable() for c in line), repr(line)
+assert line.startswith("[KB] BLOCKED: schema" + " " * 11 + "\"quoted\" \\path café Ελληνικά"), repr(line)
+' "$BATS_TEST_TMPDIR/stderr"
+    [ "$status" -eq 0 ]
+  done
+}
+
+@test "pre-tool gemini emits valid deny JSON with the sanitized reason round-tripped" {
+  run bash -c 'printf "%s" "$1" | "$2" pre-tool --agent gemini --dialect gemini 2>"$3"' _ \
+    '{"session_id":"reason-inject","cwd":"/tmp/proj","tool_name":"Edit","tool_input":{"file_path":"/tmp/proj/pyproject.toml"}}' \
+    "$HOOK" "$BATS_TEST_TMPDIR/stderr"
+  [ "$status" -eq 0 ]
+  [ ! -s "$BATS_TEST_TMPDIR/stderr" ]
+  run python3 -c '
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["decision"] == "deny"
+reason = value["reason"]
+assert all(c.isprintable() for c in reason), repr(reason)
+assert reason.startswith("[KB] BLOCKED: schema" + " " * 11 + "\"quoted\" \\path café Ελληνικά"), repr(reason)
+assert "workspace=" in reason and "source_session=" in reason
+' "$output"
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-tool requires complete identifier tokens rather than substrings" {
+  run bash -c 'printf "%s" "$1" | "$2" pre-tool' _ \
+    '{"session_id":"reason-token","cwd":"/tmp/proj","tool_name":"Edit","tool_input":{"file_path":"/tmp/proj/pyproject.toml"}}' "$HOOK"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *" (workspace='/tmp/proj', source_session='reason-token')" ]]
+}
+
+@test "pre-tool truncation cannot turn a longer token into a matching identifier" {
+  run bash -c 'printf "%s" "$1" | "$2" pre-tool' _ \
+    '{"session_id":"reason-token-cap","cwd":"/tmp/proj","tool_name":"Edit","tool_input":{"file_path":"/tmp/proj/pyproject.toml"}}' "$HOOK"
+  [ "$status" -eq 2 ]
+  [ "${#output}" -eq 1200 ]
+  [[ "$output" == *" (source_session='reason-token-cap')" ]]
 }
 
 @test "user-prompt consult body carries trigger=prompt_hook" {

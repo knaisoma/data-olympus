@@ -57,9 +57,35 @@ class Handler(BaseHTTPRequestHandler):
             if "boom" in path:
                 self._send({"error": "internal_error", "verdict": "allow"}, 500)
             elif path.endswith("pyproject.toml") and body.get("session_id") != "allowme":
-                self._send({"verdict": "consult_required",
-                            "reason": "governed action; call kb_consult first",
-                            "rules": []})
+                response = {"verdict": "consult_required", "rules": []}
+                session = body.get("session_id")
+                if session == "reason-present":
+                    response["reason"] = (
+                        "uncovered signals: keyword:schema, keyword:auth. "
+                        f"Call kb_consult(workspace={body['workspace']!r}, "
+                        f"source_session={session!r}, intent='schema; auth') then retry."
+                    )
+                elif session == "reason-long":
+                    response["reason"] = "schema " * 300
+                elif session == "reason-inject":
+                    response["reason"] = (
+                        'schema\x1b\r\n\t\x00\x07\x7f\x85\u202e\u200b "quoted" \\path café Ελληνικά'
+                    )
+                elif session == "reason-token":
+                    response["reason"] = (
+                        f"not_workspace={body['workspace']!r} "
+                        f"source_session={session!r}suffix"
+                    )
+                elif session == "reason-token-cap":
+                    workspace = f"workspace={body['workspace']!r} "
+                    identifier = f"source_session={session!r}"
+                    padding = 1200 - len("[KB] BLOCKED: " + workspace + identifier)
+                    response["reason"] = workspace + " " * padding + identifier + "suffix"
+                elif session == "reason-empty":
+                    response["reason"] = ""
+                elif session != "reason-absent":
+                    response["reason"] = "governed action; call kb_consult first"
+                self._send(response)
             else:
                 self._send({"verdict": "allow", "reason": "ok", "rules": []})
         elif self.path == "/api/v1/audit/event":
