@@ -6,9 +6,8 @@ with --fetch; computation itself is read-only. JSON preserves the reference
 engine's provenance fields and adds pypi_version. --format env emits the W6
 build contract. GA approval is read only from H, adoption only from B.
 
-R1 adoption is implemented as specified, but a normal commit cannot contain
-its own SHA. Provisioning that record requires a corrected adoption contract
-before Task 9; this module does not weaken cut equality to work around it.
+R1 adoption records a full ancestor SHA as anchor. Only the adoption record
+may differ between that anchor and the untagged cut B.
 """
 from __future__ import annotations
 
@@ -107,7 +106,8 @@ def _adoption_base(git: Git, cut: str, stable: list[str], tags: list[str]) -> st
         raise VersionError("bad_adoption", "adoption record must be a JSON object") from error
     if (
         not isinstance(record, dict)
-        or record.get("cut") != cut
+        or not isinstance(record.get("anchor"), str)
+        or not re.fullmatch(rf"[0-9a-fA-F]{{{len(cut)}}}", record["anchor"])
         or record.get("base") != "0.11.0"
         or stable
         or not tags
@@ -115,6 +115,16 @@ def _adoption_base(git: Git, cut: str, stable: list[str], tags: list[str]) -> st
         or not git.ancestor(git.resolve("refs/tags/v0.11.0"), cut)
     ):
         raise VersionError("bad_adoption", "record must name untagged cut and highest stable base")
+    try:
+        anchor = git.resolve(record["anchor"])
+    except VersionError as error:
+        raise VersionError("bad_adoption", "anchor must resolve to a commit") from error
+    if (
+        anchor == cut
+        or not git.ancestor(anchor, cut)
+        or git.run("diff", "--name-only", anchor, cut).splitlines() != ["release/ADOPTION.json"]
+    ):
+        raise VersionError("bad_adoption", "anchor must strictly precede an adoption-only cut")
     return "v0.11.0"
 
 

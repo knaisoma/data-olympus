@@ -222,16 +222,13 @@ def test_ga_reads_only_head_tree(repo):
 
 
 def adoption(repo, record=None):
-    """R1's self-hash cannot be committed normally; model it with a replacement tree."""
+    """Create the adoption cut with ordinary commits and an ancestor record."""
     repo.git("tag", "v0.11.0")
-    cut = repo.commit("chore: adoption cut")
-    repo.write("release/ADOPTION.json", json.dumps(record or {"cut": cut, "base": "0.11.0"}))
-    replacement = repo.commit("chore: record adoption")
-    parent = repo.git("rev-parse", f"{cut}^")
-    tree = repo.git("rev-parse", f"{replacement}^{{tree}}")
-    replacement = repo.git("commit-tree", tree, "-p", parent, "-m", "chore: adoption cut")
-    repo.git("replace", cut, replacement)
-    repo.git("checkout", "-B", "main", cut)
+    anchor = repo.commit("chore: adoption anchor")
+    repo.write("release/ADOPTION.json", json.dumps(
+        record if record is not None else {"anchor": anchor, "base": "0.11.0"},
+    ))
+    cut = repo.commit("chore: record adoption")
     repo.cut(None)
     return cut
 
@@ -247,12 +244,37 @@ def test_adoption_accept_and_read_only_cut(repo):
 
 
 @pytest.mark.parametrize("record", [
+    {"anchor": "main", "base": "0.11.0"},
+    {"anchor": "0" * 40, "base": "0.11.0"},
+    {"anchor": "0" * 40, "base": "0.10.0"},
+    {"anchor": None, "base": "0.11.0"},
+    {"anchor": 123, "base": "0.11.0"},
     {"cut": "main", "base": "0.11.0"},
     {"cut": "0" * 40, "base": "0.11.0"},
     {"cut": "0" * 40, "base": "0.10.0"},
 ])
 def test_adoption_reject_mismatch(repo, record):
     adoption(repo, record)
+    with pytest.raises(engine.VersionError, match="bad_adoption"):
+        repo.compute()
+
+
+@pytest.mark.parametrize("kind", ["unrelated", "abbreviated", "tree", "extra_path"])
+def test_adoption_reject_invalid_anchor_or_diff(repo, kind):
+    repo.git("tag", "v0.11.0")
+    anchor = repo.git("rev-parse", "HEAD")
+    if kind == "unrelated":
+        tree = repo.git("rev-parse", "HEAD^{tree}")
+        anchor = repo.git("commit-tree", tree, "-m", "chore: unrelated")
+    elif kind == "abbreviated":
+        anchor = anchor[:12]
+    elif kind == "tree":
+        anchor = repo.git("rev-parse", "HEAD^{tree}")
+    elif kind == "extra_path":
+        repo.write("source.py", "changed\n")
+    repo.write("release/ADOPTION.json", json.dumps({"anchor": anchor, "base": "0.11.0"}))
+    repo.commit("chore: record adoption")
+    repo.cut(None)
     with pytest.raises(engine.VersionError, match="bad_adoption"):
         repo.compute()
 
@@ -353,7 +375,7 @@ def test_adoption_at_head_does_not_supply_cut_record(repo):
     repo.git("tag", "v0.11.0")
     repo.commit("chore: advance")
     cut = repo.cut(None)
-    repo.write("release/ADOPTION.json", json.dumps({"cut": cut, "base": "0.11.0"}))
+    repo.write("release/ADOPTION.json", json.dumps({"anchor": cut, "base": "0.11.0"}))
     repo.commit("chore: add record too late")
     with pytest.raises(engine.VersionError, match="missing_tags_in_released_product"):
         repo.compute()
