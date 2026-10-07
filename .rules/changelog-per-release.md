@@ -31,22 +31,27 @@ mandate is satisfied continuously, not at the last minute:
 - Every PR that makes a functional change MUST add or update an entry under the
   topmost `## [Unreleased]` block in `CHANGELOG.md`, under the correct
   `Added` / `Changed` / `Fixed` / `Removed` / `Security` / `Deprecated` heading.
-- Cutting a release renames the `[Unreleased]` block to the version and date and
-  opens a fresh empty `[Unreleased]` block above it. The release therefore
-  inherits the entries accrued during the cycle, guaranteeing the release-level
-  mandate is met by construction.
-- The release date on the `[Unreleased]` heading is never hand-edited; it is set
-  only at the moment the block is renamed to a version.
+- On `release/new`, retain `[Unreleased]` and do not commit a target version.
+  The computed release version and date belong in generated release notes and
+  the `release: X.Y.Z` squash record, grouped by breaking changes, features,
+  fixes and other changes with issue/PR links and migration guidance. Generate
+  them from the same parsed commit set used for version computation.
+- Do not edit changelog or version files while squashing: the squash tree must
+  equal reviewed `H`. Any later archival update to `CHANGELOG.md` goes through
+  a reviewed PR on the recut branch, preserving that proof.
+- Until the first new-model release, transitional release preparation may
+  rename `[Unreleased]` to the computed version and date and open a fresh
+  `[Unreleased]` block. Do that before final review, never after it.
 
 ## Enforcement
 
 - Contributor-facing: the PR checklist in [`CONTRIBUTING.md`](../CONTRIBUTING.md)
   lists the changelog update as a required item.
-- Planned CI gate (tracked, not yet built): a workflow step that fails a PR which
-  touches functional code paths (`src/`, `bin/`, REST/MCP surfaces, `SPEC.md`)
-  without modifying the `[Unreleased]` block of `CHANGELOG.md`. This turns the
-  rule from advisory into enforced, consistent with the product's own thesis that
-  governance should be gated rather than trusted to goodwill.
+- CI runs `scripts/check_changelog.py` for functional paths (`src/`, `bin/`,
+  `deploy/`, `SPEC.md`). Its current check requires `CHANGELOG.md` in the changed
+  paths; review verifies that the entry is under `[Unreleased]`. Documentation
+  alone does not require an entry. The guard's `no-changelog` label is not a
+  replacement for recording functional release changes.
 
 ## Why
 

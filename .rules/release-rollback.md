@@ -3,6 +3,11 @@
 Status: active
 Since: 2026-09-05
 
+The STD-U-821 model uses this same recovery procedure: re-deploy the recorded
+prior digest, never retag a version. Branch recutting does not change the
+rollback identity. The transitional `set-channel.yml` path remains available
+until the first new-model release.
+
 Before deployment record previous digest, source provenance, container names,
 workload generation, rollout, health, and readiness. All init and main containers
 must use the same immutable digest. Record update policy and prevent races.

@@ -34,7 +34,7 @@ There is no web framework and no database server. Keep it that way unless a deci
 
 **Git backing**: the corpus is a git repository. `git_ops.py`, `push_queue.py`, and `pending.py` handle refresh and the proposed-write pipeline.
 
-**Deployment** is `deploy/docker` and `deploy/k8s`. Publication uses explicit candidate and stable workflow dispatches. Deploy verified immutable digests and follow `.rules/release-rollback.md`.
+**Deployment** is `deploy/docker` and `deploy/k8s`. The STD-U-821 target pipeline separates unprivileged RC builds from trusted publication and stable promotion. Existing explicit candidate/stable dispatches remain transitional until the first new-model release. Deploy verified immutable digests and follow `.rules/release-rollback.md`.
 
 ## Development Workflow
 
@@ -44,7 +44,10 @@ uv run data-olympus --help       # CLI
 uv run data-olympus-mcp          # MCP server
 ```
 
-Branching and review follow the operator rules: work in a dedicated worktree under `.worktrees/<branch>` (STD-U-505), never commit directly to `main`, and never bypass hooks with `--no-verify` (STD-U-508). Squash and merge commits are both enabled; rebase merging is not.
+Branching and review follow the operator rules: work in a dedicated worktree under `.worktrees/<branch>` (STD-U-505), never commit directly to `main`, and never bypass hooks with `--no-verify` (STD-U-508). Feature branches start from and target `release/new`; release batches squash to `main`. Follow `.rules/release-routine.md` for merge authority and gates.
+
+Rebase merging is not enabled. The repository's available merge methods do not
+override the release routine's required squash merge.
 
 Pull request titles are linted as Conventional Commits by `.github/workflows/pr-title-lint.yml`.
 
@@ -90,9 +93,9 @@ Run the linter before the tests. It runs first in CI, so a lint failure hides ev
 
 ## Deployment
 
-Releases are cut from `main` by the release routine documented in `.rules/release-routine.md`, which is the authority. In outline: `scripts/compute_release.py` decides releasability, a human merges the independently reviewed final PR, and automated delivery dispatches candidate publication and stable promotion after verifying merged content.
+The authority is `.rules/release-routine.md`. The target STD-U-821 flow computes versions with `scripts/sdlc_version.py` on `release/new`, without a committed target version. The agent holding operator authorization squash-merges reviewed content as `release: X.Y.Z`; reserved cases need explicit operator authorization. Promotion proves reviewed-tree equality and creates annotated `vX.Y.Z`. Production remains digest-pinned, and verified releases are followed by a recut.
 
-Pre-1.0 version mapping is implemented in `compute_release.py` and documented in `.rules/versioning.md`. Trust the script's `next_version` rather than inferring a bump by hand.
+`.rules/versioning.md` defines normal and hotfix identities, PEP 440 mappings and the new pre-1.0 patch mapping for features. Until the first new-model release, `compute_release.py` and committed versions remain authoritative only for the transitional path. New automation stays disabled pending its documented machine-identity and activation prerequisites.
 
 ## Key Rules
 
