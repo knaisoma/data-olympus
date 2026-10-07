@@ -16,7 +16,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 * Require an adoption cut to add only its record, block promotion until that
   record is absent from the candidate tree, and validate dated ratification
-  references against UTC and an optional standard file.
+  references against UTC. The CLI requires a standard file with a matching
+  ratification line in the Proposed amendment 1.3 section.
 
 * Preserve the gate server's uncovered signals and suggested consult intent in
   pre-tool hook denials. Replace controls and characters outside printable ASCII

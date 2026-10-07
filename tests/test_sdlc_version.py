@@ -352,6 +352,10 @@ def test_adoption_compares_stable_tags_numerically(repo, tag):
 ])
 def test_adoption_cli_ratification(repo, flags, state):
     adoption(repo)
+    if state == "ratified":
+        standard = repo.path / "standard.md"
+        standard.write_text("## Proposed amendment 1.3\nRatification: 2020-01-01\n")
+        flags = [*flags, "--standard-file", str(standard)]
     repo.git("rm", "release/ADOPTION.json")
     repo.commit("fix: after cut")
     script = Path(engine.__file__)
@@ -473,15 +477,20 @@ def test_adoption_ratification_today_or_past(repo, ratified):
     assert result["adoption"] == "ratified"
 
 
+@pytest.mark.parametrize("heading", [
+    "## Proposed amendment 1.3",
+    "## Proposed amendment 1.3: adoption cut and public-product preview",
+])
 @pytest.mark.parametrize("line", [
     "Ratification: 2020-01-01", "Ratification: not yet recorded",
     "Ratification: 2020-01-02", "prefix Ratification: 2020-01-01",
     "Ratification: 2020-01-01 suffix", "",
 ])
-def test_adoption_cli_standard_ratification(repo, line):
+def test_adoption_cli_standard_ratification(repo, line, heading):
     adoption(repo)
     standard = repo.path / "standard.md"
-    standard.write_text(f"# Standard\n{line}\n")
+    standard.write_text(f"# Standard\n{heading}\n{line}\n"
+                        "### Adoption cut for an already released product\n")
     result = subprocess.run(
         [sys.executable, str(Path(engine.__file__)), "--main", "main", "--branch", "release/new",
          "--adoption-ratified", "2020-01-01:PR#123", "--standard-file", str(standard)],
@@ -493,6 +502,29 @@ def test_adoption_cli_standard_ratification(repo, line):
     else:
         assert result.returncode == 1
         assert "adoption_unratified" in result.stderr
+
+
+@pytest.mark.parametrize("text", [
+    None,
+    "Ratification: 2020-01-01\n",
+    "Ratification: 2020-01-01\n## Proposed amendment 1.3\nRatification: not yet recorded\n",
+    "## Proposed amendment 1.3\n### Other section\nRatification: 2020-01-01\n",
+    "## Proposed amendment 1.3\n## Other amendment\nRatification: 2020-01-01\n",
+    "## Proposed amendment 1.30\nRatification: 2020-01-01\n",
+])
+def test_adoption_cli_requires_scoped_standard_ratification(repo, text):
+    adoption(repo)
+    args = [sys.executable, str(Path(engine.__file__)), "--main", "main",
+            "--branch", "release/new", "--adoption-ratified", "2020-01-01:PR#123"]
+    if text is not None:
+        standard = repo.path / "standard.md"
+        standard.write_text(text)
+        args.extend(["--standard-file", str(standard)])
+    result = subprocess.run(args, cwd=repo.path, capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "adoption_unratified" in result.stderr
+    if text is None:
+        assert "--standard-file" in result.stderr
 
 
 def test_cli_json_env_and_exit_code(repo):

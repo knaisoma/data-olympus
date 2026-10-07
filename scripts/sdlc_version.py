@@ -198,15 +198,24 @@ def compute_version(
             ratified_date = match[1]
             if date.fromisoformat(ratified_date) > (today or datetime.now(UTC).date()):
                 raise ValueError
-            if standard_file is not None and f"Ratification: {ratified_date}" not in (
-                Path(standard_file).read_text(encoding="utf-8").splitlines()
-            ):
-                raise ValueError
+            if standard_file is not None:
+                lines = Path(standard_file).read_text(encoding="utf-8").splitlines()
+                heading = next((i for i, line in enumerate(lines) if re.fullmatch(
+                    r"## Proposed amendment 1\.3(?:: .+)?", line,
+                )), None)
+                if heading is None:
+                    raise ValueError
+                section_start = heading + 1
+                section_end = next((i for i in range(section_start, len(lines))
+                            if lines[i].startswith(("### ", "## "))), len(lines))
+                if f"Ratification: {ratified_date}" not in lines[section_start:section_end]:
+                    raise ValueError
         except (ValueError, OSError) as error:
             raise VersionError(
                 "adoption_unratified",
                 "ratification requires YYYY-MM-DD:<ref>, a non-future UTC date, "
-                "and a matching Ratification line when --standard-file is supplied",
+                "and a matching Ratification line under ## Proposed amendment 1.3 "
+                "before the next section in --standard-file",
             ) from error
     if adoption and adoption_ratified is None and not adoption_dry_run:
         raise VersionError(
@@ -299,6 +308,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--adoption-dry-run", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.adoption_ratified is not None and args.standard_file is None:
+            raise VersionError(
+                "adoption_unratified", "--adoption-ratified requires --standard-file",
+            )
         if args.fetch:
             git = Git(Path.cwd())
             shallow = git.run("rev-parse", "--is-shallow-repository").strip() == "true"
