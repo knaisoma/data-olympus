@@ -46,11 +46,15 @@ errors, fix them before committing.
 
 ## PR requirements
 
-Start feature branches from `release/new` and open pull requests against
-`release/new`. Use Conventional Commits. CI builds a wheel and image artifact
-per pull request; integration builds an RC for staging. The release process
-squash-merges the batch to `main` and deploys production from its stable version
-tag, with artifacts pinned by digest through reviewed gitops changes.
+STD-U-821 states:
+
+> Start feature branches from release/new and open pull requests against release/new. Use Conventional Commits. Each pull request gets a preview; integration builds an RC for staging. The release process squash-merges the batch to main and deploys production from its stable version tag.
+
+Today, this repository's CI runs tests and wheel/sdist smoke checks per pull
+request. There is no hosted preview and no per-PR image. The RC image and wheel
+will come from `rc-build.yml` once it is enabled; that pipeline is delivered
+separately, not yet in the repository. The target production flow pins artifacts
+by digest through reviewed gitops changes.
 
 For a fork, fetch the upstream `release/new`, create your feature branch from
 that revision, push to your fork, and select upstream `release/new` as the PR
@@ -60,7 +64,7 @@ release recut, move your open PR onto the new cut and rerun checks and review.
 Fork PRs must not need publishing credentials or write tokens.
 
 The RC pipeline is being introduced alongside the transitional release path.
-The per-PR artifacts are not hosted previews. Data Olympus is a public product,
+Data Olympus is a public product,
 so STD-U-821's internal-tool preview exception does not apply; a separate
 preview exception request is pending operator ratification. New publication
 and recut automation remain disabled until the required machine identity,
@@ -112,9 +116,12 @@ By contributing you agree to abide by the project's [Code of Conduct](CODE_OF_CO
 ## Releases
 
 The target flow follows STD-U-821 v1.2 and [`.rules/versioning.md`](.rules/versioning.md).
-`scripts/sdlc_version.py` derives `X.Y.Z-rc.N` from content and commit count.
-Python metadata maps it to `X.Y.ZrcN`. The branch holds only the
-`0.0.0+unreleased` placeholder; builds inject the computed version.
+The engine `scripts/sdlc_version.py` and the `release_artifacts.py` version
+overlay are delivered separately, not yet in the repository. The engine will
+derive `X.Y.Z-rc.N` from content and commit count, mapped to `X.Y.ZrcN` in Python
+metadata. After the cut, the first commit on `release/new` will set the
+`pyproject.toml` version to `0.0.0+unreleased`; builds will inject the computed
+version through the overlay.
 
 After review and gates, the agent holding operator authorization squash-merges
 the batch to `main` with `release: X.Y.Z` and generated notes. Reserved cases

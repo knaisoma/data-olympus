@@ -17,9 +17,11 @@ Feature branches start there and their PRs target it. Integrations use squash
 messages carrying their full Conventional Commit impact. Release PRs must be
 squash merged, preserving linear history. Only release records advance `main`.
 
-`scripts/sdlc_version.py` is the new-model authority. No target version is
-committed on `release/new`: `pyproject.toml` uses `0.0.0+unreleased` after the
-cut, and `release_artifacts.py` injects computed versions into build metadata.
+The engine `scripts/sdlc_version.py` and the `release_artifacts.py` version
+overlay are delivered separately, not yet in the repository. The engine will
+be the new-model authority. No target version will be committed on
+`release/new`: its first commit after the cut will set `pyproject.toml` to
+`0.0.0+unreleased`, and the overlay will inject computed versions into build metadata.
 The placeholder is never published or used to decide a version. Its change
 lands on `release/new`, not on transitional `main`.
 
@@ -103,15 +105,32 @@ lock. Recheck head and base after acquiring it and reconcile uncertain state.
 
 ## Initial adoption remains conditional
 
-The proposed cut is ahead of `v0.11.0` and has no stable tag. R1's inert
-`release/ADOPTION.json` records `{cut, base: "0.11.0"}` and is accepted only
-if `cut == B`, no stable tag sits on `B`, and `v0.11.0` is the highest stable
-tag and an ancestor. It does not supply `B`. Operator ratification of the
-proposed STD-U-821 v1.3 adoption clause is pending; this document grants no
-exception. Retire the record in the first `release/new` commit
-(`chore(release): retire adoption record`); promotion refuses if it remains
-at `H`. The cut is reversible until publication. Alternatively, release
-0.11.1 on the transitional path and cut at its stable tag.
+The proposed cut is ahead of `v0.11.0` and has no stable tag. The proposed
+adoption record is `release/ADOPTION.json` with fields `{anchor, base}`:
+
+- `anchor` is the main head `A` before adding the record.
+- `base` is `"0.11.0"`.
+
+The record must be absent at `A`. Commit `C` is a non-merge commit whose sole
+parent is `A` and whose only change adds the record. Cut `release/new` at
+`B = C`. The engine derives `B` from the merge base and reads the record only
+from the tree of `B`, never from `H`; the record does not supply `B`. Acceptance
+also requires no stable tag on `B` and `v0.11.0` to be the highest stable tag
+and an ancestor of `B`. If `B` has a stable tag, ignore the adoption record
+and apply the normal stable-base checks.
+
+For this adoption cycle, compute impact and release notes over `v<base>..H`,
+but count `N` over `B..H`. The first commit on `release/new` sets the placeholder;
+the second deletes the record (`chore(release): retire adoption record`).
+Promotion refuses if the record remains at `H`. Do not create `hotfix/new`
+during the adoption cycle.
+
+The STD-U-821 adoption amendment is proposed, not ratified. Refuse the record
+or use it only in dry-run mode until operator ratification. An adoption issue
+is still to be opened to record the anchor, base and amendment proposal;
+neither this document nor that issue grants an exception or a preview waiver.
+The cut is reversible until publication. Alternatively, release 0.11.1 on the
+transitional path and cut at its stable tag.
 
 ## Transitional authority and immutability
 

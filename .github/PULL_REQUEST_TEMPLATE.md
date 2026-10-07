@@ -4,7 +4,9 @@
 <!-- External contributions: branch from and target release/new, never main.
 Use a Conventional Commit title that preserves the highest source-commit
 impact and breaking details. Do not commit a target package version.
-CI produces wheel/image artifacts; integration builds an RC, not a hosted PR preview.
+CI runs tests and wheel/sdist smoke checks per PR; no hosted preview or per-PR image.
+The RC wheel and image will come from rc-build.yml once enabled;
+that pipeline is delivered separately, not yet in the repository.
 Maintainer release batches target main with release: X.Y.Z and generated notes. -->
 
 ## Type of change

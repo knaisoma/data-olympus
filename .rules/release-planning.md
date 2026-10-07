@@ -10,8 +10,12 @@ Explain progress under fixes, new capabilities, and improvements; these are
 categories, not quotas. New ideas become issues before implementation.
 Record acceptance criteria, dependencies, and validation for every selected issue.
 Start feature branches from `release/new` and integrate reviewed PRs there.
-Build each integration RC from content using `scripts/sdlc_version.py`; do not
-commit the target version. Collect functional changes under `[Unreleased]`.
+The target flow will build each integration RC from content using
+`scripts/sdlc_version.py` and the `release_artifacts.py` version overlay, both
+delivered separately, not yet in the repository. After the cut, the first
+commit on `release/new` will set `pyproject.toml` to `0.0.0+unreleased`;
+builds will inject the computed version. Do not commit the target version.
+Collect functional changes under `[Unreleased]`.
 Select and validate the exact batch head, then squash it to `main` with the
 generated `release: X.Y.Z` record under `.rules/release-routine.md`.
 

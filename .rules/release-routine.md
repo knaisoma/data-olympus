@@ -21,17 +21,18 @@ Recheck expected head `H` and unchanged base before authorized merge.
 ## New-model delivery and activation
 
 The workflow names below describe the target pipeline, delivered separately
-from these rules. New publication and branch-management workflows remain
-disabled behind `SDLC_PIPELINE=enabled` until W9 provisions the bot or GitHub
-App, protected-branch deletion/recut permissions, the `release/new` ruleset
+from these rules, not yet in the repository. New publication and branch-management
+workflows remain disabled behind `SDLC_PIPELINE=enabled` until the bot or GitHub
+App is provisioned with protected-branch deletion/recut permissions, the `release/new` ruleset
 (PR required, code-owner review for `scripts/` and `.github/`), and the
 `pypi-rc` environment with its own PyPI Trusted Publisher. Missing prerequisites
 mean BLOCKED; never substitute the operator's personal token. Product static
-token machine identity is separate W3/W9 work and is not granted here.
+token machine identity is separate work and is not granted here.
 The adoption-cut and public-product preview proposals need operator
-ratification; neither the adoption issue nor the internal-tool exception
-authorizes them. CI builds a wheel and image artifact per PR, not a hosted
-preview. Integration builds an RC for staging once the new path is activated.
+ratification. An adoption issue is still to be opened; neither that issue nor
+the internal-tool exception authorizes these proposals. CI runs tests and
+wheel/sdist smoke checks per PR. There is no hosted preview and no per-PR image.
+The RC image and wheel will come from `rc-build.yml` once it is enabled.
 
 1. `rc-build.yml` builds wheel, sdist, OCI archive and provenance at exact `H`
    on `release/new` or `hotfix/new`, with `contents: read`, no secrets and no
@@ -142,8 +143,8 @@ their behavior until the first new-model release, including 0.11.x hotfix and
 rollback capability. This section applies only to that old path. Prepare a
 short-lived branch such as `codex/release-YYYY-MM-DD` with the completed batch,
 computed version, lockfile, changelog and release notes. Use
-`scripts/compute_release.py` here, not the new engine. The planned R9 exception
-removes tag-push triggers from `release-image.yml` and `publish-pypi.yml` and
+`scripts/compute_release.py` here, not the new engine. The planned safeguard
+for legacy workflows removes tag-push triggers from `release-image.yml` and `publish-pypi.yml` and
 adds duplicate-identity refusal to their dispatches, so bot-created stable
 tags cannot rebuild published artifacts or move `latest` inadvertently.
 In this transitional section only, `M` denotes the fetched main SHA after merge.
