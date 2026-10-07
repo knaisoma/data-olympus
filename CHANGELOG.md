@@ -14,6 +14,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* Require an adoption cut to add only its record, block promotion until that
+  record is absent from the candidate tree, and validate dated ratification
+  references against UTC and an optional standard file.
+
 * Preserve the gate server's uncovered signals and suggested consult intent in
   pre-tool hook denials. Replace controls and characters outside printable ASCII
   and Unicode letters with spaces for every dialect, then retain workspace/session

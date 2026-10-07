@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -42,7 +43,7 @@ class Repo:
 
     def compute(self, **kwargs):
         options = dict(cwd=self.path, head="HEAD", main="main", branch="release/new",
-                       adoption_ratified="2026-10-07")
+                       adoption_ratified="2026-10-07:PR#123", today=date(2026, 10, 7))
         return engine.compute_version(**(options | kwargs))
 
 
@@ -283,14 +284,20 @@ def test_adoption_reject_invalid_anchor_or_diff(repo, kind):
         repo.compute()
 
 
-def test_adoption_allows_other_paths_in_single_commit(repo):
+@pytest.mark.parametrize("change", ["add", "modify", "rename"])
+def test_adoption_rejects_other_paths_in_single_commit(repo, change):
     repo.git("tag", "v0.11.0")
+    repo.write("existing.py", "original\n")
     anchor = repo.commit("chore: anchor")
-    repo.write("source.py", "changed\n")
+    if change == "rename":
+        repo.git("mv", "existing.py", "renamed.py")
+    else:
+        repo.write("source.py" if change == "add" else "existing.py", "changed\n")
     repo.write("release/ADOPTION.json", json.dumps({"anchor": anchor, "base": "0.11.0"}))
     repo.commit("chore: record adoption")
     repo.cut(None)
-    assert repo.compute()["base"] == "v0.11.0"
+    with pytest.raises(engine.VersionError, match="bad_adoption"):
+        repo.compute()
 
 
 def test_adoption_rejects_merge_cut(repo):
@@ -341,10 +348,11 @@ def test_adoption_compares_stable_tags_numerically(repo, tag):
 @pytest.mark.parametrize(("flags", "state"), [
     ([], None),
     (["--adoption-dry-run"], "unratified"),
-    (["--adoption-ratified", "2026-10-07"], "ratified"),
+    (["--adoption-ratified", "2020-01-01:PR#123"], "ratified"),
 ])
 def test_adoption_cli_ratification(repo, flags, state):
     adoption(repo)
+    repo.git("rm", "release/ADOPTION.json")
     repo.commit("fix: after cut")
     script = Path(engine.__file__)
     result = subprocess.run(
@@ -367,7 +375,11 @@ def test_adoption_api_requires_ratification(repo):
         repo.compute(adoption_ratified=None)
 
 
-@pytest.mark.parametrize("ratified", ["", "approved", "20261007", "2026-02-30"])
+@pytest.mark.parametrize("ratified", [
+    "", "approved", "20261007", "2026-10-07", "2026-02-30:PR#123",
+    "2026-10-07:", "2026-10-07:two tokens", "2026-10-07:PR#123\n",
+    "2026-1-07:PR#123", "2026-10-08:PR#123",
+])
 def test_adoption_rejects_invalid_ratification_date(repo, ratified):
     adoption(repo)
     with pytest.raises(engine.VersionError, match="adoption_unratified"):
@@ -425,8 +437,62 @@ def test_post_release_tag_ignores_retained_adoption(repo, branch, candidate, pyp
     assert repo.compute(branch=branch) == {
         "base": "v0.11.1", "B": cut, "M": cut, "H": head, "N": 1,
         "target": "0.11.2", "candidate": candidate,
-        "pypi_version": pypi, "promotable": True,
+        "pypi_version": pypi, "promotable": False,
     }
+
+
+@pytest.mark.parametrize("entry", ["file", "executable", "symlink", "tree", "gitlink", "absent"])
+def test_adoption_retirement_required_at_head(repo, entry):
+    cut = adoption(repo)
+    repo.git("rm", "release/ADOPTION.json")
+    if entry in ("file", "executable"):
+        repo.write("release/ADOPTION.json", "invalid")
+        if entry == "executable":
+            (repo.path / "release/ADOPTION.json").chmod(0o755)
+    elif entry == "symlink":
+        (repo.path / "release").mkdir(exist_ok=True)
+        (repo.path / "release/ADOPTION.json").symlink_to("missing")
+    elif entry == "tree":
+        repo.write("release/ADOPTION.json/child", "present")
+    elif entry == "gitlink":
+        repo.git("update-index", "--add", "--cacheinfo", f"160000,{cut},release/ADOPTION.json")
+    if entry == "gitlink":
+        repo.git("commit", "-m", "chore: update adoption record")
+    else:
+        repo.commit("chore: update adoption record")
+    result = repo.compute()
+    assert result["N"] == 1
+    assert result["promotable"] is (entry == "absent")
+    assert result["adoption_retired"] is (entry == "absent")
+
+
+@pytest.mark.parametrize("ratified", ["2026-10-06:PR#123", "2026-10-07:https://example.test/pr/123"])
+def test_adoption_ratification_today_or_past(repo, ratified):
+    adoption(repo)
+    result = repo.compute(adoption_ratified=ratified, today=date(2026, 10, 7))
+    assert result["adoption"] == "ratified"
+
+
+@pytest.mark.parametrize("line", [
+    "Ratification: 2020-01-01", "Ratification: not yet recorded",
+    "Ratification: 2020-01-02", "prefix Ratification: 2020-01-01",
+    "Ratification: 2020-01-01 suffix", "",
+])
+def test_adoption_cli_standard_ratification(repo, line):
+    adoption(repo)
+    standard = repo.path / "standard.md"
+    standard.write_text(f"# Standard\n{line}\n")
+    result = subprocess.run(
+        [sys.executable, str(Path(engine.__file__)), "--main", "main", "--branch", "release/new",
+         "--adoption-ratified", "2020-01-01:PR#123", "--standard-file", str(standard)],
+        cwd=repo.path, capture_output=True, text=True,
+    )
+    if line == "Ratification: 2020-01-01":
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["adoption"] == "ratified"
+    else:
+        assert result.returncode == 1
+        assert "adoption_unratified" in result.stderr
 
 
 def test_cli_json_env_and_exit_code(repo):
