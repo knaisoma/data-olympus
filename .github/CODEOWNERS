@@ -21,5 +21,7 @@
 /src/data_olympus/push_queue.py            @knaisoma/kn-data-olympus-admins
 /src/data_olympus/git_ops.py               @knaisoma/kn-data-olympus-admins
 /deploy/                                   @knaisoma/kn-data-olympus-admins
+/scripts/                                  @knaisoma/kn-data-olympus-admins
+/.github/                                  @knaisoma/kn-data-olympus-admins
 /.github/workflows/                        @knaisoma/kn-data-olympus-admins
 /.github/CODEOWNERS                        @knaisoma/kn-data-olympus-admins
