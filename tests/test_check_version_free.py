@@ -300,6 +300,19 @@ def test_main_bypass_override_allows_despite_outage(
     assert main(["--version", "0.5.0"]) == 0
 
 
+@pytest.mark.parametrize("bypass", ["1", "0"])
+def test_bypass_precedes_grammar_but_grammar_precedes_registry(monkeypatch, bypass):
+    monkeypatch.setenv("KB_BYPASS_VERSION_CHECK", bypass)
+    sentinel = RuntimeError("invalid grammar must not reach registries")
+    _patch_registry(monkeypatch, pypi=sentinel, ghcr=sentinel, github=sentinel)
+    if bypass == "1":
+        assert main(["--version", "operator-diagnostic"]) == 0
+    else:
+        with pytest.raises(SystemExit) as error:
+            main(["--version", "operator-diagnostic"])
+        assert error.value.code == 2
+
+
 def test_hotfix_registry_requests_use_mapped_names(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 

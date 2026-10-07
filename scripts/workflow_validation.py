@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -31,9 +33,16 @@ def oci_tag(value: str) -> str:
 
 
 def manual_image(tag: str) -> None:
+    if os.environ.get("GITHUB_REF") not in {
+        "refs/heads/main", "refs/heads/release/new", "refs/heads/hotfix/new",
+    }:
+        raise ValueError("manual image source must be an approved branch")
     oci_tag(tag)
     if tag in CHANNELS:
         raise ValueError("manual image tag cannot be a reserved channel")
+    if re.fullmatch(rf"{NUMBER}\.{NUMBER}\.{NUMBER}-(?:hotfix\.)?rc\.{NUMBER}",
+                    tag.removeprefix("v")):
+        raise ValueError("manual image cannot claim a candidate identity")
     if not re.fullmatch(STABLE.removeprefix("v"), tag.removeprefix("v")):
         return
     for alias in ("v" + tag.removeprefix("v"), tag.removeprefix("v")):
@@ -56,7 +65,7 @@ def manual_image(tag: str) -> None:
         )
         if image.returncode == 0:
             raise ValueError("refusing existing stable image tag")
-        if image.stderr.strip() != f"ERROR: {REPO}:{alias}: not found":
+        if not re.search(r"manifest unknown|not found|no such manifest", image.stderr, re.I):
             raise ValueError("could not check stable image tag")
 
 
@@ -85,18 +94,28 @@ def manual_python(ref: str) -> tuple[str, bool]:
             raise ValueError("cannot read source package metadata version") from exc
         if declared_version != version:
             raise ValueError("source package metadata version does not match release tag")
-        url = f"https://pypi.org/pypi/data-olympus/{version}/json"
-        try:
-            with urllib.request.urlopen(url, timeout=15):
-                pass
-        except urllib.error.HTTPError as exc:
-            if exc.code != 404:
-                raise ValueError("could not check Python release identity") from exc
-        except (urllib.error.URLError, OSError) as exc:
-            raise ValueError("could not check Python release identity") from exc
-        else:
-            raise ValueError("refusing existing Python release identity")
     return sha, upload
+
+
+def python_hashes(version: str, dist: Path) -> None:
+    """Permit missing files and same-byte retries; refuse conflicting PyPI bytes."""
+    artifacts = sorted([*dist.glob("*.whl"), *dist.glob("*.tar.gz")])
+    if not artifacts:
+        raise ValueError("No publishable Python artifacts found")
+    local = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in artifacts}
+    url = f"https://pypi.org/pypi/data-olympus/{version}/json"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as response:
+            payload = json.load(response)
+        remote = {item["filename"]: item["digests"]["sha256"] for item in payload["urls"]}
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return
+        raise ValueError("could not check Python release identity") from exc
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError("could not check Python release identity") from exc
+    if any(local.get(name) != digest for name, digest in remote.items()):
+        raise ValueError("PyPI SHA256 mismatch: existing files differ from the build")
 
 
 def image_outputs(tag: str, channel: str, move_latest: bool) -> str:
@@ -151,7 +170,9 @@ def set_channel(channel: str, source: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "operation", choices=("manual-image", "manual-python", "image-tags", "set-channel")
+        "operation", choices=(
+            "manual-image", "manual-python", "python-hashes", "image-tags", "set-channel",
+        )
     )
     args = parser.parse_args()
     output = ""
@@ -160,6 +181,8 @@ def main() -> None:
     elif args.operation == "manual-python":
         sha, upload = manual_python(os.environ["REF"])
         output = f"sha={sha}\nupload={str(upload).lower()}\n"
+    elif args.operation == "python-hashes":
+        python_hashes(os.environ["PYPI_VERSION"], Path("dist"))
     elif args.operation == "image-tags":
         output = image_outputs(
             os.environ["INPUT_TAG"],

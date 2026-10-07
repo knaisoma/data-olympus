@@ -194,17 +194,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     version = args.version
 
-    try:
-        versions = registry_versions(version)
-    except ValueError as exc:
-        parser.error(str(exc))
-
     if os.environ.get(BYPASS_ENV) == "1":
         print(
             f"{BYPASS_ENV}=1 set: skipping version-free check for {version} "
             "(operator override)"
         )
         return 0
+
+    try:
+        versions = registry_versions(version)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # Idempotent reconcile: a local tag already pins vX.Y.Z at this HEAD commit.
     tag_commit = _tag_commit(versions.github)

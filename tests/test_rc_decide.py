@@ -82,6 +82,13 @@ def test_invalid_event_refused(repo):
         preflight(repo, event="pull_request")
 
 
+def test_adoption_record_only_at_head_is_not_the_cut_record(repo):
+    repo.cut()
+    repo.write("release/ADOPTION.json", "{}")
+    repo.commit("chore: add head-only record")
+    assert preflight(repo) == "release/new"
+
+
 def test_engine_refusal_cannot_be_overridden():
     assert rc_decide.decide({"N": 2, "promotable": False}, dry_run=False)["promotable"] is False
 

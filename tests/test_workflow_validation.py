@@ -9,6 +9,11 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/workflow_validation.py"
 
 
+@pytest.fixture(autouse=True)
+def approved_source(monkeypatch):
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+
+
 def module():
     assert SCRIPT.exists(), "publication validator is missing"
     spec = importlib.util.spec_from_file_location("workflow_validation", SCRIPT)
@@ -160,7 +165,7 @@ def test_manual_image_checks_both_stable_aliases(monkeypatch, tag):
 
 def test_manual_image_registry_token_failure_is_not_absence(monkeypatch):
     def run(command, **_kwargs):
-        return subprocess.CompletedProcess(command, 1, "", "token service not found")
+        return subprocess.CompletedProcess(command, 1, "", "unauthorized: authentication required")
 
     monkeypatch.setattr(subprocess, "run", run)
     with pytest.raises(ValueError, match="could not check"):
@@ -171,7 +176,7 @@ def test_manual_image_registry_token_failure_is_not_absence(monkeypatch):
     "tag,expected",
     [("v1.2.3", "1.2.3"), ("v1.2.3-rc.2", "1.2.3rc2"), ("v1.2.3-hotfix.rc.2", "1.2.3.dev2")],
 )
-def test_manual_python_rejects_existing_mapped_identity(monkeypatch, tag, expected):
+def test_manual_python_defers_registry_check_until_build(monkeypatch, tag, expected):
     import io
     import urllib.request
 
@@ -188,13 +193,12 @@ def test_manual_python_rejects_existing_mapped_identity(monkeypatch, tag, expect
         return io.BytesIO(b"{}")
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    with pytest.raises(ValueError, match="existing Python"):
-        validator.manual_python(tag)
-    assert urls == [f"https://pypi.org/pypi/data-olympus/{expected}/json"]
+    assert validator.manual_python(tag) == ("a" * 40, True)
+    assert urls == []
 
 
 @pytest.mark.parametrize("status", [403, 500])
-def test_manual_python_fails_closed_when_registry_is_unavailable(monkeypatch, status):
+def test_python_hash_check_fails_closed_when_registry_is_unavailable(tmp_path, monkeypatch, status):
     import urllib.error
     import urllib.request
 
@@ -209,8 +213,9 @@ def test_manual_python_fails_closed_when_registry_is_unavailable(monkeypatch, st
         raise urllib.error.HTTPError(url, status, "Unavailable", {}, None)
 
     monkeypatch.setattr(urllib.request, "urlopen", unavailable)
+    (tmp_path / "package.whl").write_bytes(b"wheel")
     with pytest.raises(ValueError, match="could not check Python"):
-        validator.manual_python("v1.2.3")
+        validator.python_hashes("1.2.3", tmp_path)
 
 
 @pytest.mark.parametrize("tag", ["v1.2.3", "v1.2.3-rc.2"])
@@ -232,3 +237,107 @@ def test_manual_python_refuses_metadata_mismatch_before_registry(monkeypatch, ta
     with pytest.raises(ValueError, match="metadata version"):
         validator.manual_python(tag)
     assert ("git", "show", "a" * 40 + ":pyproject.toml") in commands
+
+
+@pytest.mark.parametrize("tag", [
+    "1.2.3-rc.2", "1.2.3-hotfix.rc.2", "v1.2.3-rc.2", "v1.2.3-hotfix.rc.2",
+])
+def test_manual_image_rejects_candidate_identities(tag):
+    with pytest.raises(ValueError, match="candidate"):
+        module().manual_image(tag)
+
+
+@pytest.mark.parametrize("ref", ["refs/heads/feature/test", "refs/tags/main", "main", ""])
+def test_manual_image_refuses_unapproved_source(monkeypatch, ref):
+    monkeypatch.setenv("GITHUB_REF", ref)
+    with pytest.raises(ValueError, match="approved branch"):
+        module().manual_image("edge")
+
+
+@pytest.mark.parametrize("branch", ["main", "release/new", "hotfix/new"])
+def test_manual_image_accepts_approved_source(monkeypatch, branch):
+    monkeypatch.setenv("GITHUB_REF", f"refs/heads/{branch}")
+    module().manual_image("edge")
+
+
+@pytest.mark.parametrize("diagnostic", [
+    "ERROR: manifest unknown", "Not Found", "error: NO SUCH MANIFEST",
+])
+def test_manual_image_accepts_buildx_absence_patterns(monkeypatch, diagnostic):
+    monkeypatch.setattr(subprocess, "run", lambda command, **_kw:
+                        subprocess.CompletedProcess(command, 1, "", diagnostic))
+    module().manual_image("v1.2.3")
+
+
+@pytest.mark.parametrize("remote,allowed", [
+    ({}, True),
+    ({"package.whl": "same"}, True),
+    ({"package.whl": "same", "package.tar.gz": "same"}, True),
+    ({"package.whl": "different"}, False),
+    ({"other.whl": "same"}, False),
+])
+def test_python_hash_check_allows_partial_retry_only_with_matching_bytes(
+    tmp_path, monkeypatch, remote, allowed,
+):
+    import hashlib
+    import io
+    import json
+    import urllib.request
+
+    (tmp_path / "package.whl").write_bytes(b"wheel")
+    (tmp_path / "package.tar.gz").write_bytes(b"sdist")
+    payload = {"urls": [{"filename": name, "digests": {"sha256":
+               hashlib.sha256(b"sdist" if name.endswith(".tar.gz") else b"wheel").hexdigest()
+               if value == "same" else "0" * 64}} for name, value in remote.items()]}
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw:
+                        io.BytesIO(json.dumps(payload).encode()))
+    if allowed:
+        module().python_hashes("1.2.3", tmp_path)
+    else:
+        with pytest.raises(ValueError, match="SHA256 mismatch"):
+            module().python_hashes("1.2.3", tmp_path)
+
+
+def test_python_hash_check_allows_missing_release(tmp_path, monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    (tmp_path / "package.whl").write_bytes(b"wheel")
+
+    def absent(url, **_kwargs):
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", absent)
+    module().python_hashes("1.2.3", tmp_path)
+
+
+def test_python_hash_check_requires_local_artifacts(tmp_path):
+    with pytest.raises(ValueError, match="No publishable"):
+        module().python_hashes("1.2.3", tmp_path)
+
+
+@pytest.mark.parametrize("payload", [b"not json", b"{}", b'{"urls": null}'])
+def test_python_hash_check_refuses_unreadable_registry(tmp_path, monkeypatch, payload):
+    import io
+    import urllib.request
+
+    (tmp_path / "package.whl").write_bytes(b"wheel")
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw: io.BytesIO(payload))
+    with pytest.raises(ValueError, match="could not check Python"):
+        module().python_hashes("1.2.3", tmp_path)
+
+
+def test_manual_python_workflow_checks_hashes_before_upload():
+    import yaml
+
+    path = SCRIPT.parents[1] / ".github/workflows/publish-pypi-reusable.yml"
+    job = yaml.safe_load(path.read_text())["jobs"]["upload"]
+    assert job["permissions"]["contents"] == "read"
+    steps = job["steps"]
+    guard = next(i for i, step in enumerate(steps)
+                 if "workflow_validation.py python-hashes" in step.get("run", ""))
+    publish = next(i for i, step in enumerate(steps)
+                   if "pypa/gh-action-pypi-publish" in step.get("uses", ""))
+    assert guard < publish
+    assert steps[publish]["with"]["skip-existing"] is True
+    assert "sha256" in "\n".join(s.get("run", "") for s in steps[publish + 1:])

@@ -46,12 +46,20 @@ jobs:
       # id-token: write is what mints the OIDC token gh-action-pypi-publish
       # exchanges for a short-lived upload credential. No secret token exists.
       id-token: write
+      contents: read
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
+      - name: Check existing PyPI file hashes before upload
+        env:
+          PYPI_VERSION: ${{ needs.build.outputs.version }}
+        run: python3 scripts/workflow_validation.py python-hashes
       - name: Publish to PyPI (Trusted Publishing)
         uses: pypa/gh-action-pypi-publish@release/v1
         # No `password:` or token: OIDC Trusted Publishing only. skip-existing so a

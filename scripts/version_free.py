@@ -67,7 +67,7 @@ def evaluate(
     pypi_present: bool | None,
     ghcr_present: bool | None,
     gh_release_present: bool | None,
-    gh_tag_present: bool | None = False,
+    gh_tag_present: bool | None,
 ) -> dict[str, object]:
     """PURE. Each arg is True (found/taken), False (confirmed absent), or
     None (unreachable/unknown). A version is free only if all checks are

@@ -23,6 +23,7 @@ jobs:
       - name: Validate manual publication tag
         env:
           INPUT_TAG: ${{ inputs.tag }}
+          GITHUB_REF: ${{ github.ref }}
         run: python3 scripts/workflow_validation.py manual-image
   prerelease:
     needs: validate

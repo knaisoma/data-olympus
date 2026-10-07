@@ -6,7 +6,7 @@ from scripts.version_free import _ghcr_present, evaluate, main, registry_version
 
 
 def test_evaluate_all_absent_is_free() -> None:
-    result = evaluate(False, False, False)
+    result = evaluate(False, False, False, False)
     assert result == {
         "pypi_taken": False,
         "ghcr_taken": False,
@@ -18,20 +18,20 @@ def test_evaluate_all_absent_is_free() -> None:
 
 
 def test_evaluate_pypi_present_not_free() -> None:
-    result = evaluate(True, False, False)
+    result = evaluate(True, False, False, False)
     assert result["pypi_taken"] is True
     assert result["free"] is False
     assert result["unreachable"] == []
 
 
 def test_evaluate_any_none_not_free_and_unreachable() -> None:
-    result = evaluate(None, False, False)
+    result = evaluate(None, False, False, False)
     assert result["free"] is False
     assert "pypi" in result["unreachable"]
 
 
 def test_evaluate_mixed_unreachable_ghcr_only() -> None:
-    result = evaluate(False, None, False)
+    result = evaluate(False, None, False, False)
     assert result["free"] is False
     assert result["unreachable"] == ["ghcr"]
     assert result["pypi_taken"] is False
@@ -40,22 +40,22 @@ def test_evaluate_mixed_unreachable_ghcr_only() -> None:
 
 
 def test_evaluate_all_none_all_unreachable() -> None:
-    result = evaluate(None, None, None)
+    result = evaluate(None, None, None, None)
     assert result["free"] is False
-    assert result["unreachable"] == ["pypi", "ghcr", "github_release"]
+    assert result["unreachable"] == ["pypi", "ghcr", "github_release", "github_tag"]
     assert result["pypi_taken"] is None
     assert result["ghcr_taken"] is None
     assert result["github_release_taken"] is None
 
 
 def test_evaluate_ghcr_present_not_free() -> None:
-    result = evaluate(False, True, False)
+    result = evaluate(False, True, False, False)
     assert result["free"] is False
     assert result["ghcr_taken"] is True
 
 
 def test_evaluate_gh_release_present_not_free() -> None:
-    result = evaluate(False, False, True)
+    result = evaluate(False, False, True, False)
     assert result["free"] is False
     assert result["github_release_taken"] is True
 

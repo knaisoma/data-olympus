@@ -35,7 +35,8 @@ def preflight(
     bases = git.run("merge-base", "--all", m, h).splitlines()
     if len(bases) != 1:
         raise ValueError("expected exactly one merge base")
-    if git.file(bases[0], "release/ADOPTION.json") is not None:
+    cut_sha = bases[0]  # B, matching the engine's CUT_SHA output.
+    if git.file(cut_sha, "release/ADOPTION.json") is not None:
         raise ValueError(
             "Task 9 must wire explicit adoption ratification before this cut can build"
         )

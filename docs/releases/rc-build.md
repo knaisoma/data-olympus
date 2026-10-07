@@ -27,5 +27,17 @@ cut. A `release/ADOPTION.json` record at the cut stops the build until explicit
 ratification is wired into the workflow during adoption.
 
 The transitional candidate and stable publication workflows remain available.
-Their manual fallback entry points validate tags and reject existing publication
-identities; pushing a `v*` tag no longer launches a rebuild publication.
+Pushing a `v*` tag no longer launches a rebuild publication.
+
+R9 compatibility notes: the manual PyPI fallback preserves `skip-existing: true`
+and the post-upload SHA256 verification. After building, it compares every
+existing PyPI file with the local filename and SHA256 before upload. Matching
+files allow a retry, including a partially uploaded release; conflicting files
+or an unreadable registry fail closed. A version's existence alone is not a
+refusal. Nonrelease refs remain build-only.
+
+Manual image builds require a source branch of `main`, `release/new`, or
+`hotfix/new` and build the dispatch's exact `github.sha`. Candidate identities
+(`X.Y.Z-rc.N` and `X.Y.Z-hotfix.rc.N`, also with a legacy `v` prefix) are reserved
+for the candidate pipeline. Existing stable Git tags or registry images are
+refused under both stable aliases. Channel tags remain reserved.
