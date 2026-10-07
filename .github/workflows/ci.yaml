@@ -1,7 +1,8 @@
 name: ci
 on:
   push:
-    branches: [main]
+    # Validate both integration branches and main; keep PR coverage unrestricted.
+    branches: [main, release/new, hotfix/new]
   pull_request:
 permissions:
   contents: read

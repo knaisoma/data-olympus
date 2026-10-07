@@ -1,6 +1,8 @@
 name: pr-title-lint
 on:
   pull_request:
+    # Lint all supported integration targets, including main during adoption.
+    branches: [main, release/new, hotfix/new]
     types: [opened, edited, synchronize, reopened]
 permissions:
   contents: read
@@ -8,10 +10,27 @@ jobs:
   lint-title:
     runs-on: ubuntu-latest
     steps:
+      # Base checkout protects the lint script from PR tampering, not this
+      # pull_request workflow definition. PR commits are fetched as Git data.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch PR history without checking out its files
+        working-directory: trusted
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: git fetch --no-tags origin "$PR_HEAD"
       - uses: astral-sh/setup-uv@v7
       - run: uv venv --python 3.13
-      - name: Validate PR title is a Conventional Commit
+        working-directory: trusted
+      - name: Validate source commits and proposed squash title
+        working-directory: trusted
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: uv run python scripts/lint_pr_title.py "$PR_TITLE"
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: .venv/bin/python -I scripts/lint_pr_title.py --base "$PR_BASE" --head "$PR_HEAD" --body "$PR_BODY"
