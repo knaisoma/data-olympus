@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-"""Validate that a PR title is a Conventional Commit.
+"""Validate titles, source commits and squash impact (STD-U-821).
 
-The repo has no Node toolchain, so this is the STD-U-810 §7.1 "commitlint or
-equivalent". It reuses compute_release's parser so the accepted grammar matches
-the bump engine exactly.
+The positional title-only CLI retains its STD-U-810 behavior. Range mode uses
+the STD-U-821 grammar and reads PR_TITLE from the environment, with optional
+--body for the proposed squash message body. Scopes contain one or more ASCII
+lowercase letters, digits, periods, underscores, slashes or hyphens [a-z0-9._/-].
+It needs only
+the standard library and Git, so CI can run a trusted base-ref copy without
+installing or executing anything from a pull request.
 """
 from __future__ import annotations
 
+import argparse
+import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -23,6 +31,67 @@ _ALLOWED = {
     "refactor", "test", "ci", "build", "style", "revert",
 }
 
+_SUBJECT = re.compile(r"([a-z]+)(?:\([a-z0-9._/-]+\))?(!)?: (\S.*)")
+_BREAKING_FOOTER = re.compile(r"^BREAKING[ -]CHANGE: \S", re.MULTILINE)
+_IMPACTS = ("other", "fix", "feat", "breaking")
+
+
+def commit_impact(message: str) -> int:
+    """Return other=0, fix=1, feat=2, breaking=3; reject malformed messages.
+
+    A rewritten revert is an ordinary ``revert: ...`` commit. Its embedded
+    original subject contributes no impact, and it never subtracts impact.
+    """
+    subject, _, body = message.partition("\n")
+    match = _SUBJECT.fullmatch(subject)
+    if match is None:
+        raise ValueError(f"Malformed commit subject: {subject!r}")
+    if match[2] or _BREAKING_FOOTER.search(body):
+        return 3
+    return {"feat": 2, "fix": 1}.get(match[1], 0)
+
+
+def lint_range(repo: Path, base: str, head: str, title: str, body: str = "") -> list[str]:
+    """Lint every non-merge message and the proposed squash title and body."""
+    # Resolve first, preventing option/revision-expression injection into log.
+    refs = [subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--end-of-options",
+         f"{ref}^{{commit}}"], check=True, capture_output=True, text=True,
+    ).stdout.strip() for ref in (base, head)]
+    raw = subprocess.run(
+        ["git", "-C", str(repo), "log", "--no-merges", "-z", "--format=%H%n%B",
+         f"{refs[0]}..{refs[1]}", "--"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    errors: list[str] = []
+    highest = 0
+    has_breaking_footer = False
+    # Remove only the final record terminator, never message whitespace.
+    for record in raw.removesuffix("\0").split("\0") if raw else []:
+        sha, _, message = record.partition("\n")
+        has_breaking_footer |= bool(_BREAKING_FOOTER.search(message.partition("\n")[2]))
+        try:
+            highest = max(highest, commit_impact(message))
+        except ValueError as exc:
+            errors.append(f"{sha}: {exc}")
+    try:
+        if "\n" in title or "\r" in title:
+            raise ValueError("PR title must be a single subject line")
+        proposed = commit_impact(f"{title}\n\n{body}")
+        if proposed < highest:
+            errors.append(
+                f"Proposed squash impact {_IMPACTS[proposed]} is lower than "
+                f"source impact {_IMPACTS[highest]}; preserve breaking markers."
+            )
+    except ValueError as exc:
+        errors.append(f"Invalid PR title: {exc}")
+    if has_breaking_footer and not _BREAKING_FOOTER.search(body):
+        errors.append(
+            "Proposed squash body must preserve a nonempty breaking-change footer "
+            "(BREAKING CHANGE: or BREAKING-CHANGE:); '!' alone is insufficient."
+        )
+    return errors
+
 
 def is_valid_title(title: str) -> bool:
     ctype, _ = classify(title, "")
@@ -30,6 +99,31 @@ def is_valid_title(title: str) -> bool:
 
 
 def main(argv: list[str]) -> int:
+    if argv and argv[0].startswith("--"):
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument("--base", required=True)
+        parser.add_argument("--head", default="HEAD")
+        parser.add_argument("--repo", type=Path, default=Path.cwd())
+        parser.add_argument("--body", default="", help="Proposed squash message body")
+        args = parser.parse_args(argv)
+        try:
+            errors = lint_range(
+                args.repo, args.base, args.head, os.environ.get("PR_TITLE", ""), args.body,
+            )
+        except UnicodeDecodeError as exc:
+            print(
+                f"Cannot decode commit range: invalid {exc.encoding} output from Git",
+                file=sys.stderr,
+            )
+            return 1
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"Cannot read commit range: {exc}", file=sys.stderr)
+            return 1
+        for error in errors:
+            print(error, file=sys.stderr)
+        if not errors:
+            print("Commit range and squash title ok")
+        return int(bool(errors))
     title = argv[0] if argv else ""
     if is_valid_title(title):
         print(f"PR title ok: {title}")
