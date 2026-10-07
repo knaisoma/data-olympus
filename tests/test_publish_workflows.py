@@ -52,7 +52,7 @@ def test_reusable_upload_gated_on_input():
 
 
 def test_reusable_build_runs_twine_check():
-    doc = _load("publish-pypi-reusable.yml")
+    doc = _load("publish-python-build.yml")
     build = doc["jobs"]["build"]
     cmds = " ".join(str(s.get("run", "")) for s in build["steps"])
     assert "twine check" in cmds
@@ -62,7 +62,10 @@ def test_reusable_build_runs_twine_check():
 def test_publish_pr_dry_run_does_not_upload():
     doc = _load("publish-pypi.yml")
     dry = doc["jobs"]["dry-run"]
-    assert dry["with"]["upload"] is False
+    assert dry["uses"] == "./.github/workflows/publish-python-build.yml"
+    assert dry["permissions"] == {"contents": "read"}
+    build_only = _load("publish-python-build.yml")
+    assert set(build_only["jobs"]) == {"build"}
     # dry-run fires on pull_request only.
     assert "pull_request" in dry["if"]
 
@@ -198,8 +201,8 @@ def test_manual_dispatch_uploads_only_for_validated_release_tag():
     assert "upload" in validate["outputs"]
     check = " ".join(str(s.get("run", "")) for s in validate["steps"])
     # Guards on a v-semver tag pattern and an existing tag object.
-    assert "v[0-9]" in check
-    assert "refs/tags/" in check
+    assert "workflow_validation.py manual-python" in check
+    assert jobs["manual"]["with"]["ref"] == "${{ needs.validate-manual.outputs.sha }}"
     # The manual publish job keys its upload off the validate output, not a bare true.
     manual = jobs["manual"]
     assert manual["needs"] == "validate-manual"
@@ -210,12 +213,11 @@ def test_publish_pr_dry_run_ref_is_not_untrusted():
     """The reusable workflow's ref must come from a trusted source, never event
     body fields (injection guard)."""
     doc = _load("publish-pypi.yml")
-    for job in ("dry-run", "release", "manual"):
+    for job in ("dry-run", "manual"):
         ref = doc["jobs"][job]["with"]["ref"]
         assert ref in (
             "${{ github.sha }}",
-            "${{ github.ref_name }}",
-            "${{ inputs.ref }}",
+            "${{ needs.validate-manual.outputs.sha }}",
         ), (job, ref)
 
 
@@ -226,7 +228,7 @@ def test_reusable_image_build_checks_out_and_labels_explicit_ref():
     assert ref_input["required"] is True
 
     steps = doc["jobs"]["build-push"]["steps"]
-    checkout = next(s for s in steps if "actions/checkout" in str(s.get("uses", "")))
+    checkout = next(s for s in steps if s.get("name") == "Checkout")
     assert checkout["with"]["ref"] == "${{ inputs.ref }}"
 
     source = next(s for s in steps if s.get("id") == "source")

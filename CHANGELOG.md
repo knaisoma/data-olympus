@@ -12,6 +12,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+* Build normal and hotfix release candidates with read-only permissions,
+  injected Python versions, an OCI archive, and provenance. Cut builds and
+  dry runs build and verify artifacts without allowing promotion.
+
+### Security
+
+* Validate manual publication identities and reject collisions, bind Python
+  builds to validated commit SHAs, and move image channels by verified digest.
+  Remove tag-triggered rebuild publication and OIDC grants from PR packaging builds.
+
 ### Fixed
 
 * Accept the ratified Amendment 1.3 heading for adoption verification while

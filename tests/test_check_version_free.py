@@ -298,3 +298,29 @@ def test_main_bypass_override_allows_despite_outage(
     sentinel = RuntimeError("registry must not be queried when bypassed")
     _patch_registry(monkeypatch, pypi=sentinel, ghcr=sentinel, github=sentinel)
     assert main(["--version", "0.5.0"]) == 0
+
+
+def test_hotfix_registry_requests_use_mapped_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def run(command: list[str], **_kwargs: object) -> object:
+        calls.append(command[-1])
+        return version_guard.subprocess.CompletedProcess(command, 1, "", "manifest unknown")
+
+    monkeypatch.setattr(version_guard.subprocess, "run", run)
+    monkeypatch.setattr(version_guard, "_gh_json", lambda path: calls.append(path))
+    assert version_guard._on_ghcr("1.2.3-hotfix.rc.4", "a/b") is False
+    assert version_guard._on_github("1.2.3-hotfix.rc.4", "a/b") is False
+    assert calls == [
+        "ghcr.io/a/b:1.2.3-hotfix.rc.4",
+        "/repos/a/b/releases/tags/1.2.3-hotfix.rc.4",
+        "/repos/a/b/git/ref/tags/1.2.3-hotfix.rc.4",
+    ]
+
+
+def test_hotfix_main_checks_python_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+    _patch_registry(monkeypatch, pypi=False, ghcr=False, github=False)
+    monkeypatch.setattr(version_guard, "_on_pypi", lambda version: seen.append(version))
+    assert main(["--version", "1.2.3-hotfix.rc.4"]) == 0
+    assert seen == ["1.2.3.dev4"]

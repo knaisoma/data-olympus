@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -33,6 +35,117 @@ def test_candidate_version_maps_public_channels() -> None:
     assert version.git_tag == "0.6.0-rc.3"
     assert version.pypi_version == "0.6.0rc3"
     assert version.stable_tag == "v0.6.0"
+
+
+@pytest.mark.parametrize(("tag", "python_version"), [
+    ("0.6.0-hotfix.rc.3", "0.6.0.dev3"),
+    ("0.6.0-hotfix.rc.0", "0.6.0.dev0"),
+    ("0.6.0-rc.0", "0.6.0rc0"),
+    ("0.6.0-rc.3", "0.6.0rc3"),
+])
+def test_candidate_identity_supports_stage_one(tag: str, python_version: str) -> None:
+    version = _module().CandidateVersion.from_tag(tag)
+    assert version.git_tag == tag
+    assert version.pypi_version == python_version
+
+
+@pytest.mark.parametrize("tag", ["0.6.0-rc.01", "v0.6.0-rc.1", "0.6.0-rc.-1",
+                                "0.6.0-hotfix.rc.1\n", "0.6.0"])
+def test_stage_one_identity_rejects_malformed_tag(tag: str) -> None:
+    with pytest.raises(ValueError, match="candidate tag"):
+        _module().CandidateVersion.from_tag(tag)
+
+
+def test_prepare_context_injects_hotfix_without_mutating_source(tmp_path: Path) -> None:
+    module = _module()
+    before = (ROOT / "pyproject.toml").read_bytes()
+    output = tmp_path / "context"
+    assert module.main(["prepare-context", "--source", str(ROOT), "--output", str(output),
+                        "--version", "0.6.0.dev0"]) == 0
+    project = tomllib.loads((output / "pyproject.toml").read_text())["project"]
+    assert project["version"] == "0.6.0.dev0"
+    assert (ROOT / "pyproject.toml").read_bytes() == before
+    assert (output / "deploy/docker/Dockerfile").is_file()
+
+
+@pytest.mark.parametrize(("tag", "number", "dry_run", "promotable"), [
+    ("0.6.0-hotfix.rc.3", 3, False, True),
+    ("0.6.0-hotfix.rc.0", 0, False, False),
+    ("0.6.0-rc.3", 3, True, False),
+])
+def test_archive_provenance_binds_inputs_and_decision(
+    tmp_path: Path, tag: str, number: int, dry_run: bool, promotable: bool,
+) -> None:
+    module = _module()
+    version = module.CandidateVersion.from_tag(tag)
+    receipt = module.BuildReceipt(version.pypi_version, "a" * 40, "b" * 64, "c" * 64,
+                                  Path("test.whl"), Path("test.tar.gz"), "d" * 64, "e" * 64)
+    source = tmp_path / "source.json"
+    output = tmp_path / "final.json"
+    archive = tmp_path / "image.oci.tar"
+    archive.write_bytes(b"oci archive fixture")
+    module.write_provenance(module.ReleaseReceipt("a" * 40, receipt), source)
+    args = ["finalize-archive", "--provenance", str(source), "--output", str(output),
+            "--source-sha", "a" * 40, "--base-sha", "b" * 40, "--main-sha", "c" * 40,
+            "--candidate-tag", tag, "--number", str(number), "--oci-archive", str(archive),
+            "--image-digest", "sha256:" + "d" * 64,
+            "--promotable", str(promotable).lower()]
+    args.extend(["--dry-run", str(dry_run).lower()])
+    assert module.main(args) == 0
+    payload = json.loads(output.read_text())
+    assert {key: payload[key] for key in ("B", "H", "M", "N")} == {
+        "B": "b" * 40, "H": "a" * 40, "M": "c" * 40, "N": number,
+    }
+    assert payload["python_version"] == version.pypi_version
+    assert payload["candidate_tag"] == tag
+    assert payload["oci_archive_sha256"] == hashlib.sha256(b"oci archive fixture").hexdigest()
+    assert payload["image_digest"] == "sha256:" + "d" * 64
+    assert payload["promotable"] is promotable
+    assert payload["dry_run"] is dry_run
+
+
+@pytest.mark.parametrize("stable", [False, True])
+def test_legacy_provenance_bytes_remain_unchanged(tmp_path: Path, stable: bool) -> None:
+    module = _module()
+    candidate = module.BuildReceipt("0.6.0rc3", "a" * 40, "b" * 64, "c" * 64,
+                                   Path("c.whl"), Path("c.tar.gz"), "d" * 64, "e" * 64)
+    stable_build = module.BuildReceipt("0.6.0", "a" * 40, "b" * 64, "c" * 64,
+                                      Path("s.whl"), Path("s.tar.gz"), "f" * 64, "0" * 64)
+    comparison = module.ComparisonReceipt("0.6.0rc3", "0.6.0", "d" * 64, "f" * 64,
+                                         "1" * 64, 10, True)
+    expected_candidate = dict(version="0.6.0rc3", source_sha="a" * 40,
+                              source_tree_sha256="b" * 64, lock_sha256="c" * 64,
+                              wheel="c.whl", sdist="c.tar.gz", wheel_sha256="d" * 64,
+                              sdist_sha256="e" * 64)
+    expected_stable = dict(expected_candidate, version="0.6.0", wheel="s.whl", sdist="s.tar.gz",
+                           wheel_sha256="f" * 64, sdist_sha256="0" * 64)
+    expected_comparison = dict(candidate_version="0.6.0rc3", stable_version="0.6.0",
+                               candidate_wheel_sha256="d" * 64, stable_wheel_sha256="f" * 64,
+                               normalized_payload_sha256="1" * 64, files_compared=10,
+                               equivalent=True)
+    expected = {"source_sha": "a" * 40, "candidate": expected_candidate,
+                "stable": expected_stable if stable else None,
+                "comparison": expected_comparison if stable else None}
+    output = tmp_path / "legacy.json"
+    receipt = module.ReleaseReceipt("a" * 40, candidate, stable_build if stable else None,
+                                    comparison if stable else None)
+    module.write_provenance(receipt, output)
+    assert output.read_bytes() == (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode()
+
+
+@pytest.mark.parametrize(("number", "dry_run"), [(0, "false"), (3, "true")])
+def test_archive_provenance_refuses_promotable_cut_or_dry_run(
+    tmp_path: Path, number: int, dry_run: str,
+) -> None:
+    with pytest.raises(ValueError, match="not promotable"):
+        _module().main([
+            "finalize-archive", "--provenance", str(tmp_path / "unused.json"),
+            "--output", str(tmp_path / "final.json"), "--source-sha", "a" * 40,
+            "--base-sha", "b" * 40, "--main-sha", "c" * 40,
+            "--candidate-tag", f"0.6.0-rc.{number}", "--number", str(number),
+            "--oci-archive", str(tmp_path / "image.tar"), "--image-digest", "sha256:" + "d" * 64,
+            "--promotable", "true", "--dry-run", dry_run,
+        ])
 
 
 @pytest.mark.parametrize("base", ["0.6", "v0.6.0", "0.6.0rc1", "0.6.0-alpha"])

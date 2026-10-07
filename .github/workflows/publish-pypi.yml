@@ -1,18 +1,3 @@
-# .github/workflows/publish-pypi.yml
-#
-# REQUIRES OPERATOR SETUP. The `upload` path for real releases and manual tags
-# fails closed until the operator configures a PyPI Trusted Publisher on
-# pypi.org: owner=knaisoma, repo=data-olympus, workflow=publish-pypi.yml,
-# environment=pypi. See docs/releases/pypi-trusted-publishing.md.
-#
-# NORMAL RELEASE PATH: this file is NOT the primary release trigger. The live
-# release chain uses inline Trusted Publishing jobs in rc-publish.yml and
-# tag-release.yml. Because GITHUB_TOKEN-created tag pushes do NOT trigger
-# `on: push tags` workflows, the `release` job below does not fire in the normal
-# flow. This file provides two independent fallback paths:
-#   1. a PR-time DRY RUN (build + twine check, no upload) for packaging changes;
-#   2. a manual-tag / human-pushed-tag FALLBACK (same rationale as
-#      release-image.yml's tag trigger, STD-U-810 section 9).
 name: Publish to PyPI
 
 on:
@@ -25,15 +10,8 @@ on:
       - "scripts/smoke_installed_wheel.py"
       - "tests/test_installed_wheel_smoke.py"
       - ".github/workflows/publish-pypi*.yml"
-  # FALLBACK for a human-pushed tag (tag-release.yml's GITHUB_TOKEN push does not
-  # reach here). Real upload.
-  push:
-    tags:
-      - "v*"
-  # Manual re-publish of a specific ref. Only a `v*` RELEASE TAG uploads; any
-  # other ref (a branch like release/0.3.0, or a raw SHA) is built + twine-checked
-  # DRY-RUN only, never uploaded. This keeps the "PyPI artifacts come only from
-  # release tags" invariant even for a hand-triggered run.
+      - ".github/workflows/publish-python-build.yml"
+  # Nonrelease refs retain build-only dispatch behavior.
   workflow_dispatch:
     inputs:
       ref:
@@ -43,36 +21,15 @@ on:
 jobs:
   dry-run:
     if: github.event_name == 'pull_request'
-    uses: ./.github/workflows/publish-pypi-reusable.yml
+    uses: ./.github/workflows/publish-python-build.yml
     with:
       ref: ${{ github.sha }}
-      upload: false
     permissions:
       contents: read
-      # id-token: write is NOT used on this path (upload=false skips the only
-      # job with an OIDC step) but must be granted anyway: GitHub validates a
-      # called workflow's job-level permission requests against the caller's
-      # grant statically at startup, BEFORE `if:` conditions are evaluated, so
-      # omitting it startup-fails every pull_request run. Exposure is bounded:
-      # the reusable `build` job runs with contents: read only, the `upload`
-      # job (the only OIDC consumer) is gated off by `if: inputs.upload`, and
-      # a real PyPI exchange additionally requires the `pypi` environment
-      # (deployment policy: main + v* tags) and a matching Trusted Publisher.
-      id-token: write
-
-  release:
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    uses: ./.github/workflows/publish-pypi-reusable.yml
-    with:
-      ref: ${{ github.ref_name }}
-      upload: true
-    permissions:
-      contents: read
-      id-token: write
 
   # Validate the manual input BEFORE any upload: upload is enabled only when the
-  # ref is a `v<semver>` tag AND resolves to an existing tag object. Otherwise the
-  # manual job runs upload=false.
+  # ref is an exact release tag that resolves to a commit. Other valid refs
+  # retain build-only behavior; malformed or absent release tags fail closed.
   validate-manual:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -80,6 +37,7 @@ jobs:
       contents: read
     outputs:
       upload: ${{ steps.check.outputs.upload }}
+      sha: ${{ steps.check.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -88,26 +46,14 @@ jobs:
         id: check
         env:
           REF: ${{ inputs.ref }}
-        run: |
-          upload=false
-          # Must look like v<major>.<minor>.<patch>(suffix) AND be a real tag.
-          if printf '%s' "$REF" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+'; then
-            if git rev-parse -q --verify "refs/tags/$REF" >/dev/null; then
-              upload=true
-            else
-              echo "::warning::ref '$REF' is not an existing tag; dry-run only"
-            fi
-          else
-            echo "::warning::ref '$REF' is not a v* release tag; dry-run only"
-          fi
-          echo "upload=$upload" >> "$GITHUB_OUTPUT"
+        run: python3 scripts/workflow_validation.py manual-python
 
   manual:
     needs: validate-manual
     if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/publish-pypi-reusable.yml
     with:
-      ref: ${{ inputs.ref }}
+      ref: ${{ needs.validate-manual.outputs.sha }}
       upload: ${{ needs.validate-manual.outputs.upload == 'true' }}
     permissions:
       contents: read

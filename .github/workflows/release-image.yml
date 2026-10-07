@@ -2,9 +2,6 @@
 name: Release Docker Image
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
@@ -13,20 +10,22 @@ on:
         default: "edge"
 
 jobs:
-  # A real release is a pushed `v*` tag: publish the semver tag AND move `latest`.
-  # A manual workflow_dispatch (default `edge`) is a pre-release build: publish
-  # ONLY its tag, never move `latest`.
-  release:
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    uses: ./.github/workflows/release-image-reusable.yml
-    with:
-      ref: ${{ github.ref_name }}
-      tag: ${{ github.ref_name }}
-      move_latest: true
+  validate:
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v4
+      - name: Validate manual publication tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: python3 scripts/workflow_validation.py manual-image
   prerelease:
+    needs: validate
     if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/release-image-reusable.yml
     with:

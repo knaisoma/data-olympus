@@ -38,6 +38,18 @@ jobs:
       digest: ${{ steps.build.outputs.digest }}
       source_sha: ${{ steps.source.outputs.sha }}
     steps:
+      - name: Checkout workflow validators
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Compute image tags
+        id: image-tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          MOVE_LATEST: ${{ inputs.move_latest }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+        run: python3 scripts/workflow_validation.py image-tags
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -56,24 +68,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Compute image tags
-        id: image-tag
-        env:
-          INPUT_TAG: ${{ inputs.tag }}
-          MOVE_LATEST: ${{ inputs.move_latest }}
-          INPUT_CHANNEL: ${{ inputs.channel }}
-        run: |
-          {
-            echo "tags<<EOF"
-            echo "ghcr.io/knaisoma/data-olympus:$INPUT_TAG"
-            if [ "$MOVE_LATEST" = "true" ]; then
-              echo "ghcr.io/knaisoma/data-olympus:latest"
-            fi
-            if [ -n "$INPUT_CHANNEL" ]; then
-              echo "ghcr.io/knaisoma/data-olympus:$INPUT_CHANNEL"
-            fi
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
       - name: Build and push
         id: build
         uses: docker/build-push-action@v7

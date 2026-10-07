@@ -3,7 +3,7 @@
 # This workflow uploads to PyPI via Trusted Publishing (OIDC, no API token).
 # PyPI binds the publisher to the TOP-LEVEL
 # workflow that starts the run. This reusable workflow is now called only from
-# publish-pypi.yml, the human-pushed tag and manual fallback. The primary
+# publish-pypi.yml, the manual fallback. The primary
 # rc-publish.yml and tag-release.yml paths publish inline and have their own
 # publisher identities.
 # See docs/releases/pypi-trusted-publishing.md for the exact setup path. A
@@ -25,46 +25,11 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    uses: ./.github/workflows/publish-python-build.yml
+    with:
+      ref: ${{ inputs.ref }}
     permissions:
       contents: read
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref }}
-          fetch-depth: 0
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v7
-      - name: Read expected package version
-        id: version
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import tomllib
-
-          with open("pyproject.toml", "rb") as stream:
-              print(f"version={tomllib.load(stream)['project']['version']}")
-          PY
-      - name: Build sdist + wheel
-        run: uv build
-      - name: Verify metadata (twine check)
-        run: uvx twine check --strict dist/*
-      - name: Smoke-test the built distributions
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          for artifact in dist/*.whl dist/*.tar.gz; do
-            uv run python scripts/smoke_installed_wheel.py \
-              --artifact "$artifact" --expected-version "$VERSION"
-          done
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: dist
-          path: dist/
-          if-no-files-found: error
 
   upload:
     # Only runs on a real release (upload=true). On PR dry-runs this job is

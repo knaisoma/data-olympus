@@ -1,0 +1,52 @@
+name: build-python-distributions
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+    outputs:
+      version:
+        value: ${{ jobs.build.outputs.version }}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+      - name: Read expected package version
+        id: version
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+
+          with open("pyproject.toml", "rb") as stream:
+              print(f"version={tomllib.load(stream)['project']['version']}")
+          PY
+      - name: Build sdist + wheel
+        run: uv build
+      - name: Verify metadata (twine check)
+        run: uvx twine check --strict dist/*
+      - name: Smoke-test the built distributions
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for artifact in dist/*.whl dist/*.tar.gz; do
+            uv run python scripts/smoke_installed_wheel.py \
+              --artifact "$artifact" --expected-version "$VERSION"
+          done
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error

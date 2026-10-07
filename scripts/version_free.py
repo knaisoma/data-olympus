@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Release version-freshness gate: fail unless a target version is absent from
-every external registry (PyPI, ghcr, GitHub releases), fail-closed.
+every external registry (PyPI, ghcr, GitHub releases and Git tags), fail-closed.
 
 A version is only "free" (safe to publish) when it is confirmed absent from
 all three registries AND every registry was reachable. If any registry could
@@ -35,7 +35,9 @@ from dataclasses import dataclass
 from typing import cast
 
 _STABLE_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
-_CANDIDATE_RE = re.compile(r"([0-9]+\.[0-9]+\.[0-9]+)-rc\.([1-9][0-9]*)")
+_CANDIDATE_RE = re.compile(
+    r"([0-9]+\.[0-9]+\.[0-9]+)-(hotfix\.)?rc\.(0|[1-9][0-9]*)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,28 +54,30 @@ def registry_versions(version: str) -> RegistryVersions:
         return RegistryVersions(pypi=version, ghcr=tag, github=tag)
     candidate = _CANDIDATE_RE.fullmatch(version)
     if candidate:
-        base, number = candidate.groups()
+        base, hotfix, number = candidate.groups()
         return RegistryVersions(
-            pypi=f"{base}rc{number}",
+            pypi=f"{base}{'.dev' if hotfix else 'rc'}{number}",
             ghcr=version,
             github=version,
         )
-    raise ValueError("version must be X.Y.Z or X.Y.Z-rc.N")
+    raise ValueError("version must be X.Y.Z, X.Y.Z-rc.N, or X.Y.Z-hotfix.rc.N")
 
 
 def evaluate(
     pypi_present: bool | None,
     ghcr_present: bool | None,
     gh_release_present: bool | None,
+    gh_tag_present: bool | None = False,
 ) -> dict[str, object]:
     """PURE. Each arg is True (found/taken), False (confirmed absent), or
-    None (unreachable/unknown). A version is free only if all three are
+    None (unreachable/unknown). A version is free only if all checks are
     exactly False; any True means taken, any None means unreachable and
     fails closed (not free)."""
     checks = (
         ("pypi", pypi_present),
         ("ghcr", ghcr_present),
         ("github_release", gh_release_present),
+        ("github_tag", gh_tag_present),
     )
     unreachable = [name for name, present in checks if present is None]
     free = all(present is False for _, present in checks)
@@ -81,6 +85,7 @@ def evaluate(
         "pypi_taken": pypi_present,
         "ghcr_taken": ghcr_present,
         "github_release_taken": gh_release_present,
+        "github_tag_taken": gh_tag_present,
         "unreachable": unreachable,
         "free": free,
     }
@@ -97,7 +102,7 @@ def _pypi_present(version: str, package: str = "data-olympus") -> bool | None:
         if exc.code == 404:
             return False
         return None
-    except urllib.error.URLError:
+    except OSError:
         return None
 
 
@@ -126,10 +131,20 @@ def _ghcr_present(tag: str, package: str = "data-olympus") -> bool | None:
 
 
 def _gh_release_present(tag: str, repo: str = "knaisoma/data-olympus") -> bool | None:
-    out = subprocess.run(
-        ["gh", "api", f"repos/{repo}/releases/tags/{tag}"],
-        capture_output=True, text=True,
-    )
+    return _gh_present(f"repos/{repo}/releases/tags/{tag}")
+
+
+def _gh_tag_present(tag: str, repo: str = "knaisoma/data-olympus") -> bool | None:
+    return _gh_present(f"repos/{repo}/git/ref/tags/{tag}")
+
+
+def _gh_present(path: str) -> bool | None:
+    try:
+        out = subprocess.run(
+            ["gh", "api", path], capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
     if out.returncode == 0:
         return True
     if "404" in out.stderr or "Not Found" in out.stderr:
@@ -154,12 +169,13 @@ def main(argv: list[str] | None = None) -> int:
     pypi = _pypi_present(versions.pypi, args.package)
     ghcr = _ghcr_present(versions.ghcr, args.package)
     gh_release = _gh_release_present(versions.github, args.repo)
-    result = evaluate(pypi, ghcr, gh_release)
+    gh_tag = _gh_tag_present(versions.github, args.repo)
+    result = evaluate(pypi, ghcr, gh_release, gh_tag)
 
     if args.json:
         print(json.dumps(result))
     elif result["free"]:
-        print(f"{args.version} is free: absent from PyPI, ghcr, and GitHub releases")
+        print(f"{args.version} is free: absent from PyPI, ghcr, GitHub releases and Git tags")
     else:
         taken = [
             name
@@ -167,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
                 ("PyPI", "pypi_taken"),
                 ("ghcr", "ghcr_taken"),
                 ("GitHub releases", "github_release_taken"),
+                ("Git tags", "github_tag_taken"),
             )
             if result[key] is True
         ]

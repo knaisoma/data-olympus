@@ -1,0 +1,98 @@
+name: rc-build
+
+on:
+  push:
+    branches: [release/new, hotfix/new]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and verify artifacts without allowing promotion
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      DRY_RUN: ${{ inputs.dry_run || false }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.13'
+      - name: Fetch current heads and require exact source
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = branch
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main \
+            "+refs/heads/$GITHUB_REF_NAME:refs/remotes/origin/build-head"
+          mkdir -p to-delete/rc-build
+          uv run python scripts/rc_decide.py preflight \
+            --head "$GITHUB_SHA" --branch "$GITHUB_REF_NAME" \
+            --branch-ref refs/remotes/origin/build-head \
+            --event "$GITHUB_EVENT_NAME" --dry-run "$DRY_RUN" >> "$GITHUB_ENV"
+      - name: Compute content-derived identity and build decision
+        run: |
+          set -euo pipefail
+          uv run python scripts/sdlc_version.py \
+            --head "$GITHUB_SHA" --main refs/remotes/origin/main \
+            --branch "$ENGINE_BRANCH" \
+            --json-output to-delete/rc-build/version.json \
+            --env-output to-delete/rc-build/version.env
+          cat to-delete/rc-build/version.env >> "$GITHUB_ENV"
+          uv run python scripts/rc_decide.py decide \
+            --version-file to-delete/rc-build/version.json \
+            --output to-delete/rc-build/decision.json --dry-run "$DRY_RUN" >> "$GITHUB_ENV"
+      - name: Build and verify Python distributions
+        run: |
+          set -euo pipefail
+          uv run python scripts/release_artifacts.py candidate \
+            --candidate-tag "$RC_VERSION" --source . \
+            --output to-delete/rc-build/dist \
+            --provenance to-delete/rc-build/python-provenance.json
+          uvx twine check --strict to-delete/rc-build/dist/*
+          for artifact in to-delete/rc-build/dist/*.whl to-delete/rc-build/dist/*.tar.gz; do
+            uv run python scripts/smoke_installed_wheel.py \
+              --artifact "$artifact" --expected-version "$PYPI_VERSION"
+          done
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Build OCI archive with injected package version
+        run: |
+          set -euo pipefail
+          uv run python scripts/release_artifacts.py prepare-context \
+            --source . --output to-delete/rc-context --version "$PYPI_VERSION"
+          docker buildx build to-delete/rc-context \
+            --file to-delete/rc-context/deploy/docker/Dockerfile \
+            --platform linux/amd64,linux/arm64 \
+            --label "org.opencontainers.image.version=$RC_VERSION" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "ghcr.io/knaisoma/data-olympus:$RC_VERSION" \
+            --output type=oci,dest=to-delete/rc-build/image.oci.tar \
+            --metadata-file to-delete/rc-build/image-metadata.json
+      - name: Record archive provenance
+        run: |
+          set -euo pipefail
+          IMAGE_DIGEST="$(jq -er '."containerimage.digest"' to-delete/rc-build/image-metadata.json)"
+          MAIN_SHA="$(jq -er '.M' to-delete/rc-build/version.json)"
+          uv run python scripts/release_artifacts.py finalize-archive \
+            --provenance to-delete/rc-build/python-provenance.json \
+            --output to-delete/rc-build/release-provenance.json \
+            --candidate-tag "$RC_VERSION" --source-sha "$GITHUB_SHA" \
+            --base-sha "$CUT_SHA" --main-sha "$MAIN_SHA" --number "$N" \
+            --image-digest "$IMAGE_DIGEST" --oci-archive to-delete/rc-build/image.oci.tar \
+            --promotable "$PROMOTABLE" --dry-run "$DRY_RUN"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rc-build-${{ github.sha }}-${{ github.run_attempt }}
+          path: to-delete/rc-build/
+          if-no-files-found: error

@@ -50,7 +50,7 @@ def test_clean_installed_wheel_smoke(tmp_path: Path) -> None:
 
 def test_packaging_workflows_smoke_both_artifacts_at_the_expected_version() -> None:
     jobs = {
-        "publish-pypi-reusable.yml": "build",
+        "publish-python-build.yml": "build",
         "rc-publish.yml": "build-python",
         "tag-release.yml": "publish-pypi",
     }
