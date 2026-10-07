@@ -211,3 +211,41 @@ def test_git_log_decode_error_is_clear(history, monkeypatch, capsys) -> None:
     monkeypatch.setattr(subprocess, "run", invalid_log)
     assert main(["--base", base, "--repo", str(repo)]) == 1
     assert "Cannot decode commit range" in capsys.readouterr().err
+
+
+def test_workflow_executes_only_base_scripts() -> None:
+    import yaml
+
+    workflow = yaml.safe_load((_REPO / ".github/workflows/pr-title-lint.yml").read_text())
+    # PyYAML's YAML 1.1 loader represents GitHub's `on` key as True.
+    events = workflow[True]
+    assert set(events) == {"pull_request"}
+    assert set(events["pull_request"]["branches"]) == {"main", "release/new", "hotfix/new"}
+    assert workflow["permissions"] == {"contents": "read"}
+    steps = workflow["jobs"]["lint-title"]["steps"]
+    checkout = [step for step in steps if step.get("uses", "").startswith("actions/checkout@")]
+    assert len(checkout) == 1
+    assert checkout[0]["with"] == {
+        "ref": "${{ github.event.pull_request.base.sha }}", "path": "trusted",
+        "fetch-depth": 0, "persist-credentials": False,
+    }
+    for step in steps:
+        if "run" in step:
+            assert step["working-directory"] == "trusted"
+            assert "${{" not in step["run"]
+    lint = steps[-1]
+    assert lint["env"]["PR_TITLE"] == "${{ github.event.pull_request.title }}"
+    assert lint["env"]["PR_BODY"] == "${{ github.event.pull_request.body }}"
+    assert '--body "$PR_BODY"' in lint["run"]
+    assert lint["run"].startswith(".venv/bin/python -I scripts/lint_pr_title.py --base ")
+    assert "uv run" not in lint["run"]
+
+
+def test_ci_includes_integration_branches_without_narrowing_prs() -> None:
+    import yaml
+
+    workflow = yaml.safe_load((_REPO / ".github/workflows/ci.yaml").read_text())
+    events = workflow[True]
+    assert set(events["push"]["branches"]) == {"main", "release/new", "hotfix/new"}
+    assert "pull_request" in events
+    assert events["pull_request"] is None
