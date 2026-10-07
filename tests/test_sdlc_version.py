@@ -294,11 +294,36 @@ def test_adoption_ignores_prerelease_and_unrelated_tags(repo):
     assert repo.compute()["candidate"] == "0.11.1-rc.0"
 
 
-def test_adoption_reject_stable_on_cut(repo):
-    adoption(repo)
+@pytest.mark.parametrize("record", [None, {"base": "wrong"}, "invalid"])
+def test_adoption_ignored_with_stable_on_cut(repo, record):
+    adoption(repo, record)
     repo.git("tag", "v0.11.1")
-    with pytest.raises(engine.VersionError, match="bad_adoption"):
-        repo.compute()
+    repo.commit("fix: repair export")
+    result = repo.compute()
+    assert result["base"] == "v0.11.1"
+    assert result["candidate"] == "0.11.2-rc.1"
+
+
+@pytest.mark.parametrize(("branch", "candidate", "pypi"), [
+    ("release/new", "0.11.2-rc.1", "0.11.2rc1"),
+    ("hotfix/new", "0.11.2-hotfix.rc.1", "0.11.2.dev1"),
+])
+def test_post_release_tag_ignores_retained_adoption(repo, branch, candidate, pypi):
+    adoption(repo)
+    repo.write("source.py", "repaired\n")
+    repo.commit("fix: repair export")
+    repo.git("checkout", "main")
+    repo.git("merge", "--squash", "release/new")
+    cut = repo.commit("release: 0.11.1")
+    repo.git("tag", "v0.11.1")
+    repo.git("branch", "-D", "release/new")
+    repo.git("checkout", "-b", branch)
+    head = repo.commit("fix: follow-up repair")
+    assert repo.compute(branch=branch) == {
+        "base": "v0.11.1", "B": cut, "M": cut, "H": head, "N": 1,
+        "target": "0.11.2", "candidate": candidate,
+        "pypi_version": pypi, "promotable": True,
+    }
 
 
 def test_cli_json_env_and_exit_code(repo):

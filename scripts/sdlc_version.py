@@ -4,7 +4,7 @@
 Callers must supply full history and tags. The CLI can fetch them explicitly
 with --fetch; computation itself is read-only. JSON preserves the reference
 engine's provenance fields and adds pypi_version. --format env emits the W6
-build contract. GA approval is read only from H, adoption only from B.
+build contract. GA approval is read only from H, adoption only from untagged B.
 
 R1 adoption records a full ancestor SHA as anchor. Only the adoption record
 may differ between that anchor and the untagged cut B.
@@ -25,6 +25,8 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from scripts.compute_release import classify  # noqa: E402
+
+ADOPTION_BASE = "0.11.0"
 
 _NUMBER = r"(0|[1-9][0-9]*)"
 _STABLE = re.compile(rf"v{_NUMBER}\.{_NUMBER}\.{_NUMBER}")
@@ -96,7 +98,7 @@ def _impact(message: str) -> int:
     return 3 if breaking else 2 if kind == "feat" else 1 if kind == "fix" else 0
 
 
-def _adoption_base(git: Git, cut: str, stable: list[str], tags: list[str]) -> str | None:
+def _adoption_base(git: Git, cut: str, tags: list[str]) -> str | None:
     raw = git.file(cut, "release/ADOPTION.json")
     if raw is None:
         return None
@@ -108,11 +110,10 @@ def _adoption_base(git: Git, cut: str, stable: list[str], tags: list[str]) -> st
         not isinstance(record, dict)
         or not isinstance(record.get("anchor"), str)
         or not re.fullmatch(rf"[0-9a-fA-F]{{{len(cut)}}}", record["anchor"])
-        or record.get("base") != "0.11.0"
-        or stable
+        or record.get("base") != ADOPTION_BASE
         or not tags
-        or max(tags, key=_version) != "v0.11.0"
-        or not git.ancestor(git.resolve("refs/tags/v0.11.0"), cut)
+        or max(tags, key=_version) != f"v{ADOPTION_BASE}"
+        or not git.ancestor(git.resolve(f"refs/tags/v{ADOPTION_BASE}"), cut)
     ):
         raise VersionError("bad_adoption", "record must name untagged cut and highest stable base")
     try:
@@ -125,7 +126,7 @@ def _adoption_base(git: Git, cut: str, stable: list[str], tags: list[str]) -> st
         or git.run("diff", "--name-only", anchor, cut).splitlines() != ["release/ADOPTION.json"]
     ):
         raise VersionError("bad_adoption", "anchor must strictly precede an adoption-only cut")
-    return "v0.11.0"
+    return f"v{ADOPTION_BASE}"
 
 
 def compute_version(
@@ -172,8 +173,8 @@ def compute_version(
     all_stable = [tag for tag in tags if _STABLE.fullmatch(tag)]
     if len(stable) > 1:
         raise VersionError("ambiguous_stable_tag", "more than one stable tag on cut")
-    adoption = _adoption_base(git, b, stable, all_stable)
-    base = stable[0] if stable else adoption
+    # A stable cut tag takes precedence even if an adoption record remains.
+    base = stable[0] if stable else _adoption_base(git, b, all_stable)
     if branch == "hotfix/new" and (not stable or base != max(all_stable, key=_version)):
         raise VersionError("hotfix_scope", "hotfix/new requires the current stable main tag")
 
