@@ -41,7 +41,8 @@ class Repo:
         path.write_text(text)
 
     def compute(self, **kwargs):
-        options = dict(cwd=self.path, head="HEAD", main="main", branch="release/new")
+        options = dict(cwd=self.path, head="HEAD", main="main", branch="release/new",
+                       adoption_ratified="2026-10-07")
         return engine.compute_version(**(options | kwargs))
 
 
@@ -259,7 +260,7 @@ def test_adoption_reject_mismatch(repo, record):
         repo.compute()
 
 
-@pytest.mark.parametrize("kind", ["unrelated", "abbreviated", "tree", "extra_path"])
+@pytest.mark.parametrize("kind", ["unrelated", "abbreviated", "tree", "distant", "existing"])
 def test_adoption_reject_invalid_anchor_or_diff(repo, kind):
     repo.git("tag", "v0.11.0")
     anchor = repo.git("rev-parse", "HEAD")
@@ -270,13 +271,115 @@ def test_adoption_reject_invalid_anchor_or_diff(repo, kind):
         anchor = anchor[:12]
     elif kind == "tree":
         anchor = repo.git("rev-parse", "HEAD^{tree}")
-    elif kind == "extra_path":
-        repo.write("source.py", "changed\n")
+    elif kind == "distant":
+        repo.commit("chore: intervening empty commit")
+    elif kind == "existing":
+        repo.write("release/ADOPTION.json", "{}")
+        anchor = repo.commit("chore: earlier record")
     repo.write("release/ADOPTION.json", json.dumps({"anchor": anchor, "base": "0.11.0"}))
     repo.commit("chore: record adoption")
     repo.cut(None)
     with pytest.raises(engine.VersionError, match="bad_adoption"):
         repo.compute()
+
+
+def test_adoption_allows_other_paths_in_single_commit(repo):
+    repo.git("tag", "v0.11.0")
+    anchor = repo.commit("chore: anchor")
+    repo.write("source.py", "changed\n")
+    repo.write("release/ADOPTION.json", json.dumps({"anchor": anchor, "base": "0.11.0"}))
+    repo.commit("chore: record adoption")
+    repo.cut(None)
+    assert repo.compute()["base"] == "v0.11.0"
+
+
+def test_adoption_rejects_merge_cut(repo):
+    repo.git("tag", "v0.11.0")
+    anchor = repo.commit("chore: anchor")
+    side = repo.commit("chore: side")
+    repo.write("release/ADOPTION.json", json.dumps({"anchor": anchor, "base": "0.11.0"}))
+    repo.commit("chore: record adoption")
+    tree = repo.git("rev-parse", "HEAD^{tree}")
+    cut = repo.git("commit-tree", tree, "-p", anchor, "-p", side, "-m", "Merge side")
+    with pytest.raises(engine.VersionError, match="bad_adoption"):
+        repo.compute(head=cut, main=cut)
+
+
+@pytest.mark.parametrize(("message", "target"), [
+    ("feat: before anchor", "0.11.1"),
+    ("fix!: before anchor", "0.12.0"),
+    ("malformed", None),
+])
+def test_adoption_parses_from_stable_tag(repo, message, target):
+    repo.git("tag", "v0.11.0")
+    repo.commit(message)
+    anchor = repo.commit("chore: anchor")
+    repo.write("release/ADOPTION.json", json.dumps({"anchor": anchor, "base": "0.11.0"}))
+    repo.commit("chore: record adoption")
+    repo.cut(None)
+    repo.commit("docs: after cut")
+    if target is None:
+        with pytest.raises(engine.VersionError, match="malformed_commit"):
+            repo.compute()
+    else:
+        result = repo.compute()
+        assert result["target"] == target
+        assert result["N"] == 1
+
+
+@pytest.mark.parametrize("tag", ["v0.9.0", "v0.100.0"])
+def test_adoption_compares_stable_tags_numerically(repo, tag):
+    adoption(repo)
+    repo.git("tag", tag, "v0.11.0")
+    if tag == "v0.9.0":
+        assert repo.compute()["base"] == "v0.11.0"
+    else:
+        with pytest.raises(engine.VersionError, match="bad_adoption"):
+            repo.compute()
+
+
+@pytest.mark.parametrize(("flags", "state"), [
+    ([], None),
+    (["--adoption-dry-run"], "unratified"),
+    (["--adoption-ratified", "2026-10-07"], "ratified"),
+])
+def test_adoption_cli_ratification(repo, flags, state):
+    adoption(repo)
+    repo.commit("fix: after cut")
+    script = Path(engine.__file__)
+    result = subprocess.run(
+        [sys.executable, str(script), "--main", "main", "--branch", "release/new", *flags],
+        cwd=repo.path, capture_output=True, text=True,
+    )
+    if state is None:
+        assert result.returncode != 0
+        assert "adoption_unratified" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        output = json.loads(result.stdout)
+        assert output["adoption"] == state
+        assert output["promotable"] is (state == "ratified")
+
+
+def test_adoption_api_requires_ratification(repo):
+    adoption(repo)
+    with pytest.raises(engine.VersionError, match="adoption_unratified"):
+        repo.compute(adoption_ratified=None)
+
+
+@pytest.mark.parametrize("ratified", ["", "approved", "20261007", "2026-02-30"])
+def test_adoption_rejects_invalid_ratification_date(repo, ratified):
+    adoption(repo)
+    with pytest.raises(engine.VersionError, match="adoption_unratified"):
+        repo.compute(adoption_ratified=ratified)
+
+
+def test_adoption_dry_run_env_blocks_promotion(repo):
+    adoption(repo)
+    repo.commit("fix: after cut")
+    result = repo.compute(adoption_ratified=None, adoption_dry_run=True)
+    assert result["adoption"] == "unratified"
+    assert "PROMOTABLE=false\n" in engine.env_lines(result)
 
 
 def test_adoption_reject_newer_stable(repo):
@@ -299,7 +402,7 @@ def test_adoption_ignored_with_stable_on_cut(repo, record):
     adoption(repo, record)
     repo.git("tag", "v0.11.1")
     repo.commit("fix: repair export")
-    result = repo.compute()
+    result = repo.compute(adoption_ratified=None)
     assert result["base"] == "v0.11.1"
     assert result["candidate"] == "0.11.2-rc.1"
 

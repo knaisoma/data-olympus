@@ -6,8 +6,10 @@ with --fetch; computation itself is read-only. JSON preserves the reference
 engine's provenance fields and adds pypi_version. --format env emits the W6
 build contract. GA approval is read only from H, adoption only from untagged B.
 
-R1 adoption records a full ancestor SHA as anchor. Only the adoption record
-may differ between that anchor and the untagged cut B.
+Adoption records the sole parent of untagged B as anchor, where the record
+must be absent. Adoption parses impact from the stable base, but counts from B.
+It requires --adoption-ratified YYYY-MM-DD; --adoption-dry-run evaluates an
+unratified record without allowing promotion.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 _ROOT = str(Path(__file__).resolve().parents[1])
@@ -121,17 +124,17 @@ def _adoption_base(git: Git, cut: str, tags: list[str]) -> str | None:
     except VersionError as error:
         raise VersionError("bad_adoption", "anchor must resolve to a commit") from error
     if (
-        anchor == cut
-        or not git.ancestor(anchor, cut)
-        or git.run("diff", "--name-only", anchor, cut).splitlines() != ["release/ADOPTION.json"]
+        git.run("rev-list", "--parents", "-n", "1", cut).split() != [cut, anchor]
+        or git.file(anchor, "release/ADOPTION.json") is not None
     ):
-        raise VersionError("bad_adoption", "anchor must strictly precede an adoption-only cut")
+        raise VersionError("bad_adoption", "anchor must be sole parent and have no adoption record")
     return f"v{ADOPTION_BASE}"
 
 
 def compute_version(
     *, cwd: str | Path, head: str, main: str, branch: str,
     bootstrap: dict[str, str] | None = None,
+    adoption_ratified: str | None = None, adoption_dry_run: bool = False,
 ) -> dict:
     """Freeze refs, validate the cut, and derive a candidate from its commit set.
 
@@ -177,6 +180,16 @@ def compute_version(
     base = stable[0] if stable else _adoption_base(git, b, all_stable)
     if branch == "hotfix/new" and (not stable or base != max(all_stable, key=_version)):
         raise VersionError("hotfix_scope", "hotfix/new requires the current stable main tag")
+    adoption = base is not None and not stable
+    if adoption and adoption_ratified is not None:
+        try:
+            if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", adoption_ratified):
+                raise ValueError
+            date.fromisoformat(adoption_ratified)
+        except ValueError as error:
+            raise VersionError("adoption_unratified", "ratification requires YYYY-MM-DD") from error
+    if adoption and adoption_ratified is None and not adoption_dry_run:
+        raise VersionError("adoption_unratified", "pass --adoption-ratified YYYY-MM-DD or dry-run")
 
     ga = False
     if branch == "release/new":
@@ -202,7 +215,8 @@ def compute_version(
             raise VersionError("bootstrap_mismatch", "bootstrap cut does not equal merge base")
 
     count = int(git.run("rev-list", "--count", f"{b}..{h}"))
-    raw = git.run("log", "--no-merges", "-z", "--format=%B", f"{b}..{h}")
+    start = git.resolve(f"refs/tags/{base}") if adoption else b
+    raw = git.run("log", "--no-merges", "-z", "--format=%B", f"{start}..{h}")
     highest = 0
     for message in raw.split("\0")[:-1]:
         impact = _impact(message)
@@ -227,7 +241,8 @@ def compute_version(
     return {
         "base": base, "B": b, "H": h, "M": m, "N": count, "target": target,
         "candidate": candidate, "pypi_version": f"{target}{'.dev' if hotfix else 'rc'}{count}",
-        "promotable": count > 0,
+        "promotable": count > 0 and (not adoption or adoption_ratified is not None),
+        **({"adoption": "ratified" if adoption_ratified else "unratified"} if adoption else {}),
     }
 
 
@@ -253,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--format", choices=("json", "env"), default="json")
     parser.add_argument("--json-output", type=Path)
     parser.add_argument("--env-output", type=Path)
+    parser.add_argument("--adoption-ratified", metavar="YYYY-MM-DD")
+    parser.add_argument("--adoption-dry-run", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.fetch:
@@ -264,6 +281,7 @@ def main(argv: list[str] | None = None) -> int:
             cwd=Path.cwd(), head=args.head, main=args.main, branch=args.branch,
             bootstrap={"cut": args.bootstrap_cut, "target": args.bootstrap_target}
             if args.bootstrap_cut else None,
+            adoption_ratified=args.adoption_ratified, adoption_dry_run=args.adoption_dry_run,
         )
         document = json.dumps(result, indent=2) + "\n"
         env = env_lines(result)
