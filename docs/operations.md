@@ -597,6 +597,15 @@ Set `KB_ENDPOINT` / `KB_AUTH_TOKEN` in the hook's environment the same way
 
 ## 7. Release operations
 
+The procedures below describe the transitional publication path, retained
+until the first STD-U-821 release. The target flow uses `release/new`, separate
+unprivileged RC builds and trusted publication, a reviewed `release: X.Y.Z`
+squash record, and an annotated stable tag. Hotfix candidates use
+`X.Y.Z-hotfix.rc.N` (Python `X.Y.Z.devN`). See the authoritative
+[release routine](../.rules/release-routine.md) for activation prerequisites,
+merge authority and new-model provenance. Production remains digest-pinned;
+publication does not deploy a workload.
+
 ### 7.1 Release channels
 
 Every release is published to three places. Each release has an immutable
@@ -684,7 +693,9 @@ PyPI publication happen before the stable Git tag is created. The workflow then
 retags the candidate image digest as the version, `stable`, and `latest`; it does
 not build another image.
 
-The final PR is independently reviewed and merged by a human. Delivery requires
+The final PR is independently reviewed and merged by the agent holding the
+operator's authorization. Reserved cases, including migrations and destructive
+changes, need explicit operator authorization. Delivery requires
 matching reviewed and merged trees with fresh checks on merged source. Merge
 does not trigger these workflows: an authorized continuation dispatches them.
 Environment approval remains bound to the exact workflow run and source.
@@ -700,7 +711,7 @@ overwrite an immutable candidate or stable version.
 
 GitHub retries use `scripts/release_upload.py`: existing bytes must match exactly;
 only missing assets are uploaded. Mismatches block without replacement. Prepared
-but unpublished versions require fresh reviewed PR and human merge. Inventory
+but unpublished versions require a fresh reviewed PR and authorized merge. Inventory
 all public surfaces; uncertain or conflicting state needs reviewed recovery.
 
 The `set-channel.yml` workflow permits only `rc`, `stable`, or `latest`, defaulting
