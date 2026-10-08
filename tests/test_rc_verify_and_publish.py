@@ -823,16 +823,34 @@ def test_rc_channel_gate_reaches_only_the_publish_script():
     assert users[0][1]["env"]["SDLC_RC_CHANNEL"] == "${{ vars.SDLC_RC_CHANNEL }}"
 
 
-def test_actions_are_sha_pinned_or_marked_tag_pins():
-    """Nit: every action is a full SHA pin or carries the explicit tag-pin marker."""
+SHA_PINNED = {
+    "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "v7"),
+    "astral-sh/setup-uv": ("37802adc94f370d6bfd71619e3f0bf239e1f3b78", "v7"),
+    "actions/create-github-app-token": ("fee1f7d63c2ff003460e3d139729b119787bc349", "v2"),
+    "actions/attest-build-provenance": ("977bb373ede98d70efdf65b84cb5f73e068dcc2a", "v3"),
+    "pypa/gh-action-pypi-publish": ("dc37677b2e1c63e2034f94d8a5b11f265b73ba33", "release/v1"),
+}
+
+
+def test_privileged_actions_are_pinned_by_full_sha():
+    """Every use of the five ruled actions is the verified 40-hex SHA with its tag
+    as a trailing comment; other actions may keep tags."""
     lines = [line for line in WORKFLOW.read_text().splitlines()
              if re.match(r"\s*(- )?uses:", line)]
     assert lines
+    seen = set()
     for line in lines:
         ref = line.split("uses:", 1)[1].split("#", 1)[0].strip()
-        assert "@" in ref, line
-        if re.fullmatch(r"[0-9a-f]{40}", ref.rsplit("@", 1)[1]) is None:
-            assert line.rstrip().endswith("# tag-pin: SHA unverified offline"), line
+        action, _, version = ref.partition("@")
+        assert version, line
+        if action in SHA_PINNED:
+            sha, tag = SHA_PINNED[action]
+            assert re.fullmatch(r"[0-9a-f]{40}", version) and version == sha, line
+            assert line.rstrip().endswith(f"# {tag}"), line
+            seen.add(action)
+    # create-github-app-token is not used: stage 2 needs no App token.
+    assert seen == set(SHA_PINNED) - {"actions/create-github-app-token"}
+    assert "tag-pin" not in WORKFLOW.read_text()
 
 
 def test_attestations_follow_verified_publication():
@@ -903,7 +921,11 @@ def test_secrets_live_only_in_declared_environments():
     assert "secrets" not in json.dumps(workflow.get("env", {}))
     for name, job in workflow["jobs"].items():
         if "secrets." in json.dumps(job):
-            assert job.get("environment") in ("pypi-rc",), name
+            assert job.get("environment") in ("pypi-rc", "sdlc-bot"), name
+    # Stage 2 needs no App token: no App-token action and no sdlc-bot job today.
+    assert "create-github-app-token" not in WORKFLOW.read_text()
+    assert not any(job.get("environment") == "sdlc-bot"
+                   for job in workflow["jobs"].values())
 
 
 def test_publish_cli_emits_validated_digest(build, tmp_path, monkeypatch):

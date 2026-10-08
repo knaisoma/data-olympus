@@ -33,9 +33,6 @@ item holds:
   `.github/` and `scripts/`) MUST exist. Activation is blocked until it does,
   because only that review stops merged `release/new` code from adding a
   workflow that self-grants `contents: write` or `packages: write`.
-- Every `uses:` in `rc-publish-stage.yml` marked `# tag-pin: SHA unverified
-  offline` MUST be replaced by a verified full commit SHA, including
-  `pypa/gh-action-pypi-publish@release/v1`, which is a moving branch.
 
 ## Admission and trust
 
@@ -101,14 +98,24 @@ new-model release is published. From then on `set-channel.yml` MUST NOT be used
 for `rc`. A hotfix head never moves `rc`. The staging selection record carries
 `rc_channel_moved`.
 
+## Action pins
+
+`actions/checkout`, `astral-sh/setup-uv`, `actions/attest-build-provenance`
+and `pypa/gh-action-pypi-publish` (including the moving `release/v1` branch)
+are pinned by full commit SHA with the tag in a trailing comment, and a test
+enforces those exact SHAs. `actions/download-artifact` and
+`actions/upload-artifact` keep tag pins.
+
 ## Secrets and environments
 
-The workflow uses no repository secret today. Any credential added later, such
-as a W9 GitHub App private key or a bot token, MUST be an environment secret
-on an environment whose deployment branch policy allows only `main`, and only
-the job that uses it declares that environment. A repository-wide Actions
-secret is not allowed. The `pypi-rc` environment is restricted to `main` in the
-same way. `workflow_run` jobs run with the `main` ref, so these policies admit
+The workflow uses no secret today, and stage 2 needs no GitHub App token: its
+writes are covered by `GITHUB_TOKEN` and OIDC. If a job ever needs an App
+token, it follows the pipeline convention: the single `sdlc-bot` environment
+(deployment branch policy `main` only, no required reviewers), the App id as
+the non-secret variable `vars.SDLC_APP_ID`, and the private key as the
+environment secret `SDLC_APP_PRIVATE_KEY`, declared only by the job that uses
+it. A repository-wide Actions secret is not allowed. The `pypi-rc` environment
+stays the PyPI environment and is restricted to `main` in the same way. `workflow_run` jobs run with the `main` ref, so these policies admit
 this workflow and reject a definition from any other branch.
 `tests/test_rc_verify_and_publish.py` enforces that a job referencing
 `secrets.` declares an approved environment.
