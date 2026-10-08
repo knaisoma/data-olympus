@@ -189,12 +189,12 @@ def test_app_key_is_only_an_environment_secret_restricted_to_main_jobs():
     """The App key and OIDC publication live only in main-gated environments."""
     jobs = workflow()["jobs"]
     environments = {name: job.get("environment") for name, job in jobs.items()}
-    assert environments["prove"] == "release-bot"
-    assert environments["create-tag"] == "release-bot"
+    assert environments["prove"] == "sdlc-bot"
+    assert environments["create-tag"] == "sdlc-bot"
     assert environments["publish-pypi"]["name"] == "pypi"
     for name, job in jobs.items():
         if "secrets." in str(job):
-            assert environments[name] in ("release-bot", {
+            assert environments[name] in ("sdlc-bot", {
                 "name": "pypi", "url": "https://pypi.org/p/data-olympus",
             }), name
             assert "secrets.SDLC_APP_PRIVATE_KEY" in str(job)
@@ -214,3 +214,24 @@ def test_both_digest_checks_are_present():
             "--format '{{.Manifest.Digest}}')\" = \"$IMAGE_DIGEST\"") in image
     assert image.index("imagetools create --tag \"$REPO:stable\"") < image.index(
         'for channel in "$TAG" stable latest; do')
+
+
+PINNED = {
+    "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "astral-sh/setup-uv": "37802adc94f370d6bfd71619e3f0bf239e1f3b78",
+    "actions/create-github-app-token": "fee1f7d63c2ff003460e3d139729b119787bc349",
+    "actions/attest-build-provenance": "977bb373ede98d70efdf65b84cb5f73e068dcc2a",
+    "pypa/gh-action-pypi-publish": "dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+}
+
+
+def test_privileged_actions_are_pinned_by_full_commit_sha():
+    seen = set()
+    for job in workflow()["jobs"].values():
+        for step in job["steps"]:
+            action, _, ref = step.get("uses", "").partition("@")
+            if action in PINNED:
+                seen.add(action)
+                assert ref == PINNED[action], action
+    assert {"actions/checkout", "astral-sh/setup-uv", "actions/create-github-app-token",
+            "pypa/gh-action-pypi-publish"} <= seen

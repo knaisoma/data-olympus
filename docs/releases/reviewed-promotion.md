@@ -18,15 +18,17 @@ no fallback to a human token:
   permissions: contents write, Dependabot alerts read and code scanning alerts
   read. The App pushes the stable tag and reads the alerts, which
   `GITHUB_TOKEN` cannot read.
-- The environment `release-bot`, with a deployment branch policy that allows
+- The environment `sdlc-bot`, with a deployment branch policy that allows
   only `main`. Its environment secret `SDLC_APP_PRIVATE_KEY` and environment
   variable `SDLC_APP_ID` hold the App credentials. The `prove` and
-  `create-tag` jobs bind this environment.
+  `create-tag` jobs bind this environment, which has no required reviewers
+  (the real approval is the `pypi` environment's).
 - The protected `pypi` environment, also restricted to `main`, with required
   reviewers. Add a PyPI Trusted Publisher for `promote-release.yml` and
   environment `pypi`, and keep the existing publishers registered until
   adoption completes, because the R9 old path (`publish-pypi.yml`,
-  `rc-publish.yml`, `tag-release.yml`) still publishes through them. A job binds only one environment, so `publish-pypi`
+  `rc-publish.yml`, `tag-release.yml`) still publishes through them. A job binds only one
+  environment, so `publish-pypi`
   (which rechecks the alerts and the tag after approval) needs its own copy of
   `SDLC_APP_PRIVATE_KEY` and `SDLC_APP_ID` as `pypi` environment secret and
   variable. Rotate both copies together.
@@ -43,10 +45,6 @@ no fallback to a human token:
   require `main`.
 - A repository ruleset that limits who can create `v*` tags. The tagger check
   is self-asserted metadata, so this ruleset is the actual access control.
-- No required reviewers on the `release-bot` environment. The `prove` job
-  binds it before the real approval, which is the `pypi` environment's required
-  reviewers; reviewers on `release-bot` would block the run ahead of that
-  approval. Its access control is the `main`-only deployment policy.
 - `SDLC_REQUIRED_CODEQL_CHECKS`: the exact required language-analysis check
   names, comma-separated. `H` and `S` both need successful `test`, aggregate
   `CodeQL` and each of those checks.

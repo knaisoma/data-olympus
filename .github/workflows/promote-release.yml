@@ -31,9 +31,9 @@ jobs:
   prove:
     if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    # SDLC_APP_PRIVATE_KEY is an environment secret of release-bot, whose
+    # SDLC_APP_PRIVATE_KEY is an environment secret of sdlc-bot, whose
     # deployment branch policy is main only. It is never a repository secret.
-    environment: release-bot
+    environment: sdlc-bot
     permissions:
       contents: read
       checks: read
@@ -50,7 +50,7 @@ jobs:
       RC_TAG: ${{ inputs.candidate_tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -119,7 +119,7 @@ jobs:
           done
       # GITHUB_TOKEN cannot read Dependabot alerts. No human-token fallback:
       # without the W9 App this step fails and nothing is published.
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         id: security-app
         with:
           app-id: ${{ vars.SDLC_APP_ID }}
@@ -176,12 +176,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.prove.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           python-version: '3.13'
       - uses: actions/download-artifact@v8
@@ -228,7 +228,7 @@ jobs:
       RC_TAG: ${{ needs.prove.outputs.rc_tag }}
       VERSION: ${{ needs.prove.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -246,7 +246,7 @@ jobs:
           path: to-delete/stable
       # The pypi environment (main only) holds its own copy of the App key as
       # an environment secret; a job can bind only one environment.
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         id: security-app
         with:
           app-id: ${{ vars.SDLC_APP_ID }}
@@ -281,7 +281,7 @@ jobs:
       # A re-run after a partial upload skips files already on PyPI; the hash
       # verification below then requires every remote file to be ours.
       - name: Publish stable Python artifacts using Trusted Publishing
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: to-delete/stable/dist/
           skip-existing: true
@@ -308,12 +308,12 @@ jobs:
     if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
     needs: [prove, publish-pypi]
     runs-on: ubuntu-latest
-    environment: release-bot
+    environment: sdlc-bot
     permissions:
       contents: read
     steps:
       # No human-token fallback. W9 must provision this machine identity.
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         id: app
         with:
           app-id: ${{ vars.SDLC_APP_ID }}
@@ -330,7 +330,7 @@ jobs:
           [[ "$BOT_ID" =~ ^[1-9][0-9]*$ ]]
           echo "BOT_NAME=${APP_SLUG}[bot]" >> "$GITHUB_ENV"
           echo "BOT_EMAIL=${BOT_ID}+${APP_SLUG}[bot]@users.noreply.github.com" >> "$GITHUB_ENV"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -418,7 +418,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.prove.outputs.source_sha }}
           fetch-depth: 0
@@ -473,7 +473,7 @@ jobs:
       REGISTRY: https://registry.modelcontextprotocol.io
       VERSION: ${{ needs.prove.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.prove.outputs.source_sha }}
           persist-credentials: false
