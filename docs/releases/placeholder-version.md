@@ -48,7 +48,18 @@ The `version-free-guard` job in `.github/workflows/ci.yaml` asks
 request head SHA come from the job environment, never interpolated into the
 script. The head tree is taken from the pull request head commit, not from the
 merge commit that `actions/checkout` produces, and compared with the trees of
-the fetched `origin/release/new` and `origin/hotfix/new`.
+the fetched remote branches. They are read by full ref,
+`refs/remotes/origin/release/new` and `refs/remotes/origin/hotfix/new`, so a
+local tag named `origin/release/new` cannot shadow the branch.
+
+The guard is an early, advisory check of where the change comes from, not the
+release proof. A head tree equal to a cycle branch shows that the pull request
+carries that branch's reviewed content; it does not prove the tree that lands
+after GitHub's squash, and a green result goes stale if `release/new` or
+`hotfix/new` moves afterwards. The authoritative proof is
+`scripts/release_record.py`, which refuses promotion unless the squash on
+`main` has exactly the tree of the reviewed head (see
+[reviewed-promotion.md](reviewed-promotion.md)).
 
 - placeholder into `release/new` or `hotfix/new`: exit 0 with an explicit
   message, and no registry query;
@@ -73,9 +84,11 @@ placeholder already present on the base was skipped as unchanged on any base.
 to equal `[project].version`. When the declared version is the placeholder and
 the branch context is `release/new`, `hotfix/new` or `main`, that equality is
 waived and both fields must instead be one identical concrete stable `X.Y.Z`.
-They keep the last released version, which is the entry the MCP registry
-serves; the promotion job updates only its workspace copy for publication. The
-placeholder, a candidate version or a range never belongs in `server.json`.
+That value may lag the latest release: the promotion job updates only its
+workspace copy of `server.json` for publication, and the tree proof forbids
+editing the squash, so the committed file keeps whatever concrete version it
+last carried. The placeholder, a candidate version or a range never belongs in
+`server.json`.
 Checking the value against the latest release tag was not chosen because the
 CI test checkout is shallow and carries no tags. Whether a pull request may
 bring the placeholder into `main` is decided by `version-free-guard`, not by
@@ -83,6 +96,14 @@ this test.
 
 To run the suite locally on a cycle branch, set the context explicitly, for
 example `GITHUB_BASE_REF=release/new uv run pytest`.
+
+## Required checks
+
+The `main` protection is only as strong as the checks that must pass. The
+`version-free-guard` and `test` jobs must be required status checks on `main`
+in the data-olympus repository ruleset; otherwise a pull request that brings
+the placeholder into `main` by any other route could merge with a red guard.
+The controller adds them to the ruleset; this change does not modify it.
 
 ## Cut precondition
 

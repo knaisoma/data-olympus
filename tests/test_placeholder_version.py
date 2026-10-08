@@ -360,6 +360,30 @@ def test_shell_refuses_other_main_pr_introducing_placeholder(tmp_path: Path) -> 
     assert "may enter main only" in result.stderr
 
 
+def test_shell_local_tag_cannot_shadow_the_remote_cycle_branch(tmp_path: Path) -> None:
+    # A tag named origin/release/new outranks refs/remotes/origin/release/new in
+    # git's short-name lookup. The guard must read the full remote ref, so a tag
+    # pointing at the squash tree does not make an unreviewed tree acceptable.
+    repo, cycle = _cycle_fixture(tmp_path)
+    reviewed = _git(repo, "rev-parse", "HEAD")  # the real branch, on another tree
+    _git(repo, "update-ref", "refs/remotes/origin/release/new", reviewed)
+    squash = _squash_of(repo, cycle)
+    for branch in ("release/new", "hotfix/new"):
+        _git(repo, "tag", f"origin/{branch}", squash)
+    result = _run(repo, "main", squash)
+    assert result.returncode != 0
+    assert "may enter main only" in result.stderr
+
+
+def test_shell_local_tag_does_not_hide_a_matching_remote_branch(tmp_path: Path) -> None:
+    repo, cycle = _cycle_fixture(tmp_path)
+    _git(repo, "update-ref", "refs/remotes/origin/release/new", cycle)
+    _git(repo, "tag", "origin/release/new", _git(repo, "rev-parse", "HEAD"))
+    result = _run(repo, "main", _squash_of(repo, cycle))
+    assert result.returncode == 0, result.stderr
+    assert "origin/release/new" in result.stderr
+
+
 def test_shell_fails_closed_when_cycle_ref_is_missing(tmp_path: Path) -> None:
     repo, cycle = _cycle_fixture(tmp_path)  # no origin/release/new or hotfix/new ref
     result = _run(repo, "main", _squash_of(repo, cycle))
