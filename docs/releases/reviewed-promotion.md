@@ -86,7 +86,9 @@ The JSON release record maps `H`, `S`, `B`, `M`, the candidate, the stable tag
 and the image digest. The proof only reads Git.
 
 The workflow holds the shared `data-olympus-promotion` lock without
-cancellation (R-CONC). Right after acquiring it, the `initial` proof also
+cancellation (R-CONC), only for admitted runs (`main` with the pipeline
+enabled); any other dispatch gets a run-scoped group and cannot cancel a
+pending run. Right after acquiring it, the `initial` proof also
 requires `main` head to equal `S` and the stable tag to be absent, and
 `version_free.py` requires the version to be absent from PyPI, GHCR, GitHub
 releases and Git tags. GitHub keeps only one pending run per concurrency group,
