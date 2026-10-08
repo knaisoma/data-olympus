@@ -23,7 +23,10 @@ be the new-model authority. No target version will be committed on
 `release/new`: its first commit after the cut will set `pyproject.toml` to
 `0.0.0+unreleased`, and the overlay will inject computed versions into build metadata.
 The placeholder is never published or used to decide a version. Its change
-lands on `release/new`, not on transitional `main`.
+lands on `release/new`, not on transitional `main`; `main` then receives it
+through each tree-equal release squash. Where CI accepts the placeholder is
+defined in
+[docs/releases/placeholder-version.md](../docs/releases/placeholder-version.md).
 
 Fetch full history and tags and freeze these inputs:
 

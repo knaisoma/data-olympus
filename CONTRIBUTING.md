@@ -63,6 +63,12 @@ has not yet been cut, wait for the maintainers to make it available. After a
 release recut, move your open PR onto the new cut and rerun checks and review.
 Fork PRs must not need publishing credentials or write tokens.
 
+During a cycle, open each pull request directly against `release/new` (or
+`hotfix/new` for a coordinated hotfix). Do not stack pull requests on another
+feature branch: those branches declare the `0.0.0+unreleased` placeholder, and
+CI refuses it on any other base, as described in
+[docs/releases/placeholder-version.md](docs/releases/placeholder-version.md).
+
 The RC pipeline is being introduced alongside the transitional release path.
 Data Olympus is a public product,
 so STD-U-821's internal-tool preview exception does not apply; a separate

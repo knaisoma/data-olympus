@@ -14,13 +14,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-* Accept the documented `0.0.0+unreleased` placeholder package version only
-  for the `release/new` and `hotfix/new` cycle. `version-free-guard` now skips it
-  with an explicit message on pull requests into those branches and fails closed
-  on the placeholder anywhere else and on any other non `X.Y.Z` version, and the
-  `server.json` tests waive version equality there while still requiring a
-  concrete stable entry. The rule lives in `scripts/placeholder_version.py` and
-  is described in `docs/releases/placeholder-version.md`.
 * Add a disabled-by-default trusted RC publication stage (`rc-publish-stage.yml`)
   that runs only `main` scripts, recomputes the candidate version from `H`'s
   history as data, verifies package hashes and the OCI digest, splits
@@ -66,6 +59,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* Accept the documented `0.0.0+unreleased` placeholder package version only
+  where the engine-managed cycle puts it. `version-free-guard` skips it with an
+  explicit message on pull requests into `release/new` and `hotfix/new`, and
+  into `main` only when the pull request head tree equals `origin/release/new`
+  or `origin/hotfix/new` (the reviewed release or hotfix squash) or `main`
+  already declares it unchanged. It fails closed on the placeholder anywhere
+  else, on any other non `X.Y.Z` version and on an unexpected decision. The
+  `server.json` tests waive version equality on those branches while still
+  requiring a concrete stable entry. The rule lives in
+  `scripts/placeholder_version.py` and is described in
+  `docs/releases/placeholder-version.md`.
 * Accept the ratified Amendment 1.3 heading for adoption verification while
   retaining the proposed heading form. Include the ratified amendment and
   pinned verification arguments so CI can verify it without private KB access.
