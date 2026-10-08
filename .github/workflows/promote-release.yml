@@ -31,6 +31,9 @@ jobs:
   prove:
     if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # SDLC_APP_PRIVATE_KEY is an environment secret of release-bot, whose
+    # deployment branch policy is main only. It is never a repository secret.
+    environment: release-bot
     permissions:
       contents: read
       checks: read
@@ -241,15 +244,8 @@ jobs:
         with:
           name: stable-artifacts
           path: to-delete/stable
-      - name: Recheck the proof after environment approval
-        run: |
-          set -euo pipefail
-          git fetch --tags origin +refs/heads/main:refs/remotes/origin/main
-          python scripts/release_record.py prove --phase resume --squash "$SQUASH" \
-            --head "$REVIEWED_HEAD" --candidate-tag "$RC_TAG" \
-            --candidate-provenance to-delete/promotion/candidate/release-provenance.json \
-            --output to-delete/promotion/rechecked.json
-          cmp to-delete/promotion/release-record.json to-delete/promotion/rechecked.json
+      # The pypi environment (main only) holds its own copy of the App key as
+      # an environment secret; a job can bind only one environment.
       - uses: actions/create-github-app-token@v2
         id: security-app
         with:
@@ -257,6 +253,27 @@ jobs:
           private-key: ${{ secrets.SDLC_APP_PRIVATE_KEY }}
           permission-vulnerability-alerts: read
           permission-security-events: read
+      - name: Resolve the release App bot identity
+        env:
+          GH_TOKEN: ${{ steps.security-app.outputs.token }}
+          APP_SLUG: ${{ steps.security-app.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+          BOT_ID="$(gh api "users/${APP_SLUG}[bot]" --jq .id)"
+          [[ "$BOT_ID" =~ ^[1-9][0-9]*$ ]]
+          echo "BOT_NAME=${APP_SLUG}[bot]" >> "$GITHUB_ENV"
+          echo "BOT_EMAIL=${BOT_ID}+${APP_SLUG}[bot]@users.noreply.github.com" >> "$GITHUB_ENV"
+      - name: Recheck the proof after environment approval
+        run: |
+          set -euo pipefail
+          git fetch --tags origin +refs/heads/main:refs/remotes/origin/main
+          python scripts/release_record.py prove --phase resume --squash "$SQUASH" \
+            --head "$REVIEWED_HEAD" --candidate-tag "$RC_TAG" \
+            --candidate-provenance to-delete/promotion/candidate/release-provenance.json \
+            --tagger "$BOT_NAME <$BOT_EMAIL>" \
+            --output to-delete/promotion/rechecked.json
+          cmp to-delete/promotion/release-record.json to-delete/promotion/rechecked.json
       - name: Require zero open security alerts after environment approval
         env:
           GH_TOKEN: ${{ steps.security-app.outputs.token }}
@@ -291,6 +308,7 @@ jobs:
     if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
     needs: [prove, publish-pypi]
     runs-on: ubuntu-latest
+    environment: release-bot
     permissions:
       contents: read
     steps:
@@ -301,6 +319,17 @@ jobs:
           app-id: ${{ vars.SDLC_APP_ID }}
           private-key: ${{ secrets.SDLC_APP_PRIVATE_KEY }}
           permission-contents: write
+      - name: Resolve the release App bot identity
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+          BOT_ID="$(gh api "users/${APP_SLUG}[bot]" --jq .id)"
+          [[ "$BOT_ID" =~ ^[1-9][0-9]*$ ]]
+          echo "BOT_NAME=${APP_SLUG}[bot]" >> "$GITHUB_ENV"
+          echo "BOT_EMAIL=${BOT_ID}+${APP_SLUG}[bot]@users.noreply.github.com" >> "$GITHUB_ENV"
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
@@ -322,19 +351,28 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --tags origin +refs/heads/main:refs/remotes/origin/main
-          python scripts/release_record.py prove --phase resume --squash "$SQUASH" \
-            --head "$REVIEWED_HEAD" --candidate-tag "$RC_TAG" \
-            --candidate-provenance to-delete/promotion/candidate/release-provenance.json \
-            --output to-delete/promotion/rechecked.json
-          cmp to-delete/promotion/release-record.json to-delete/promotion/rechecked.json
-          # The resume proof accepts an existing tag only if it is annotated and on S.
+          recheck() {
+            python scripts/release_record.py prove --phase resume --squash "$SQUASH" \
+              --head "$REVIEWED_HEAD" --candidate-tag "$RC_TAG" \
+              --candidate-provenance to-delete/promotion/candidate/release-provenance.json \
+              --tagger "$BOT_NAME <$BOT_EMAIL>" \
+              --output to-delete/promotion/rechecked.json
+            cmp to-delete/promotion/release-record.json to-delete/promotion/rechecked.json
+          }
+          recheck
+          # The resume proof accepts an existing tag only if it is annotated,
+          # on S, carries the generated notes and was tagged by the App.
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "$TAG already exists as an annotated tag on S"
+            echo "$TAG already exists as this workflow's annotated tag on S"
           else
-            git config user.name 'github-actions[bot]'
-            git config user.email 'github-actions[bot]@users.noreply.github.com'
-            git tag -a "$TAG" "$SQUASH" -F to-delete/promotion/release-notes.md
+            git config user.name "$BOT_NAME"
+            git config user.email "$BOT_EMAIL"
+            # verbatim: the default cleanup strips the notes' Markdown headings.
+            git tag -a --cleanup=verbatim "$TAG" "$SQUASH" -F to-delete/promotion/release-notes.md
             git push origin "refs/tags/$TAG:refs/tags/$TAG"
+            # A remote tag that differs from ours makes this non-forced fetch fail.
+            git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+            recheck
           fi
 
   promote-image:
@@ -393,6 +431,9 @@ jobs:
         with:
           name: stable-artifacts
           path: to-delete/stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
       - name: Publish generated notes and the H to S provenance mapping
         env:
           GH_TOKEN: ${{ github.token }}
@@ -405,13 +446,17 @@ jobs:
             to-delete/promotion/release-record.json)
           git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
           test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$SQUASH"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            # Re-run: upload only missing assets, refusing different bytes.
-            python3 scripts/release_upload.py "$TAG" "${ASSETS[@]}"
-          else
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --verify-tag --title "$TAG" \
               --notes-file to-delete/promotion/release-notes.md "${ASSETS[@]}"
           fi
+          # Fresh or re-run: the body must be the generated notes and every
+          # asset one of ours with the same SHA-256 bound to the release
+          # record; only missing assets are uploaded, never replaced.
+          python scripts/release_record.py release --tag "$TAG" \
+            --record to-delete/promotion/release-record.json \
+            --stable-provenance to-delete/stable/release-provenance.json \
+            --notes to-delete/promotion/release-notes.md "${ASSETS[@]}"
 
   publish-mcp-registry:
     # Last on purpose: a registry outage must not hold back PyPI, the image or

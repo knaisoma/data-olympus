@@ -31,6 +31,8 @@ def wheel(path: Path, version: str, change: str = "") -> Path:
         entries["data_olympus/__init__.py"] = b"VALUE = 2\n"
     elif change == "version":
         entries[f"{info}/METADATA"] = b"Name: data-olympus\nVersion: 9.9.9\n\nBody\n"
+    elif change == "traversal":
+        entries["../outside.py"] = b"VALUE = 1\n"
     record = io.StringIO()
     writer = csv.writer(record, lineterminator="\n")
     for name, data in entries.items():
@@ -40,9 +42,15 @@ def wheel(path: Path, version: str, change: str = "") -> Path:
     entries[f"{info}/RECORD"] = record.getvalue().encode()
     if change == "record":
         entries[f"{info}/RECORD"] += b"injected.py,sha256=bad,1\n"
+    elif change == "record_hash":
+        # Same bytes in both wheels, but RECORD no longer describes them.
+        entries["data_olympus/__init__.py"] = b"VALUE = 3\n"
     with zipfile.ZipFile(path, "w") as archive:
         for name, data in entries.items():
-            archive.writestr(name, data)
+            info_entry = zipfile.ZipInfo(name)
+            info_entry.external_attr = (0o100755 if change == "mode"
+                                        and name.endswith("__init__.py") else 0o100644) << 16
+            archive.writestr(info_entry, data)
     return path
 
 
@@ -220,5 +228,22 @@ def test_sdist_rejects_unsafe_members_and_mode_changes(tmp_path, change):
         artifacts.compare_distributions(
             wheel(tmp_path / "candidate.whl", "0.6.0rc3"),
             wheel(tmp_path / "stable.whl", "0.6.0"), candidate, stable,
+            candidate_version="0.6.0rc3", stable_version="0.6.0",
+        )
+
+
+@pytest.mark.parametrize(("change", "both", "error"), [
+    ("mode", False, "payload mismatch"),
+    ("record_hash", True, "RECORD hash"),
+    ("traversal", True, "unsafe"),
+])
+def test_wheel_mode_record_hash_and_unsafe_paths_are_enforced(tmp_path, change, both, error):
+    """Applied to both wheels where needed, so only the targeted check can refuse."""
+    with pytest.raises(ValueError, match=error):
+        artifacts.compare_distributions(
+            wheel(tmp_path / "candidate.whl", "0.6.0rc3", change if both else ""),
+            wheel(tmp_path / "stable.whl", "0.6.0", change),
+            sdist(tmp_path / "candidate.tar.gz", "0.6.0rc3"),
+            sdist(tmp_path / "stable.tar.gz", "0.6.0"),
             candidate_version="0.6.0rc3", stable_version="0.6.0",
         )

@@ -12,6 +12,8 @@ import pytest
 from scripts import release_record as release
 from scripts.sdlc_version import compute_version
 
+BOT = "sdlc-release[bot] <123+sdlc-release[bot]@users.noreply.github.com>"
+
 
 class Promotion:
     def __init__(self, path):
@@ -63,6 +65,13 @@ class Promotion:
         self.git("update-ref", "refs/heads/main", sha)
         return sha
 
+    def stable_tag(self, target=None, *, notes=None, who=BOT, name="v0.4.3"):
+        """Create an annotated tag the way create-tag does (verbatim notes)."""
+        user, email = who[:-1].split(" <")
+        (self.path / "tag-notes.md").write_text(self.notes if notes is None else notes)
+        self.git("-c", f"user.name={user}", "-c", f"user.email={email}", "tag", "-a",
+                 "--cleanup=verbatim", name, target or self.s, "-F", "tag-notes.md")
+
     def prove(self, **overrides):
         return release.prove_release(**({
             "cwd": self.path, "head": self.h, "squash": self.s, "main": "main",
@@ -87,14 +96,26 @@ def test_valid_proof_is_read_only_and_records_original_main(promotion):
     assert promotion.git("show-ref") == before
 
 
-@pytest.mark.parametrize(("change", "error"), [
+PHASE_INDEPENDENT = [
     ("two_parents", "sole parent"), ("wrong_parent", "sole parent"),
-    ("tree", "tree"), ("base", "B"), ("subject", "subject"),
+    ("tree", "tree mismatch"), ("base", "computed B differs"),
+    ("engine_base", "computed B differs"), ("subject", "subject"),
     ("notes", "notes"), ("adoption", "ADOPTION"), ("existing_tag", "already exists"),
-    ("not_promotable", "promotable"), ("main_moved", "main head"),
+    ("not_promotable", "candidate must be promotable"),
+    ("engine_not_promotable", "engine result must be promotable"),
     ("tag_head", "RC tag"), ("recorded_head", "recorded H"),
+]
+
+
+@pytest.mark.parametrize(("change", "error", "phase"), [
+    *((change, error, phase) for phase in release.PHASES
+      for change, error in PHASE_INDEPENDENT),
+    # Resume deliberately accepts these two; see the resume tests.
+    ("main_moved", "main head", "initial"),
+    ("existing_annotated_tag", "already exists", "initial"),
 ])
-def test_each_proof_refuses(promotion, change, error):
+def test_each_proof_refuses(promotion, monkeypatch, change, error, phase):
+    """Every proof except the main head and own-tag rules is phase independent."""
     p = promotion
     if change == "two_parents":
         p.s = p.squash(parents=[p.b, p.h])
@@ -104,6 +125,18 @@ def test_each_proof_refuses(promotion, change, error):
         p.s = p.squash(tree=p.git("rev-parse", f"{p.b}^{{tree}}"))
     elif change == "base":
         p.provenance["B"] = p.h
+    elif change == "engine_base":
+        # S's sole parent equals the RC-recorded B, which is not the engine's
+        # cut: only the engine B check can refuse this.
+        p.git("checkout", "-b", "forged", p.b)
+        forged = p.commit("chore: forged cut")
+        p.provenance["B"] = forged
+        p.s = p.squash(parents=[forged])
+        assert p.git("rev-list", "--parents", "-n", "1", p.s).split()[1:] == [forged]
+    elif change == "engine_not_promotable":
+        real = release.compute_version
+        monkeypatch.setattr(release, "compute_version",
+                            lambda **kwargs: real(**kwargs) | {"promotable": False})
     elif change == "subject":
         p.s = p.squash(message=f"release: 0.4.4\n\n{p.notes}")
     elif change == "notes":
@@ -120,6 +153,8 @@ def test_each_proof_refuses(promotion, change, error):
         p.s = p.squash()
     elif change == "existing_tag":
         p.git("tag", "v0.4.3", p.s)
+    elif change == "existing_annotated_tag":
+        p.stable_tag()
     elif change == "not_promotable":
         p.provenance["promotable"] = False
     elif change == "main_moved":
@@ -129,7 +164,39 @@ def test_each_proof_refuses(promotion, change, error):
     elif change == "recorded_head":
         p.provenance["H"] = p.b
     with pytest.raises(ValueError, match=error):
-        p.prove()
+        p.prove(phase=phase, tagger=BOT)
+
+
+def test_engine_base_check_is_isolated_from_parent_check(promotion):
+    """The engine B guard alone refuses a forged RC B that S also uses."""
+    p = promotion
+    p.git("checkout", "-b", "forged", p.b)
+    forged = p.commit("chore: forged cut")
+    p.provenance["B"] = forged
+    p.s = p.squash(parents=[forged])
+    facts = dict(
+        version=p.version, provenance=p.provenance, squash=p.s, head=p.h,
+        candidate_tag=p.tag, parents=[forged], head_tree="t", squash_tree="t",
+        main_head=p.s, rc_head=p.h, message=f"release: 0.4.3\n\n{p.notes}",
+        notes=p.notes, adoption_present=False, tag_exists=False,
+    )
+    with pytest.raises(ValueError, match="computed B differs"):
+        release.validate_proof(**facts)
+
+
+@pytest.mark.parametrize("version_change", [
+    {"promotable": False}, {"promotable": False, "N": 0}, {"promotable": "true"},
+])
+def test_engine_non_promotable_result_is_refused(promotion, version_change):
+    """R2: an N=0 or adoption cut stays refused even if the RC record says promotable."""
+    p = promotion
+    with pytest.raises(ValueError, match="engine result must be promotable"):
+        release.validate_proof(
+            version=p.version | version_change, provenance=p.provenance, squash=p.s,
+            head=p.h, candidate_tag=p.tag, parents=[p.b], head_tree="t", squash_tree="t",
+            main_head=p.s, rc_head=p.h, message=f"release: 0.4.3\n\n{p.notes}",
+            notes=p.notes, adoption_present=False, tag_exists=False,
+        )
 
 
 @pytest.mark.parametrize(("field", "value"), [
@@ -252,8 +319,10 @@ def test_resume_phase_accepts_advanced_main_and_own_annotated_tag(promotion):
     initial = p.prove()
     later = p.squash(parents=[p.s], message="fix: unrelated later change")
     assert p.git("rev-parse", "main") == later
-    p.git("tag", "-a", "v0.4.3", p.s, "-m", "Release 0.4.3")
-    assert p.prove(phase="resume") == initial
+    p.stable_tag()
+    raw = subprocess.check_output(["git", "cat-file", "tag", "v0.4.3"], cwd=p.path, text=True)
+    assert raw.endswith("\n\n" + p.notes)
+    assert p.prove(phase="resume", tagger=BOT) == initial
     with pytest.raises(ValueError, match="main head"):
         p.prove()
 
@@ -261,19 +330,96 @@ def test_resume_phase_accepts_advanced_main_and_own_annotated_tag(promotion):
 @pytest.mark.parametrize(("change", "error"), [
     ("lightweight_tag", "already exists"), ("tag_elsewhere", "already exists"),
     ("rewritten_main", "no longer reachable"),
+    ("stale_squash", "sole parent"), ("stale_release_tagged", "already exists"),
+    ("tag_message", "message differs"), ("tag_default_cleanup", "message differs"),
+    ("tag_tagger", "tagger differs"), ("tag_without_expected_tagger", "tagger identity"),
+    ("tag_object_renamed", "does not name S"),
 ])
 def test_resume_phase_still_fails_closed(promotion, change, error):
     p = promotion
+    tagger = BOT
     if change == "lightweight_tag":
         p.git("tag", "v0.4.3", p.s)
     elif change == "tag_elsewhere":
-        p.git("tag", "-a", "v0.4.3", p.h, "-m", "Release 0.4.3")
-    else:
+        p.stable_tag(p.h)
+    elif change == "rewritten_main":
         p.git("update-ref", "refs/heads/main", p.b)
+    elif change == "stale_squash":
+        # Replaying an older commit still on main as S.
+        p.s = p.b
+    elif change == "stale_release_tagged":
+        # Two valid squashes of the same release are on main; the tagged one
+        # is the published release, and the other is replayed as S.
+        stale = p.s
+        fresh = p.squash(message=f"release: 0.4.3\n\n{p.notes}\n")
+        assert fresh != stale
+        p.stable_tag(fresh)
+        p.squash(parents=[stale, fresh], message="chore: join")
+        p.s = stale
+    elif change == "tag_message":
+        p.stable_tag(notes="# Release 0.4.3\n\nForged notes\n")
+    elif change == "tag_default_cleanup":
+        (p.path / "n.md").write_text(p.notes)
+        p.git("-c", "user.name=sdlc-release[bot]",
+              "-c", "user.email=123+sdlc-release[bot]@users.noreply.github.com",
+              "tag", "-a", "v0.4.3", p.s, "-F", "n.md")
+    elif change == "tag_tagger":
+        p.stable_tag(who="Someone Else <someone@example.invalid>")
+    elif change == "tag_without_expected_tagger":
+        p.stable_tag()
+        tagger = None
+    elif change == "tag_object_renamed":
+        p.stable_tag(name="v9.9.9")
+        p.git("update-ref", "refs/tags/v0.4.3", p.git("rev-parse", "refs/tags/v9.9.9"))
     with pytest.raises(ValueError, match=error):
-        p.prove(phase="resume")
+        p.prove(phase="resume", tagger=tagger)
+
+
+@pytest.mark.parametrize("tagger", ["no-email", "a <b>\nc <d>", "<only@email>"])
+def test_tagger_identity_is_validated(promotion, tagger):
+    p = promotion
+    p.stable_tag()
+    with pytest.raises(ValueError, match="tagger"):
+        p.prove(phase="resume", tagger=tagger)
+
+
+def cli_prove(p, phase, output):
+    (p.path / "candidate.json").write_text(json.dumps(p.provenance))
+    return subprocess.run([
+        sys.executable, str(Path(release.__file__).resolve()), "prove", "--phase", phase,
+        "--head", p.h, "--squash", p.s, "--main", "main", "--candidate-tag", p.tag,
+        "--candidate-provenance", "candidate.json", "--tagger", BOT, "--output", output,
+    ], cwd=p.path, capture_output=True, text=True)
+
+
+def test_resume_record_is_byte_identical_only_for_the_same_release(promotion):
+    """The workflow's cmp of initial and resume records detects any drift."""
+    p = promotion
+    assert cli_prove(p, "initial", "initial.json").returncode == 0
+    p.squash(parents=[p.s], message="fix: unrelated later change")
+    p.stable_tag()
+    assert cli_prove(p, "resume", "resume.json").returncode == 0
+    assert (p.path / "initial.json").read_bytes() == (p.path / "resume.json").read_bytes()
+    p.provenance["image_digest"] = "sha256:" + "9" * 64
+    assert cli_prove(p, "resume", "drift.json").returncode == 0
+    assert (p.path / "initial.json").read_bytes() != (p.path / "drift.json").read_bytes()
 
 
 def test_unknown_phase_is_refused(promotion):
     with pytest.raises(ValueError, match="phase"):
         promotion.prove(phase="later")
+
+
+@pytest.mark.parametrize(("header", "error"), [
+    ("object " + "0" * 40 + "\ntype commit\ntag v0.4.3", "does not name S"),
+    ("object {s}\ntype tree\ntag v0.4.3", "does not name S"),
+    ("object {s}\ntype commit\ntag v0.4.4", "does not name S"),
+    ("object {s}\ntype commit\ntag v0.4.3\ntag v0.4.3", "duplicate header"),
+    ("object {s}\ntype commit\ntag v0.4.3", "tagger differs"),
+])
+def test_tag_object_headers_are_checked(header, error):
+    s = "a" * 40
+    raw = header.format(s=s) + "\n\n# Release 0.4.3\n"
+    with pytest.raises(ValueError, match=error):
+        release.validate_tag_object(raw, squash=s, tag="v0.4.3",
+                                    notes="# Release 0.4.3\n", tagger=BOT)
