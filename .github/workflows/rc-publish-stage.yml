@@ -69,7 +69,7 @@ jobs:
           set -euo pipefail
           command -v skopeo >/dev/null || { sudo apt-get update && sudo apt-get install --yes skopeo; }
           skopeo --version
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: rc-build-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.run_attempt }}
           run-id: ${{ github.event.workflow_run.id }}
@@ -108,7 +108,7 @@ jobs:
           set -euo pipefail
           command -v skopeo >/dev/null || { sudo apt-get update && sudo apt-get install --yes skopeo; }
           skopeo --version
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: rc-build-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.run_attempt }}
           run-id: ${{ github.event.workflow_run.id }}
@@ -164,7 +164,7 @@ jobs:
           set -euo pipefail
           command -v skopeo >/dev/null || { sudo apt-get update && sudo apt-get install --yes skopeo; }
           skopeo --version
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: rc-build-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.run_attempt }}
           run-id: ${{ github.event.workflow_run.id }}
@@ -183,7 +183,7 @@ jobs:
           uv run --no-project python scripts/rc_verify_and_publish.py publish \
             --artifacts to-delete/rc-input --history to-delete/rc-history.git \
             --selection to-delete/rc-selection/staging-selection.json
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: staging-selection-${{ github.event.workflow_run.head_sha }}-${{ github.run_attempt }}
           path: to-delete/rc-selection/staging-selection.json
@@ -201,7 +201,7 @@ jobs:
       id-token: write
       packages: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: rc-build-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.run_attempt }}
           run-id: ${{ github.event.workflow_run.id }}
