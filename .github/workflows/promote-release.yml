@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: data-olympus-promotion
+  group: ${{ (github.ref == 'refs/heads/main' && vars.SDLC_PIPELINE == 'enabled') && 'data-olympus-promotion' || format('sdlc-branch-noop-{0}', github.run_id) }}
   cancel-in-progress: false
 
 defaults:

@@ -15,12 +15,12 @@ WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 LOCK = "data-olympus-promotion"
 REPOSITORY = "knaisoma/data-olympus"
 
-# Delivered by this task: a missing or renamed file must fail, never skip.
-DELIVERED = ("recut-release-branch.yml", "hotfix-cut.yml")
-# TODO(N3): move each entry to DELIVERED when its task lands. Until then a
-# missing file is skipped; once present it is checked like any other, and
-# test_pending_lock_members_are_promoted_when_delivered forces the move.
-PENDING = {"rc-publish-stage.yml": "Task 4", "promote-release.yml": "Task 5"}
+# A missing or renamed file must fail, never skip.
+DELIVERED = (
+    "recut-release-branch.yml", "hotfix-cut.yml", "rc-publish-stage.yml", "promote-release.yml",
+)
+# Every lock member has landed. Add a new one to DELIVERED and ADMISSION below.
+PENDING: dict[str, str] = {}  # keep: a new lock member starts here
 
 _DISPATCH = {"github.ref": "refs/heads/main", "vars.SDLC_PIPELINE": "enabled"}
 _RUN = "github.event.workflow_run."
@@ -49,6 +49,7 @@ ADMISSION = {
     ]),
 }
 ADMISSION["hotfix-cut.yml"] = ADMISSION["recut-release-branch.yml"]
+ADMISSION["promote-release.yml"] = ADMISSION["recut-release-branch.yml"]
 
 _TOKEN = re.compile(r"\s*(?:('[^']*')|(&&|\|\||==|!=|\(|\)|,)|(format)\b|"
                     r"([A-Za-z_][\w-]*(?:\.[\w-]+)*))")
@@ -115,11 +116,6 @@ def test_privileged_workflows_share_promotion_lock(name):
         assert first == f"{fallback[1]}101", context
         assert first != second, "a refused run's group must be run-scoped"
 
-
-@pytest.mark.parametrize("name", sorted(PENDING))
-def test_pending_lock_members_are_promoted_when_delivered(name):
-    assert not (WORKFLOWS / name).exists(), (
-        f"{name} has landed: move it from PENDING to DELIVERED so a rename fails")
 
 
 def test_evaluator_matches_task_four_conditional_form():

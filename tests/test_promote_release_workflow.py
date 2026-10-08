@@ -16,9 +16,10 @@ def scripts(job):
 def test_dispatch_gate_and_shared_lock():
     data = workflow()
     assert set(data.get("on", data.get(True))) == {"workflow_dispatch"}
-    assert data["concurrency"] == {
-        "group": "data-olympus-promotion", "cancel-in-progress": False,
-    }
+    # Only admitted runs take the shared lock (tests/test_promotion_concurrency.py
+    # evaluates the expression); a refused dispatch gets a run-scoped group.
+    assert data["concurrency"]["cancel-in-progress"] is False
+    assert "'data-olympus-promotion'" in data["concurrency"]["group"]
     assert data["permissions"] == {"contents": "read"}
     for job in data["jobs"].values():
         assert "vars.SDLC_PIPELINE == 'enabled'" in job["if"]
