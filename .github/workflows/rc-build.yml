@@ -24,13 +24,13 @@ jobs:
     env:
       DRY_RUN: ${{ inputs.dry_run || false }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           python-version: '3.13'
       - name: Fetch current heads and require exact source
@@ -69,8 +69,8 @@ jobs:
             uv run python scripts/smoke_installed_wheel.py \
               --artifact "$artifact" --expected-version "$PYPI_VERSION"
           done
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Build OCI archive with injected package version
         run: |
           set -euo pipefail
@@ -96,7 +96,7 @@ jobs:
             --base-sha "$CUT_SHA" --main-sha "$MAIN_SHA" --number "$N" \
             --image-digest "$IMAGE_DIGEST" --oci-archive to-delete/rc-build/image.oci.tar \
             --promotable "$PROMOTABLE" --dry-run "$DRY_RUN"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: rc-build-${{ github.sha }}-${{ github.run_attempt }}
           path: to-delete/rc-build/
