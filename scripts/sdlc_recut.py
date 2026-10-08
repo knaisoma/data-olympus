@@ -27,6 +27,8 @@ MAIN = "refs/heads/main"
 RELEASE = "refs/heads/release/new"
 HOTFIX = "refs/heads/hotfix/new"
 PRESERVE = "refs/heads/sdlc-preserve/"
+# Old-path privileged workflows outside the data-olympus-promotion lock group.
+OLD_PATH_WORKFLOWS = ("tag-release.yml", "rc-publish.yml", "set-channel.yml")
 
 
 class RecutError(Exception):
@@ -44,6 +46,43 @@ def _git(cwd, *args):
         return engine.Git(cwd).run(*args).strip()
     except engine.VersionError as error:
         raise RecutError(str(error)) from error
+
+
+def _tag_commit(git, ref):
+    """Resolve a tag to its commit, naming the tag when it does not peel to one."""
+    try:
+        return git.resolve(ref)
+    except engine.VersionError as error:
+        raise RecutError(f"bad_ref: {ref} does not resolve to a commit") from error
+
+
+def refuse_old_path_activity(runs):
+    """Refuse while an old-path privileged run is queued or in progress.
+
+    The caller passes the workflow runs it listed; this is a point-in-time
+    check, not a lock. An old-path run that starts afterwards is not blocked.
+    """
+    if not isinstance(runs, list) or any(not isinstance(run, dict) for run in runs):
+        raise RecutError("old-path runs must be a JSON list of objects")
+    for run in runs:
+        path = run.get("path")
+        if not isinstance(path, str):
+            raise RecutError("old-path run without a workflow path; state uncertain")
+        if run.get("status") == "completed":
+            continue
+        if path.split("@", 1)[0].rsplit("/", 1)[-1] in OLD_PATH_WORKFLOWS:
+            raise RecutError(f"old-path workflow run active: {path} ({run.get('status')})")
+
+
+def validate_acknowledge(acknowledge):
+    """Acknowledgements are a list of full SHA strings, never another JSON value."""
+    if not isinstance(acknowledge, (list, tuple)) or any(
+        not isinstance(sha, str) for sha in acknowledge
+    ):
+        raise RecutError("acknowledge must be a JSON list of SHA strings")
+    for sha in acknowledge:
+        _sha(sha)
+    return list(acknowledge)
 
 
 def remote_snapshot(cwd, remote):
@@ -112,9 +151,7 @@ def plan_recut(*, refs, new_base, pending, acknowledge, pull_requests, after_hot
         updates[preservation] = old
     if after_hotfix:
         updates[HOTFIX] = None
-    acknowledged = list(acknowledge)
-    for sha in acknowledged:
-        _sha(sha)
+    acknowledged = validate_acknowledge(acknowledge)
     ready = len(acknowledged) == len(set(acknowledged)) and set(acknowledged) == set(pending)
     return {
         "mode": "recut", "ready": ready, "expected_refs": dict(refs),
@@ -174,8 +211,10 @@ def _replay_check(cwd, onto, steps):
 
 def prepare_plan(*, cwd, remote, mode, expected_main, expected_head, expected_base,
                  expected_hotfix="absent", tag=None, evidence=None, acknowledge=(),
-                 pull_requests=None):
+                 pull_requests=None, old_path_runs=None):
     """Capture remote state after the caller acquires the promotion lock."""
+    refuse_old_path_activity([] if old_path_runs is None else old_path_runs)
+    validate_acknowledge(acknowledge)
     refs = remote_snapshot(cwd, remote)
     for ref, expected in ((MAIN, expected_main), (RELEASE, expected_head),
                           (HOTFIX, expected_hotfix)):
@@ -200,16 +239,24 @@ def prepare_plan(*, cwd, remote, mode, expected_main, expected_head, expected_ba
     m = refs[MAIN]
     first_parent = _git(cwd, "rev-list", "--first-parent", m).splitlines()
     git = engine.Git(cwd)
-    stable = []
+    stable, off_line = [], []
     for ref in refs:
         name = ref.removeprefix("refs/tags/")
         if ref.startswith("refs/tags/") and engine._STABLE.fullmatch(name):
-            commit = git.resolve(ref)
-            if commit in first_parent:
-                stable.append((engine._version(name), name, commit))
+            commit = _tag_commit(git, ref)
+            entry = (engine._version(name), name, commit)
+            (stable if commit in first_parent else off_line).append(entry)
     if not stable:
         raise RecutError("no stable tag on main's line")
-    _, latest_tag, latest_commit = max(stable)
+    latest = max(stable)
+    _, latest_tag, latest_commit = latest
+    # A strict stable tag off main's first-parent line is reconciled only when
+    # main already contains it (a merged historical release such as v0.6.0) and
+    # it is older than the newest first-parent release. Anything else is an
+    # unreconciled tag (STD-U-821) that would also skew later engine runs.
+    for entry in off_line:
+        if entry >= latest or not git.ancestor(entry[2], m):
+            raise RecutError(f"unreconciled stable tag {entry[1]}: not on main's first-parent line")
     if mode == "hotfix":
         if expected_base != latest_commit or m != latest_commit:
             raise RecutError("hotfix base must be current stable main; adoption cannot cut hotfix")
@@ -294,7 +341,7 @@ def _released_candidate(cwd, evidence, refs):
         Path(tmp, "objects/info/alternates").write_text(objects + "\n")
         git = engine.Git(cwd)
         for ref, sha in refs.items():
-            if ref.startswith("refs/tags/") and git.ancestor(git.resolve(ref), evidence["M"]):
+            if ref.startswith("refs/tags/") and git.ancestor(_tag_commit(git, ref), evidence["M"]):
                 _git(tmp, "update-ref", ref, sha)
         return validate_candidate(cwd=tmp, head=evidence["H"], main=evidence["M"],
                                   branch=evidence["branch"])
@@ -343,6 +390,8 @@ def main(argv=None):
     parser.add_argument("--evidence-json", default="null")
     parser.add_argument("--pull-requests-json", default="[]")
     parser.add_argument("--acknowledge", default="[]", help="JSON array of exact pending SHAs")
+    parser.add_argument("--old-path-runs-json", default="[]",
+                        help="JSON list of queued or in-progress old-path workflow runs")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -351,7 +400,8 @@ def main(argv=None):
                             expected_base=args.expected_base, expected_hotfix=args.expected_hotfix,
                             tag=args.tag, evidence=json.loads(args.evidence_json),
                             acknowledge=json.loads(args.acknowledge),
-                            pull_requests=json.loads(args.pull_requests_json))
+                            pull_requests=json.loads(args.pull_requests_json),
+                            old_path_runs=json.loads(args.old_path_runs_json))
         print(json.dumps(plan, indent=2), flush=True)
         if not plan["ready"]:
             return 2

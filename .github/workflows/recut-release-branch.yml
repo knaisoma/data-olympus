@@ -38,9 +38,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  manage:
+  # No secret is reachable here: environment secrets exist only in apply.
+  plan:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     env:
@@ -52,10 +54,9 @@ jobs:
       EVIDENCE_JSON: ${{ inputs.evidence_json }}
       ACKNOWLEDGE: ${{ inputs.acknowledge }}
     steps:
-      - name: Require trusted main and W9 bot identity
+      - name: Require trusted main and enabled pipeline
         env:
           SDLC_PIPELINE: ${{ vars.SDLC_PIPELINE }}
-          HAS_BOT_IDENTITY: ${{ secrets.SDLC_BOT_TOKEN != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -63,7 +64,7 @@ jobs:
             echo 'blocked: dispatch must use main' >&2
             exit 1
           fi
-          if [[ "$SDLC_PIPELINE" != enabled || "$HAS_BOT_IDENTITY" != true ]]; then
+          if [[ "$SDLC_PIPELINE" != enabled ]]; then
             echo 'blocked: requires W9 bot identity' >&2
             exit 1
           fi
@@ -87,17 +88,77 @@ jobs:
             "repos/$GITHUB_REPOSITORY/pulls" -f base=release/new -f state=open \
             -f per_page=100 | jq -c '[.[][] | {number, url: .html_url,
             headRefName: .head.ref, headRefOid: .head.sha, baseRefName: .base.ref}]')"
+          OLD_PATH_RUNS_JSON="$(for workflow in tag-release.yml rc-publish.yml set-channel.yml; do
+            for status in queued in_progress waiting requested pending; do
+              gh api --method GET --paginate \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
+                -f status="$status" -f per_page=100 \
+                --jq '.workflow_runs[] | {id, path, status}'
+            done
+          done | jq -cs .)"
           unset GH_TOKEN
           uv run --no-project --python 3.13 python scripts/sdlc_recut.py recut \
             --repo . --remote origin --expected-main "$MAIN_SHA" \
             --expected-head "$HEAD_SHA" --expected-base "$BASE_SHA" \
             --expected-hotfix "$HOTFIX_SHA" --tag "$TAG" \
             --evidence-json "$EVIDENCE_JSON" --acknowledge "$ACKNOWLEDGE" \
-            --pull-requests-json "$PULL_REQUESTS_JSON"
-      - name: Apply recut with bot identity and fresh checks
+            --pull-requests-json "$PULL_REQUESTS_JSON" \
+            --old-path-runs-json "$OLD_PATH_RUNS_JSON"
+
+  # The sdlc-bot environment is restricted to main by its deployment branch
+  # policy and is the only place the W9 App id and private key exist.
+  apply:
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: sdlc-bot
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    env:
+      MAIN_SHA: ${{ inputs.main_sha }}
+      HEAD_SHA: ${{ inputs.head_sha }}
+      BASE_SHA: ${{ inputs.base_sha }}
+      HOTFIX_SHA: ${{ inputs.hotfix_sha }}
+      TAG: ${{ inputs.tag }}
+      EVIDENCE_JSON: ${{ inputs.evidence_json }}
+      ACKNOWLEDGE: ${{ inputs.acknowledge }}
+    steps:
+      - name: Require trusted main and W9 bot identity
         env:
-          SDLC_BOT_TOKEN: ${{ secrets.SDLC_BOT_TOKEN }}
-          ACTIONS_TOKEN: ${{ github.token }}
+          SDLC_PIPELINE: ${{ vars.SDLC_PIPELINE }}
+          HAS_APP_ID: ${{ secrets.SDLC_APP_ID != '' }}
+          HAS_APP_KEY: ${{ secrets.SDLC_APP_PRIVATE_KEY != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo 'blocked: dispatch must use main' >&2
+            exit 1
+          fi
+          if [[ "$SDLC_PIPELINE" != enabled || "$HAS_APP_ID" != true \
+                || "$HAS_APP_KEY" != true ]]; then
+            echo 'blocked: requires W9 bot identity' >&2
+            exit 1
+          fi
+      - name: Checkout trusted dispatcher revision
+        # TODO(C6): pin by full commit SHA; no verified SHA was available
+        # offline. tests/test_sdlc_recut_workflows.py tracks this strictly.
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up uv
+        # TODO(C6): pin by full commit SHA; no verified SHA was available
+        # offline. tests/test_sdlc_recut_workflows.py tracks this strictly.
+        uses: astral-sh/setup-uv@v7
+      - name: Install Python
+        run: uv python install 3.13
+      # Read-only snapshots and interpreter lookup run before the bot token
+      # exists, so gh, jq and uv never execute with it in their environment.
+      - name: Snapshot read-only state before minting the bot token
+        env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
@@ -106,14 +167,48 @@ jobs:
             "repos/$GITHUB_REPOSITORY/pulls" -f base=release/new -f state=open \
             -f per_page=100 | jq -c '[.[][] | {number, url: .html_url,
             headRefName: .head.ref, headRefOid: .head.sha, baseRefName: .base.ref}]')"
-          unset GH_TOKEN
-          test -n "$SDLC_BOT_TOKEN"
-          # The W9 identity must be distinct from the workflow's own token.
-          if [[ "$SDLC_BOT_TOKEN" == "$ACTIONS_TOKEN" ]]; then
+          OLD_PATH_RUNS_JSON="$(for workflow in tag-release.yml rc-publish.yml set-channel.yml; do
+            for status in queued in_progress waiting requested pending; do
+              gh api --method GET --paginate \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
+                -f status="$status" -f per_page=100 \
+                --jq '.workflow_runs[] | {id, path, status}'
+            done
+          done | jq -cs .)"
+          printf '%s\n' "$PULL_REQUESTS_JSON" > "$RUNNER_TEMP/sdlc-pull-requests.json"
+          printf '%s\n' "$OLD_PATH_RUNS_JSON" > "$RUNNER_TEMP/sdlc-old-path-runs.json"
+          uv python find 3.13 > "$RUNNER_TEMP/sdlc-python"
+      # Minted last, so no earlier action can read it; revoked by the
+      # action's post step. Only contents: write on this repository.
+      - name: Mint short-lived W9 App installation token
+        id: app-token
+        # TODO(C6): pin by full commit SHA; no verified SHA was available
+        # offline. tests/test_sdlc_recut_workflows.py tracks this strictly.
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.SDLC_APP_ID }}
+          private-key: ${{ secrets.SDLC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+      - name: Apply recut with bot identity and fresh checks
+        env:
+          SDLC_BOT_TOKEN: ${{ steps.app-token.outputs.token }}
+          ACTIONS_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only an App installation token (ghs_) distinct from the workflow's
+          # own token is accepted. The token value is never printed.
+          if [[ -z "${SDLC_BOT_TOKEN:-}" || "$SDLC_BOT_TOKEN" != ghs_* \
+                || "$SDLC_BOT_TOKEN" == "$ACTIONS_TOKEN" ]]; then
             echo 'blocked: requires W9 bot identity' >&2
             exit 1
           fi
           unset ACTIONS_TOKEN
+          PULL_REQUESTS_JSON="$(< "$RUNNER_TEMP/sdlc-pull-requests.json")"
+          OLD_PATH_RUNS_JSON="$(< "$RUNNER_TEMP/sdlc-old-path-runs.json")"
+          PYTHON="$(< "$RUNNER_TEMP/sdlc-python")"
           # Authentication is process-scoped; never persist a token in git config.
           export GIT_CONFIG_COUNT=2
           export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
@@ -123,9 +218,10 @@ jobs:
           export GIT_CONFIG_KEY_1=credential.helper
           export GIT_CONFIG_VALUE_1=''
           unset SDLC_BOT_TOKEN
-          uv run --no-project --python 3.13 python scripts/sdlc_recut.py recut \
+          "$PYTHON" scripts/sdlc_recut.py recut \
             --repo . --remote origin --expected-main "$MAIN_SHA" \
             --expected-head "$HEAD_SHA" --expected-base "$BASE_SHA" \
             --expected-hotfix "$HOTFIX_SHA" --tag "$TAG" \
             --evidence-json "$EVIDENCE_JSON" --acknowledge "$ACKNOWLEDGE" \
-            --pull-requests-json "$PULL_REQUESTS_JSON" --apply
+            --pull-requests-json "$PULL_REQUESTS_JSON" \
+            --old-path-runs-json "$OLD_PATH_RUNS_JSON" --apply
