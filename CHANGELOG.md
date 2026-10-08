@@ -14,6 +14,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+* Add a disabled-by-default trusted RC publication stage (`rc-publish-stage.yml`)
+  that runs only `main` scripts, recomputes the candidate version from `H`'s
+  history as data, verifies package hashes and the OCI digest, splits
+  reservation, PyPI OIDC upload and image push into least-privilege jobs,
+  refuses duplicate identities, reuses same-`H` objects on retry, and records
+  branch-based staging selection with hotfix priority.
+
 * Build normal and hotfix release candidates with read-only permissions,
   injected Python versions, an OCI archive, and provenance. Cut builds and
   dry runs build and verify artifacts without allowing promotion.

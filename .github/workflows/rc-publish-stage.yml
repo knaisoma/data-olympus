@@ -1,0 +1,156 @@
+name: rc-publish-stage
+
+# Stage 2 of the two-stage RC pipeline (W6 R8). workflow_run always uses the
+# definition on main, and every job checks out that same main commit
+# (github.sha) for the scripts. The candidate H is fetched as Git data only;
+# no code from H runs here. Disabled unless vars.SDLC_PIPELINE is exactly
+# 'enabled' (R6). Only GITHUB_TOKEN and PyPI OIDC are used, never a personal
+# token. Every job repeats the full verification under the shared lock.
+
+on:
+  workflow_run:
+    workflows: [rc-build]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: data-olympus-promotion
+  cancel-in-progress: false
+
+jobs:
+  reserve:
+    if: >-
+      vars.SDLC_PIPELINE == 'enabled' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      (github.event.workflow_run.head_branch == 'release/new' ||
+       github.event.workflow_run.head_branch == 'hotfix/new') &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      packages: read
+    outputs:
+      upload: ${{ steps.reserve.outputs.upload }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.13'
+      - name: Require Skopeo
+        run: |
+          set -euo pipefail
+          command -v skopeo >/dev/null || { sudo apt-get update && sudo apt-get install --yes skopeo; }
+          skopeo --version
+      - uses: actions/download-artifact@v8
+        with:
+          name: rc-build-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.run_attempt }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: to-delete/rc-input
+      - name: Verify artifacts and reserve the candidate identity
+        id: reserve
+        env:
+          SDLC_PIPELINE: ${{ vars.SDLC_PIPELINE }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          uv run --no-project python scripts/rc_verify_and_publish.py reserve \
+            --artifacts to-delete/rc-input --history to-delete/rc-history.git
+
+  pypi:
+    needs: reserve
+    if: needs.reserve.outputs.upload == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi-rc
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.13'
+      - name: Require Skopeo
+        run: |
+          set -euo pipefail
+          command -v skopeo >/dev/null || { sudo apt-get update && sudo apt-get install --yes skopeo; }
+          skopeo --version
+      - uses: actions/download-artifact@v8
+        with:
+          name: rc-build-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.run_attempt }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: to-delete/rc-input
+      - name: Re-verify and stage only the files PyPI lacks
+        id: stage
+        env:
+          SDLC_PIPELINE: ${{ vars.SDLC_PIPELINE }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          uv run --no-project python scripts/rc_verify_and_publish.py stage-upload \
+            --artifacts to-delete/rc-input --history to-delete/rc-history.git \
+            --upload to-delete/rc-upload
+      - name: Publish with PyPI Trusted Publishing
+        if: steps.stage.outputs.upload == 'true'
+        # No password or token: OIDC only. No skip-existing: a file that already
+        # exists was excluded by the verifier, so any conflict must fail.
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: to-delete/rc-upload/
+
+  publish:
+    needs: [reserve, pypi]
+    if: >-
+      !cancelled() &&
+      needs.reserve.result == 'success' &&
+      (needs.pypi.result == 'success' || needs.pypi.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.13'
+      - name: Require Skopeo
+        run: |
+          set -euo pipefail
+          command -v skopeo >/dev/null || { sudo apt-get update && sudo apt-get install --yes skopeo; }
+          skopeo --version
+      - uses: actions/download-artifact@v8
+        with:
+          name: rc-build-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.run_attempt }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: to-delete/rc-input
+      - name: Verify PyPI, publish the OCI digest and record staging selection
+        env:
+          SDLC_PIPELINE: ${{ vars.SDLC_PIPELINE }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          uv run --no-project python scripts/rc_verify_and_publish.py publish \
+            --artifacts to-delete/rc-input --history to-delete/rc-history.git \
+            --selection to-delete/rc-selection/staging-selection.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: staging-selection-${{ github.event.workflow_run.head_sha }}-${{ github.run_attempt }}
+          path: to-delete/rc-selection/staging-selection.json
+          if-no-files-found: error
