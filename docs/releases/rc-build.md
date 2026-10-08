@@ -34,10 +34,32 @@ and the post-upload SHA256 verification. After building, it compares every
 existing PyPI file with the local filename and SHA256 before upload. Matching
 files allow a retry, including a partially uploaded release; conflicting files
 or an unreadable registry fail closed. A version's existence alone is not a
-refusal. Nonrelease refs remain build-only.
+refusal. Pre-upload validation and post-upload readback run in separate read-only
+jobs. The OIDC upload job only downloads the validated artifacts and publishes.
+Nonrelease refs remain build-only: resolution tries the fetched
+`refs/remotes/origin/<ref>`, then a full 40-hex commit SHA, then the local name.
+Every build receives the resolved immutable SHA. Branches such as `vendor-bump`
+are allowed; malformed `v`-prefixed tags and names beginning with `v` followed
+by a digit are refused. Release tags must exist exactly and match the package
+metadata version before upload is allowed.
 
 Manual image builds require a source branch of `main`, `release/new`, or
 `hotfix/new` and build the dispatch's exact `github.sha`. Candidate identities
 (`X.Y.Z-rc.N` and `X.Y.Z-hotfix.rc.N`, also with a legacy `v` prefix) are reserved
-for the candidate pipeline. Existing stable Git tags or registry images are
-refused under both stable aliases. Channel tags remain reserved.
+for the candidate pipeline. Every stable identity (`X.Y.Z` or `vX.Y.Z`) is
+reserved for promotion, including identities absent from Git and the registry.
+Existence checks supply diagnostics only. Channel tags remain reserved.
+
+## Task 9 prerequisites
+
+No dispatched end-to-end dry run has been performed for this workflow. Task 9
+must first wire operator adoption ratification into the workflow and make
+`rc-build.yml` available for dispatch from the default branch. Then dispatch a
+dry run on `release/new` and retain evidence of:
+
+- Buildx multi-architecture OCI export for `linux/amd64` and `linux/arm64`.
+- The `containerimage.digest` metadata key and its recorded digest.
+- Artifact size and successful upload within the runner's artifact limits.
+- Successful installed-package smoke tests for the wheel and source distribution.
+
+This runner verification remains deferred until those prerequisites are met.

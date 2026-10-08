@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import tomllib
 import zipfile
@@ -131,6 +133,88 @@ def test_legacy_provenance_bytes_remain_unchanged(tmp_path: Path, stable: bool) 
                                     comparison if stable else None)
     module.write_provenance(receipt, output)
     assert output.read_bytes() == (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode()
+
+
+def _legacy_fixture(source: Path) -> dict[str, str]:
+    """Create fixed build inputs and a reproducible source commit for R9."""
+    source.mkdir()
+    files = {
+        "pyproject.toml": (
+            '[project]\nname = "data-olympus"\nversion = "0.6.0"\n'
+            'requires-python = ">=3.13"\n'
+            '[build-system]\nrequires = ["hatchling==1.30.1"]\n'
+            'build-backend = "hatchling.build"\n'
+            '[tool.hatch.build.targets.wheel]\npackages = ["src/data_olympus"]\n'
+        ),
+        "uv.lock": (
+            'version = 1\nrevision = 3\nrequires-python = ">=3.13"\n'
+            '[[package]]\nname = "data-olympus"\nversion = "0.6.0"\n'
+            'source = { editable = "." }\n'
+        ),
+        "src/data_olympus/__init__.py": "VALUE = 42\n",
+    }
+    for name, content in files.items():
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        path.chmod(0o644)
+    env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+               GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid",
+               GIT_AUTHOR_DATE="2000-01-01T00:00:00+0000",
+               GIT_COMMITTER_DATE="2000-01-01T00:00:00+0000",
+               SOURCE_DATE_EPOCH="946684800")
+    for args in (
+        ["init", "--quiet", "--object-format=sha1", "--initial-branch=fixture", "--template="],
+        ["add", "."],
+        ["commit", "--quiet", "--no-gpg-sign", "-m", "Fixed release artifact fixture"],
+    ):
+        subprocess.run(["git", "-C", str(source), *args], env=env, check=True,
+                       capture_output=True, text=True)
+    return env
+
+
+def _legacy_cli_hashes(script: Path, source: Path, output: Path,
+                       env: dict[str, str]) -> dict[str, str]:
+    output.mkdir()
+    candidate_provenance = output / "candidate.json"
+    stable_provenance = output / "stable.json"
+    common = ["--base", "0.6.0", "--source", str(source), "--output", str(output)]
+    subprocess.run(
+        [sys.executable, str(script), "candidate", *common, "--number", "3",
+         "--provenance", str(candidate_provenance)],
+        env=env, check=True, capture_output=True, text=True,
+    )
+    candidate_wheel = next(output.glob("*.whl"))
+    subprocess.run(
+        [sys.executable, str(script), "stable", *common,
+         "--candidate-provenance", str(candidate_provenance),
+         "--candidate-wheel", str(candidate_wheel), "--provenance", str(stable_provenance)],
+        env=env, check=True, capture_output=True, text=True,
+    )
+    return {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in output.iterdir()}
+
+
+def test_legacy_cli_artifacts_match_pre_stage_one_golden(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    env = _legacy_fixture(source)
+    # Generated once with git show c341940:scripts/release_artifacts.py in to-delete/.
+    # Full baseline revision: c341940e70eb9dc98afee92facc09c32253fc2b0.
+    # Pin the backend and source commit above so shallow CI needs no historical checkout.
+    expected = {
+        "candidate.json": "12bcc4e7a5dc06a5a3f40f160f6e745cc6d2626cf8fbf97b0fa7cf3b22f4f1c5",
+        "stable.json": "fb86661406ddf11a32e5eb402aacab907bbe01914dd01f9fd1d00e49a9ef5c65",
+        "data_olympus-0.6.0rc3-py3-none-any.whl":
+            "cd0924461cbfbbda0312105872e6e87456c6cc79a6e77e5e20e937cf4ec84fbd",
+        "data_olympus-0.6.0rc3.tar.gz":
+            "800e8bfa9910b3a30d3f10ae91496f8dc57a45d6635b384a5e8af8ce97858db4",
+        "data_olympus-0.6.0-py3-none-any.whl":
+            "92ef2097d2aae2bd582fc665425c0a6f45a8006f88186d2c2f5e2ec904e662d6",
+        "data_olympus-0.6.0.tar.gz":
+            "e75bd7203d6cff6f599b088034a91f53ca32d6510b9271f231ebf1effa18f072",
+    }
+    assert _legacy_cli_hashes(SCRIPT, source, tmp_path / "output", env) == expected
 
 
 @pytest.mark.parametrize(("number", "dry_run"), [(0, "false"), (3, "true")])

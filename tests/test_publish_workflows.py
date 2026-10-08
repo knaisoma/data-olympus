@@ -48,7 +48,8 @@ def test_reusable_upload_gated_on_input():
     doc = _load("publish-pypi-reusable.yml")
     # upload job only runs when the caller asks for upload=true. GitHub accepts a
     # bare expression at job-level `if`, so YAML loads it without the ${{ }} wrap.
-    assert doc["jobs"]["upload"]["if"] == "inputs.upload"
+    assert doc["jobs"]["upload"]["if"] == "inputs.upload && needs.validate.outputs.passed == 'true'"
+    assert doc["jobs"]["upload"]["needs"] == "validate"
 
 
 def test_reusable_build_runs_twine_check():
@@ -160,10 +161,27 @@ def test_version_guard_allows_only_newly_integrated_release_history() -> None:
 
 def test_reusable_publish_fails_closed_and_verifies_remote_hashes() -> None:
     doc = _load("publish-pypi-reusable.yml")
+    validate = doc["jobs"]["validate"]
+    assert validate["needs"] == "build"
+    assert validate["if"] == "inputs.upload"
+    assert validate["permissions"] == {"contents": "read"}
+    assert validate["outputs"]["passed"] == "${{ steps.check.outputs.passed }}"
+    check = next(s for s in validate["steps"] if s.get("id") == "check")
+    assert check["env"]["PYPI_VERSION"] == "${{ needs.build.outputs.version }}"
+    assert "set -e" in check["run"]
+    assert check["run"].index("workflow_validation.py python-hashes") < (
+        check["run"].index('echo "passed=true" >> "$GITHUB_OUTPUT"')
+    )
     steps = doc["jobs"]["upload"]["steps"]
+    assert len(steps) == 2
+    assert steps[0]["uses"].startswith("actions/download-artifact@")
+    assert all("run" not in step for step in steps)
     publish = next(s for s in steps if "pypa/gh-action-pypi-publish" in str(s.get("uses", "")))
     assert "continue-on-error" not in publish
-    commands = "\n".join(str(step.get("run", "")) for step in steps)
+    verify = doc["jobs"]["verify"]
+    assert set(verify["needs"]) == {"build", "upload"}
+    assert verify["permissions"] == {"contents": "read"}
+    commands = "\n".join(str(step.get("run", "")) for step in verify["steps"])
     assert "pypi.org/pypi/data-olympus" in commands
     assert "sha256" in commands
 
@@ -182,12 +200,26 @@ def test_every_pypi_publisher_fails_closed_and_reads_back_hashes() -> None:
             if "pypa/gh-action-pypi-publish" in str(step.get("uses", ""))
         )
         assert "continue-on-error" not in publish, workflow
+        if workflow == "publish-pypi-reusable.yml":
+            steps = _load(workflow)["jobs"]["verify"]["steps"]
         commands = "\n".join(str(step.get("run", "")) for step in steps)
         assert "pypi.org/pypi/data-olympus" in commands, workflow
         assert "sha256" in commands, workflow
         assert 'glob("*.whl")' in commands, workflow
         assert 'glob("*.tar.gz")' in commands, workflow
         assert 'Path("dist").iterdir()' not in commands, workflow
+
+
+def test_stage_one_concurrency_and_manual_workflow_permissions() -> None:
+    build = _load("rc-build.yml")
+    assert build["concurrency"] == {
+        "group": "rc-build-${{ github.ref }}", "cancel-in-progress": True,
+    }
+    assert build["permissions"] == {"contents": "read"}
+    assert _load("release-image.yml")["jobs"]["validate"]["permissions"] == {"contents": "read"}
+    retag = _load("set-channel.yml")["jobs"]["retag"]
+    checkout = next(s for s in retag["steps"] if s.get("uses", "").startswith("actions/checkout@"))
+    assert checkout["with"]["persist-credentials"] is False
 
 
 def test_manual_dispatch_uploads_only_for_validated_release_tag():

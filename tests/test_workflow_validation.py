@@ -82,6 +82,57 @@ def test_manual_tag_is_exact_and_build_is_bound_to_tag_commit(tmp_path, monkeypa
             module().manual_python(ref)
 
 
+def test_manual_python_resolves_actions_checkout_layout(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+
+    def git(*args, cwd=source):
+        return subprocess.check_output(["git", *args], cwd=cwd, text=True).strip()
+
+    git("init", "-q", "-b", "main")
+    (source / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n')
+    git("add", ".")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "-qm", "initial")
+    tagged = git("rev-parse", "HEAD")
+    git("tag", "v1.2.3")
+    git("tag", "snapshot")
+    git("tag", "vendor-tag")
+    git("checkout", "-qb", "release/0.3.0")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "--allow-empty", "-qm", "branch")
+    branch = git("rev-parse", "HEAD")
+    git("branch", "vendor-bump")
+    git("branch", "v2-packaging")
+    git("checkout", "-q", "main")
+    checkout = tmp_path / "checkout"
+    git("clone", "--no-local", "--branch", "main", str(source), str(checkout))
+    assert git("for-each-ref", "--format=%(refname)", "refs/heads", cwd=checkout) == (
+        "refs/heads/main"
+    )
+    # An ambiguous local tag must not override the fetched branch.
+    git("tag", "release/0.3.0", tagged, cwd=checkout)
+    monkeypatch.chdir(checkout)
+    validator = module()
+    for ref in ("release/0.3.0", "vendor-bump", branch):
+        assert validator.manual_python(ref) == (branch, False)
+    assert validator.manual_python("HEAD") == (tagged, False)
+    assert validator.manual_python("snapshot") == (tagged, False)
+    assert validator.manual_python("v1.2.3") == (tagged, True)
+    for ref in ("vendor-tag", "v2-packaging", "v9.9.9", "missing", "--help"):
+        with pytest.raises(ValueError):
+            validator.manual_python(ref)
+
+
+def test_run_reports_registry_stderr_before_raising(capsys):
+    import sys
+
+    with pytest.raises(subprocess.CalledProcessError):
+        module().run(sys.executable, "-c",
+                     "import sys; sys.stderr.write('source image not found\\n'); sys.exit(1)")
+    assert capsys.readouterr().err == "source image not found\n"
+
+
 def test_image_output_uses_unique_delimiter_and_validates_channel():
     validator = module()
     first = validator.image_outputs("edge", "rc", True)
@@ -263,10 +314,12 @@ def test_manual_image_accepts_approved_source(monkeypatch, branch):
 @pytest.mark.parametrize("diagnostic", [
     "ERROR: manifest unknown", "Not Found", "error: NO SUCH MANIFEST",
 ])
-def test_manual_image_accepts_buildx_absence_patterns(monkeypatch, diagnostic):
+@pytest.mark.parametrize("tag", ["1.2.3", "v1.2.3", "0.0.0", "v0.12.0"])
+def test_manual_image_refuses_stable_identity_even_when_absent(monkeypatch, diagnostic, tag):
     monkeypatch.setattr(subprocess, "run", lambda command, **_kw:
                         subprocess.CompletedProcess(command, 1, "", diagnostic))
-    module().manual_image("v1.2.3")
+    with pytest.raises(ValueError, match="stable identity"):
+        module().manual_image(tag)
 
 
 @pytest.mark.parametrize("remote,allowed", [
@@ -331,13 +384,14 @@ def test_manual_python_workflow_checks_hashes_before_upload():
     import yaml
 
     path = SCRIPT.parents[1] / ".github/workflows/publish-pypi-reusable.yml"
-    job = yaml.safe_load(path.read_text())["jobs"]["upload"]
-    assert job["permissions"]["contents"] == "read"
-    steps = job["steps"]
-    guard = next(i for i, step in enumerate(steps)
-                 if "workflow_validation.py python-hashes" in step.get("run", ""))
-    publish = next(i for i, step in enumerate(steps)
+    jobs = yaml.safe_load(path.read_text())["jobs"]
+    assert jobs["validate"]["permissions"] == {"contents": "read"}
+    assert any("workflow_validation.py python-hashes" in step.get("run", "")
+               for step in jobs["validate"]["steps"])
+    assert jobs["upload"]["needs"] == "validate"
+    assert "needs.validate.outputs.passed == 'true'" in jobs["upload"]["if"]
+    publish = next(step for step in jobs["upload"]["steps"]
                    if "pypa/gh-action-pypi-publish" in step.get("uses", ""))
-    assert guard < publish
-    assert steps[publish]["with"]["skip-existing"] is True
-    assert "sha256" in "\n".join(s.get("run", "") for s in steps[publish + 1:])
+    assert publish["with"]["skip-existing"] is True
+    assert "upload" in jobs["verify"]["needs"]
+    assert "sha256" in "\n".join(s.get("run", "") for s in jobs["verify"]["steps"])

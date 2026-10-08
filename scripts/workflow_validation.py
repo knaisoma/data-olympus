@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tomllib
 import urllib.error
 import urllib.request
@@ -23,7 +24,12 @@ CHANNELS = {"rc", "stable", "latest"}
 
 
 def run(*args: str) -> str:
-    return subprocess.run(args, check=True, capture_output=True, text=True).stdout.strip()
+    try:
+        return subprocess.run(args, check=True, capture_output=True, text=True).stdout.strip()
+    except subprocess.CalledProcessError as exc:
+        if exc.stderr:
+            print(exc.stderr, file=sys.stderr, end="")
+        raise
 
 
 def oci_tag(value: str) -> str:
@@ -55,8 +61,8 @@ def manual_image(tag: str) -> None:
             raise ValueError("refusing existing stable version tag")
         if exists.returncode != 1:
             raise ValueError("could not check stable version tag")
-        # Stable identities may also exist only in the registry. Unknown registry
-        # errors fail closed; only an explicit absence permits a new identity.
+        # Existence checks only improve diagnostics. Stable identities remain
+        # reserved for promotion even when neither alias exists anywhere.
         image = subprocess.run(
             ["docker", "buildx", "imagetools", "inspect", f"{REPO}:{alias}"],
             check=False,
@@ -67,6 +73,7 @@ def manual_image(tag: str) -> None:
             raise ValueError("refusing existing stable image tag")
         if not re.search(r"manifest unknown|not found|no such manifest", image.stderr, re.I):
             raise ValueError("could not check stable image tag")
+    raise ValueError("manual image cannot claim a stable identity")
 
 
 def manual_python(ref: str) -> tuple[str, bool]:
@@ -74,13 +81,38 @@ def manual_python(ref: str) -> tuple[str, bool]:
         raise ValueError("invalid source ref")
     upload = bool(re.fullmatch(RELEASE, ref))
     if ref.startswith("v") and not upload:
-        raise ValueError("invalid release tag grammar")
+        tag = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/tags/{ref}"],
+            check=False, capture_output=True,
+        )
+        if tag.returncode == 0 or re.match(r"v[0-9]", ref):
+            raise ValueError("invalid release tag grammar")
+        if tag.returncode != 1:
+            raise ValueError("could not check source tag")
     try:
         if upload:
             run("git", "show-ref", "--verify", "--", f"refs/tags/{ref}")
-            sha = run("git", "rev-parse", "--verify", f"refs/tags/{ref}^{{commit}}")
+            sha = run("git", "rev-parse", "--verify", "--end-of-options",
+                      f"refs/tags/{ref}^{{commit}}")
         else:
-            sha = run("git", "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}")
+            # checkout fetches other branches under origin, without local heads.
+            # Preserve build-only dispatches, preferring the fetched branch over
+            # ambiguous local names, then an immutable full SHA, then local refs.
+            refs = [f"refs/remotes/origin/{ref}"]
+            if re.fullmatch(r"[0-9a-fA-F]{40}", ref):
+                refs.append(ref)
+            if ref not in refs:
+                refs.append(ref)
+            for source in refs:
+                resolved = subprocess.run(
+                    ["git", "rev-parse", "--verify", "--end-of-options", f"{source}^{{commit}}"],
+                    check=False, capture_output=True, text=True,
+                )
+                if resolved.returncode == 0:
+                    sha = resolved.stdout.strip()
+                    break
+            else:
+                raise ValueError("source ref does not resolve to an existing commit")
     except subprocess.CalledProcessError as exc:
         raise ValueError("source ref does not resolve to an existing commit") from exc
     if not re.fullmatch(r"[0-9a-f]{40}", sha):

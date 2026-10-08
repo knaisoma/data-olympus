@@ -13,6 +13,11 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Stage 1 is unprivileged; newer heads can cancel obsolete builds.
+  group: rc-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest

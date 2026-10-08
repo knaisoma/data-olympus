@@ -1,3 +1,4 @@
+# Trusted Publisher setup: docs/releases/pypi-trusted-publishing.md.
 name: Publish to PyPI
 
 on:
@@ -11,7 +12,7 @@ on:
       - "tests/test_installed_wheel_smoke.py"
       - ".github/workflows/publish-pypi*.yml"
       - ".github/workflows/publish-python-build.yml"
-  # Nonrelease refs retain build-only dispatch behavior.
+  # Branches, full SHAs and nonrelease local refs build only; release tags upload.
   workflow_dispatch:
     inputs:
       ref:

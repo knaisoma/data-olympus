@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "image tag to publish, e.g. v0.1.0"
+        description: "preview image tag to publish, e.g. edge"
         required: false
         default: "edge"
 
@@ -14,7 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: read
     steps:
       - uses: actions/checkout@v7
         with:

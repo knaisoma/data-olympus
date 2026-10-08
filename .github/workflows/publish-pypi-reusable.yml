@@ -31,11 +31,36 @@ jobs:
     permissions:
       contents: read
 
-  upload:
-    # Only runs on a real release (upload=true). On PR dry-runs this job is
-    # skipped, so packaging PRs get build + twine check with no upload.
+  validate:
     needs: build
     if: inputs.upload
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      passed: ${{ steps.check.outputs.passed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: Check existing PyPI file hashes before upload
+        id: check
+        env:
+          PYPI_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/workflow_validation.py python-hashes
+          echo "passed=true" >> "$GITHUB_OUTPUT"
+
+  upload:
+    # Only validated release artifacts enter the credential-bearing job.
+    needs: validate
+    if: inputs.upload && needs.validate.outputs.passed == 'true'
     runs-on: ubuntu-latest
     # Trusted Publishing requires the `pypi` environment name to match the
     # pending-publisher config on pypi.org.
@@ -48,18 +73,11 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
-      - name: Check existing PyPI file hashes before upload
-        env:
-          PYPI_VERSION: ${{ needs.build.outputs.version }}
-        run: python3 scripts/workflow_validation.py python-hashes
       - name: Publish to PyPI (Trusted Publishing)
         uses: pypa/gh-action-pypi-publish@release/v1
         # No `password:` or token: OIDC Trusted Publishing only. skip-existing so a
@@ -67,6 +85,18 @@ jobs:
         # error (mirrors the idempotent tag/image/release jobs).
         with:
           skip-existing: true
+
+  verify:
+    needs: [build, upload]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
       - name: Verify PyPI files by SHA256
         env:
           PYPI_VERSION: ${{ needs.build.outputs.version }}
