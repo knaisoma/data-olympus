@@ -23,8 +23,10 @@ no fallback to a human token:
   variable `SDLC_APP_ID` hold the App credentials. The `prove` and
   `create-tag` jobs bind this environment.
 - The protected `pypi` environment, also restricted to `main`, with required
-  reviewers and its PyPI Trusted Publisher bound to `promote-release.yml` and
-  environment `pypi`. A job binds only one environment, so `publish-pypi`
+  reviewers. Add a PyPI Trusted Publisher for `promote-release.yml` and
+  environment `pypi`, and keep the existing publishers registered until
+  adoption completes, because the R9 old path (`publish-pypi.yml`,
+  `rc-publish.yml`, `tag-release.yml`) still publishes through them. A job binds only one environment, so `publish-pypi`
   (which rechecks the alerts and the tag after approval) needs its own copy of
   `SDLC_APP_PRIVATE_KEY` and `SDLC_APP_ID` as `pypi` environment secret and
   variable. Rotate both copies together.
@@ -33,10 +35,18 @@ no fallback to a human token:
   the main-only guard lives in a workflow file the writer controls, so any
   writer could mint the release identity. Environment secrets are released
   only to jobs that run on an allowed deployment branch.
-- Before restricting `pypi` to `main`, note that the old manual
-  `publish-pypi.yml` recovery path also accepts dispatches from
-  `release/new` and `hotfix/new`; with the restriction it must be dispatched
-  from `main`. `rc-publish.yml` and `tag-release.yml` already require `main`.
+- Recorded R9 deviation (operator-delegated ruling 2026-10-08): `publish-pypi.yml`
+  has no branch guard and accepts a dispatch from any ref. Restricting the
+  `pypi` environment to `main` means manual recovery runs through
+  `publish-pypi.yml` must be dispatched from `main`; the release tag is still
+  selected by its `ref` input. `rc-publish.yml` and `tag-release.yml` already
+  require `main`.
+- A repository ruleset that limits who can create `v*` tags. The tagger check
+  is self-asserted metadata, so this ruleset is the actual access control.
+- No required reviewers on the `release-bot` environment. The `prove` job
+  binds it before the real approval, which is the `pypi` environment's required
+  reviewers; reviewers on `release-bot` would block the run ahead of that
+  approval. Its access control is the `main`-only deployment policy.
 - `SDLC_REQUIRED_CODEQL_CHECKS`: the exact required language-analysis check
   names, comma-separated. `H` and `S` both need successful `test`, aggregate
   `CodeQL` and each of those checks.

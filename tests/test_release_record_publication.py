@@ -201,6 +201,23 @@ def test_concurrent_upload_of_a_missing_asset_fails(run, monkeypatch):
         complete(run)
 
 
+def test_final_verification_requires_every_asset_after_upload(run, monkeypatch):
+    """An upload that exits 0 but leaves an asset missing must still fail."""
+    _, _, paths = run
+    github = FakeGitHub({path.name: path.read_bytes() for path in paths[:2]})
+    real = github.__call__
+
+    def lossy(*args):
+        result = real(*args)
+        if args[:2] == ("release", "upload"):
+            del github.assets["release-record.json"]
+        return result
+
+    monkeypatch.setattr(release, "_gh", lossy)
+    with pytest.raises(ValueError, match="missing assets"):
+        complete(run)
+
+
 def test_cli_release_command_reports_refusal(run, monkeypatch, capsys):
     record, provenance, paths = run
     folder = paths[0].parent
