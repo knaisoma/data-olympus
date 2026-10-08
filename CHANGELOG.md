@@ -14,6 +14,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+* Accept the documented `0.0.0+unreleased` placeholder package version only
+  for the `release/new` and `hotfix/new` cycle. `version-free-guard` now skips it
+  with an explicit message on pull requests into those branches and fails closed
+  on the placeholder anywhere else and on any other non `X.Y.Z` version, and the
+  `server.json` tests waive version equality there while still requiring a
+  concrete stable entry. The rule lives in `scripts/placeholder_version.py` and
+  is described in `docs/releases/placeholder-version.md`.
 * Add a disabled-by-default trusted RC publication stage (`rc-publish-stage.yml`)
   that runs only `main` scripts, recomputes the candidate version from `H`'s
   history as data, verifies package hashes and the OCI digest, splits
