@@ -16,7 +16,8 @@ the full verification (branch head, main, version recompute, hashes, digest):
                 upload action; id-token: write exists only in that job
   publish       wait for the PyPI readback, push the OCI archive by digest,
                 move rc for release/new heads, write the staging selection
-                record (packages: write)
+                record (packages: write); the workflow then attests the image
+                digest and the verified wheel and sdist
 """
 from __future__ import annotations
 
@@ -538,6 +539,10 @@ def main(argv: list[str] | None = None) -> int:
             with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
                 summary.write(
                     "Staging selection (no deployment):\n\n```json\n" + rendered + "```\n")
+            # The attestation subject digest; validated single-line sha256 only.
+            require(DIGEST.fullmatch(verified.image_digest) is not None, "invalid image digest")
+            with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+                output.write(f"image_digest={verified.image_digest}\n")
     except VersionError as error:
         print(f"RC publication refused: version engine {_one_line(error.code)}", file=sys.stderr)
         return 1

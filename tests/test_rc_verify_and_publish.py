@@ -544,7 +544,10 @@ def test_workflow_security_contract():
     assert jobs["pypi"]["permissions"] == {
         "actions": "read", "contents": "read", "packages": "read", "id-token": "write"}
     assert jobs["publish"]["permissions"] == {
-        "actions": "read", "contents": "read", "packages": "write"}
+        "actions": "read", "attestations": "write", "contents": "read",
+        "id-token": "write", "packages": "write"}
+    assert [n for n, j in jobs.items() if "attestations" in j["permissions"]] == ["publish"]
+    assert [n for n, j in jobs.items() if "id-token" in j["permissions"]] == ["pypi", "publish"]
     assert [name for name, job in jobs.items() if "environment" in job] == ["pypi"]
     assert jobs["pypi"]["environment"] == "pypi-rc"
     text = WORKFLOW.read_text()
@@ -568,6 +571,54 @@ def test_workflow_security_contract():
                 assert "uv run --no-project python" in step["run"]
         uses = [s["uses"] for s in steps if "uses" in s]
         assert any(u.startswith("pypa/") for u in uses) == (name == "pypi")
+        assert any(u.startswith("actions/attest") for u in uses) == (name == "publish")
     publish_step = next(s for s in jobs["pypi"]["steps"]
                         if s.get("uses", "").startswith("pypa/gh-action-pypi-publish"))
     assert set(publish_step["with"]) == {"packages-dir"}
+
+
+def test_attestations_follow_verified_publication():
+    steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["publish"]["steps"]
+    names = [s.get("id") or s.get("uses", "").split("@")[0] for s in steps]
+    publish_at = names.index("publish")
+    attest = [i for i, s in enumerate(steps)
+              if s.get("uses", "").startswith("actions/attest-build-provenance@")]
+    assert len(attest) == 2 and min(attest) > publish_at
+    image, files = (steps[i]["with"] for i in attest)
+    assert image == {"subject-name": stage.IMAGE,
+                     "subject-digest": "${{ steps.publish.outputs.image_digest }}",
+                     "push-to-registry": True}
+    assert files == {"subject-path": "to-delete/rc-input/dist/*.whl\n"
+                                     "to-delete/rc-input/dist/*.tar.gz\n"}
+
+
+def test_secrets_live_only_in_declared_environments():
+    """Bot or App credentials must be environment secrets on main-only environments."""
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    assert "secrets" not in json.dumps(workflow.get("env", {}))
+    for name, job in workflow["jobs"].items():
+        if "secrets." in json.dumps(job):
+            assert job.get("environment") in ("pypi-rc",), name
+
+
+def test_publish_cli_emits_validated_digest(build, tmp_path, monkeypatch):
+    verified = verify(build)
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(build[3]))
+    output, summary = tmp_path / "output", tmp_path / "summary"
+    for key, value in {"SDLC_PIPELINE": "enabled", "GITHUB_EVENT_NAME": "workflow_run",
+                       "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_PATH": str(event_path),
+                       "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)
+                       }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(stage, "fetch_history", lambda *_a: None)
+    monkeypatch.setattr(stage, "verify", lambda *_a, **_kw: verified)
+    monkeypatch.setattr(stage, "publish", lambda *_a, **_kw: {"H": verified.head,
+                                                                "branch": verified.branch})
+    monkeypatch.setattr(stage, "selection", lambda record, _h: record | {"selected": True})
+    selection = tmp_path / "out" / "staging-selection.json"
+    assert stage.main(["publish", "--artifacts", str(build[1]), "--history",
+                       str(build[0].path), "--selection", str(selection)]) == 0
+    assert output.read_text() == f"image_digest={verified.image_digest}\n"
+    assert json.loads(selection.read_text())["selected"] is True
+    assert verified.head in summary.read_text()

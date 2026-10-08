@@ -43,13 +43,57 @@ a moved branch head or a moved `main` fails closed.
 |---|---|---|
 | `reserve` | `actions: read`, `contents: write`, `packages: read` | Creates an annotated tag at `H` and a public prerelease whose wheel, sdist and `release-provenance.json` assets bind the identity to `H` |
 | `pypi` | `actions: read`, `contents: read`, `packages: read`, `id-token: write`, environment `pypi-rc` | Stages only the files missing from PyPI and uploads them with Trusted Publishing |
-| `publish` | `actions: read`, `contents: read`, `packages: write` | Waits for the PyPI readback, copies the OCI archive with `skopeo copy --all --preserve-digests`, reads the remote digest back, moves `rc` by digest for `release/new` only, and writes the staging selection |
+| `publish` | `actions: read`, `attestations: write`, `contents: read`, `id-token: write`, `packages: write` | Waits for the PyPI readback, copies the OCI archive with `skopeo copy --all --preserve-digests`, reads the remote digest back, moves `rc` by digest for `release/new` only, writes the staging selection, and attests the published objects |
 
 Before any write, every surface is read. A Git tag at another `H`, different
 PyPI file hashes, a different image digest, or release assets with different
 bytes are duplicate identities and fail the run. Objects that already exist
 must carry the same `H` provenance. Registry errors other than an explicit
 "not found" are outages and also fail closed.
+
+`attestations: write` exists only on `publish`. `id-token: write` exists on
+`pypi` (PyPI OIDC) and on `publish` (Sigstore signing of the attestations), and
+nowhere else.
+
+## Secrets and environments
+
+The workflow uses no repository secret today. Any credential added later, such
+as a W9 GitHub App private key or a bot token, MUST be an environment secret
+on an environment whose deployment branch policy allows only `main`, and only
+the job that uses it declares that environment. A repository-wide Actions
+secret is not allowed. The `pypi-rc` environment is restricted to `main` in the
+same way. `workflow_run` jobs run with the `main` ref, so these policies admit
+this workflow and reject a definition from any other branch.
+`tests/test_rc_verify_and_publish.py` enforces that a job referencing
+`secrets.` declares an approved environment.
+
+## Build provenance attestations (contract)
+
+After the `publish` step succeeds, the same job runs
+`actions/attest-build-provenance` twice:
+
+- The image: subject `ghcr.io/knaisoma/data-olympus` at the verified and
+  published digest, with the attestation also pushed to the registry.
+- The wheel and sdist: subjects are the exact files that were hash-verified
+  against provenance and uploaded to PyPI.
+
+Promotion (`promote-release`, Task 5) MUST verify each object before reusing it:
+
+```bash
+gh attestation verify oci://ghcr.io/knaisoma/data-olympus@<digest> \
+  --repo knaisoma/data-olympus \
+  --signer-workflow knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml \
+  --source-ref refs/heads/main
+gh attestation verify <wheel-or-sdist> --repo knaisoma/data-olympus \
+  --signer-workflow knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml \
+  --source-ref refs/heads/main
+```
+
+The attestation proves that the trusted stage-two workflow on `main` verified
+and published those bytes. It describes the stage-two run, not the stage-one
+build. The link from the digest to `H`, `B` and `M` is the staging selection
+record and `release-provenance.json`. A rerun of `publish` adds another
+attestation for the same subjects, which is harmless.
 
 ## Retries
 
@@ -78,6 +122,7 @@ never deploys.
 - GitHub keeps at most one pending run per concurrency group. A newer pending
   run in `data-olympus-promotion` cancels an older pending one, which is
   harmless because a superseded head is refused anyway.
-- The Skopeo copy from a multi-platform Buildx OCI archive and the GHCR digest
-  readback have only been exercised against fakes. The first enabled run after
+- The Skopeo copy from a multi-platform Buildx OCI archive, the GHCR digest
+  readback, and the attestation steps have only been exercised against fakes
+  and structure tests. The first enabled run after
   the R6 prerequisites is the live verification.

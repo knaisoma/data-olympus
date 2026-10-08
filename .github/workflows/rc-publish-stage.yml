@@ -4,8 +4,11 @@ name: rc-publish-stage
 # definition on main, and every job checks out that same main commit
 # (github.sha) for the scripts. The candidate H is fetched as Git data only;
 # no code from H runs here. Disabled unless vars.SDLC_PIPELINE is exactly
-# 'enabled' (R6). Only GITHUB_TOKEN and PyPI OIDC are used, never a personal
-# token. Every job repeats the full verification under the shared lock.
+# 'enabled' (R6). Only GITHUB_TOKEN and OIDC are used, never a personal
+# token. Any future bot or GitHub App secret must be an environment secret on
+# an environment restricted to main, declared by the job that uses it, never
+# a repository-wide Actions secret. Every job repeats the full verification
+# under the shared lock.
 
 on:
   workflow_run:
@@ -119,7 +122,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: read
+      attestations: write
       contents: read
+      id-token: write
       packages: write
     steps:
       - uses: actions/checkout@v7
@@ -141,6 +146,7 @@ jobs:
           github-token: ${{ github.token }}
           path: to-delete/rc-input
       - name: Verify PyPI, publish the OCI digest and record staging selection
+        id: publish
         env:
           SDLC_PIPELINE: ${{ vars.SDLC_PIPELINE }}
           GH_TOKEN: ${{ github.token }}
@@ -149,6 +155,21 @@ jobs:
           uv run --no-project python scripts/rc_verify_and_publish.py publish \
             --artifacts to-delete/rc-input --history to-delete/rc-history.git \
             --selection to-delete/rc-selection/staging-selection.json
+      # Contract for promote-release: gh attestation verify --signer-workflow
+      # knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml. Subjects
+      # are only the objects verified and published by the step above.
+      - name: Attest the published image digest
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ghcr.io/knaisoma/data-olympus
+          subject-digest: ${{ steps.publish.outputs.image_digest }}
+          push-to-registry: true
+      - name: Attest the verified wheel and sdist
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            to-delete/rc-input/dist/*.whl
+            to-delete/rc-input/dist/*.tar.gz
       - uses: actions/upload-artifact@v7
         with:
           name: staging-selection-${{ github.event.workflow_run.head_sha }}-${{ github.run_attempt }}

@@ -18,8 +18,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that runs only `main` scripts, recomputes the candidate version from `H`'s
   history as data, verifies package hashes and the OCI digest, splits
   reservation, PyPI OIDC upload and image push into least-privilege jobs,
-  refuses duplicate identities, reuses same-`H` objects on retry, and records
-  branch-based staging selection with hotfix priority.
+  refuses duplicate identities, reuses same-`H` objects on retry, attests the
+  published image digest and Python files for promotion to verify, and records
+  branch-based staging selection with hotfix priority. Credentials may only be
+  environment secrets on `main`-only environments.
 
 * Build normal and hotfix release candidates with read-only permissions,
   injected Python versions, an OCI archive, and provenance. Cut builds and
