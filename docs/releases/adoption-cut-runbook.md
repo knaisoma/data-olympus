@@ -12,6 +12,33 @@ The cut changes no published object. Tags, PyPI files, GHCR tags, GitHub
 releases, `operator/laptop.md` and the live StatefulSet stay exactly as recorded
 in step 1, and step 9 proves it.
 
+## Immutable tags and the point of no return
+
+Organization rulesets make every tag matching `v*`, `identity-v*`, `*-rc.*` and
+`*-hotfix.rc.*` undeletable and unmovable. A tag with one of those names cannot
+be corrected or removed once it exists, by anyone, with any identity.
+
+- The cut itself creates no tag. The record commit `C`, the `release/new`
+  branch, the placeholder and retirement commits, and the dry-run build are all
+  branch commits or workflow runs. The cut stays reversible by deleting
+  `release/new` and reverting `C` (see "Rollback of the cut").
+- The point of no return is the first `X.Y.Z-rc.N` publication: stage 2's
+  `reserve` job creates the annotated candidate tag and the GitHub prerelease
+  (here `0.11.1-rc.2` or later). It can only run after
+  `SDLC_PIPELINE=enabled` (item 4 of the enable order). From then on that
+  identity is permanent, and a mistake is corrected only by a newer candidate.
+- Never create a tag matching those patterns for testing, in this repository
+  or as a rehearsal of any step here. Test tags belong only in local scratch
+  repositories (such as the offline fixtures in `tests/test_adoption_cut.py`),
+  never on the remote.
+
+The organization Actions policy also requires every selected action to be
+pinned by a full commit SHA. Every `uses:` line in `rc-build.yml`,
+`rc-publish-stage.yml` and `promote-release.yml` is a 40-character SHA with
+its tag in a trailing comment (checked after the rebase onto `307186d`); any
+`uses:` added to these workflows must follow the same form or the run fails
+before it starts.
+
 ## How the ratification enters each stage
 
 The engine (`scripts/sdlc_version.py`) is the only authority on whether an
@@ -356,8 +383,10 @@ The adoption issue (step 2) is also an owner action.
 
 ## Rollback of the cut
 
-The cut is reversible until the first publication (the first stage 2 run with
-`SDLC_PIPELINE=enabled`):
+The cut is reversible until the first publication, the point of no return
+described above: the first stage 2 `reserve` job, which creates the first
+`X.Y.Z-rc.N` tag and prerelease and can only run with `SDLC_PIPELINE=enabled`.
+Until then no tag exists to undo:
 
 1. Delete `release/new` (write, needs the identity the ruleset allows):
    `git push origin --delete release/new`.
@@ -368,6 +397,7 @@ The cut is reversible until the first publication (the first stage 2 run with
 3. Comment the reason on the adoption issue and close it.
 
 Nothing published needs rollback at this point, because nothing was published.
-After the first publication the cut is no longer rolled back this way; use the
-documented release rollback (`.rules/release-rollback.md`), which only
+After the first publication the cut is no longer rolled back this way: the
+candidate tag cannot be deleted or moved under the organization rulesets. Use
+the documented release rollback (`.rules/release-rollback.md`), which only
 redeploys recorded digests and never retags.
