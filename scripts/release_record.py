@@ -23,12 +23,14 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = str(Path(__file__).resolve().parents[1])
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from scripts.rc_decide import main_ratification_kwargs  # noqa: E402
 from scripts.release_artifacts import CandidateVersion  # noqa: E402
 from scripts.sdlc_version import Git, VersionError, _impact, compute_version  # noqa: E402
 
@@ -198,6 +200,20 @@ def validate_proof(
     }
 
 
+def _compute(git: Git, *, cwd: str | Path, head: str, main: str, branch: str) -> dict:
+    """Recompute, taking adoption ratification only from main's blobs.
+
+    This checkout is the squash S, whose tree equals the reviewed H, so its own
+    scripts/adoption_ratification.py and vendored amendment are candidate data.
+    For an adoption cut the pinned values are read from the RC's recorded main
+    M (the main stage 2 ran from), never from S or H; the engine validates them.
+    """
+    with tempfile.TemporaryDirectory(prefix="adoption-ratification-") as trusted:
+        return compute_version(cwd=cwd, head=head, main=main, branch=branch,
+                               **main_ratification_kwargs(git, head=head, main=main,
+                                                          trusted_dir=Path(trusted)))
+
+
 def prove_release(
     *, cwd: str | Path, squash: str, head: str, candidate_tag: str,
     provenance: dict, main: str = "origin/main", phase: str = "initial",
@@ -209,10 +225,8 @@ def prove_release(
     git = Git(cwd)
     if git.file(head, "release/ADOPTION.json") is not None:
         raise ValueError("release/ADOPTION.json must be absent at H")
-    if git.file(provenance["B"], "release/ADOPTION.json") is not None:
-        raise ValueError("ADOPTION promotion requires trusted ratification configuration")
     branch = "hotfix/new" if "-hotfix.rc." in candidate_tag else "release/new"
-    version = compute_version(cwd=cwd, head=head, main=provenance["M"], branch=branch)
+    version = _compute(git, cwd=cwd, head=head, main=provenance["M"], branch=branch)
     notes = generate_notes(cwd=cwd, version=version)
     main_head = git.resolve(main)
     tag_ref = f"refs/tags/{identity.stable_tag}"
@@ -382,8 +396,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "validate-inputs":
             validate_inputs(squash=args.squash, head=args.head, candidate_tag=args.candidate_tag)
         elif args.command == "notes":
-            version = compute_version(cwd=Path.cwd(), head=args.head, main=args.main,
-                                      branch=args.branch)
+            version = _compute(Git(Path.cwd()), cwd=Path.cwd(), head=args.head,
+                               main=args.main, branch=args.branch)
             rendered = generate_notes(cwd=Path.cwd(), version=version)
             if args.output:
                 args.output.write_text(rendered, encoding="utf-8")

@@ -51,6 +51,7 @@ ROOT = str(Path(__file__).resolve().parents[1])
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from scripts import adoption_ratification as ratification  # noqa: E402
 from scripts.sdlc_version import Git, VersionError, compute_version  # noqa: E402
 
 REPOSITORY = "knaisoma/data-olympus"
@@ -236,7 +237,11 @@ def verify(artifacts: Path, history: Path, event: dict[str, Any], *,
     # have moved (M is compared with provenance below); otherwise fail closed.
     require(git.resolve(branch_ref or f"refs/heads/{branch}") == head,
             "triggered head is no longer the branch head")
-    computed = compute_version(cwd=history, head=head, main=main, branch=branch)
+    # Adoption ratification comes only from this trusted main checkout (ROOT),
+    # never from H's tree or the artifacts; the engine applies it only while B
+    # carries release/ADOPTION.json. There is no dry-run mode in this stage.
+    computed = compute_version(cwd=history, head=head, main=main, branch=branch,
+                               **ratification.engine_kwargs(Path(ROOT)))
     require(computed["N"] > 0, "N=0 never publishes")
     require(computed["promotable"], "engine refuses promotion")
     provenance_path = safe_file(artifacts, PROVENANCE)

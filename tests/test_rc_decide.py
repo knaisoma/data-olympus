@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from scripts import rc_decide
-from scripts.sdlc_version import compute_version
+from scripts.sdlc_version import VersionError, compute_version
 from tests.test_sdlc_version import Repo
 
 
@@ -36,7 +36,8 @@ def preflight(repo, branch="release/new", head="HEAD", dry_run=False, event="pus
     return rc_decide.preflight(
         cwd=repo.path, head=head, main="refs/heads/main", branch=branch,
         branch_ref=f"refs/heads/{branch}", dry_run=dry_run, event=event,
-    )
+        trusted_dir=repo.path.parent / "trusted",
+    ).engine_branch
 
 
 def test_stale_head_refused(repo):
@@ -65,15 +66,20 @@ def test_work_branch_requires_dispatch_dry_run(repo):
             preflight(repo, branch="feature/test", dry_run=dry_run, event=event)
 
 
-def test_adoption_record_at_base_fails_without_ratification(repo):
+def test_adoption_record_at_base_goes_to_the_engine(repo):
+    """The cut is no longer refused outright: the engine validates the record."""
     repo.git("tag", "v0.11.0")
     repo.write("release/ADOPTION.json", "{}")
     repo.commit("chore: adoption cut")
     repo.git("checkout", "-b", "release/new")
     repo.git("rm", "release/ADOPTION.json")
     repo.commit("chore: retire adoption record")
-    with pytest.raises(ValueError, match="Task 9.*ratification"):
+    # main carries no pinned ratification module: refused before any build.
+    with pytest.raises(ValueError, match="trusted adoption ratification"):
         preflight(repo)
+    # A dispatched dry run reaches the engine, which rejects the record itself.
+    with pytest.raises(VersionError, match="bad_adoption"):
+        preflight(repo, dry_run=True, event="workflow_dispatch")
 
 
 def test_invalid_event_refused(repo):
@@ -87,6 +93,13 @@ def test_adoption_record_only_at_head_is_not_the_cut_record(repo):
     repo.write("release/ADOPTION.json", "{}")
     repo.commit("chore: add head-only record")
     assert preflight(repo) == "release/new"
+
+
+def test_cut_build_is_never_promotable_even_if_the_engine_says_so():
+    """R2: N=0 stays unpromotable in decide itself, independent of the engine."""
+    result = rc_decide.decide({"N": 0, "promotable": True}, dry_run=False)
+    assert result["promotable"] is False
+    assert result["publish"] is False
 
 
 def test_engine_refusal_cannot_be_overridden():
@@ -103,4 +116,47 @@ def test_stage_one_workflow_has_no_publication_credentials():
     assert "--push" not in text
     assert "type=oci,dest=" in text
     assert "scripts/sdlc_version.py" in text
-    assert "--adoption-" not in text
+
+
+def _steps():
+    import yaml
+
+    workflow = yaml.safe_load(Path(".github/workflows/rc-build.yml").read_text())
+    return {step.get("name"): step.get("run", "") for step in workflow["jobs"]["build"]["steps"]}
+
+
+def test_stage_one_workflow_takes_adoption_only_from_preflight():
+    steps = _steps()
+    admission = steps["Fetch current heads and require exact source"]
+    assert "--trusted-dir to-delete/rc-trusted" in admission
+    engine = steps["Compute content-derived identity and build decision"]
+    # Ratification values come only from preflight's env lines (main's blobs).
+    assert '--adoption-ratified "$ADOPTION_RATIFIED"' in engine
+    assert '--standard-file "$ADOPTION_STANDARD_FILE"' in engine
+    assert '"${adoption[@]}"' in engine
+    assert "dry-run) adoption=(--adoption-dry-run)" in engine
+    assert "exit 1" in engine
+    import yaml
+
+    workflow = yaml.safe_load(Path(".github/workflows/rc-build.yml").read_text())
+    # A push has no inputs, so it is never a dry run; only a dispatch can set it.
+    assert workflow["jobs"]["build"]["env"]["DRY_RUN"] == "${{ inputs.dry_run || false }}"
+    text = Path(".github/workflows/rc-build.yml").read_text()
+    assert "adoption_ratification.py" not in text
+    assert "std-u-821" not in text
+    assert text.count("--adoption-dry-run") == 1
+    assert "inputs." not in engine and "inputs." not in admission
+
+
+def test_trusted_stages_never_take_adoption_from_workflows_or_dry_run():
+    for workflow in ("rc-publish-stage.yml", "promote-release.yml"):
+        assert "--adoption-" not in Path(".github/workflows", workflow).read_text()
+    for script in ("scripts/rc_verify_and_publish.py", "scripts/release_record.py"):
+        assert "adoption_dry_run" not in Path(script).read_text()
+    # Stage 2 runs from main's checkout; promotion's checkout is S (tree of H),
+    # so it reads the pinned values from the recorded M's blobs instead.
+    assert "ratification.engine_kwargs(Path(ROOT))" in Path(
+        "scripts/rc_verify_and_publish.py").read_text()
+    promotion = Path("scripts/release_record.py").read_text()
+    assert "main_ratification_kwargs" in promotion
+    assert "engine_kwargs" not in promotion

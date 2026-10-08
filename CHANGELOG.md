@@ -33,6 +33,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * Build normal and hotfix release candidates with read-only permissions,
   injected Python versions, an OCI archive, and provenance. Cut builds and
   dry runs build and verify artifacts without allowing promotion.
+* Wire the ratified STD-U-821 adoption record into candidate builds, the
+  trusted publication stage and promotion. Builds of an adoption cut take the
+  pinned ratification and vendored amendment from `main`'s Git blobs rather
+  than the candidate tree, the publication stage uses its own `main` checkout,
+  promotion reads them from the candidate's recorded `main`, and only dispatched
+  dry runs evaluate the record unratified. The engine now refuses a
+  ratification passed without the standard file, and the build parser refuses
+  any binding of the pinned names other than one top-level literal.
+  The cut build stays unpromotable and promotion still refuses while the
+  record exists at the reviewed head. Add the adoption cut runbook
+  (`docs/releases/adoption-cut-runbook.md`).
 * Plan verified release branch recuts and stable hotfix cuts, preserve pending
   commits on a backup branch, and refuse stale or unreconciled state, including
   stray stable tags and active old-path release runs. The new workflows share

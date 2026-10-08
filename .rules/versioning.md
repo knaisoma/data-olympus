@@ -125,10 +125,18 @@ the second deletes the record (`chore(release): retire adoption record`).
 Promotion refuses if the record remains at `H`. Do not create `hotfix/new`
 during the adoption cycle.
 
-The STD-U-821 adoption amendment is proposed, not ratified. Refuse the record
-or use it only in dry-run mode until operator ratification. An adoption issue
-is still to be opened to record the anchor, base and amendment proposal;
-neither this document nor that issue grants an exception or a preview waiver.
+The operator ratified the adoption amendment on 2026-10-07 (STD-U-821
+amendment 1.3, vendored at `docs/releases/std-u-821-amendment-1.3.md`). Tooling
+accepts the record only with the ratification pinned on `main` in
+`scripts/adoption_ratification.py` and the vendored amendment, never from
+workflow inputs or `H`. Stage 2 imports them from its `main` checkout; stage 1
+and promotion read them as blobs of `main` (promotion: the RC's recorded `M`),
+because their checkouts are `H` and the squash `S`, whose tree equals `H`.
+Adoption dry-run mode is limited to dispatched dry-run builds and is never
+promotable.
+An adoption issue is still to be opened to record the anchor, base and reason;
+neither this document nor that issue grants anything beyond the amendment.
+The cut sequence is `docs/releases/adoption-cut-runbook.md`.
 The cut is reversible until publication. Alternatively, release 0.11.1 on the
 transitional path and cut at its stable tag.
 

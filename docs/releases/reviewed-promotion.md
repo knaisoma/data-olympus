@@ -48,8 +48,12 @@ no fallback to a human token:
 - `SDLC_REQUIRED_CODEQL_CHECKS`: the exact required language-analysis check
   names, comma-separated. `H` and `S` both need successful `test`, aggregate
   `CodeQL` and each of those checks.
-- Trusted adoption ratification (Task 9). Until then a cut that carries
-  `release/ADOPTION.json` is refused, matching the stage-one build.
+- Adoption ratification needs no repository setting. This workflow's checkout
+  is the squash `S`, whose tree equals `H`, so the proof does not use its own
+  copy: when the cut carries `release/ADOPTION.json` it reads
+  `scripts/adoption_ratification.py` and the vendored amendment as blobs of the
+  RC's recorded `M`, and it still refuses while the record exists at `H`. See
+  [the adoption cut runbook](adoption-cut-runbook.md).
 
 ## Preparing the release squash
 

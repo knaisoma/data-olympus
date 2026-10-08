@@ -41,16 +41,30 @@ jobs:
             +refs/heads/main:refs/remotes/origin/main \
             "+refs/heads/$GITHUB_REF_NAME:refs/remotes/origin/build-head"
           mkdir -p to-delete/rc-build
+          # For an adoption cut, preflight reads the pinned ratification and the
+          # vendored standard from origin/main's blobs (never from this H
+          # checkout) into to-delete/rc-trusted, outside the uploaded artifact,
+          # and runs the engine once with them. Stage 2 recomputes with main's
+          # own checkout, so this stage is not trusted for the result.
           uv run python scripts/rc_decide.py preflight \
             --head "$GITHUB_SHA" --branch "$GITHUB_REF_NAME" \
             --branch-ref refs/remotes/origin/build-head \
-            --event "$GITHUB_EVENT_NAME" --dry-run "$DRY_RUN" >> "$GITHUB_ENV"
+            --event "$GITHUB_EVENT_NAME" --dry-run "$DRY_RUN" \
+            --trusted-dir to-delete/rc-trusted >> "$GITHUB_ENV"
       - name: Compute content-derived identity and build decision
         run: |
           set -euo pipefail
+          # Adoption dry run exists only for a dispatched dry run (preflight).
+          adoption=()
+          case "$ADOPTION_MODE" in
+            none) ;;
+            ratified) adoption=(--adoption-ratified "$ADOPTION_RATIFIED" --standard-file "$ADOPTION_STANDARD_FILE") ;;
+            dry-run) adoption=(--adoption-dry-run) ;;
+            *) echo "unknown adoption mode" >&2; exit 1 ;;
+          esac
           uv run python scripts/sdlc_version.py \
             --head "$GITHUB_SHA" --main refs/remotes/origin/main \
-            --branch "$ENGINE_BRANCH" \
+            --branch "$ENGINE_BRANCH" "${adoption[@]}" \
             --json-output to-delete/rc-build/version.json \
             --env-output to-delete/rc-build/version.env
           cat to-delete/rc-build/version.env >> "$GITHUB_ENV"
