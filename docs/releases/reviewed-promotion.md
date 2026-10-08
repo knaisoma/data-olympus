@@ -14,10 +14,29 @@ repository variable `SDLC_PIPELINE` is `enabled` and the dispatch ref is
 Activation needs all of the following. A missing item fails closed and there is
 no fallback to a human token:
 
-- The W9 GitHub App: repository variable `SDLC_APP_ID` and Actions secret
-  `SDLC_APP_PRIVATE_KEY`. The App pushes the stable tag and reads Dependabot
-  and code scanning alerts, which `GITHUB_TOKEN` cannot read.
-- The protected `pypi` environment with its Trusted Publisher.
+- The W9 GitHub App, installed on this repository only, with exactly these
+  permissions: contents write, Dependabot alerts read and code scanning alerts
+  read. The App pushes the stable tag and reads the alerts, which
+  `GITHUB_TOKEN` cannot read.
+- The environment `release-bot`, with a deployment branch policy that allows
+  only `main`. Its environment secret `SDLC_APP_PRIVATE_KEY` and environment
+  variable `SDLC_APP_ID` hold the App credentials. The `prove` and
+  `create-tag` jobs bind this environment.
+- The protected `pypi` environment, also restricted to `main`, with required
+  reviewers and its PyPI Trusted Publisher bound to `promote-release.yml` and
+  environment `pypi`. A job binds only one environment, so `publish-pypi`
+  (which rechecks the alerts and the tag after approval) needs its own copy of
+  `SDLC_APP_PRIVATE_KEY` and `SDLC_APP_ID` as `pypi` environment secret and
+  variable. Rotate both copies together.
+- The App private key is never a repository or organization Actions secret.
+  Those are available to workflows on every branch a writer can push, where
+  the main-only guard lives in a workflow file the writer controls, so any
+  writer could mint the release identity. Environment secrets are released
+  only to jobs that run on an allowed deployment branch.
+- Before restricting `pypi` to `main`, note that the old manual
+  `publish-pypi.yml` recovery path also accepts dispatches from
+  `release/new` and `hotfix/new`; with the restriction it must be dispatched
+  from `main`. `rc-publish.yml` and `tag-release.yml` already require `main`.
 - `SDLC_REQUIRED_CODEQL_CHECKS`: the exact required language-analysis check
   names, comma-separated. `H` and `S` both need successful `test`, aggregate
   `CodeQL` and each of those checks.
@@ -70,8 +89,14 @@ The publishing jobs repeat the proof in the `resume` phase after `pypi`
 environment approval and before tagging, and require the record to be byte
 equal. `resume` accepts a `main` that has advanced past `S` (but not one that
 no longer contains `S`) and an existing stable tag only if it is annotated and
-on `S`. This keeps "Re-run failed jobs" usable after a partial publication.
-Re-running all jobs is refused once anything is published.
+on `S`, its tag object names `S` and `vX.Y.Z`, its message is byte for byte
+the generated notes, and its tagger is the App bot identity
+(`<app-slug>[bot]` with the `<id>+<app-slug>[bot]@users.noreply.github.com`
+address, resolved from the App token). A tag pushed by anyone else, or with
+other notes, is refused. Git tagger metadata is self-asserted, so this is an
+audit check and not an access control: the W9 tag ruleset must restrict who may
+create `v*` tags. This keeps "Re-run failed jobs" usable after a partial
+publication. Re-running all jobs is refused once anything is published.
 
 The proof job also requires zero open security alerts (repeated after
 environment approval), that the RC GHCR tag still resolves to the recorded
@@ -104,13 +129,24 @@ output to the module at commit c341940.
 1. PyPI through Trusted Publishing in the `pypi` environment. A re-run skips
    files already present, and the hash check then requires every remote file
    to equal the local build.
-2. The App creates the annotated `vX.Y.Z` tag on `S`, carrying the notes.
+2. The App creates the annotated `vX.Y.Z` tag on `S` as its bot identity,
+   carrying the notes verbatim (`--cleanup=verbatim`; the default cleanup
+   would strip the Markdown headings). The checkout credential is the App
+   token, never `GITHUB_TOKEN` or a human token. After the push the tag is
+   fetched back without force and the resume proof runs again.
 3. Exactly `vX.Y.Z`, `stable` and `latest` move to the RC digest, as
    `tag-release.yml` does today, without rebuilding. The image keeps its RC
    version and revision labels; the stable provenance records the alias.
 4. The GitHub release with the generated notes, stable files, stable
-   provenance and release record. A re-run uploads only missing assets and
-   refuses different bytes.
+   provenance and release record. `release_record.py release` binds every
+   asset to the run: the stable provenance must carry the release record's
+   `H`, `S`, `B`, `M`, tag, candidate and digest, and its stable wheel and
+   sdist hashes must equal the files. An existing release is accepted only if
+   it is published, not a prerelease, its body equals the generated notes and
+   every asset it has is one of these four files with the same SHA-256 (the
+   downloaded bytes and, when GitHub reports it, the asset digest). Foreign
+   assets are refused. Only missing assets are uploaded, without replacement,
+   and the complete release is verified again afterwards.
 5. The MCP registry, last, with the pinned publisher, ownership marker, OIDC
    login and read-back of `tag-release.yml`. Only the job's workspace copy of
    `server.json` receives the version.
@@ -118,3 +154,51 @@ output to the module at commit c341940.
 Recovery from a partial publication never replaces or re-tags a published
 item. The workflow never deploys: production stays digest-pinned in reviewed
 gitops, and rollback uses the recorded prior digest with `set-channel.yml`.
+
+## Old and new promotion paths during the R9 window
+
+Until the first new-model release, `tag-release.yml` stays unchanged (R9) and
+does not take the `data-olympus-promotion` lock; it uses its own
+`tag-release-<candidate>` group. Both paths move `stable` and `latest`, so
+running them at the same time can leave the channels on whichever finished
+last, which may be the lower version. Code cannot prevent this without
+changing `tag-release.yml`, so the operator keeps them mutually exclusive:
+
+1. Never dispatch `tag-release.yml` while a `promote-release.yml` run exists
+   in any non-completed state, and the reverse. A run waiting for `pypi`
+   approval counts as running.
+2. Before dispatching either workflow, check both are idle:
+
+   ```bash
+   for workflow in tag-release.yml promote-release.yml; do
+     for status in queued in_progress waiting pending requested action_required; do
+       gh run list --workflow "$workflow" --status "$status" \
+         --json databaseId,status,headBranch,createdAt
+     done
+   done
+   ```
+
+   Every list must be empty (`[]`). If one is not, wait for it to complete
+   or cancel the queued run that should not proceed.
+3. After a run completes, verify the channels with
+   `docker buildx imagetools inspect ghcr.io/knaisoma/data-olympus:stable`
+   and `:latest` before dispatching the other path.
+
+## Tracked prerequisites
+
+These are not implemented in this change and block activation:
+
+- RC image anchoring. The RC provenance asset and the `X.Y.Z-rc.N` GHCR tag are
+  mutable, and the RC image labels can be set by anyone who can push an
+  image, so today the promoted digest is not bound to anything immutable.
+  Stage 2 (Task 4, `rc-publish-stage.yml`) must emit GitHub artifact
+  attestations (`actions/attest-build-provenance`) for the image digest and
+  for `release-provenance.json`, and `promote-release.yml` must verify them
+  with `gh attestation verify --signer-workflow
+  knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml` (and the
+  source ref) before promoting the RC digest. Immutable GitHub releases are an
+  additional or alternative anchor for the provenance asset.
+- Shared lock on the old path. After adoption, when `tag-release.yml` is
+  retired or changed, the remaining stable promotion path must take the
+  `data-olympus-promotion` lock (Task 6). Until then the procedure above is
+  the only mutual exclusion.
