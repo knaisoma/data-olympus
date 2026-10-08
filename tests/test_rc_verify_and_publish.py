@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import re
 import subprocess
 import tarfile
 import urllib.error
@@ -200,10 +202,11 @@ def test_happy_publication_and_idempotent_retry(build, tmp_path):
     assert sorted(p.name for p in (tmp_path / "upload").iterdir()) == sorted(
         verified.python_hashes)
     registry.python = verified.python_hashes.copy()
-    record = stage.selection(publish(verified, registry), build[0].path)
+    record = stage.selection(publish(verified, registry, move_rc=True), build[0].path)
     assert (record["H"], record["image_digest"], record["selected"]) == (
         verified.head, verified.image_digest, True)
     assert record["image"] == f"{stage.IMAGE}@{verified.image_digest}"
+    assert record["rc_channel_moved"] is True
     assert registry.writes == ["reserve", "image", "rc"]
     # A rerun of the same stage-two run reuses every object and writes nothing new.
     assert stage.reserve(verified, registry) == 0
@@ -290,7 +293,7 @@ def test_pypi_readback_is_polled_until_consistent(build):
     views = [{}, {names[0]: verified.python_hashes[names[0]]}, verified.python_hashes.copy()]
     registry.python_hashes = lambda _version: views.pop(0) if len(views) > 1 else views[0]
     publish(verified, registry)
-    assert registry.writes == ["reserve", "image", "rc"]
+    assert registry.writes == ["reserve", "image"]
 
 
 def test_rc_channel_and_selection_for_hotfix(build):
@@ -300,16 +303,17 @@ def test_rc_channel_and_selection_for_hotfix(build):
     registry.python = verified.python_hashes.copy()
     # An open hotfix wins staging; a release/new candidate is not selected.
     repo.git("update-ref", "refs/heads/hotfix/new", repo.git("rev-parse", "main"))
-    record = stage.selection(publish(verified, registry), repo.path)
+    record = stage.selection(publish(verified, registry, move_rc=True), repo.path)
     assert (record["selected"], record["selection_branch"]) == (False, "hotfix/new")
     assert "rc" in registry.writes
     hotfix = replace(verified, branch="hotfix/new", head=repo.git("rev-parse", "main"))
     registry = Registry()
     stage.reserve(hotfix, registry)
     registry.python = hotfix.python_hashes.copy()
-    record = stage.selection(publish(hotfix, registry), repo.path)
+    record = stage.selection(publish(hotfix, registry, move_rc=True), repo.path)
     assert (record["selected"], record["selection_branch"]) == (True, "hotfix/new")
     assert registry.writes == ["reserve", "image"]
+    assert record["rc_channel_moved"] is False
     repo.git("update-ref", "refs/heads/hotfix/new", verified.head)
     with pytest.raises(ValueError, match="hotfix head moved"):
         stage.selection(publish(hotfix, registry), repo.path)
@@ -321,7 +325,7 @@ def test_hotfix_candidate_end_to_end(tmp_path):
     assert (verified.version, verified.python_version) == ("1.4.3-hotfix.rc.1", "1.4.3.dev1")
     assert stage.reserve(verified, registry) == 2
     registry.python = verified.python_hashes.copy()
-    record = stage.selection(publish(verified, registry), hotfix[0].path)
+    record = stage.selection(publish(verified, registry, move_rc=True), hotfix[0].path)
     assert (record["selected"], record["branch"]) == (True, "hotfix/new")
     assert "rc" not in registry.writes
 
@@ -386,6 +390,177 @@ def test_oci_unexpected_entry_refused(build):
         verify(build)
 
 
+def test_rc_channel_is_not_moved_by_default(build):
+    """W6 invariant: rc stays with set-channel.yml until SDLC_RC_CHANNEL is enabled."""
+    verified, registry = verify(build), Registry()
+    stage.reserve(verified, registry)
+    registry.python = verified.python_hashes.copy()
+    record = publish(verified, registry)
+    assert registry.writes == ["reserve", "image"]
+    assert record["rc_channel_moved"] is False
+
+
+@pytest.mark.parametrize(("key", "value"), [
+    ("dry_run", 0), ("promotable", 1), ("N", 1.0), ("N", True),
+])
+def test_provenance_types_are_strict(build, key, value):
+    """M05: values that compare equal but have another JSON type are refused."""
+    if key == "N":
+        assert build[2]["N"] == 1
+    mutate(build, key, value)
+    with pytest.raises(ValueError, match=f"recompute mismatch: {key}"):
+        verify(build)
+
+
+@pytest.mark.parametrize(("key", "value"), [
+    ("source_sha", "0" * 40), ("version", "9.9.9rc1"), ("source_sha", None),
+])
+def test_candidate_receipt_mismatch(build, key, value):
+    """M11: the stage-one receipt must name H and the computed Python version."""
+    build[2]["candidate"][key] = value
+    mutate(build, "candidate", build[2]["candidate"])
+    with pytest.raises(ValueError, match="candidate receipt mismatch"):
+        verify(build)
+
+
+def test_artifact_symlink_refused_even_inside_its_directory(build):
+    """M20: a symlink to a sibling regular file is still not an artifact."""
+    provenance = build[1] / "release-provenance.json"
+    provenance.rename(build[1] / "elsewhere.json")
+    provenance.symlink_to("elsewhere.json")
+    with pytest.raises(ValueError, match="regular file"):
+        verify(build)
+
+
+def rebuild_oci(build, *, manifest_edit=None, extra=(), layout=True):
+    """Rewrite the OCI archive (optionally editing the manifest) and re-bind provenance."""
+    artifacts, provenance = build[1], build[2]
+    config = b'{}'
+    manifest_data = {"schemaVersion": 2, "config": {
+        "digest": "sha256:" + digest(config), "size": len(config)}, "layers": []}
+    if manifest_edit:
+        manifest_edit(manifest_data)
+    manifest = json.dumps(manifest_data).encode()
+    descriptor = {"digest": "sha256:" + digest(manifest), "size": len(manifest)}
+    path = artifacts / "image.oci.tar"
+    with tarfile.open(path, "w") as archive:
+        for name, data in {
+            **({"oci-layout": b'{"imageLayoutVersion":"1.0.0"}'} if layout else {}),
+            "index.json": json.dumps({"schemaVersion": 2, "manifests": [descriptor]}).encode(),
+            "blobs/sha256/" + digest(manifest): manifest,
+            "blobs/sha256/" + digest(config): config,
+        }.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+        for info, data in extra:
+            archive.addfile(info, io.BytesIO(data) if data is not None else None)
+    provenance["image_digest"] = descriptor["digest"]
+    mutate(build, "oci_archive_sha256", digest(path.read_bytes()))
+
+
+def test_rebuilt_oci_archive_still_verifies(build):
+    rebuild_oci(build)
+    assert verify(build).image_digest == build[2]["image_digest"]
+
+
+def test_oci_non_regular_member_refused(build):
+    """M22: oci-layout as a symlink to a valid blob is refused, not followed.
+
+    Without the regular-file check this archive verifies, because tarfile
+    follows the internal link and every hash still matches.
+    """
+    layout = b'{"imageLayoutVersion":"1.0.0"}'
+    blob = tarfile.TarInfo("blobs/sha256/" + digest(layout))
+    blob.size = len(layout)
+    link = tarfile.TarInfo("oci-layout")
+    link.type, link.linkname = tarfile.SYMTYPE, "blobs/sha256/" + digest(layout)
+    rebuild_oci(build, extra=[(blob, layout), (link, None)], layout=False)
+    with pytest.raises(ValueError, match="unsafe or duplicate OCI entry"):
+        verify(build)
+
+
+def test_oci_descriptor_size_mismatch_refused(build):
+    """M23: a descriptor must state the exact blob size."""
+    rebuild_oci(build, manifest_edit=lambda m: m["config"].update(size=1))
+    with pytest.raises(ValueError, match="size mismatch"):
+        verify(build)
+
+
+def test_oci_external_urls_refused(build):
+    """M24: descriptors may not point outside the archive."""
+    rebuild_oci(build, manifest_edit=lambda m: m["config"].update(
+        urls=["https://example.invalid/blob"]))
+    with pytest.raises(ValueError, match="external OCI URLs"):
+        verify(build)
+
+
+@pytest.mark.parametrize("name", ["../escape", "/absolute", "blobs/../../escape"])
+def test_oci_directory_traversal_refused(build, name):
+    """M25: directory members are checked for traversal too."""
+    directory = tarfile.TarInfo(name)
+    directory.type = tarfile.DIRTYPE
+    rebuild_oci(build, extra=[(directory, None)])
+    with pytest.raises(ValueError, match="unsafe OCI path"):
+        verify(build)
+
+
+def test_publish_requires_complete_reservation(build):
+    """M34: a partial release (provenance only) never reaches the image push."""
+    verified, registry = verify(build), Registry()
+    registry.tag = verified.head
+    registry.assets = {stage.PROVENANCE: verified.assets[stage.PROVENANCE]}
+    registry.python = verified.python_hashes.copy()
+    with pytest.raises(ValueError, match="incomplete GitHub reservation"):
+        publish(verified, registry)
+    assert not registry.writes
+
+
+@pytest.mark.parametrize("kind", ["wheel", "sdist"])
+def test_oversized_distribution_metadata_refused(build, monkeypatch, kind):
+    """METADATA and PKG-INFO are read with a cap; the other file stays small."""
+    candidate, py = build[2]["candidate"], build[2]["python_version"]
+    path = build[1] / "dist" / candidate[kind]
+    text = f"Name: data-olympus\nVersion: {py}\nSummary: {'x' * 200}\n"
+    if kind == "wheel":
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(f"data_olympus-{py}.dist-info/METADATA", text)
+    else:
+        tar(path, {f"data_olympus-{py}/PKG-INFO": text.encode()})
+    candidate[f"{kind}_sha256"] = digest(path.read_bytes())
+    mutate(build, "candidate", candidate)
+    monkeypatch.setattr(stage, "METADATA_LIMIT", 128)
+    with pytest.raises(ValueError, match="oversized metadata"):
+        verify(build)
+    monkeypatch.setattr(stage, "METADATA_LIMIT", 1024)
+    assert verify(build).python_version == py
+
+
+def test_oversized_provenance_refused(build, monkeypatch):
+    monkeypatch.setattr(stage, "PROVENANCE_LIMIT", 8)
+    with pytest.raises(ValueError, match="oversized metadata"):
+        verify(build)
+
+
+def test_deeply_nested_json_fails_closed_without_traceback(build, tmp_path, monkeypatch,
+                                                           capsys):
+    (build[1] / "release-provenance.json").write_text("[" * 200_000 + "]" * 200_000)
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(build[3]))
+    for key, value in {"SDLC_PIPELINE": "enabled", "GITHUB_EVENT_NAME": "workflow_run",
+                       "GITHUB_REF": "refs/heads/main",
+                       "GITHUB_EVENT_PATH": str(event_path)}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(stage, "fetch_history", lambda *_a: None)
+    real_verify = stage.verify
+    monkeypatch.setattr(stage, "verify", lambda artifacts, history, event: real_verify(
+        artifacts, history, event, main="main", branch_ref="release/new"))
+    assert stage.main(["reserve", "--artifacts", str(build[1]),
+                       "--history", str(build[0].path)]) == 1
+    err = capsys.readouterr().err
+    assert "RecursionError" in err and "Traceback" not in err
+
+
 @pytest.mark.parametrize(("env", "message"), [
     ({}, "disabled"),
     ({"SDLC_PIPELINE": "enabled", "GITHUB_EVENT_NAME": "push"}, "workflow_run"),
@@ -422,6 +597,34 @@ def test_pypi_outage_is_not_absence(monkeypatch):
     monkeypatch.setattr(stage.urllib.request, "urlopen", outage)
     with pytest.raises(ValueError, match="unavailable"):
         stage.Registries().python_hashes("1.4.3rc1")
+
+
+def fake_gh(monkeypatch, responses):
+    def run(args, **_kwargs):
+        endpoint = args[2].removeprefix(f"repos/{stage.REPOSITORY}/")
+        return SimpleNamespace(returncode=0, stdout=json.dumps(responses[endpoint]).encode(),
+                               stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+@pytest.mark.parametrize("release", [
+    {"prerelease": True, "draft": True, "assets": []},
+    {"prerelease": False, "draft": False, "assets": []},
+])
+def test_production_release_must_be_public_prerelease(monkeypatch, release):
+    """M36: a draft or a full release is never accepted as the reservation."""
+    fake_gh(monkeypatch, {"releases/tags/1.4.3-rc.1": release})
+    with pytest.raises(ValueError, match="public prerelease"):
+        stage.Registries().release_assets("1.4.3-rc.1")
+
+
+def test_production_lightweight_tag_refused(monkeypatch):
+    """M37: a lightweight tag (ref straight to a commit) is refused before dereference."""
+    fake_gh(monkeypatch, {"git/ref/tags/1.4.3-rc.1": {
+        "object": {"type": "commit", "sha": "a" * 40}}})
+    with pytest.raises(ValueError, match="annotated"):
+        stage.Registries().tag_head("1.4.3-rc.1")
 
 
 def test_production_clients_with_fake_gh_skopeo_and_pypi(build, tmp_path, monkeypatch):
@@ -509,12 +712,12 @@ def test_production_clients_with_fake_gh_skopeo_and_pypi(build, tmp_path, monkey
         assert writes == ["tag-object", "tag-ref", "release", "asset", "asset", "asset"]
         assert stage.stage_upload(verified, client, tmp_path / "first") == 2
         state["python"] = verified.python_hashes.copy()
-        publish(verified, client)
+        publish(verified, client, move_rc=True)
         assert state["images"].keys() == {verified.version, "rc"}
         first_writes = writes.copy()
         assert stage.reserve(verified, client) == 0
         assert stage.stage_upload(verified, client, tmp_path / "retry") == 0
-        publish(verified, client)
+        publish(verified, client, move_rc=True)
         assert writes == first_writes
     finally:
         client.close()
@@ -523,40 +726,74 @@ def test_production_clients_with_fake_gh_skopeo_and_pypi(build, tmp_path, monkey
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/rc-publish-stage.yml"
 
 
+ADMISSION = (
+    "vars.SDLC_PIPELINE == 'enabled' && "
+    "github.event.workflow_run.conclusion == 'success' && "
+    "github.event.workflow_run.event == 'push' && "
+    "(github.event.workflow_run.head_branch == 'release/new' || "
+    "github.event.workflow_run.head_branch == 'hotfix/new') && "
+    "github.event.workflow_run.head_repository.full_name == github.repository"
+)
+
+
+def squash(text):
+    return re.sub(r"\s+", " ", text).replace("( ", "(").replace(" )", ")").strip()
+
+
+def test_lock_is_taken_only_by_admitted_runs():
+    """C1: no-op runs get a private group and cannot cancel pending promotions."""
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    concurrency = workflow["concurrency"]
+    assert set(concurrency) == {"group", "cancel-in-progress"}
+    assert concurrency["cancel-in-progress"] is False
+    assert squash(concurrency["group"]) == (
+        "${{ (" + ADMISSION + ") && 'data-olympus-promotion' || "
+        "format('rc-publish-noop-{0}', github.run_id) }}")
+    # The lock condition and the job gate are the same expression.
+    assert squash(workflow["jobs"]["reserve"]["if"]) == ADMISSION
+
+
 def test_workflow_security_contract():
     workflow = yaml.safe_load(WORKFLOW.read_text())
     assert workflow.get("on", workflow.get(True)) == {
         "workflow_run": {"workflows": ["rc-build"], "types": ["completed"]}}
     assert workflow["permissions"] == {}
-    assert workflow["concurrency"] == {
-        "group": "data-olympus-promotion", "cancel-in-progress": False}
     jobs = workflow["jobs"]
-    assert set(jobs) == {"reserve", "pypi", "publish"}
+    assert set(jobs) == {"reserve", "pypi", "publish", "attest"}
     for gate in ("vars.SDLC_PIPELINE == 'enabled'", "conclusion == 'success'",
                  "head_branch == 'release/new'", "head_branch == 'hotfix/new'",
                  "event == 'push'", "head_repository.full_name == github.repository"):
         assert gate in jobs["reserve"]["if"]
     assert jobs["pypi"]["needs"] == "reserve"
     assert jobs["publish"]["needs"] == ["reserve", "pypi"]
+    assert jobs["attest"]["needs"] == "publish"
+    assert "if" not in jobs["attest"]
     assert "needs.reserve.result == 'success'" in jobs["publish"]["if"]
     assert jobs["reserve"]["permissions"] == {
         "actions": "read", "contents": "write", "packages": "read"}
     assert jobs["pypi"]["permissions"] == {
         "actions": "read", "contents": "read", "packages": "read", "id-token": "write"}
     assert jobs["publish"]["permissions"] == {
-        "actions": "read", "attestations": "write", "contents": "read",
-        "id-token": "write", "packages": "write"}
-    assert [n for n, j in jobs.items() if "attestations" in j["permissions"]] == ["publish"]
-    assert [n for n, j in jobs.items() if "id-token" in j["permissions"]] == ["pypi", "publish"]
+        "actions": "read", "contents": "read", "packages": "write"}
+    assert jobs["attest"]["permissions"] == {
+        "actions": "read", "attestations": "write", "id-token": "write", "packages": "write"}
+    assert [n for n, j in jobs.items() if "attestations" in j["permissions"]] == ["attest"]
+    assert [n for n, j in jobs.items() if "id-token" in j["permissions"]] == ["pypi", "attest"]
     assert [name for name, job in jobs.items() if "environment" in job] == ["pypi"]
     assert jobs["pypi"]["environment"] == "pypi-rc"
     text = WORKFLOW.read_text()
     assert "secrets." not in text and "pull_request" not in text
     for name, job in jobs.items():
         steps = job["steps"]
-        checkout = steps[0]
-        assert checkout["uses"].startswith("actions/checkout")
-        assert checkout["with"] == {"ref": "${{ github.sha }}", "persist-credentials": False}
+        if name == "attest":
+            # The signing job runs no repository code.
+            assert not any(s.get("uses", "").startswith("actions/checkout") for s in steps)
+            assert "scripts/" not in json.dumps(steps) and "uv run" not in json.dumps(steps)
+        else:
+            checkout = steps[0]
+            assert checkout["uses"].startswith("actions/checkout")
+            assert checkout["with"] == {"ref": "${{ github.sha }}",
+                                        "persist-credentials": False}
         download = next(s for s in steps if s.get("uses", "").startswith(
             "actions/download-artifact"))
         assert download["with"]["run-id"] == "${{ github.event.workflow_run.id }}"
@@ -571,25 +808,93 @@ def test_workflow_security_contract():
                 assert "uv run --no-project python" in step["run"]
         uses = [s["uses"] for s in steps if "uses" in s]
         assert any(u.startswith("pypa/") for u in uses) == (name == "pypi")
-        assert any(u.startswith("actions/attest") for u in uses) == (name == "publish")
+        assert any(u.startswith("actions/attest") for u in uses) == (name == "attest")
     publish_step = next(s for s in jobs["pypi"]["steps"]
                         if s.get("uses", "").startswith("pypa/gh-action-pypi-publish"))
     assert set(publish_step["with"]) == {"packages-dir"}
 
 
+def test_rc_channel_gate_reaches_only_the_publish_script():
+    """C3: the rc move is gated by its own variable, default off."""
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    users = [(name, step) for name, job in jobs.items() for step in job["steps"]
+             if "SDLC_RC_CHANNEL" in json.dumps(step)]
+    assert [(name, step["id"]) for name, step in users] == [("publish", "publish")]
+    assert users[0][1]["env"]["SDLC_RC_CHANNEL"] == "${{ vars.SDLC_RC_CHANNEL }}"
+
+
+def test_actions_are_sha_pinned_or_marked_tag_pins():
+    """Nit: every action is a full SHA pin or carries the explicit tag-pin marker."""
+    lines = [line for line in WORKFLOW.read_text().splitlines()
+             if re.match(r"\s*(- )?uses:", line)]
+    assert lines
+    for line in lines:
+        ref = line.split("uses:", 1)[1].split("#", 1)[0].strip()
+        assert "@" in ref, line
+        if re.fullmatch(r"[0-9a-f]{40}", ref.rsplit("@", 1)[1]) is None:
+            assert line.rstrip().endswith("# tag-pin: SHA unverified offline"), line
+
+
 def test_attestations_follow_verified_publication():
-    steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["publish"]["steps"]
-    names = [s.get("id") or s.get("uses", "").split("@")[0] for s in steps]
-    publish_at = names.index("publish")
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    assert jobs["publish"]["outputs"] == {
+        key: "${{ steps.publish.outputs." + key + " }}"
+        for key in ("image_digest", "wheel", "wheel_sha256", "sdist", "sdist_sha256")}
+    steps = jobs["attest"]["steps"]
+    check = next(i for i, s in enumerate(steps) if "sha256sum --check" in s.get("run", ""))
+    assert steps[check]["env"] == {
+        "IMAGE_DIGEST": "${{ needs.publish.outputs.image_digest }}",
+        "WHEEL": "${{ needs.publish.outputs.wheel }}",
+        "WHEEL_SHA256": "${{ needs.publish.outputs.wheel_sha256 }}",
+        "SDIST": "${{ needs.publish.outputs.sdist }}",
+        "SDIST_SHA256": "${{ needs.publish.outputs.sdist_sha256 }}"}
     attest = [i for i, s in enumerate(steps)
               if s.get("uses", "").startswith("actions/attest-build-provenance@")]
-    assert len(attest) == 2 and min(attest) > publish_at
+    assert len(attest) == 2 and min(attest) > check
     image, files = (steps[i]["with"] for i in attest)
     assert image == {"subject-name": stage.IMAGE,
-                     "subject-digest": "${{ steps.publish.outputs.image_digest }}",
+                     "subject-digest": "${{ needs.publish.outputs.image_digest }}",
                      "push-to-registry": True}
-    assert files == {"subject-path": "to-delete/rc-input/dist/*.whl\n"
-                                     "to-delete/rc-input/dist/*.tar.gz\n"}
+    # Only the copies that passed sha256sum are subjects, never the raw artifact.
+    assert files == {"subject-path": "to-delete/rc-attest/*.whl\n"
+                                     "to-delete/rc-attest/*.tar.gz\n"}
+
+
+def test_attest_hash_check_rejects_tampered_files(tmp_path):
+    """C4: the attest job's shell check fails on a byte change or a symlink."""
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    script = next(s["run"] for s in jobs["attest"]["steps"]
+                  if "sha256sum --check" in s.get("run", ""))
+    if subprocess.run(["bash", "-c", "command -v sha256sum"], check=False,
+                      capture_output=True).returncode:
+        pytest.skip("sha256sum not available")
+    dist = tmp_path / "to-delete" / "rc-input" / "dist"
+    dist.mkdir(parents=True)
+    wheel, sdist = "data_olympus-1.4.3rc1-py3-none-any.whl", "data_olympus-1.4.3rc1.tar.gz"
+    (dist / wheel).write_bytes(b"wheel")
+    (dist / sdist).write_bytes(b"sdist")
+    env = {"PATH": os.environ["PATH"],
+           "IMAGE_DIGEST": "sha256:" + "a" * 64, "WHEEL": wheel, "SDIST": sdist,
+           "WHEEL_SHA256": digest(b"wheel"), "SDIST_SHA256": digest(b"sdist")}
+
+    def run(**overrides):
+        target = tmp_path / "to-delete" / "rc-attest"
+        if target.exists():
+            for child in target.iterdir():
+                child.unlink()
+            target.rmdir()
+        return subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env | overrides,
+                              check=False, capture_output=True).returncode
+
+    assert run() == 0
+    assert run(WHEEL_SHA256=digest(b"other")) != 0
+    assert run(SDIST="../../evil.tar.gz") != 0
+    assert run(IMAGE_DIGEST="sha256:" + "a" * 63) != 0
+    # A symlink to identical bytes passes sha256sum, so only the -L check stops it.
+    (dist / wheel).unlink()
+    (tmp_path / "outside.whl").write_bytes(b"wheel")
+    (dist / wheel).symlink_to(tmp_path / "outside.whl")
+    assert run() != 0
 
 
 def test_secrets_live_only_in_declared_environments():
@@ -613,12 +918,60 @@ def test_publish_cli_emits_validated_digest(build, tmp_path, monkeypatch):
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(stage, "fetch_history", lambda *_a: None)
     monkeypatch.setattr(stage, "verify", lambda *_a, **_kw: verified)
-    monkeypatch.setattr(stage, "publish", lambda *_a, **_kw: {"H": verified.head,
-                                                                "branch": verified.branch})
+    calls = []
+    monkeypatch.setenv("SDLC_RC_CHANNEL", "enabled")
+    monkeypatch.setattr(stage, "publish", lambda *_a, **kw: calls.append(kw) or {
+        "H": verified.head, "branch": verified.branch})
     monkeypatch.setattr(stage, "selection", lambda record, _h: record | {"selected": True})
     selection = tmp_path / "out" / "staging-selection.json"
     assert stage.main(["publish", "--artifacts", str(build[1]), "--history",
                        str(build[0].path), "--selection", str(selection)]) == 0
-    assert output.read_text() == f"image_digest={verified.image_digest}\n"
+    wheel = next(n for n in verified.python_hashes if n.endswith(".whl"))
+    sdist = next(n for n in verified.python_hashes if n.endswith(".tar.gz"))
+    assert output.read_text() == (
+        f"image_digest={verified.image_digest}\n"
+        f"wheel={wheel}\nwheel_sha256={verified.python_hashes[wheel]}\n"
+        f"sdist={sdist}\nsdist_sha256={verified.python_hashes[sdist]}\n")
+    assert calls == [{"move_rc": True}]
     assert json.loads(selection.read_text())["selected"] is True
     assert verified.head in summary.read_text()
+
+
+@pytest.mark.parametrize(("value", "expected"), [(None, False), ("", False),
+                                                 ("true", False), ("enabled", True)])
+def test_cli_rc_channel_variable_must_be_exactly_enabled(build, tmp_path, monkeypatch,
+                                                         value, expected):
+    verified = verify(build)
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(build[3]))
+    for key, item in {"SDLC_PIPELINE": "enabled", "GITHUB_EVENT_NAME": "workflow_run",
+                      "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_PATH": str(event_path),
+                      "GITHUB_OUTPUT": str(tmp_path / "output"),
+                      "GITHUB_STEP_SUMMARY": str(tmp_path / "summary")}.items():
+        monkeypatch.setenv(key, item)
+    if value is None:
+        monkeypatch.delenv("SDLC_RC_CHANNEL", raising=False)
+    else:
+        monkeypatch.setenv("SDLC_RC_CHANNEL", value)
+    calls = []
+    monkeypatch.setattr(stage, "fetch_history", lambda *_a: None)
+    monkeypatch.setattr(stage, "verify", lambda *_a, **_kw: verified)
+    monkeypatch.setattr(stage, "publish", lambda *_a, **kw: calls.append(kw) or {
+        "H": verified.head, "branch": verified.branch})
+    monkeypatch.setattr(stage, "selection", lambda record, _h: record | {"selected": True})
+    assert stage.main(["publish", "--artifacts", str(build[1]), "--history",
+                       str(build[0].path), "--selection", str(tmp_path / "s.json")]) == 0
+    assert calls == [{"move_rc": expected}]
+
+
+@pytest.mark.parametrize("name", ["data_olympus-1.4.3rc1\nx=y.whl", "evil-1.0.whl"])
+def test_attestation_outputs_refuse_unsafe_names(build, name):
+    """Only validated single-line values reach GITHUB_OUTPUT for the attest job."""
+    verified = verify(build)
+    sdist = next(n for n in verified.python_hashes if n.endswith(".tar.gz"))
+    unsafe = replace(verified, python_hashes={name: "a" * 64, sdist: "b" * 64})
+    with pytest.raises(ValueError, match="invalid distribution output"):
+        stage.attestation_outputs(unsafe)
+    with pytest.raises(ValueError, match="invalid distribution output"):
+        stage.attestation_outputs(replace(verified, python_hashes={
+            n: "A" * 64 for n in verified.python_hashes}))

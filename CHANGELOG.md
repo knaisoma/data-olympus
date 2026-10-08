@@ -21,7 +21,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   refuses duplicate identities, reuses same-`H` objects on retry, attests the
   published image digest and Python files for promotion to verify, and records
   branch-based staging selection with hotfix priority. Credentials may only be
-  environment secrets on `main`-only environments.
+  environment secrets on `main`-only environments. Only admitted runs take the
+  shared promotion lock, signing runs in a separate job that never parses the
+  candidate archives, and the `rc` channel moves only once
+  `SDLC_RC_CHANNEL=enabled` is set after the first new-model release.
 
 * Build normal and hotfix release candidates with read-only permissions,
   injected Python versions, an OCI archive, and provenance. Cut builds and

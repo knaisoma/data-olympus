@@ -15,9 +15,13 @@ the full verification (branch head, main, version recompute, hashes, digest):
   stage-upload  copy the Python files still missing from PyPI for the OIDC
                 upload action; id-token: write exists only in that job
   publish       wait for the PyPI readback, push the OCI archive by digest,
-                move rc for release/new heads, write the staging selection
-                record (packages: write); the workflow then attests the image
-                digest and the verified wheel and sdist
+                move rc for release/new heads only when SDLC_RC_CHANNEL is
+                exactly "enabled", write the staging selection record
+                (packages: write) and emit the validated image digest and
+                Python file hashes as job outputs
+
+A separate attest job, which never runs this script or parses the archives,
+re-checks the files against those hashes and signs the attestations.
 """
 from __future__ import annotations
 
@@ -58,6 +62,9 @@ DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 PROVENANCE = "release-provenance.json"
 PYPI_ATTEMPTS = 20
 PYPI_DELAY_SECONDS = 15.0
+# Upper bounds for untrusted metadata read into memory (fail closed above them).
+METADATA_LIMIT = 1024 * 1024
+PROVENANCE_LIMIT = 1024 * 1024
 
 
 def require(condition: bool, message: str) -> None:
@@ -101,6 +108,14 @@ def safe_file(root: Path, name: object) -> Path:
     return path
 
 
+def bounded_read(stream: Any, declared: int, limit: int) -> bytes:
+    """Read at most limit bytes; a declared or actual larger size fails closed."""
+    require(declared <= limit, "oversized metadata")
+    data = stream.read(limit + 1)
+    require(isinstance(data, bytes) and len(data) <= limit, "oversized metadata")
+    return bytes(data)
+
+
 def metadata_version(raw: bytes, version: str) -> None:
     metadata = BytesParser().parsebytes(raw)
     require(metadata.get_all("Name") == ["data-olympus"]
@@ -116,7 +131,9 @@ def verify_distribution(path: Path, version: str, kind: str) -> None:
             names = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
             require(names == [f"data_olympus-{version}.dist-info/METADATA"],
                     "ambiguous wheel metadata")
-            metadata_version(archive.read(names[0]), version)
+            with archive.open(names[0]) as entry:
+                raw = bounded_read(entry, archive.getinfo(names[0]).file_size, METADATA_LIMIT)
+            metadata_version(raw, version)
     else:
         require(path.name == f"data_olympus-{version}.tar.gz", "sdist filename mismatch")
         with tarfile.open(path) as archive:
@@ -126,7 +143,7 @@ def verify_distribution(path: Path, version: str, kind: str) -> None:
             stream = archive.extractfile(members[0])
             require(stream is not None, "missing sdist metadata")
             assert stream is not None
-            metadata_version(stream.read(), version)
+            metadata_version(bounded_read(stream, members[0].size, METADATA_LIMIT), version)
 
 
 def archive_digest(path: Path) -> str:
@@ -223,7 +240,9 @@ def verify(artifacts: Path, history: Path, event: dict[str, Any], *,
     require(computed["N"] > 0, "N=0 never publishes")
     require(computed["promotable"], "engine refuses promotion")
     provenance_path = safe_file(artifacts, PROVENANCE)
-    payload = json.loads(provenance_path.read_bytes())
+    with provenance_path.open("rb") as stream:
+        raw = bounded_read(stream, provenance_path.stat().st_size, PROVENANCE_LIMIT)
+    payload = json.loads(raw)
     require(isinstance(payload, dict) and isinstance(payload.get("candidate"), dict),
             "provenance must contain a candidate receipt")
     expected = {**{key: computed[key] for key in ("B", "H", "M", "N")},
@@ -318,9 +337,15 @@ def stage_upload(verified: Verified, client: Client, upload: Path) -> int:
 
 
 def publish(verified: Verified, client: Client, *,
+            move_rc: bool = False,
             sleep: Callable[[float], None] = time.sleep,
             attempts: int = PYPI_ATTEMPTS, delay: float = PYPI_DELAY_SECONDS) -> dict[str, Any]:
-    """Wait for PyPI, push the image by digest, move rc for release/new heads."""
+    """Wait for PyPI, push the image by digest, optionally move rc for release/new.
+
+    The rc channel stays with set-channel.yml until the first release under the
+    new model (W6 spec invariant); move_rc is off unless SDLC_RC_CHANNEL is
+    exactly "enabled", and even then a hotfix head never moves it.
+    """
     _, image, assets = inventory(verified, client)
     require(assets == verified.assets, "incomplete GitHub reservation")
     # The PyPI JSON API is eventually consistent after an upload.
@@ -338,7 +363,8 @@ def publish(verified: Verified, client: Client, *,
         client.push_image(verified)
     require(client.image_digest(verified.version) == verified.image_digest,
             "remote image digest mismatch")
-    if verified.branch == "release/new":
+    moved = move_rc and verified.branch == "release/new"
+    if moved:
         client.move_channel(verified)
     return {"H": verified.head, "B": verified.base, "M": verified.main,
             "branch": verified.branch, "version": verified.version,
@@ -346,7 +372,8 @@ def publish(verified: Verified, client: Client, *,
             "image": f"{IMAGE}@{verified.image_digest}",
             "image_digest": verified.image_digest,
             "build_run_id": verified.build_run_id,
-            "build_run_attempt": verified.build_run_attempt}
+            "build_run_attempt": verified.build_run_attempt,
+            "rc_channel_moved": moved}
 
 
 def selection(record: dict[str, Any], history: Path) -> dict[str, Any]:
@@ -493,6 +520,21 @@ def fetch_history(path: Path, event: dict[str, Any]) -> None:
     require(Git(path).resolve(f"refs/heads/{branch}") == head, "branch head moved")
 
 
+def attestation_outputs(verified: Verified) -> str:
+    """GITHUB_OUTPUT lines for the attest job; every value is validated here."""
+    require(DIGEST.fullmatch(verified.image_digest) is not None, "invalid image digest")
+    lines = [f"image_digest={verified.image_digest}"]
+    for kind, suffix in (("wheel", ".whl"), ("sdist", ".tar.gz")):
+        names = [n for n in verified.python_hashes if n.endswith(suffix)]
+        require(len(names) == 1, "ambiguous distribution outputs")
+        name, value = names[0], verified.python_hashes[names[0]]
+        require(re.fullmatch(r"data_olympus-[A-Za-z0-9_.-]+", name) is not None
+                and re.fullmatch(r"[0-9a-f]{64}", value) is not None,
+                "invalid distribution output")
+        lines += [f"{kind}={name}", f"{kind}_sha256={value}"]
+    return "".join(line + "\n" for line in lines)
+
+
 def _one_line(text: str) -> str:
     # Never start a log line with "::" (workflow commands) or span lines.
     return re.sub(r"[^\x20-\x7e]", "?", text)[:200]
@@ -529,7 +571,8 @@ def main(argv: list[str] | None = None) -> int:
                 output.write(f"upload={'true' if count else 'false'}\n")
         else:
             assert args.selection is not None
-            record = publish(verified, client)
+            record = publish(verified, client,
+                             move_rc=os.environ.get("SDLC_RC_CHANNEL") == "enabled")
             # Detect ref movement during external publication before selecting.
             fetch_history(args.history, event)
             verify(args.artifacts, args.history, event)
@@ -539,17 +582,17 @@ def main(argv: list[str] | None = None) -> int:
             with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
                 summary.write(
                     "Staging selection (no deployment):\n\n```json\n" + rendered + "```\n")
-            # The attestation subject digest; validated single-line sha256 only.
-            require(DIGEST.fullmatch(verified.image_digest) is not None, "invalid image digest")
+            # Attestation subjects for the attest job; validated single-line values.
+            rendered_outputs = attestation_outputs(verified)
             with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-                output.write(f"image_digest={verified.image_digest}\n")
+                output.write(rendered_outputs)
     except VersionError as error:
         print(f"RC publication refused: version engine {_one_line(error.code)}", file=sys.stderr)
         return 1
     except ValueError as error:
         print(f"RC publication refused: {_one_line(str(error))}", file=sys.stderr)
         return 1
-    except (OSError, KeyError, TypeError, AttributeError,
+    except (OSError, KeyError, TypeError, AttributeError, RecursionError,
             tarfile.TarError, zipfile.BadZipFile, subprocess.TimeoutExpired) as error:
         # Avoid reflecting attacker-controlled metadata or command lines.
         print(f"RC publication refused ({type(error).__name__}); verify inputs and registry state",

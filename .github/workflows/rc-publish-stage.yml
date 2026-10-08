@@ -9,6 +9,11 @@ name: rc-publish-stage
 # an environment restricted to main, declared by the job that uses it, never
 # a repository-wide Actions secret. Every job repeats the full verification
 # under the shared lock.
+#
+# Action pins: no full commit SHA for these actions can be verified offline in
+# this repository, so each `uses:` below is a tag pin marked `tag-pin:` and
+# allowed only by that marker in tests/test_rc_verify_and_publish.py. Replace
+# each with a verified full SHA before SDLC_PIPELINE is enabled.
 
 on:
   workflow_run:
@@ -17,8 +22,20 @@ on:
 
 permissions: {}
 
+# Only an admitted run (the same conditions as the reserve job gate) takes the
+# shared promotion lock. Failed builds, dry runs, other branches and every run
+# while SDLC_PIPELINE is disabled get a private per-run group, so they can
+# never cancel a pending publication, promotion or recut.
 concurrency:
-  group: data-olympus-promotion
+  group: >-
+    ${{ (
+      vars.SDLC_PIPELINE == 'enabled' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      (github.event.workflow_run.head_branch == 'release/new' ||
+       github.event.workflow_run.head_branch == 'hotfix/new') &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    ) && 'data-olympus-promotion' || format('rc-publish-noop-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
@@ -38,11 +55,11 @@ jobs:
     outputs:
       upload: ${{ steps.reserve.outputs.upload }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7  # tag-pin: SHA unverified offline
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v7  # tag-pin: SHA unverified offline
         with:
           python-version: '3.13'
       - name: Require Skopeo
@@ -50,7 +67,7 @@ jobs:
           set -euo pipefail
           command -v skopeo >/dev/null || { sudo apt-get update && sudo apt-get install --yes skopeo; }
           skopeo --version
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8  # tag-pin: SHA unverified offline
         with:
           name: rc-build-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.run_attempt }}
           run-id: ${{ github.event.workflow_run.id }}
@@ -77,11 +94,11 @@ jobs:
       packages: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7  # tag-pin: SHA unverified offline
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v7  # tag-pin: SHA unverified offline
         with:
           python-version: '3.13'
       - name: Require Skopeo
@@ -89,7 +106,7 @@ jobs:
           set -euo pipefail
           command -v skopeo >/dev/null || { sudo apt-get update && sudo apt-get install --yes skopeo; }
           skopeo --version
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8  # tag-pin: SHA unverified offline
         with:
           name: rc-build-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.run_attempt }}
           run-id: ${{ github.event.workflow_run.id }}
@@ -109,7 +126,8 @@ jobs:
         if: steps.stage.outputs.upload == 'true'
         # No password or token: OIDC only. No skip-existing: a file that already
         # exists was excluded by the verifier, so any conflict must fail.
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # release/v1 is a moving branch; the SHA pin is required before activation.
+        uses: pypa/gh-action-pypi-publish@release/v1  # tag-pin: SHA unverified offline
         with:
           packages-dir: to-delete/rc-upload/
 
@@ -120,18 +138,24 @@ jobs:
       needs.reserve.result == 'success' &&
       (needs.pypi.result == 'success' || needs.pypi.result == 'skipped')
     runs-on: ubuntu-latest
+    # No id-token and no attestations here: this job parses the untrusted
+    # archives, so it never holds the signing identity (attest job below).
     permissions:
       actions: read
-      attestations: write
       contents: read
-      id-token: write
       packages: write
+    outputs:
+      image_digest: ${{ steps.publish.outputs.image_digest }}
+      wheel: ${{ steps.publish.outputs.wheel }}
+      wheel_sha256: ${{ steps.publish.outputs.wheel_sha256 }}
+      sdist: ${{ steps.publish.outputs.sdist }}
+      sdist_sha256: ${{ steps.publish.outputs.sdist_sha256 }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7  # tag-pin: SHA unverified offline
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v7  # tag-pin: SHA unverified offline
         with:
           python-version: '3.13'
       - name: Require Skopeo
@@ -139,7 +163,7 @@ jobs:
           set -euo pipefail
           command -v skopeo >/dev/null || { sudo apt-get update && sudo apt-get install --yes skopeo; }
           skopeo --version
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8  # tag-pin: SHA unverified offline
         with:
           name: rc-build-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.run_attempt }}
           run-id: ${{ github.event.workflow_run.id }}
@@ -149,29 +173,81 @@ jobs:
         id: publish
         env:
           SDLC_PIPELINE: ${{ vars.SDLC_PIPELINE }}
+          # rc stays with set-channel.yml until the first new-model release
+          # (W6 invariant); Task 9 sets SDLC_RC_CHANNEL=enabled after it.
+          SDLC_RC_CHANNEL: ${{ vars.SDLC_RC_CHANNEL }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           uv run --no-project python scripts/rc_verify_and_publish.py publish \
             --artifacts to-delete/rc-input --history to-delete/rc-history.git \
             --selection to-delete/rc-selection/staging-selection.json
-      # Contract for promote-release: gh attestation verify --signer-workflow
-      # knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml. Subjects
-      # are only the objects verified and published by the step above.
-      - name: Attest the published image digest
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-name: ghcr.io/knaisoma/data-olympus
-          subject-digest: ${{ steps.publish.outputs.image_digest }}
-          push-to-registry: true
-      - name: Attest the verified wheel and sdist
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-path: |
-            to-delete/rc-input/dist/*.whl
-            to-delete/rc-input/dist/*.tar.gz
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7  # tag-pin: SHA unverified offline
         with:
           name: staging-selection-${{ github.event.workflow_run.head_sha }}-${{ github.run_attempt }}
           path: to-delete/rc-selection/staging-selection.json
           if-no-files-found: error
+
+  attest:
+    needs: publish
+    runs-on: ubuntu-latest
+    # The signing identity lives only here. This job runs no repository code
+    # and parses no archive: it re-checks the downloaded files against the
+    # hashes the publish job verified, then signs exactly those subjects.
+    permissions:
+      actions: read
+      attestations: write
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v8  # tag-pin: SHA unverified offline
+        with:
+          name: rc-build-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.run_attempt }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: to-delete/rc-input
+      - name: Check the files against the verified hashes
+        env:
+          IMAGE_DIGEST: ${{ needs.publish.outputs.image_digest }}
+          WHEEL: ${{ needs.publish.outputs.wheel }}
+          WHEEL_SHA256: ${{ needs.publish.outputs.wheel_sha256 }}
+          SDIST: ${{ needs.publish.outputs.sdist }}
+          SDIST_SHA256: ${{ needs.publish.outputs.sdist_sha256 }}
+        run: |
+          set -euo pipefail
+          fail() { echo "attestation input refused: $1" >&2; exit 1; }
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "image digest"
+          [[ "$WHEEL" =~ ^data_olympus-[A-Za-z0-9_.-]+\.whl$ ]] || fail "wheel name"
+          [[ "$SDIST" =~ ^data_olympus-[A-Za-z0-9_.-]+\.tar\.gz$ ]] || fail "sdist name"
+          [[ "$WHEEL_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "wheel hash"
+          [[ "$SDIST_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "sdist hash"
+          mkdir to-delete/rc-attest
+          for name in "$WHEEL" "$SDIST"; do
+            source="to-delete/rc-input/dist/$name"
+            [[ -f "$source" && ! -L "$source" ]] || fail "not a regular file"
+            cp -- "$source" "to-delete/rc-attest/$name"
+          done
+          cd to-delete/rc-attest
+          printf '%s  %s\n' "$WHEEL_SHA256" "$WHEEL" "$SDIST_SHA256" "$SDIST" \
+            | sha256sum --check --strict - || fail "hash mismatch"
+      - name: Log in to GHCR for the registry attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      # Contract for promote-release: gh attestation verify --signer-workflow
+      # knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml. Subjects
+      # are only the objects verified and published by the publish job.
+      - name: Attest the published image digest
+        uses: actions/attest-build-provenance@v3  # tag-pin: SHA unverified offline
+        with:
+          subject-name: ghcr.io/knaisoma/data-olympus
+          subject-digest: ${{ needs.publish.outputs.image_digest }}
+          push-to-registry: true
+      - name: Attest the verified wheel and sdist
+        uses: actions/attest-build-provenance@v3  # tag-pin: SHA unverified offline
+        with:
+          subject-path: |
+            to-delete/rc-attest/*.whl
+            to-delete/rc-attest/*.tar.gz
