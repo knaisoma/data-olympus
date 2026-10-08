@@ -18,6 +18,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: docker/setup-buildx-action@v4
       - name: Validate manual publication tag
         env:

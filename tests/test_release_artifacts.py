@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import socket
 import subprocess
 import sys
 import tomllib
@@ -196,6 +197,21 @@ def _legacy_cli_hashes(script: Path, source: Path, output: Path,
             for path in output.iterdir()}
 
 
+def _package_index_reachable() -> bool:
+    try:
+        socket.create_connection(("pypi.org", 443), timeout=3).close()
+    except OSError:
+        return False
+    return True
+
+
+# `uv build` fetches the pinned build backend. Skip only on an offline developer
+# machine; in CI (CI is set) the test always runs, so an outage fails loudly
+# instead of silently weakening the R9 guard.
+@pytest.mark.skipif(
+    not os.environ.get("CI") and not _package_index_reachable(),
+    reason="needs the package index to fetch the pinned build backend (offline)",
+)
 def test_legacy_cli_artifacts_match_pre_stage_one_golden(tmp_path: Path) -> None:
     source = tmp_path / "source"
     env = _legacy_fixture(source)

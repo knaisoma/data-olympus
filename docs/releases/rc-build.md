@@ -50,6 +50,11 @@ for the candidate pipeline. Every stable identity (`X.Y.Z` or `vX.Y.Z`) is
 reserved for promotion, including identities absent from Git and the registry.
 Existence checks supply diagnostics only. Channel tags remain reserved.
 
+Refusing `v<digit>`-prefixed refs that are not release tags (for example a
+branch named `v2-packaging`) on manual PyPI dispatch is intentional: it keeps
+the release-tag namespace unambiguous and only removes build-only runs, never
+enabling an upload. To build such a ref, dispatch by its full commit SHA.
+
 ## Task 9 prerequisites
 
 No dispatched end-to-end dry run has been performed for this workflow. Task 9
@@ -61,5 +66,8 @@ dry run on `release/new` and retain evidence of:
 - The `containerimage.digest` metadata key and its recorded digest.
 - Artifact size and successful upload within the runner's artifact limits.
 - Successful installed-package smoke tests for the wheel and source distribution.
+- The `set-channel` digest lookup: run `docker buildx imagetools inspect
+  --format '{{.Manifest.Digest}}'` against a real published tag (for example
+  `v0.11.0`) and retain the output, since only mocks exercise it today.
 
 This runner verification remains deferred until those prerequisites are met.
