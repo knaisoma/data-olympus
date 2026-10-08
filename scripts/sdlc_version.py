@@ -201,7 +201,7 @@ def compute_version(
             if standard_file is not None:
                 lines = Path(standard_file).read_text(encoding="utf-8").splitlines()
                 heading = next((i for i, line in enumerate(lines) if re.fullmatch(
-                    r"## Proposed amendment 1\.3(?:: .+)?", line,
+                    r"## (?:Amendment|Proposed amendment) 1\.3(?:: .+)?", line,
                 )), None)
                 if heading is None:
                     raise ValueError
@@ -214,7 +214,8 @@ def compute_version(
             raise VersionError(
                 "adoption_unratified",
                 "ratification requires YYYY-MM-DD:<ref>, a non-future UTC date, "
-                "and a matching Ratification line under ## Proposed amendment 1.3 "
+                "and a matching Ratification line under ## Amendment 1.3 "
+                "or ## Proposed amendment 1.3 "
                 "before the next section in --standard-file",
             ) from error
     if adoption and adoption_ratified is None and not adoption_dry_run:

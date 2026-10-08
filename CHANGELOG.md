@@ -14,6 +14,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* Accept the ratified Amendment 1.3 heading for adoption verification while
+  retaining the proposed heading form. Include the ratified amendment and
+  pinned verification arguments so CI can verify it without private KB access.
+
 * Require an adoption cut to add only its record, block promotion until that
   record is absent from the candidate tree, and validate dated ratification
   references against UTC. The CLI requires a standard file with a matching

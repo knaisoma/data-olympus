@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from scripts import sdlc_version as engine
+from scripts.adoption_ratification import RATIFIED, STANDARD_FILE, engine_args
 
 
 class Repo:
@@ -478,6 +479,8 @@ def test_adoption_ratification_today_or_past(repo, ratified):
 
 
 @pytest.mark.parametrize("heading", [
+    "## Amendment 1.3",
+    "## Amendment 1.3: adoption cut and public-product preview",
     "## Proposed amendment 1.3",
     "## Proposed amendment 1.3: adoption cut and public-product preview",
 ])
@@ -511,6 +514,9 @@ def test_adoption_cli_standard_ratification(repo, line, heading):
     "## Proposed amendment 1.3\n### Other section\nRatification: 2020-01-01\n",
     "## Proposed amendment 1.3\n## Other amendment\nRatification: 2020-01-01\n",
     "## Proposed amendment 1.30\nRatification: 2020-01-01\n",
+    "## Amendment 1.3\n### Other section\nRatification: 2020-01-01\n",
+    "## Amendment 1.3\n## Other amendment\nRatification: 2020-01-01\n",
+    "## Amendment 1.30\nRatification: 2020-01-01\n",
 ])
 def test_adoption_cli_requires_scoped_standard_ratification(repo, text):
     adoption(repo)
@@ -525,6 +531,35 @@ def test_adoption_cli_requires_scoped_standard_ratification(repo, text):
     assert "adoption_unratified" in result.stderr
     if text is None:
         assert "--standard-file" in result.stderr
+
+
+def test_vendored_adoption_ratification(repo):
+    adoption(repo)
+    root = Path(__file__).resolve().parents[1]
+    standard = root / STANDARD_FILE
+    text = standard.read_text(encoding="utf-8")
+    assert "## Amendment 1.3: adoption cut and public-product preview" in text.splitlines()
+    assert "Ratification: 2026-10-07" in text.splitlines()
+    assert "### Adoption cut for an already released product" in text.splitlines()
+    result = repo.compute(adoption_ratified=RATIFIED, standard_file=standard)
+    assert result["adoption"] == "ratified"
+
+    # Workflows resolve the standard file relative to their repository root.
+    repo.write(STANDARD_FILE, text)
+    result = subprocess.run(
+        [sys.executable, str(Path(engine.__file__)),
+         "--main", "main", "--branch", "release/new", *engine_args()],
+        cwd=repo.path, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["adoption"] == "ratified"
+
+
+def test_vendored_adoption_rejects_future_ratification(repo):
+    adoption(repo)
+    standard = Path(__file__).resolve().parents[1] / STANDARD_FILE
+    with pytest.raises(engine.VersionError, match="adoption_unratified"):
+        repo.compute(adoption_ratified=RATIFIED, standard_file=standard, today=date(2026, 10, 6))
 
 
 def test_cli_json_env_and_exit_code(repo):
