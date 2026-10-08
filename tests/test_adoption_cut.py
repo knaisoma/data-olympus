@@ -220,13 +220,52 @@ def test_stage_one_refuses_a_stale_standard_copy(cut, tmp_path):
     MODULE_SOURCE + '\nRATIFIED: str = "2026-10-07:other"\n',
     MODULE_SOURCE + '\nexec("RATIFIED = 1")\n',
     MODULE_SOURCE + '\nvars()["STANDARD_FILE"] = "x"\n',
+    MODULE_SOURCE + "\nfrom x import *\n",
+    MODULE_SOURCE + '\nimport sys\nsys.modules[__name__] = "x"\n',
+    MODULE_SOURCE + '\ngetattr(Path, "__di" + "ct__").update(RATIFIED="x")\n',
+    MODULE_SOURCE + '\nOTHER = "x"\n',
+    MODULE_SOURCE + "\nimport os\n",
+    MODULE_SOURCE.replace('"--standard-file", STANDARD_FILE]', '"--standard-file", "x"]', 1),
+    MODULE_SOURCE.replace('MODULE = "scripts/adoption_ratification.py"\n', "", 1),
 ], ids=["computed", "rebound", "path-escape", "newline", "syntax", "tuple-unpack",
         "for-target", "import-as", "from-import-as", "nested-if", "globals", "module-attr",
-        "walrus", "argument", "delete", "augmented", "annotated", "exec", "vars"])
+        "walrus", "argument", "delete", "augmented", "annotated", "exec", "vars",
+        "star-import", "sys-modules", "getattr-dict", "extra-assignment", "extra-import",
+        "changed-function-body", "missing-literal"])
 def test_stage_one_refuses_untrusted_module_shapes(tmp_path, source):
     cut = Cut(tmp_path / "repo", module=source)
     with pytest.raises(ValueError, match="trusted adoption ratification"):
         cut.preflight()
+
+
+@pytest.mark.parametrize("probe,reason", [
+    ("from x import *", "star import"),
+    ("import sys\nsys.modules[__name__] = object()", "subscript store"),
+    ('getattr(mod, "__di" + "ct__").update(RATIFIED="x")', "calls other than Path"),
+    ('Path.RATIFIED = "x"', "attribute or subscript store"),
+    ("Path(__file__).touch()", "calls other than Path"),
+])
+def test_dynamic_rules_refuse_on_their_own(probe, reason):
+    """The tree-wide rules refuse these even where the top-level allowlist is not
+    consulted, so each rule is independently enforced."""
+    with pytest.raises(ValueError, match=reason):
+        rc_decide._refuse_dynamic(ast.parse(probe))
+
+
+@pytest.mark.parametrize("probe", [
+    "from x import *", 'import sys\nsys.modules[__name__] = object()',
+    'getattr(mod, "__di" + "ct__").update(RATIFIED="x")', 'OTHER = "x"', "import os",
+])
+def test_shape_allowlist_refuses_on_its_own(probe):
+    with pytest.raises(ValueError, match="trusted adoption ratification"):
+        rc_decide._check_shape(ast.parse(MODULE_SOURCE + "\n" + probe + "\n"))
+
+
+def test_shape_allowlist_ignores_docstrings_only():
+    edited = MODULE_SOURCE.replace(
+        "Return version-engine arguments relative to the repository root.", "Reworded.")
+    assert edited != MODULE_SOURCE
+    rc_decide._check_shape(ast.parse(edited))
 
 
 def test_real_module_parses_like_its_import():

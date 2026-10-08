@@ -95,6 +95,13 @@ def test_adoption_record_only_at_head_is_not_the_cut_record(repo):
     assert preflight(repo) == "release/new"
 
 
+def test_cut_build_is_never_promotable_even_if_the_engine_says_so():
+    """R2: N=0 stays unpromotable in decide itself, independent of the engine."""
+    result = rc_decide.decide({"N": 0, "promotable": True}, dry_run=False)
+    assert result["promotable"] is False
+    assert result["publish"] is False
+
+
 def test_engine_refusal_cannot_be_overridden():
     assert rc_decide.decide({"N": 2, "promotable": False}, dry_run=False)["promotable"] is False
 
@@ -129,6 +136,11 @@ def test_stage_one_workflow_takes_adoption_only_from_preflight():
     assert '"${adoption[@]}"' in engine
     assert "dry-run) adoption=(--adoption-dry-run)" in engine
     assert "exit 1" in engine
+    import yaml
+
+    workflow = yaml.safe_load(Path(".github/workflows/rc-build.yml").read_text())
+    # A push has no inputs, so it is never a dry run; only a dispatch can set it.
+    assert workflow["jobs"]["build"]["env"]["DRY_RUN"] == "${{ inputs.dry_run || false }}"
     text = Path(".github/workflows/rc-build.yml").read_text()
     assert "adoption_ratification.py" not in text
     assert "std-u-821" not in text

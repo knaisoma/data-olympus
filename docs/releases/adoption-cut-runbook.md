@@ -60,7 +60,9 @@ supplies them must not be controllable by the code it judges.
   Its own copy is therefore the candidate's claim, not an independent check.
   When the cut carries the record, it reads the module and the standard as
   blobs of the RC's recorded `M` (the `main` that stage 2 ran from) with the
-  same parser as stage 1, and ignores its checkout's copy.
+  same parser as stage 1, and ignores its checkout's copy. Promotion's own
+  scripts, including that parser, still equal `H`'s, so the real boundary
+  there is the code-owner review of `scripts/` on `release/new`.
 - Stage 1 (`rc-build.yml`) checks out and runs the code at `H`, so its own copy
   of the module is candidate data. `scripts/rc_decide.py preflight` therefore
   reads `scripts/adoption_ratification.py` and the standard file as blobs of the
