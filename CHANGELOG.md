@@ -33,6 +33,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * Build normal and hotfix release candidates with read-only permissions,
   injected Python versions, an OCI archive, and provenance. Cut builds and
   dry runs build and verify artifacts without allowing promotion.
+* Plan verified release branch recuts and stable hotfix cuts, preserve pending
+  commits on a backup branch, and refuse stale or unreconciled state. The new
+  workflows share the promotion lock and remain disabled until W9 bot activation.
+  See [branch recut and hotfix cuts](docs/releases/branch-recut.md).
 
 ### Security
 

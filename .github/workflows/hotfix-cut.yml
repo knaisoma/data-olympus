@@ -1,0 +1,97 @@
+name: Cut stable hotfix branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      main_sha:
+        description: Full main SHA captured before dispatch and lock acquisition
+        required: true
+        type: string
+      head_sha:
+        description: Full release/new SHA before dispatch, or absent
+        required: true
+        type: string
+      base_sha:
+        description: Full highest stable tag commit SHA captured before dispatch
+        required: true
+        type: string
+      hotfix_sha:
+        description: Full hotfix/new SHA before dispatch, or absent
+        required: true
+        type: string
+
+concurrency:
+  group: data-olympus-promotion
+  cancel-in-progress: false
+
+jobs:
+  manage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      MAIN_SHA: ${{ inputs.main_sha }}
+      HEAD_SHA: ${{ inputs.head_sha }}
+      BASE_SHA: ${{ inputs.base_sha }}
+      HOTFIX_SHA: ${{ inputs.hotfix_sha }}
+    steps:
+      - name: Require trusted main and W9 bot identity
+        env:
+          SDLC_PIPELINE: ${{ vars.SDLC_PIPELINE }}
+          HAS_BOT_IDENTITY: ${{ secrets.SDLC_BOT_TOKEN != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo 'blocked: dispatch must use main' >&2
+            exit 1
+          fi
+          if [[ "$SDLC_PIPELINE" != enabled || "$HAS_BOT_IDENTITY" != true ]]; then
+            echo 'blocked: requires W9 bot identity' >&2
+            exit 1
+          fi
+      - name: Checkout trusted dispatcher revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+      - name: Install Python
+        run: uv python install 3.13
+      - name: Plan stable hotfix cut
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.13 python scripts/sdlc_recut.py hotfix \
+            --repo . --remote origin --expected-main "$MAIN_SHA" \
+            --expected-head "$HEAD_SHA" --expected-base "$BASE_SHA" \
+            --expected-hotfix "$HOTFIX_SHA"
+      - name: Apply hotfix cut with bot identity and fresh checks
+        env:
+          SDLC_BOT_TOKEN: ${{ secrets.SDLC_BOT_TOKEN }}
+          ACTIONS_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SDLC_BOT_TOKEN"
+          # The W9 identity must be distinct from the workflow's own token.
+          if [[ "$SDLC_BOT_TOKEN" == "$ACTIONS_TOKEN" ]]; then
+            echo 'blocked: requires W9 bot identity' >&2
+            exit 1
+          fi
+          unset ACTIONS_TOKEN
+          # Authentication is process-scoped; never persist a token in git config.
+          export GIT_CONFIG_COUNT=2
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' \
+            "$SDLC_BOT_TOKEN" | base64 -w 0)"
+          export GIT_CONFIG_VALUE_0
+          export GIT_CONFIG_KEY_1=credential.helper
+          export GIT_CONFIG_VALUE_1=''
+          unset SDLC_BOT_TOKEN
+          uv run --no-project --python 3.13 python scripts/sdlc_recut.py hotfix \
+            --repo . --remote origin --expected-main "$MAIN_SHA" \
+            --expected-head "$HEAD_SHA" --expected-base "$BASE_SHA" \
+            --expected-hotfix "$HOTFIX_SHA" --apply

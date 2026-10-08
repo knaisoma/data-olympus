@@ -1,0 +1,131 @@
+name: Recut verified release branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Verified annotated stable tag on main
+        required: true
+        type: string
+      main_sha:
+        description: Full main SHA captured before dispatch and lock acquisition
+        required: true
+        type: string
+      head_sha:
+        description: Full release/new SHA captured before dispatch
+        required: true
+        type: string
+      base_sha:
+        description: Full reviewed base SHA captured before dispatch
+        required: true
+        type: string
+      hotfix_sha:
+        description: Full hotfix/new SHA before dispatch, or absent
+        required: true
+        type: string
+      evidence_json:
+        description: JSON publication, delivery and reconciliation evidence
+        required: true
+        type: string
+      acknowledge:
+        description: JSON array of exact pending SHAs acknowledged for preservation
+        required: false
+        default: '[]'
+        type: string
+
+concurrency:
+  group: data-olympus-promotion
+  cancel-in-progress: false
+
+jobs:
+  manage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      MAIN_SHA: ${{ inputs.main_sha }}
+      HEAD_SHA: ${{ inputs.head_sha }}
+      BASE_SHA: ${{ inputs.base_sha }}
+      HOTFIX_SHA: ${{ inputs.hotfix_sha }}
+      TAG: ${{ inputs.tag }}
+      EVIDENCE_JSON: ${{ inputs.evidence_json }}
+      ACKNOWLEDGE: ${{ inputs.acknowledge }}
+    steps:
+      - name: Require trusted main and W9 bot identity
+        env:
+          SDLC_PIPELINE: ${{ vars.SDLC_PIPELINE }}
+          HAS_BOT_IDENTITY: ${{ secrets.SDLC_BOT_TOKEN != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo 'blocked: dispatch must use main' >&2
+            exit 1
+          fi
+          if [[ "$SDLC_PIPELINE" != enabled || "$HAS_BOT_IDENTITY" != true ]]; then
+            echo 'blocked: requires W9 bot identity' >&2
+            exit 1
+          fi
+      - name: Checkout trusted dispatcher revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+      - name: Install Python
+        run: uv python install 3.13
+      - name: Plan recut and list open pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PULL_REQUESTS_JSON="$(gh api --method GET --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/pulls" -f base=release/new -f state=open \
+            -f per_page=100 | jq -c '[.[][] | {number, url: .html_url,
+            headRefName: .head.ref, headRefOid: .head.sha, baseRefName: .base.ref}]')"
+          unset GH_TOKEN
+          uv run --no-project --python 3.13 python scripts/sdlc_recut.py recut \
+            --repo . --remote origin --expected-main "$MAIN_SHA" \
+            --expected-head "$HEAD_SHA" --expected-base "$BASE_SHA" \
+            --expected-hotfix "$HOTFIX_SHA" --tag "$TAG" \
+            --evidence-json "$EVIDENCE_JSON" --acknowledge "$ACKNOWLEDGE" \
+            --pull-requests-json "$PULL_REQUESTS_JSON"
+      - name: Apply recut with bot identity and fresh checks
+        env:
+          SDLC_BOT_TOKEN: ${{ secrets.SDLC_BOT_TOKEN }}
+          ACTIONS_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PULL_REQUESTS_JSON="$(gh api --method GET --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/pulls" -f base=release/new -f state=open \
+            -f per_page=100 | jq -c '[.[][] | {number, url: .html_url,
+            headRefName: .head.ref, headRefOid: .head.sha, baseRefName: .base.ref}]')"
+          unset GH_TOKEN
+          test -n "$SDLC_BOT_TOKEN"
+          # The W9 identity must be distinct from the workflow's own token.
+          if [[ "$SDLC_BOT_TOKEN" == "$ACTIONS_TOKEN" ]]; then
+            echo 'blocked: requires W9 bot identity' >&2
+            exit 1
+          fi
+          unset ACTIONS_TOKEN
+          # Authentication is process-scoped; never persist a token in git config.
+          export GIT_CONFIG_COUNT=2
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' \
+            "$SDLC_BOT_TOKEN" | base64 -w 0)"
+          export GIT_CONFIG_VALUE_0
+          export GIT_CONFIG_KEY_1=credential.helper
+          export GIT_CONFIG_VALUE_1=''
+          unset SDLC_BOT_TOKEN
+          uv run --no-project --python 3.13 python scripts/sdlc_recut.py recut \
+            --repo . --remote origin --expected-main "$MAIN_SHA" \
+            --expected-head "$HEAD_SHA" --expected-base "$BASE_SHA" \
+            --expected-hotfix "$HOTFIX_SHA" --tag "$TAG" \
+            --evidence-json "$EVIDENCE_JSON" --acknowledge "$ACKNOWLEDGE" \
+            --pull-requests-json "$PULL_REQUESTS_JSON" --apply
