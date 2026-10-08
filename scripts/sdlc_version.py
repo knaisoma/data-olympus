@@ -11,8 +11,8 @@ must be absent. Adoption parses impact from the stable base, but counts from B.
 The cut must add only release/ADOPTION.json, and promotion requires its absence
 from H. Adoption JSON includes adoption_retired to report that absence.
 It requires --adoption-ratified YYYY-MM-DD:<ref>, with a nonempty reference token
-and a date no later than today UTC. --standard-file additionally requires an
-exact Ratification: YYYY-MM-DD line. --adoption-dry-run evaluates an unratified
+and a date no later than today UTC, plus --standard-file (standard_file in the
+API) carrying an exact Ratification: YYYY-MM-DD line. --adoption-dry-run evaluates an unratified
 record without allowing promotion.
 """
 from __future__ import annotations
@@ -198,18 +198,20 @@ def compute_version(
             ratified_date = match[1]
             if date.fromisoformat(ratified_date) > (today or datetime.now(UTC).date()):
                 raise ValueError
-            if standard_file is not None:
-                lines = Path(standard_file).read_text(encoding="utf-8").splitlines()
-                heading = next((i for i, line in enumerate(lines) if re.fullmatch(
-                    r"## (?:Amendment|Proposed amendment) 1\.3(?:: .+)?", line,
-                )), None)
-                if heading is None:
-                    raise ValueError
-                section_start = heading + 1
-                section_end = next((i for i in range(section_start, len(lines))
-                            if lines[i].startswith(("### ", "## "))), len(lines))
-                if f"Ratification: {ratified_date}" not in lines[section_start:section_end]:
-                    raise ValueError
+            # The engine, not each caller, requires the standard's ratification line.
+            if standard_file is None:
+                raise ValueError
+            lines = Path(standard_file).read_text(encoding="utf-8").splitlines()
+            heading = next((i for i, line in enumerate(lines) if re.fullmatch(
+                r"## (?:Amendment|Proposed amendment) 1\.3(?:: .+)?", line,
+            )), None)
+            if heading is None:
+                raise ValueError
+            section_start = heading + 1
+            section_end = next((i for i in range(section_start, len(lines))
+                                if lines[i].startswith(("### ", "## "))), len(lines))
+            if f"Ratification: {ratified_date}" not in lines[section_start:section_end]:
+                raise ValueError
         except (ValueError, OSError) as error:
             raise VersionError(
                 "adoption_unratified",

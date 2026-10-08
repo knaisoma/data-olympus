@@ -9,6 +9,7 @@ which in these tests is this repository.
 """
 from __future__ import annotations
 
+import ast
 import json
 import re
 import subprocess
@@ -205,11 +206,33 @@ def test_stage_one_refuses_a_stale_standard_copy(cut, tmp_path):
     MODULE_SOURCE.replace('STANDARD_FILE = "', 'STANDARD_FILE = "../', 1),
     MODULE_SOURCE.replace('RATIFIED = "', 'RATIFIED = "2026-10-07:a\\nINJECTED=1 ', 1),
     "RATIFIED = (",
-], ids=["computed", "rebound", "path-escape", "newline", "syntax"])
+    MODULE_SOURCE + '\nRATIFIED, OTHER = "2026-10-07:other", 1\n',
+    MODULE_SOURCE + '\nfor RATIFIED in ["2026-10-07:other"]:\n    pass\n',
+    MODULE_SOURCE + "\nimport os as RATIFIED\n",
+    MODULE_SOURCE + "\nfrom os import sep as STANDARD_FILE\n",
+    MODULE_SOURCE + '\nif True:\n    RATIFIED = "2026-10-07:other"\n',
+    MODULE_SOURCE + '\nglobals()["RATIFIED"] = "2026-10-07:other"\n',
+    MODULE_SOURCE + '\nimport sys\nsys.modules[__name__].RATIFIED = "2026-10-07:other"\n',
+    MODULE_SOURCE + '\n(RATIFIED := "2026-10-07:other")\n',
+    MODULE_SOURCE + '\ndef f(RATIFIED=1):\n    pass\n',
+    MODULE_SOURCE + '\ndel RATIFIED\n',
+    MODULE_SOURCE + '\nRATIFIED += "x"\n',
+    MODULE_SOURCE + '\nRATIFIED: str = "2026-10-07:other"\n',
+    MODULE_SOURCE + '\nexec("RATIFIED = 1")\n',
+    MODULE_SOURCE + '\nvars()["STANDARD_FILE"] = "x"\n',
+], ids=["computed", "rebound", "path-escape", "newline", "syntax", "tuple-unpack",
+        "for-target", "import-as", "from-import-as", "nested-if", "globals", "module-attr",
+        "walrus", "argument", "delete", "augmented", "annotated", "exec", "vars"])
 def test_stage_one_refuses_untrusted_module_shapes(tmp_path, source):
     cut = Cut(tmp_path / "repo", module=source)
     with pytest.raises(ValueError, match="trusted adoption ratification"):
         cut.preflight()
+
+
+def test_real_module_parses_like_its_import():
+    tree = ast.parse(MODULE_SOURCE)
+    assert rc_decide._literal(tree, "RATIFIED") == ratification.RATIFIED
+    assert rc_decide._literal(tree, "STANDARD_FILE") == ratification.STANDARD_FILE
 
 
 def test_stage_one_ignores_ratification_carried_by_h(cut):
@@ -348,11 +371,41 @@ def test_promotion_fails_while_the_record_exists_at_h(cut):
         promote(cut, version)
 
 
-def test_promotion_takes_ratification_from_its_trusted_checkout(cut, monkeypatch):
+def forge_ratification_at_h(cut: Cut) -> None:
+    """A release/new commit replacing the pinned values in H (and so in S)."""
+    cut.write(ratification.MODULE, module_with("2026-10-06:forged"))
+    cut.write(ratification.STANDARD_FILE, "forged\n")
+    cut.commit("chore(release): forge ratification")
+
+
+def test_promotion_ignores_ratification_carried_by_h(cut):
+    """Promotion's checkout is S, whose tree is H: it must read M's blobs."""
+    cut.placeholder()
+    cut.retire()
+    forge_ratification_at_h(cut)
+    version = cut.trusted()
+    assert version["candidate"] == "0.11.1-rc.3"
+    assert promote(cut, version)["tag"] == "v0.11.1"
+
+
+def test_promotion_ignores_its_own_checkout_constants(cut, monkeypatch):
     cut.placeholder()
     cut.retire()
     version = cut.engine(cut.preflight())
+    monkeypatch.setattr(ratification, "RATIFIED", "2026-10-06:forged")
     monkeypatch.setattr(ratification, "STANDARD_FILE", "docs/releases/missing.md")
+    assert promote(cut, version)["candidate_tag"] == "0.11.1-rc.2"
+
+
+@pytest.mark.parametrize("module,standard", [
+    (module_with("2026-10-06:knaisoma/company-knowledge@785bb77"), STANDARD_TEXT),
+    (MODULE_SOURCE, None),
+], ids=["wrong-date", "missing-standard"])
+def test_promotion_refuses_bad_ratification_on_m(tmp_path, module, standard):
+    cut = Cut(tmp_path / "repo", module=module, standard=standard)
+    cut.placeholder()
+    cut.retire()
+    version = cut.trusted()  # what a correct stage 2 would have recorded
     with pytest.raises(VersionError, match="adoption_unratified"):
         promote(cut, version)
 
@@ -360,6 +413,15 @@ def test_promotion_takes_ratification_from_its_trusted_checkout(cut, monkeypatch
 def test_release_notes_helper_accepts_the_ratified_cut(cut, capsys, monkeypatch):
     cut.placeholder()
     cut.retire()
+    monkeypatch.chdir(cut.path)
+    assert release.main(["notes", "--head", "HEAD", "--main", "refs/heads/main"]) == 0
+    assert capsys.readouterr().out.startswith("# Release 0.11.1\n")
+
+
+def test_release_notes_helper_ignores_ratification_carried_by_h(cut, capsys, monkeypatch):
+    cut.placeholder()
+    cut.retire()
+    forge_ratification_at_h(cut)
     monkeypatch.chdir(cut.path)
     assert release.main(["notes", "--head", "HEAD", "--main", "refs/heads/main"]) == 0
     assert capsys.readouterr().out.startswith("# Release 0.11.1\n")

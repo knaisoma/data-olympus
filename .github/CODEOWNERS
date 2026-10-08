@@ -22,6 +22,9 @@
 /src/data_olympus/git_ops.py               @knaisoma/kn-data-olympus-admins
 /deploy/                                   @knaisoma/kn-data-olympus-admins
 /scripts/                                  @knaisoma/kn-data-olympus-admins
+# Release records and the vendored ratified standard steer the version engine.
+/release/                                  @knaisoma/kn-data-olympus-admins
+/docs/releases/std-u-821-amendment-1.3.md  @knaisoma/kn-data-olympus-admins
 /.github/                                  @knaisoma/kn-data-olympus-admins
 /.github/workflows/                        @knaisoma/kn-data-olympus-admins
 /.github/CODEOWNERS                        @knaisoma/kn-data-olympus-admins

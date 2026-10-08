@@ -140,6 +140,11 @@ def test_trusted_stages_never_take_adoption_from_workflows_or_dry_run():
     for workflow in ("rc-publish-stage.yml", "promote-release.yml"):
         assert "--adoption-" not in Path(".github/workflows", workflow).read_text()
     for script in ("scripts/rc_verify_and_publish.py", "scripts/release_record.py"):
-        source = Path(script).read_text()
-        assert "adoption_dry_run" not in source
-        assert "ratification.engine_kwargs(Path(ROOT))" in source
+        assert "adoption_dry_run" not in Path(script).read_text()
+    # Stage 2 runs from main's checkout; promotion's checkout is S (tree of H),
+    # so it reads the pinned values from the recorded M's blobs instead.
+    assert "ratification.engine_kwargs(Path(ROOT))" in Path(
+        "scripts/rc_verify_and_publish.py").read_text()
+    promotion = Path("scripts/release_record.py").read_text()
+    assert "main_ratification_kwargs" in promotion
+    assert "engine_kwargs" not in promotion

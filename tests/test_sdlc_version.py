@@ -45,7 +45,14 @@ class Repo:
     def compute(self, **kwargs):
         options = dict(cwd=self.path, head="HEAD", main="main", branch="release/new",
                        adoption_ratified="2026-10-07:PR#123", today=date(2026, 10, 7))
-        return engine.compute_version(**(options | kwargs))
+        options |= kwargs
+        if "standard_file" not in kwargs and isinstance(options["adoption_ratified"], str):
+            # A standard ratified on the same date, kept outside the work tree.
+            standard = self.path / ".git" / "test-standard.md"
+            standard.write_text(
+                f"## Amendment 1.3\n\nRatification: {options['adoption_ratified'][:10]}\n")
+            options["standard_file"] = standard
+        return engine.compute_version(**options)
 
 
 @pytest.fixture
@@ -372,6 +379,21 @@ def test_adoption_cli_ratification(repo, flags, state):
         output = json.loads(result.stdout)
         assert output["adoption"] == state
         assert output["promotable"] is (state == "ratified")
+
+
+@pytest.mark.parametrize("standard", [None, "missing"])
+def test_adoption_api_requires_the_standard_file(repo, standard):
+    """The engine refuses a ratification without the standard, not only the CLI."""
+    adoption(repo)
+    path = None if standard is None else repo.path / ".git" / "missing.md"
+    with pytest.raises(engine.VersionError, match="adoption_unratified"):
+        repo.compute(standard_file=path)
+
+
+def test_standard_file_not_needed_without_an_adoption_cut(repo):
+    repo.cut()
+    repo.commit("fix: repair export")
+    assert repo.compute(standard_file=None)["candidate"] == "1.4.3-rc.1"
 
 
 def test_adoption_api_requires_ratification(repo):

@@ -1,10 +1,12 @@
 """Pinned adoption ratification inputs for release workflows.
 
-These constants are trusted only as checked into main. Stage two and promotion
-import them from their own main checkout; stage one runs the code at H, so it
-reads them (and the vendored standard) from origin/main's blobs instead, see
-scripts/rc_decide.py and docs/releases/adoption-cut-runbook.md. They are never
-taken from workflow inputs, release evidence or the tree of H.
+These constants are trusted only as checked into main. Stage two imports them
+from its own main checkout. Stage one runs the code at H, and promotion runs
+from the release squash S, whose tree equals H, so both read them (and the
+vendored standard) as Git blobs of main instead: stage one from origin/main,
+promotion from the RC's recorded M. See scripts/rc_decide.py and
+docs/releases/adoption-cut-runbook.md. They are never taken from workflow
+inputs, release evidence or the tree of H.
 """
 from __future__ import annotations
 

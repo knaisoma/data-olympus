@@ -56,19 +56,53 @@ class Admission:
                 f"ADOPTION_STANDARD_FILE={self.standard_file or ''}\n")
 
 
+# Names whose use could rebind module globals without a visible assignment.
+_DYNAMIC = frozenset({"globals", "locals", "vars", "setattr", "delattr", "exec", "eval",
+                      "compile", "__import__", "__dict__", "__builtins__"})
+
+
+def _bindings(tree: ast.Module) -> list[tuple[str, ast.AST]]:
+    """Every name bound anywhere in the module, with the binding node."""
+    found: list[tuple[str, ast.AST]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            found.append((node.id, node))
+        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            found.append((node.attr, node))
+        elif isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)) \
+                and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+            found.append((node.slice.value, node))
+        elif isinstance(node, ast.alias):
+            found.append((node.asname or node.name.split(".")[0], node))
+        elif isinstance(node, ast.arg):
+            found.append((node.arg, node))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            found.append((node.name, node))
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            found.extend((name, node) for name in node.names)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)) and node.name:
+            found.append((node.name, node))
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            found.append((node.rest, node))
+    return found
+
+
 def _literal(tree: ast.Module, name: str) -> str:
-    """The single top-level string literal bound to name, or refuse."""
-    bindings = [node for node in tree.body
-                if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign))
-                and any(isinstance(target, ast.Name) and target.id == name
-                        for target in (node.targets if isinstance(node, ast.Assign)
-                                       else [node.target]))]
-    if (len(bindings) != 1 or not isinstance(bindings[0], ast.Assign)
-            or len(bindings[0].targets) != 1
-            or not isinstance(bindings[0].value, ast.Constant)
-            or not isinstance(bindings[0].value.value, str)):
+    """The value of name, which must be bound exactly once, by a top-level
+    `name = "literal"`, so that parsing agrees with what an import would bind."""
+    if any((isinstance(node, ast.Name) and node.id in _DYNAMIC)
+           or (isinstance(node, ast.Attribute) and node.attr in _DYNAMIC)
+           for node in ast.walk(tree)):
+        raise ValueError("trusted adoption ratification: dynamic global access refused")
+    bindings = [node for bound, node in _bindings(tree) if bound == name]
+    top = [node for node in tree.body if isinstance(node, ast.Assign)
+           and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+           and node.targets[0].id == name]
+    if (len(bindings) != 1 or len(top) != 1 or bindings[0] is not top[0].targets[0]
+            or not isinstance(top[0].value, ast.Constant)
+            or not isinstance(top[0].value.value, str)):
         raise ValueError(f"trusted adoption ratification: {name} must be one string literal")
-    return bindings[0].value.value
+    return top[0].value.value
 
 
 def trusted_ratification(git: Git, main: str, trusted_dir: Path) -> tuple[str, Path]:
@@ -97,6 +131,21 @@ def trusted_ratification(git: Git, main: str, trusted_dir: Path) -> tuple[str, P
     if text is not None:
         target.write_text(text, encoding="utf-8")
     return ratified, target
+
+
+def main_ratification_kwargs(git: Git, *, head: str, main: str, trusted_dir: Path) -> dict:
+    """Engine ratification kwargs from main's blobs when the cut carries the record.
+
+    Used by promotion, whose own checkout is the squash S (tree equal to H), so
+    its imported constants are candidate data there. Without a record, or with
+    an ambiguous merge base, nothing is passed and the engine decides.
+    """
+    h, m = git.resolve(head), git.resolve(main)
+    bases = git.run("merge-base", "--all", m, h, allow_one=True).splitlines()
+    if len(bases) != 1 or git.file(bases[0], RECORD) is None:
+        return {}
+    ratified, standard = trusted_ratification(git, m, trusted_dir)
+    return {"adoption_ratified": ratified, "standard_file": standard}
 
 
 def preflight(
