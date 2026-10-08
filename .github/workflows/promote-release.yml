@@ -1,0 +1,563 @@
+name: Promote reviewed release
+
+on:
+  workflow_dispatch:
+    inputs:
+      squash:
+        description: Full SHA of the release squash S at main HEAD
+        required: true
+        type: string
+      reviewed_head:
+        description: Full reviewed H recorded by the published RC
+        required: true
+        type: string
+      candidate_tag:
+        description: Existing X.Y.Z-rc.N or X.Y.Z-hotfix.rc.N prerelease
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: data-olympus-promotion
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prove:
+    if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # SDLC_APP_PRIVATE_KEY is an environment secret of sdlc-bot, whose
+    # deployment branch policy is main only. It is never a repository secret.
+    environment: sdlc-bot
+    permissions:
+      contents: read
+      checks: read
+      packages: read
+    outputs:
+      tag: ${{ steps.proof.outputs.tag }}
+      version: ${{ steps.proof.outputs.version }}
+      source_sha: ${{ steps.proof.outputs.source_sha }}
+      image_digest: ${{ steps.proof.outputs.image_digest }}
+      rc_tag: ${{ steps.proof.outputs.rc_tag }}
+    env:
+      SQUASH: ${{ inputs.squash }}
+      REVIEWED_HEAD: ${{ inputs.reviewed_head }}
+      RC_TAG: ${{ inputs.candidate_tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Validate dispatch and load the existing candidate
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          [[ "$SQUASH" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REVIEWED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RC_TAG" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(hotfix\.)?rc\.[1-9][0-9]*$ ]]
+          test "$SQUASH" = "$GITHUB_SHA"
+          mkdir -p to-delete/promotion/candidate
+          gh release view "$RC_TAG" --json tagName,isDraft,isPrerelease \
+            | jq -e --arg tag "$RC_TAG" '.tagName == $tag and .isPrerelease and (.isDraft | not)'
+          gh release download "$RC_TAG" --pattern release-provenance.json \
+            --pattern '*.whl' --pattern '*.tar.gz' --dir to-delete/promotion/candidate
+          git fetch --tags origin +refs/heads/main:refs/remotes/origin/main \
+            "refs/tags/$RC_TAG:refs/tags/$RC_TAG"
+      - name: Prove squash and recorded RC after acquiring the shared lock
+        id: proof
+        run: |
+          set -euo pipefail
+          python scripts/release_record.py prove --squash "$SQUASH" \
+            --head "$REVIEWED_HEAD" --candidate-tag "$RC_TAG" \
+            --candidate-provenance to-delete/promotion/candidate/release-provenance.json \
+            --output to-delete/promotion/release-record.json \
+            --notes-output to-delete/promotion/release-notes.md \
+            --env-output to-delete/promotion/outputs
+          cat to-delete/promotion/outputs >> "$GITHUB_OUTPUT"
+      - name: Require exact-source CI and CodeQL on H and S
+        env:
+          REQUIRED_ANALYSES: ${{ vars.SDLC_REQUIRED_CODEQL_CHECKS }}
+        run: |
+          set -euo pipefail
+          test -n "$REQUIRED_ANALYSES"
+          for SHA in "$REVIEWED_HEAD" "$SQUASH"; do
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs" \
+              > to-delete/promotion/checks.json
+            CHECK_SHA="$SHA" python - <<'PY'
+          import json, os
+          required = {'test', 'CodeQL'} | set(os.environ['REQUIRED_ANALYSES'].split(','))
+          if any(not name.strip() or name != name.strip() for name in required):
+              raise SystemExit('invalid required analysis names')
+          checks = [c for page in json.load(open('to-delete/promotion/checks.json'))
+                    for c in page['check_runs']]
+          for name in required:
+              matches = [c for c in checks if c['name'] == name
+                         and c['head_sha'] == os.environ['CHECK_SHA']
+                         and c['app']['slug'] in ('github-actions', 'github-code-scanning')]
+              if not matches:
+                  raise SystemExit('missing required check: ' + name)
+              latest = max(matches, key=lambda c: c['id'])
+              if latest['status'] != 'completed' or latest['conclusion'] != 'success':
+                  raise SystemExit('required check did not succeed: ' + name)
+          PY
+          done
+      # GITHUB_TOKEN cannot read Dependabot alerts. No human-token fallback:
+      # without the W9 App this step fails and nothing is published.
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        id: security-app
+        with:
+          app-id: ${{ vars.SDLC_APP_ID }}
+          private-key: ${{ secrets.SDLC_APP_PRIVATE_KEY }}
+          permission-vulnerability-alerts: read
+          permission-security-events: read
+      - name: Require zero open security alerts
+        env:
+          GH_TOKEN: ${{ steps.security-app.outputs.token }}
+        run: python scripts/security_alerts.py --repo "$GITHUB_REPOSITORY"
+      - name: Verify candidate publication and unused stable identity
+        env:
+          IMAGE_DIGEST: ${{ steps.proof.outputs.image_digest }}
+          VERSION: ${{ steps.proof.outputs.version }}
+          REPO: ghcr.io/knaisoma/data-olympus
+        run: |
+          set -euo pipefail
+          test "$(docker buildx imagetools inspect "$REPO:$RC_TAG" --format '{{.Manifest.Digest}}')" = "$IMAGE_DIGEST"
+          # The promoted image keeps its RC labels; require that they name
+          # this candidate and the reviewed H on every platform (attestation
+          # manifests, reported as unknown/unknown, carry no labels).
+          docker buildx imagetools inspect "$REPO@$IMAGE_DIGEST" --format '{{json .Image}}' \
+            > to-delete/promotion/image-config.json
+          jq -e --arg version "$RC_TAG" --arg revision "$REVIEWED_HEAD" '
+            (if has("config") then [.]
+              else [to_entries[] | select(.key != "unknown/unknown") | .value] end) as $images
+            | ($images | length) > 0
+            and all($images[]; .config.Labels["org.opencontainers.image.version"] == $version
+              and .config.Labels["org.opencontainers.image.revision"] == $revision)
+          ' to-delete/promotion/image-config.json
+          python - <<'PY'
+          import hashlib, json, pathlib, urllib.request
+          root = pathlib.Path('to-delete/promotion/candidate')
+          receipt = json.loads((root / 'release-provenance.json').read_text())['candidate']
+          expected = {receipt[k]: receipt[k + '_sha256'] for k in ('wheel', 'sdist')}
+          local = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                   for p in root.iterdir() if p.name.endswith(('.whl', '.tar.gz'))}
+          with urllib.request.urlopen('https://pypi.org/pypi/data-olympus/' + receipt['version'] + '/json', timeout=30) as response:
+              remote = {p['filename']: p['digests']['sha256'] for p in json.load(response)['urls']}
+          if local != expected or remote != expected:
+              raise SystemExit('candidate payload/PyPI hashes differ from the RC record')
+          PY
+          python scripts/version_free.py --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: promotion-inputs
+          path: to-delete/promotion/
+          if-no-files-found: error
+
+  build-stable:
+    if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
+    needs: prove
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prove.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v8
+        with:
+          name: promotion-inputs
+          path: to-delete/promotion
+      - name: Build from S and compare both candidate payloads
+        env:
+          VERSION: ${{ needs.prove.outputs.version }}
+        run: |
+          set -euo pipefail
+          WHEELS=(to-delete/promotion/candidate/*.whl)
+          SDISTS=(to-delete/promotion/candidate/*.tar.gz)
+          test "${#WHEELS[@]}" = 1
+          test "${#SDISTS[@]}" = 1
+          uv run python scripts/release_artifacts.py stable-promotion --source . \
+            --release-record to-delete/promotion/release-record.json \
+            --candidate-provenance to-delete/promotion/candidate/release-provenance.json \
+            --candidate-wheel "${WHEELS[0]}" --candidate-sdist "${SDISTS[0]}" \
+            --output to-delete/stable/dist --provenance to-delete/stable/release-provenance.json
+          uvx twine check --strict to-delete/stable/dist/*
+          for artifact in to-delete/stable/dist/*.whl to-delete/stable/dist/*.tar.gz; do
+            uv run python scripts/smoke_installed_wheel.py --artifact "$artifact" --expected-version "$VERSION"
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: stable-artifacts
+          path: to-delete/stable/
+          if-no-files-found: error
+
+  publish-pypi:
+    if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
+    needs: [prove, build-stable]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/data-olympus
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SQUASH: ${{ needs.prove.outputs.source_sha }}
+      REVIEWED_HEAD: ${{ inputs.reviewed_head }}
+      RC_TAG: ${{ needs.prove.outputs.rc_tag }}
+      VERSION: ${{ needs.prove.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v8
+        with:
+          name: promotion-inputs
+          path: to-delete/promotion
+      - uses: actions/download-artifact@v8
+        with:
+          name: stable-artifacts
+          path: to-delete/stable
+      # The pypi environment (main only) holds its own copy of the App key as
+      # an environment secret; a job can bind only one environment.
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        id: security-app
+        with:
+          app-id: ${{ vars.SDLC_APP_ID }}
+          private-key: ${{ secrets.SDLC_APP_PRIVATE_KEY }}
+          permission-vulnerability-alerts: read
+          permission-security-events: read
+      - name: Resolve the release App bot identity
+        env:
+          GH_TOKEN: ${{ steps.security-app.outputs.token }}
+          APP_SLUG: ${{ steps.security-app.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+          BOT_ID="$(gh api "users/${APP_SLUG}[bot]" --jq .id)"
+          [[ "$BOT_ID" =~ ^[1-9][0-9]*$ ]]
+          echo "BOT_NAME=${APP_SLUG}[bot]" >> "$GITHUB_ENV"
+          echo "BOT_EMAIL=${BOT_ID}+${APP_SLUG}[bot]@users.noreply.github.com" >> "$GITHUB_ENV"
+      - name: Recheck the proof after environment approval
+        run: |
+          set -euo pipefail
+          git fetch --tags origin +refs/heads/main:refs/remotes/origin/main
+          python scripts/release_record.py prove --phase resume --squash "$SQUASH" \
+            --head "$REVIEWED_HEAD" --candidate-tag "$RC_TAG" \
+            --candidate-provenance to-delete/promotion/candidate/release-provenance.json \
+            --tagger "$BOT_NAME <$BOT_EMAIL>" \
+            --output to-delete/promotion/rechecked.json
+          cmp to-delete/promotion/release-record.json to-delete/promotion/rechecked.json
+      - name: Require zero open security alerts after environment approval
+        env:
+          GH_TOKEN: ${{ steps.security-app.outputs.token }}
+        run: python scripts/security_alerts.py --repo "$GITHUB_REPOSITORY"
+      # A re-run after a partial upload skips files already on PyPI; the hash
+      # verification below then requires every remote file to be ours.
+      - name: Publish stable Python artifacts using Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: to-delete/stable/dist/
+          skip-existing: true
+      - name: Verify published stable Python hashes
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, pathlib, time, urllib.request
+          local = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                   for p in pathlib.Path('to-delete/stable/dist').iterdir()}
+          for attempt in range(12):
+              try:
+                  with urllib.request.urlopen('https://pypi.org/pypi/data-olympus/' + os.environ['VERSION'] + '/json', timeout=30) as response:
+                      remote = {p['filename']: p['digests']['sha256'] for p in json.load(response)['urls']}
+                  if local == remote:
+                      break
+              except OSError:
+                  pass
+              if attempt == 11:
+                  raise SystemExit('stable PyPI hashes do not match built distributions')
+              time.sleep(5)
+          PY
+
+  create-tag:
+    if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
+    needs: [prove, publish-pypi]
+    runs-on: ubuntu-latest
+    environment: sdlc-bot
+    permissions:
+      contents: read
+    steps:
+      # No human-token fallback. W9 must provision this machine identity.
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        id: app
+        with:
+          app-id: ${{ vars.SDLC_APP_ID }}
+          private-key: ${{ secrets.SDLC_APP_PRIVATE_KEY }}
+          permission-contents: write
+      - name: Resolve the release App bot identity
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+          BOT_ID="$(gh api "users/${APP_SLUG}[bot]" --jq .id)"
+          [[ "$BOT_ID" =~ ^[1-9][0-9]*$ ]]
+          echo "BOT_NAME=${APP_SLUG}[bot]" >> "$GITHUB_ENV"
+          echo "BOT_EMAIL=${BOT_ID}+${APP_SLUG}[bot]@users.noreply.github.com" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v8
+        with:
+          name: promotion-inputs
+          path: to-delete/promotion
+      - name: Recheck locked state and create immutable annotated tag on S
+        env:
+          SQUASH: ${{ needs.prove.outputs.source_sha }}
+          REVIEWED_HEAD: ${{ inputs.reviewed_head }}
+          RC_TAG: ${{ needs.prove.outputs.rc_tag }}
+          TAG: ${{ needs.prove.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --tags origin +refs/heads/main:refs/remotes/origin/main
+          recheck() {
+            python scripts/release_record.py prove --phase resume --squash "$SQUASH" \
+              --head "$REVIEWED_HEAD" --candidate-tag "$RC_TAG" \
+              --candidate-provenance to-delete/promotion/candidate/release-provenance.json \
+              --tagger "$BOT_NAME <$BOT_EMAIL>" \
+              --output to-delete/promotion/rechecked.json
+            cmp to-delete/promotion/release-record.json to-delete/promotion/rechecked.json
+          }
+          recheck
+          # The resume proof accepts an existing tag only if it is annotated,
+          # on S, carries the generated notes and was tagged by the App.
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG already exists as this workflow's annotated tag on S"
+          else
+            git config user.name "$BOT_NAME"
+            git config user.email "$BOT_EMAIL"
+            # verbatim: the default cleanup strips the notes' Markdown headings.
+            git tag -a --cleanup=verbatim "$TAG" "$SQUASH" -F to-delete/promotion/release-notes.md
+            git push origin "refs/tags/$TAG:refs/tags/$TAG"
+            # A remote tag that differs from ours makes this non-forced fetch fail.
+            git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+            recheck
+          fi
+
+  promote-image:
+    if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
+    needs: [prove, create-tag, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Move exactly the stable channels by verified digest without rebuilding
+        env:
+          IMAGE_DIGEST: ${{ needs.prove.outputs.image_digest }}
+          TAG: ${{ needs.prove.outputs.tag }}
+          REPO: ghcr.io/knaisoma/data-olympus
+        run: |
+          set -euo pipefail
+          mkdir -p to-delete
+          if docker buildx imagetools inspect "$REPO:$TAG" --format '{{.Manifest.Digest}}' \
+              > to-delete/digest.txt 2> to-delete/image-error.txt; then
+            test "$(cat to-delete/digest.txt)" = "$IMAGE_DIGEST"
+          elif grep -qiE 'manifest unknown|not found|no such manifest' to-delete/image-error.txt; then
+            docker buildx imagetools create --tag "$REPO:$TAG" "$REPO@$IMAGE_DIGEST"
+          else
+            cat to-delete/image-error.txt >&2
+            exit 1
+          fi
+          docker buildx imagetools create --tag "$REPO:stable" --tag "$REPO:latest" "$REPO@$IMAGE_DIGEST"
+          for channel in "$TAG" stable latest; do
+            test "$(docker buildx imagetools inspect "$REPO:$channel" --format '{{.Manifest.Digest}}')" = "$IMAGE_DIGEST"
+          done
+
+  release:
+    if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
+    needs: [prove, create-tag, publish-pypi, promote-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prove.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: promotion-inputs
+          path: to-delete/promotion
+      - uses: actions/download-artifact@v8
+        with:
+          name: stable-artifacts
+          path: to-delete/stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Publish generated notes and the H to S provenance mapping
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prove.outputs.tag }}
+          SQUASH: ${{ needs.prove.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          ASSETS=(to-delete/stable/dist/* to-delete/stable/release-provenance.json
+            to-delete/promotion/release-record.json)
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$SQUASH"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "$TAG" \
+              --notes-file to-delete/promotion/release-notes.md "${ASSETS[@]}"
+          fi
+          # Fresh or re-run: the body must be the generated notes and every
+          # asset one of ours with the same SHA-256 bound to the release
+          # record; only missing assets are uploaded, never replaced.
+          python scripts/release_record.py release --tag "$TAG" \
+            --record to-delete/promotion/release-record.json \
+            --stable-provenance to-delete/stable/release-provenance.json \
+            --notes to-delete/promotion/release-notes.md "${ASSETS[@]}"
+
+  publish-mcp-registry:
+    # Last on purpose: a registry outage must not hold back PyPI, the image or
+    # the GitHub release. A failure here is visible and the job can be re-run.
+    if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
+    needs: [prove, publish-pypi, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MCP_PUBLISHER_VERSION: v1.8.1
+      MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+      REGISTRY: https://registry.modelcontextprotocol.io
+      VERSION: ${{ needs.prove.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prove.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Inject stable registry metadata in this workspace
+        run: |
+          mkdir -p to-delete
+          python - <<'PYTHON'
+          import json, os, pathlib, re
+          path = pathlib.Path('server.json')
+          data = json.loads(path.read_text())
+          if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9._/-]+', data['name']):
+              raise SystemExit('invalid registry server name')
+          data['version'] = os.environ['VERSION']
+          for package in data['packages']:
+              package['version'] = os.environ['VERSION']
+          path.write_text(json.dumps(data, indent=2) + '\n')
+          PYTHON
+      - name: Check server.json and the PyPI ownership marker
+        run: |
+          test "$(jq -er '.version' server.json)" = "$VERSION"
+          test "$(jq -er '.packages[0].version' server.json)" = "$VERSION"
+          SERVER_NAME="$(jq -er '.name' server.json)"
+          for attempt in $(seq 1 12); do
+            if curl -fsS "https://pypi.org/pypi/data-olympus/${VERSION}/json" \
+                -o to-delete/pypi.json; then
+              break
+            fi
+            test "$attempt" -lt 12
+            sleep 5
+          done
+          jq -e --arg marker "<!-- mcp-name: ${SERVER_NAME} -->" \
+            '(.info.description // "") | contains($marker)' to-delete/pypi.json
+          echo "SERVER_NAME=$SERVER_NAME" >> "$GITHUB_ENV"
+      - name: Install the pinned mcp-publisher
+        run: |
+          curl -fsSL -o to-delete/mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_SHA256}  to-delete/mcp-publisher.tar.gz" | sha256sum -c -
+          tar -xzf to-delete/mcp-publisher.tar.gz -C to-delete mcp-publisher
+          to-delete/mcp-publisher --help >/dev/null
+      - name: Publish the registry entry with GitHub OIDC
+        run: |
+          # A failed read must never look like "not listed": retry it, then
+          # stop rather than publish blind. The version filter keeps a long
+          # history from paging the release out; the unfiltered search is a
+          # second opinion in case the filter's semantics change.
+          registry_query() {
+            for _ in $(seq 1 6); do
+              # A 200 whose body is not the expected shape is a failed read too.
+              if curl -fsS --get "$REGISTRY/v0/servers" "$@" -o to-delete/registry.json \
+                  && jq -r --arg name "$SERVER_NAME" \
+                    '.servers[] | (.server // .) | select(.name == $name) | .version' \
+                    to-delete/registry.json > to-delete/registry-versions.txt; then
+                cat to-delete/registry-versions.txt
+                return 0
+              fi
+              sleep 5
+            done
+            echo "cannot read the registry API at $REGISTRY" >&2
+            return 1
+          }
+          is_listed() {
+            local filtered unfiltered
+            filtered="$(registry_query --data-urlencode "search=$SERVER_NAME" \
+              --data-urlencode "version=$VERSION")" || exit 1
+            grep -qx "$VERSION" <<<"$filtered" && return 0
+            unfiltered="$(registry_query --data-urlencode "search=$SERVER_NAME")" || exit 1
+            grep -qx "$VERSION" <<<"$unfiltered"
+          }
+          if is_listed; then
+            echo "$SERVER_NAME $VERSION is already in the registry; not publishing again"
+          else
+            to-delete/mcp-publisher login github-oidc
+            to-delete/mcp-publisher publish
+          fi
+          for _ in $(seq 1 12); do
+            if is_listed; then
+              echo "registry lists $SERVER_NAME $VERSION"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "registry does not list $SERVER_NAME $VERSION after publishing" >&2
+          exit 1

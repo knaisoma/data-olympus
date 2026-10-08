@@ -25,6 +25,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shared promotion lock, signing runs in a separate job that never parses the
   candidate archives, and the `rc` channel moves only once
   `SDLC_RC_CHANNEL=enabled` is set after the first new-model release.
+* Add disabled-by-default promotion of reviewed release squashes, with exact
+  parent, tree, version and release-note proofs. Compare stable Python files
+  with both candidate payloads and reuse the RC image digest with provenance
+  mapping the reviewed head, squash and stable tag.
 
 * Build normal and hotfix release candidates with read-only permissions,
   injected Python versions, an OCI archive, and provenance. Cut builds and
