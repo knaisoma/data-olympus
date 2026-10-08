@@ -15,6 +15,8 @@ The target flow will build each integration RC from content using
 delivered separately, not yet in the repository. After the cut, the first
 commit on `release/new` will set `pyproject.toml` to `0.0.0+unreleased`;
 builds will inject the computed version. Do not commit the target version.
+CI accepts the placeholder as defined in
+[docs/releases/placeholder-version.md](../docs/releases/placeholder-version.md).
 Collect functional changes under `[Unreleased]`.
 Select and validate the exact batch head, then squash it to `main` with the
 generated `release: X.Y.Z` record under `.rules/release-routine.md`.

@@ -93,15 +93,12 @@ Pushes and non-dry-run dispatches always use the ratified path.
 - This wiring is merged on `main`, and Tasks 1 to 7 are merged.
 - The operator has confirmed the R1 route (adoption record) rather than the
   alternative of releasing 0.11.1 on the old path and cutting at that tag.
-- The R4 placeholder pull request is ready to pass CI. Known coupling, open at
-  the time of writing: `tests/test_server_json.py` requires both `server.json`
-  versions to equal `[project].version` and to be concrete releases, and the
-  `version-free-guard` job in `ci.yaml` runs whenever a pull request changes
-  `[project].version`. A placeholder-only commit therefore fails CI on
-  `release/new`. The placeholder change must resolve this in the same pull
-  request (for example by making those checks placeholder-aware and having the
-  promotion inject the computed version into `server.json`), reviewed on its
-  own merits. Do not start step 5 until that design is agreed.
+- The placeholder guards are merged on `main`: the `version-free-guard` job
+  and `tests/test_server_json.py` accept `0.0.0+unreleased` only on
+  `release/new` and `hotfix/new`, and on `main` only as a tree-equal cycle
+  squash. See [placeholder-version.md](placeholder-version.md), which also
+  states that `version-free-guard` and `test` must be required checks on
+  `main`. A placeholder-only commit then passes CI on `release/new`.
 - No open pull request needs to merge to `main` between steps 3 and 4. Any
   merge to `main` after the record commit puts `main` ahead of `C`, and
   `release/new` would have to be recut.

@@ -115,19 +115,29 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BASE_REF: ${{ github.base_ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           # Only enforce when THIS pr changes [project].version. The version is
           # bumped at release time, so on a normal PR the declared version still
           # equals the last released (published) one; checking it unconditionally
-          # would fail every non-release PR. Compare against the base branch and
-          # skip when unchanged.
+          # would fail every non-release PR. scripts/placeholder_version.py
+          # decides: skip when unchanged; skip the 0.0.0+unreleased placeholder
+          # on pull requests into release/new or hotfix/new, and into main only
+          # when the PR head tree equals origin/release/new or origin/hotfix/new
+          # (the reviewed release or hotfix squash) or main already declares it
+          # unchanged; fail closed on the placeholder anywhere else and on any
+          # other non X.Y.Z version; otherwise continue to the checks below.
+          # See docs/releases/placeholder-version.md.
           HEAD_VERSION="$(python3 scripts/should_tag.py --print-version)"
           BASE_VERSION="$(git show "origin/$BASE_REF:pyproject.toml" | python3 -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.buffer.read().decode())["project"]["version"])')"
-          if [ "$HEAD_VERSION" = "$BASE_VERSION" ]; then
-            echo "declared version unchanged ($HEAD_VERSION); nothing to guard"
+          DECISION="$(python3 scripts/placeholder_version.py guard --head-version "$HEAD_VERSION" --base-version "$BASE_VERSION" --base-ref "$BASE_REF" --head-commit "$PR_HEAD_SHA")"
+          if [ "$DECISION" = "skip" ]; then
             exit 0
           fi
-          echo "declared version changed $BASE_VERSION -> $HEAD_VERSION; checking it is free"
+          if [ "$DECISION" != "check" ]; then
+            echo "unexpected version guard decision: $DECISION" >&2
+            exit 1
+          fi
 
           # A history reconciliation is safe when an existing immutable release
           # tag enters the pull request history for the first time. The tag must
