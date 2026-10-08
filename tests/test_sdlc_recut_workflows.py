@@ -59,9 +59,13 @@ def test_credential_lives_only_in_the_main_restricted_apply_environment(workflow
     assert "environment" not in jobs["plan"]
     assert "secrets." not in str(workflow.get("env", {}))
     assert "SDLC_BOT_TOKEN }}" not in str(workflow), "no static bot token secret"
+    assert "secrets.SDLC_APP_ID" not in str(workflow), "the App id is a variable"
+    # The private key is the only secret, and only in the gate and mint steps.
+    assert set(re.findall(r"secrets\.(\w+)", str(workflow))) == {"SDLC_APP_PRIVATE_KEY"}
     for name, job in jobs.items():
         if name != "apply":
             assert "secrets." not in str(job), f"{name} must not reference any secret"
+            assert "SDLC_APP" not in str(job), f"{name} must not touch App credentials"
     apply = jobs["apply"]
     assert "secrets." not in str(apply.get("env", {}))
     gate, mint = apply["steps"][0], _step(apply, "Mint ")
@@ -76,7 +80,7 @@ def test_app_token_is_minted_per_run_with_least_privilege(workflow):
         workflow["jobs"]["apply"], "Apply ")
     assert mint["uses"].startswith("actions/create-github-app-token@")
     assert mint["id"] == "app-token"
-    assert mint["with"]["app-id"] == "${{ secrets.SDLC_APP_ID }}"
+    assert mint["with"]["app-id"] == "${{ vars.SDLC_APP_ID }}"
     assert mint["with"]["private-key"] == "${{ secrets.SDLC_APP_PRIVATE_KEY }}"
     assert mint["with"]["owner"] == "${{ github.repository_owner }}"
     assert mint["with"]["repositories"] == "${{ github.event.repository.name }}"
@@ -107,7 +111,7 @@ def test_activation_gate_fails_closed(workflow, job, ref, pipeline, app_id, app_
     assert step["name"].startswith("Require trusted main")
     assert step["env"]["SDLC_PIPELINE"] == "${{ vars.SDLC_PIPELINE }}"
     if job == "apply":
-        assert step["env"]["HAS_APP_ID"] == "${{ secrets.SDLC_APP_ID != '' }}"
+        assert step["env"]["HAS_APP_ID"] == "${{ vars.SDLC_APP_ID != '' }}"
         assert step["env"]["HAS_APP_KEY"] == "${{ secrets.SDLC_APP_PRIVATE_KEY != '' }}"
     result = _run(step["run"], GITHUB_REF=ref, SDLC_PIPELINE=pipeline,
                   HAS_APP_ID=app_id, HAS_APP_KEY=app_key)
@@ -216,10 +220,23 @@ def test_recut_lists_every_open_pr_read_only(workflow):
     assert "--pull-requests-json" in _step(workflow["jobs"]["apply"], "Apply ")["run"]
 
 
-@pytest.mark.xfail(strict=True, reason="TODO(C6): no verified full commit SHA was available "
-                   "offline for actions/checkout, astral-sh/setup-uv and "
-                   "actions/create-github-app-token; pin them, then drop this marker")
-def test_apply_job_actions_are_pinned_by_full_commit_sha(workflow):
-    for step in workflow["jobs"]["apply"]["steps"]:
-        if "uses" in step:
-            assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", step["uses"]), step["uses"]
+PINNED = {
+    "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "v7"),
+    "astral-sh/setup-uv": ("37802adc94f370d6bfd71619e3f0bf239e1f3b78", "v7"),
+    "actions/create-github-app-token": ("fee1f7d63c2ff003460e3d139729b119787bc349", "v2"),
+}
+
+
+def test_every_action_is_pinned_by_full_commit_sha(workflow):
+    uses = [step["uses"] for job in workflow["jobs"].values()
+            for step in job["steps"] if "uses" in step]
+    assert uses
+    for value in uses:
+        action, _, ref = value.partition("@")
+        assert re.fullmatch(r"[0-9a-f]{40}", ref), value
+        assert PINNED[action][0] == ref, value
+    text = (WORKFLOWS / workflow["__name__"]).read_text()
+    for action, (sha, tag) in PINNED.items():
+        for line in text.splitlines():
+            if f"uses: {action}@" in line:
+                assert line.strip() == f"uses: {action}@{sha} # {tag}", line

@@ -69,13 +69,13 @@ jobs:
             exit 1
           fi
       - name: Checkout trusted dispatcher revision
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Set up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
       - name: Install Python
         run: uv python install 3.13
       - name: Plan recut and list open pull requests
@@ -106,7 +106,8 @@ jobs:
             --old-path-runs-json "$OLD_PATH_RUNS_JSON"
 
   # The sdlc-bot environment is restricted to main by its deployment branch
-  # policy and is the only place the W9 App id and private key exist.
+  # policy. It holds the App id (environment variable) and the private key
+  # (environment secret); no repository or organization copy exists.
   apply:
     needs: plan
     runs-on: ubuntu-latest
@@ -127,7 +128,7 @@ jobs:
       - name: Require trusted main and W9 bot identity
         env:
           SDLC_PIPELINE: ${{ vars.SDLC_PIPELINE }}
-          HAS_APP_ID: ${{ secrets.SDLC_APP_ID != '' }}
+          HAS_APP_ID: ${{ vars.SDLC_APP_ID != '' }}
           HAS_APP_KEY: ${{ secrets.SDLC_APP_PRIVATE_KEY != '' }}
         shell: bash
         run: |
@@ -142,17 +143,13 @@ jobs:
             exit 1
           fi
       - name: Checkout trusted dispatcher revision
-        # TODO(C6): pin by full commit SHA; no verified SHA was available
-        # offline. tests/test_sdlc_recut_workflows.py tracks this strictly.
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Set up uv
-        # TODO(C6): pin by full commit SHA; no verified SHA was available
-        # offline. tests/test_sdlc_recut_workflows.py tracks this strictly.
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
       - name: Install Python
         run: uv python install 3.13
       # Read-only snapshots and interpreter lookup run before the bot token
@@ -182,11 +179,9 @@ jobs:
       # action's post step. Only contents: write on this repository.
       - name: Mint short-lived W9 App installation token
         id: app-token
-        # TODO(C6): pin by full commit SHA; no verified SHA was available
-        # offline. tests/test_sdlc_recut_workflows.py tracks this strictly.
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
-          app-id: ${{ secrets.SDLC_APP_ID }}
+          app-id: ${{ vars.SDLC_APP_ID }}
           private-key: ${{ secrets.SDLC_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}

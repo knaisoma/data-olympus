@@ -15,9 +15,10 @@ dispatches on `main` only. Each has two jobs:
   pull requests (recut) and active old-path runs and prints the plan. It never
   applies.
 * `apply` runs after `plan` succeeds, in the `sdlc-bot` GitHub environment. It
-  repeats the main and pipeline checks, then requires the environment secrets
-  `SDLC_APP_ID` and `SDLC_APP_PRIVATE_KEY`. A missing or empty value fails with
-  exactly `blocked: requires W9 bot identity`; there is no human-token fallback.
+  repeats the main and pipeline checks, then requires the environment
+  variable `SDLC_APP_ID` and the environment secret `SDLC_APP_PRIVATE_KEY`. A
+  missing or empty value fails with exactly `blocked: requires W9 bot
+  identity`; there is no human-token fallback.
 
 The `apply` job mints a short-lived W9 GitHub App installation token for each
 run with `actions/create-github-app-token`, limited to this repository and to
@@ -29,12 +30,19 @@ run before the token is minted, so `gh`, `jq` and `uv` never execute with it.
 The token reaches Git only as a per-process header; it is never written to Git
 configuration. The workflow token stays read-only.
 
+Every action in both workflows is pinned by full commit SHA, with the release
+tag in a trailing comment, and a test rejects any other reference. Updating an
+action means replacing the SHA and the comment together.
+
 Owner provisioning, not done by this change and tracked under W9 sitting 1:
 
 * Create the `sdlc-bot` environment with a deployment branch policy that
-  allows only `main`, optionally with required reviewers.
-* Store `SDLC_APP_ID` and `SDLC_APP_PRIVATE_KEY` there as environment secrets,
-  and keep no repository or organization copy of either. A repository secret is
+  allows only `main` and no required reviewers. It is the single environment
+  for every job that mints a W9 App token.
+* Store the App id as the environment variable `SDLC_APP_ID` (it is not a
+  secret) and the private key as the environment secret
+  `SDLC_APP_PRIVATE_KEY`. Keep no repository or organization copy of the key.
+  A repository secret is
   released to a workflow on any branch, so a modified workflow pushed to a side
   branch could use it; the environment's branch policy is enforced by GitHub,
   not by editable workflow YAML. The `GITHUB_REF` check stays as defense in
@@ -43,10 +51,8 @@ Owner provisioning, not done by this change and tracked under W9 sitting 1:
   it, and nothing else, to bypass the `release/new` and `hotfix/new`
   protections for replacement and deletion.
 
-Promotion (`promote-release.yml`) binds its App credentials through the
-`release-bot` environment. Using two environments keeps branch deletion
-separate from publication; if the owner prefers one, both workflows must name
-the same environment before activation.
+Every App-token job in the SDLC workflows, including promotion, uses this one
+`sdlc-bot` environment with the same variable and secret names.
 
 ## Inputs
 
@@ -163,10 +169,5 @@ each is met, the workflows stay disabled:
   for the tag, the GHCR tag resolves to `digest`, and the PyPI version exists.
   Until then `publication`, `delivery_verified` and `unpromoted_heads` remain
   operator-supplied and only their shape and Git consistency are checked.
-* `actions/checkout`, `astral-sh/setup-uv` and `actions/create-github-app-token`
-  in the `apply` jobs are pinned by full commit SHA. They are tag-pinned now
-  because no verified SHA was available when this was written; a strict
-  expected-failure test in `tests/test_sdlc_recut_workflows.py` fails once they
-  are pinned, so the marker is removed with the pin.
 * The old path is retired, or the operator accepts the race described under
   the lock limits.
