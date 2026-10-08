@@ -1,9 +1,32 @@
-"""Pinned adoption ratification inputs for release workflows."""
+"""Pinned adoption ratification inputs for release workflows.
+
+These constants are trusted only as checked into main. Stage two and promotion
+import them from their own main checkout; stage one runs the code at H, so it
+reads them (and the vendored standard) from origin/main's blobs instead, see
+scripts/rc_decide.py and docs/releases/adoption-cut-runbook.md. They are never
+taken from workflow inputs, release evidence or the tree of H.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TypedDict
 
 RATIFIED = "2026-10-07:knaisoma/company-knowledge@785bb77"
 STANDARD_FILE = "docs/releases/std-u-821-amendment-1.3.md"
+# Path of this module, so stage one can read main's copy as a Git blob.
+MODULE = "scripts/adoption_ratification.py"
 
 
 def engine_args() -> list[str]:
     """Return version-engine arguments relative to the repository root."""
     return ["--adoption-ratified", RATIFIED, "--standard-file", STANDARD_FILE]
+
+
+class EngineKwargs(TypedDict):
+    adoption_ratified: str
+    standard_file: Path
+
+
+def engine_kwargs(root: Path) -> EngineKwargs:
+    """compute_version keyword arguments, resolved against a trusted checkout."""
+    return {"adoption_ratified": RATIFIED, "standard_file": Path(root) / STANDARD_FILE}

@@ -29,6 +29,7 @@ ROOT = str(Path(__file__).resolve().parents[1])
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from scripts import adoption_ratification as ratification  # noqa: E402
 from scripts.release_artifacts import CandidateVersion  # noqa: E402
 from scripts.sdlc_version import Git, VersionError, _impact, compute_version  # noqa: E402
 
@@ -209,10 +210,12 @@ def prove_release(
     git = Git(cwd)
     if git.file(head, "release/ADOPTION.json") is not None:
         raise ValueError("release/ADOPTION.json must be absent at H")
-    if git.file(provenance["B"], "release/ADOPTION.json") is not None:
-        raise ValueError("ADOPTION promotion requires trusted ratification configuration")
     branch = "hotfix/new" if "-hotfix.rc." in candidate_tag else "release/new"
-    version = compute_version(cwd=cwd, head=head, main=provenance["M"], branch=branch)
+    # An adoption cut B is validated by the engine with the ratification pinned
+    # in this trusted main checkout (ROOT); promotion still requires the record
+    # to be absent at H (checked above and by the engine's promotable flag).
+    version = compute_version(cwd=cwd, head=head, main=provenance["M"], branch=branch,
+                              **ratification.engine_kwargs(Path(ROOT)))
     notes = generate_notes(cwd=cwd, version=version)
     main_head = git.resolve(main)
     tag_ref = f"refs/tags/{identity.stable_tag}"
@@ -383,7 +386,8 @@ def main(argv: list[str] | None = None) -> int:
             validate_inputs(squash=args.squash, head=args.head, candidate_tag=args.candidate_tag)
         elif args.command == "notes":
             version = compute_version(cwd=Path.cwd(), head=args.head, main=args.main,
-                                      branch=args.branch)
+                                      branch=args.branch,
+                                      **ratification.engine_kwargs(Path(ROOT)))
             rendered = generate_notes(cwd=Path.cwd(), version=version)
             if args.output:
                 args.output.write_text(rendered, encoding="utf-8")

@@ -41,9 +41,14 @@ def make_build(tmp_path, branch="release/new"):
     if branch == "hotfix/new":
         repo.git("checkout", "-b", "hotfix/new", "v1.4.2")
     repo.commit("fix: corrected export")
-    artifacts = tmp_path / "artifacts"
+    provenance, event = write_artifacts(tmp_path / "artifacts", repo.compute(branch=branch),
+                                        branch)
+    return repo, tmp_path / "artifacts", provenance, event
+
+
+def write_artifacts(artifacts, version, branch="release/new"):
+    """Write stage-one artifacts and the rc-build event for an engine result."""
     (artifacts / "dist").mkdir(parents=True)
-    version = repo.compute(branch=branch)
     py = version["pypi_version"]
     wheel = artifacts / "dist" / f"data_olympus-{py}-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
@@ -77,7 +82,7 @@ def make_build(tmp_path, branch="release/new"):
         "conclusion": "success", "event": "push",
         "head_branch": branch, "head_sha": version["H"],
         "head_repository": {"full_name": stage.REPOSITORY}, "id": 42, "run_attempt": 1}}
-    return repo, artifacts, provenance, event
+    return provenance, event
 
 
 @pytest.fixture
