@@ -48,11 +48,12 @@ def test_reusable_upload_gated_on_input():
     doc = _load("publish-pypi-reusable.yml")
     # upload job only runs when the caller asks for upload=true. GitHub accepts a
     # bare expression at job-level `if`, so YAML loads it without the ${{ }} wrap.
-    assert doc["jobs"]["upload"]["if"] == "inputs.upload"
+    assert doc["jobs"]["upload"]["if"] == "inputs.upload && needs.validate.outputs.passed == 'true'"
+    assert doc["jobs"]["upload"]["needs"] == "validate"
 
 
 def test_reusable_build_runs_twine_check():
-    doc = _load("publish-pypi-reusable.yml")
+    doc = _load("publish-python-build.yml")
     build = doc["jobs"]["build"]
     cmds = " ".join(str(s.get("run", "")) for s in build["steps"])
     assert "twine check" in cmds
@@ -62,7 +63,10 @@ def test_reusable_build_runs_twine_check():
 def test_publish_pr_dry_run_does_not_upload():
     doc = _load("publish-pypi.yml")
     dry = doc["jobs"]["dry-run"]
-    assert dry["with"]["upload"] is False
+    assert dry["uses"] == "./.github/workflows/publish-python-build.yml"
+    assert dry["permissions"] == {"contents": "read"}
+    build_only = _load("publish-python-build.yml")
+    assert set(build_only["jobs"]) == {"build"}
     # dry-run fires on pull_request only.
     assert "pull_request" in dry["if"]
 
@@ -157,10 +161,27 @@ def test_version_guard_allows_only_newly_integrated_release_history() -> None:
 
 def test_reusable_publish_fails_closed_and_verifies_remote_hashes() -> None:
     doc = _load("publish-pypi-reusable.yml")
+    validate = doc["jobs"]["validate"]
+    assert validate["needs"] == "build"
+    assert validate["if"] == "inputs.upload"
+    assert validate["permissions"] == {"contents": "read"}
+    assert validate["outputs"]["passed"] == "${{ steps.check.outputs.passed }}"
+    check = next(s for s in validate["steps"] if s.get("id") == "check")
+    assert check["env"]["PYPI_VERSION"] == "${{ needs.build.outputs.version }}"
+    assert "set -e" in check["run"]
+    assert check["run"].index("workflow_validation.py python-hashes") < (
+        check["run"].index('echo "passed=true" >> "$GITHUB_OUTPUT"')
+    )
     steps = doc["jobs"]["upload"]["steps"]
+    assert len(steps) == 2
+    assert steps[0]["uses"].startswith("actions/download-artifact@")
+    assert all("run" not in step for step in steps)
     publish = next(s for s in steps if "pypa/gh-action-pypi-publish" in str(s.get("uses", "")))
     assert "continue-on-error" not in publish
-    commands = "\n".join(str(step.get("run", "")) for step in steps)
+    verify = doc["jobs"]["verify"]
+    assert set(verify["needs"]) == {"build", "upload"}
+    assert verify["permissions"] == {"contents": "read"}
+    commands = "\n".join(str(step.get("run", "")) for step in verify["steps"])
     assert "pypi.org/pypi/data-olympus" in commands
     assert "sha256" in commands
 
@@ -179,12 +200,26 @@ def test_every_pypi_publisher_fails_closed_and_reads_back_hashes() -> None:
             if "pypa/gh-action-pypi-publish" in str(step.get("uses", ""))
         )
         assert "continue-on-error" not in publish, workflow
+        if workflow == "publish-pypi-reusable.yml":
+            steps = _load(workflow)["jobs"]["verify"]["steps"]
         commands = "\n".join(str(step.get("run", "")) for step in steps)
         assert "pypi.org/pypi/data-olympus" in commands, workflow
         assert "sha256" in commands, workflow
         assert 'glob("*.whl")' in commands, workflow
         assert 'glob("*.tar.gz")' in commands, workflow
         assert 'Path("dist").iterdir()' not in commands, workflow
+
+
+def test_stage_one_concurrency_and_manual_workflow_permissions() -> None:
+    build = _load("rc-build.yml")
+    assert build["concurrency"] == {
+        "group": "rc-build-${{ github.ref }}", "cancel-in-progress": True,
+    }
+    assert build["permissions"] == {"contents": "read"}
+    assert _load("release-image.yml")["jobs"]["validate"]["permissions"] == {"contents": "read"}
+    retag = _load("set-channel.yml")["jobs"]["retag"]
+    checkout = next(s for s in retag["steps"] if s.get("uses", "").startswith("actions/checkout@"))
+    assert checkout["with"]["persist-credentials"] is False
 
 
 def test_manual_dispatch_uploads_only_for_validated_release_tag():
@@ -198,8 +233,8 @@ def test_manual_dispatch_uploads_only_for_validated_release_tag():
     assert "upload" in validate["outputs"]
     check = " ".join(str(s.get("run", "")) for s in validate["steps"])
     # Guards on a v-semver tag pattern and an existing tag object.
-    assert "v[0-9]" in check
-    assert "refs/tags/" in check
+    assert "workflow_validation.py manual-python" in check
+    assert jobs["manual"]["with"]["ref"] == "${{ needs.validate-manual.outputs.sha }}"
     # The manual publish job keys its upload off the validate output, not a bare true.
     manual = jobs["manual"]
     assert manual["needs"] == "validate-manual"
@@ -210,12 +245,11 @@ def test_publish_pr_dry_run_ref_is_not_untrusted():
     """The reusable workflow's ref must come from a trusted source, never event
     body fields (injection guard)."""
     doc = _load("publish-pypi.yml")
-    for job in ("dry-run", "release", "manual"):
+    for job in ("dry-run", "manual"):
         ref = doc["jobs"][job]["with"]["ref"]
         assert ref in (
             "${{ github.sha }}",
-            "${{ github.ref_name }}",
-            "${{ inputs.ref }}",
+            "${{ needs.validate-manual.outputs.sha }}",
         ), (job, ref)
 
 
@@ -226,7 +260,7 @@ def test_reusable_image_build_checks_out_and_labels_explicit_ref():
     assert ref_input["required"] is True
 
     steps = doc["jobs"]["build-push"]["steps"]
-    checkout = next(s for s in steps if "actions/checkout" in str(s.get("uses", "")))
+    checkout = next(s for s in steps if s.get("name") == "Checkout")
     assert checkout["with"]["ref"] == "${{ inputs.ref }}"
 
     source = next(s for s in steps if s.get("id") == "source")

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 _BASE_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
-_DIST_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:rc[1-9][0-9]*)?")
+_DIST_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:(?:rc|\.dev)(?:0|[1-9][0-9]*))?")
 _IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
@@ -31,6 +31,15 @@ class CandidateVersion:
     git_tag: str
     pypi_version: str
     stable_tag: str
+
+    @classmethod
+    def from_tag(cls, tag: str) -> CandidateVersion:
+        match = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)-(hotfix\.)?rc\.(0|[1-9][0-9]*)", tag)
+        if match is None:
+            raise ValueError("candidate tag must be X.Y.Z-rc.N or X.Y.Z-hotfix.rc.N")
+        base, hotfix, number = match.groups()
+        return cls(base, int(number), tag, f"{base}{'.dev' if hotfix else 'rc'}{number}",
+                   f"v{base}")
 
     @classmethod
     def from_base(cls, base: str, number: int) -> CandidateVersion:
@@ -186,7 +195,7 @@ def _set_lock_root_version(path: Path, version: str) -> None:
 
 def _apply_version_overlay(root: Path, version: str) -> str:
     if _DIST_VERSION.fullmatch(version) is None:
-        raise ValueError("distribution version must be X.Y.Z or X.Y.ZrcN")
+        raise ValueError("distribution version must be X.Y.Z, X.Y.ZrcN or X.Y.Z.devN")
     pyproject = root / "pyproject.toml"
     lock = root / "uv.lock"
     before_project, base_version = _project_without_version(pyproject)
@@ -501,7 +510,14 @@ def finalize_candidate_provenance(
 
 
 def _run_candidate(args: argparse.Namespace) -> int:
-    version = CandidateVersion.from_base(args.base, args.number)
+    if args.candidate_tag is not None:
+        if args.base is not None or args.number is not None:
+            raise ValueError("candidate tag cannot be combined with base or number")
+        version = CandidateVersion.from_tag(args.candidate_tag)
+    else:
+        if args.base is None or args.number is None:
+            raise ValueError("candidate requires base and number, or candidate tag")
+        version = CandidateVersion.from_base(args.base, args.number)
     candidate = build_distribution(args.source, version.pypi_version, args.output)
     if not candidate.source_sha:
         raise ValueError("candidate builds require an exact git source SHA")
@@ -551,13 +567,63 @@ def _run_finalize_candidate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_prepare_context(args: argparse.Namespace) -> int:
+    if args.output.exists():
+        raise ValueError("build context output must not already exist")
+    args.output.mkdir(parents=True)
+    _copy_build_inputs(args.source.resolve(), args.output)
+    _apply_version_overlay(args.output, args.version)
+    return 0
+
+
+def _run_finalize_archive(args: argparse.Namespace) -> int:
+    """Extend a build receipt with stage-one coordinates without public writes."""
+    identity = CandidateVersion.from_tag(args.candidate_tag)
+    if identity.number != args.number:
+        raise ValueError("candidate tag does not match N")
+    for name, sha in (("B", args.base_sha), ("H", args.source_sha), ("M", args.main_sha)):
+        if re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+            raise ValueError(f"{name} requires an exact source SHA")
+    if _IMAGE_DIGEST.fullmatch(args.image_digest) is None:
+        raise ValueError("image digest must be an exact sha256 digest")
+    promotable = args.promotable == "true"
+    dry_run = args.dry_run == "true"
+    if promotable and (args.number == 0 or dry_run):
+        raise ValueError("N=0 and dry-run builds are not promotable")
+    payload = json.loads(args.provenance.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("candidate"), dict):
+        raise ValueError("candidate provenance must contain a candidate receipt")
+    candidate = payload["candidate"]
+    if (payload.get("source_sha") != args.source_sha
+            or candidate.get("source_sha") != args.source_sha):
+        raise ValueError("candidate provenance source SHA does not match checkout")
+    if candidate.get("version") != identity.pypi_version:
+        raise ValueError("candidate tag does not match candidate provenance version")
+    additions = {
+        "candidate_tag": identity.git_tag, "python_version": identity.pypi_version,
+        "B": args.base_sha, "H": args.source_sha, "M": args.main_sha, "N": args.number,
+        "oci_archive_sha256": _sha256(args.oci_archive), "image_digest": args.image_digest,
+        "promotable": promotable, "dry_run": dry_run,
+    }
+    for key, expected in additions.items():
+        if key in payload and payload[key] != expected:
+            raise ValueError(f"candidate provenance has conflicting {key}")
+        payload[key] = expected
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = args.output.with_suffix(args.output.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(args.output)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="release_artifacts")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     candidate = subparsers.add_parser("candidate")
-    candidate.add_argument("--base", required=True)
-    candidate.add_argument("--number", required=True, type=int)
+    candidate.add_argument("--base")
+    candidate.add_argument("--number", type=int)
+    candidate.add_argument("--candidate-tag")
     candidate.add_argument("--source", required=True, type=Path)
     candidate.add_argument("--output", required=True, type=Path)
     candidate.add_argument("--provenance", required=True, type=Path)
@@ -579,6 +645,22 @@ def main(argv: list[str] | None = None) -> int:
     finalize.add_argument("--candidate-tag", required=True)
     finalize.add_argument("--image-digest", required=True)
     finalize.set_defaults(handler=_run_finalize_candidate)
+
+    context = subparsers.add_parser("prepare-context")
+    context.add_argument("--source", required=True, type=Path)
+    context.add_argument("--output", required=True, type=Path)
+    context.add_argument("--version", required=True)
+    context.set_defaults(handler=_run_prepare_context)
+
+    archive = subparsers.add_parser("finalize-archive")
+    for option in ("provenance", "output", "oci-archive"):
+        archive.add_argument(f"--{option}", required=True, type=Path)
+    for option in ("source-sha", "base-sha", "main-sha", "candidate-tag", "image-digest"):
+        archive.add_argument(f"--{option}", required=True)
+    archive.add_argument("--number", required=True, type=int)
+    archive.add_argument("--promotable", required=True, choices=("true", "false"))
+    archive.add_argument("--dry-run", choices=("true", "false"), default="false")
+    archive.set_defaults(handler=_run_finalize_archive)
 
     args = parser.parse_args(argv)
     return int(args.handler(args))

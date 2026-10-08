@@ -3,7 +3,7 @@
 # This workflow uploads to PyPI via Trusted Publishing (OIDC, no API token).
 # PyPI binds the publisher to the TOP-LEVEL
 # workflow that starts the run. This reusable workflow is now called only from
-# publish-pypi.yml, the human-pushed tag and manual fallback. The primary
+# publish-pypi.yml, the manual fallback. The primary
 # rc-publish.yml and tag-release.yml paths publish inline and have their own
 # publisher identities.
 # See docs/releases/pypi-trusted-publishing.md for the exact setup path. A
@@ -25,52 +25,42 @@ on:
 
 jobs:
   build:
+    uses: ./.github/workflows/publish-python-build.yml
+    with:
+      ref: ${{ inputs.ref }}
+    permissions:
+      contents: read
+
+  validate:
+    needs: build
+    if: inputs.upload
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      passed: ${{ steps.check.outputs.passed }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref }}
-          fetch-depth: 0
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v7
-      - name: Read expected package version
-        id: version
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import tomllib
-
-          with open("pyproject.toml", "rb") as stream:
-              print(f"version={tomllib.load(stream)['project']['version']}")
-          PY
-      - name: Build sdist + wheel
-        run: uv build
-      - name: Verify metadata (twine check)
-        run: uvx twine check --strict dist/*
-      - name: Smoke-test the built distributions
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          for artifact in dist/*.whl dist/*.tar.gz; do
-            uv run python scripts/smoke_installed_wheel.py \
-              --artifact "$artifact" --expected-version "$VERSION"
-          done
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
+          persist-credentials: false
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
-          if-no-files-found: error
+      - name: Check existing PyPI file hashes before upload
+        id: check
+        env:
+          PYPI_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/workflow_validation.py python-hashes
+          echo "passed=true" >> "$GITHUB_OUTPUT"
 
   upload:
-    # Only runs on a real release (upload=true). On PR dry-runs this job is
-    # skipped, so packaging PRs get build + twine check with no upload.
-    needs: build
-    if: inputs.upload
+    # Only validated release artifacts enter the credential-bearing job.
+    needs: validate
+    if: inputs.upload && needs.validate.outputs.passed == 'true'
     runs-on: ubuntu-latest
     # Trusted Publishing requires the `pypi` environment name to match the
     # pending-publisher config on pypi.org.
@@ -81,6 +71,7 @@ jobs:
       # id-token: write is what mints the OIDC token gh-action-pypi-publish
       # exchanges for a short-lived upload credential. No secret token exists.
       id-token: write
+      contents: read
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v8
@@ -94,6 +85,18 @@ jobs:
         # error (mirrors the idempotent tag/image/release jobs).
         with:
           skip-existing: true
+
+  verify:
+    needs: [build, upload]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
       - name: Verify PyPI files by SHA256
         env:
           PYPI_VERSION: ${{ needs.build.outputs.version }}

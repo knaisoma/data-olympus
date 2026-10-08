@@ -32,6 +32,11 @@ import sys
 import urllib.error
 import urllib.request
 
+if __package__:
+    from scripts.version_free import registry_versions
+else:
+    from version_free import registry_versions
+
 BYPASS_ENV = "KB_BYPASS_VERSION_CHECK"
 
 
@@ -126,7 +131,7 @@ def _on_ghcr(version: str, repo: str) -> bool:
     Only an explicit missing-manifest response means the tag is free. Registry
     and client failures raise RegistryError so the release remains fail closed.
     """
-    reference = f"ghcr.io/{repo}:v{version}"
+    reference = f"ghcr.io/{repo}:{registry_versions(version).ghcr}"
     command = ["docker", "buildx", "imagetools", "inspect", reference]
     try:
         result = subprocess.run(
@@ -160,7 +165,7 @@ def _on_ghcr(version: str, repo: str) -> bool:
 
 def _on_github(version: str, repo: str) -> bool:
     """True if a GitHub release OR a git ref exists for tag vX.Y.Z on `repo`."""
-    tag = f"v{version}"
+    tag = registry_versions(version).github
     release = _gh_json(f"/repos/{repo}/releases/tags/{tag}")
     if release is not None:
         return True
@@ -196,17 +201,22 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    try:
+        versions = registry_versions(version)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     # Idempotent reconcile: a local tag already pins vX.Y.Z at this HEAD commit.
-    tag_commit = _tag_commit(f"v{version}")
+    tag_commit = _tag_commit(versions.github)
     if idempotent_rerun(version, tag_commit, _head_commit()):
         print(
-            f"local tag v{version} already points at HEAD: idempotent reconcile, "
+            f"local tag {versions.github} already points at HEAD: idempotent reconcile, "
             "skipping registry checks (allow)"
         )
         return 0
 
     try:
-        on_pypi = _on_pypi(version)
+        on_pypi = _on_pypi(versions.pypi)
         on_ghcr = _on_ghcr(version, args.repo)
         on_github = _on_github(version, args.repo)
     except RegistryError as exc:
