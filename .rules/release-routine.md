@@ -28,9 +28,10 @@ App is provisioned with protected-branch deletion/recut permissions, the `releas
 `pypi-rc` environment with its own PyPI Trusted Publisher. Missing prerequisites
 mean BLOCKED; never substitute the operator's personal token. Product static
 token machine identity is separate work and is not granted here.
-The adoption-cut and public-product preview proposals need operator
-ratification. An adoption issue is still to be opened; neither that issue nor
-the internal-tool exception authorizes these proposals. CI runs tests and
+The adoption cut and the public-product preview exception were ratified on
+2026-10-07 as STD-U-821 amendment 1.3. An adoption issue is still to be
+opened; it records the anchor, base and reason and grants nothing beyond the
+amendment. CI runs tests and
 wheel/sdist smoke checks per PR. There is no hosted preview and no per-PR image.
 The RC image and wheel will come from `rc-build.yml` once it is enabled.
 

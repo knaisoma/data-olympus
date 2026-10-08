@@ -23,8 +23,15 @@ At `N=0`, the build still verifies all artifacts but records `promotable: false`
 A manual dispatch defaults to `dry_run: true` and also records that it cannot
 be promoted. A dry-run dispatch on a work branch uses the normal release version
 rules while checking that branch's exact head. It still requires a valid tagged
-cut. A `release/ADOPTION.json` record at the cut stops the build until explicit
-ratification is wired into the workflow during adoption.
+cut or a valid adoption record.
+
+When the cut carries `release/ADOPTION.json`, preflight reads the pinned
+ratification (`scripts/adoption_ratification.py`) and the vendored STD-U-821
+amendment from `origin/main`'s Git blobs, never from the checked-out `H`, and
+the engine validates the record with them. Only a dispatched dry run evaluates
+the record in adoption dry-run mode, which is never promotable. The cut build
+itself (`N=0`) builds and verifies but is not promotable. The reasoning and the
+cut sequence are in [the adoption cut runbook](adoption-cut-runbook.md).
 
 The transitional candidate and stable publication workflows remain available.
 Pushing a `v*` tag no longer launches a rebuild publication.
@@ -55,12 +62,12 @@ branch named `v2-packaging`) on manual PyPI dispatch is intentional: it keeps
 the release-tag namespace unambiguous and only removes build-only runs, never
 enabling an upload. To build such a ref, dispatch by its full commit SHA.
 
-## Task 9 prerequisites
+## Live verification still pending
 
-No dispatched end-to-end dry run has been performed for this workflow. Task 9
-must first wire operator adoption ratification into the workflow and make
-`rc-build.yml` available for dispatch from the default branch. Then dispatch a
-dry run on `release/new` and retain evidence of:
+No dispatched end-to-end dry run has been performed for this workflow. The
+adoption ratification is wired, and `rc-build.yml` is on the default branch, so
+the first runs are the push builds and the dry-run dispatch of the
+[adoption cut runbook](adoption-cut-runbook.md). Retain evidence of:
 
 - Buildx multi-architecture OCI export for `linux/amd64` and `linux/arm64`.
 - The `containerimage.digest` metadata key and its recorded digest.
@@ -70,4 +77,4 @@ dry run on `release/new` and retain evidence of:
   --format '{{.Manifest.Digest}}'` against a real published tag (for example
   `v0.11.0`) and retain the output, since only mocks exercise it today.
 
-This runner verification remains deferred until those prerequisites are met.
+This runner verification remains deferred until the cut is executed.

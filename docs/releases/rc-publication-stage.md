@@ -199,13 +199,16 @@ never deploys.
   and structure tests. The first enabled run after
   the R6 prerequisites is the live verification.
 
-## Task 9 prerequisites
+## Adoption cycle
 
-The adoption cycle cannot publish through this stage as it stands. The version
-engine refuses an unratified adoption cut (`adoption_unratified`), and stage 1
-(`rc_decide`) refuses adoption cuts. PR 330 fixes the engine heading match for
-the ratified amendment (`## Amendment 1.3: ...`) in ratified mode. Task 9 MUST
-wire both stages, the stage-1 build and this stage's recompute, with the same
-`scripts/adoption_ratification.py` `engine_args()` so that both compute the
-same identity; otherwise stage 2 refuses every adoption-cycle candidate as a
-recompute mismatch. Task 9 also owns the `SDLC_RC_CHANNEL` switch above.
+Both stages pass the same pinned ratification, so they compute the same
+identity for an adoption cut. This stage imports `RATIFIED` and `STANDARD_FILE`
+from `scripts/adoption_ratification.py` in its own `main` checkout and resolves
+the vendored amendment relative to it; stage 1 reads the same two files as
+blobs of `origin/main`. Nothing comes from `H`, the artifacts or workflow
+inputs, and this stage has no adoption dry-run mode. The cut build (`N=0`) and
+the head after the R4 placeholder (record still at `H`, not promotable) are
+refused here; the first candidate this stage can publish is the head after the
+record is retired (`0.11.1-rc.2` in the planned sequence). The threat model and
+the cut sequence are in [the adoption cut runbook](adoption-cut-runbook.md).
+`SDLC_RC_CHANNEL` stays unset until the first new-model release.
