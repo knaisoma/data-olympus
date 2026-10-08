@@ -24,11 +24,16 @@ supplies them must not be controllable by the code it judges.
   pull request, plus the vendored amendment at `STANDARD_FILE`. They are never
   workflow inputs, repository variables, release evidence or files from the
   tree of `H`.
-- Stage 2 (`rc-publish-stage.yml`, `scripts/rc_verify_and_publish.py`) and
-  promotion (`promote-release.yml`, `scripts/release_record.py`) run from a
-  checkout of `main` (stage 2 through `workflow_run`, promotion at the release
-  squash `S`, which is the `main` head). They import the constants and resolve
-  the standard file relative to that checkout. `H` is fetched as Git data only.
+- Stage 2 (`rc-publish-stage.yml`, `scripts/rc_verify_and_publish.py`) runs
+  from a checkout of `main` through `workflow_run`. It imports the constants
+  and resolves the standard file relative to that checkout. `H` is fetched as
+  Git data only.
+- Promotion (`promote-release.yml`, `scripts/release_record.py`) runs from the
+  release squash `S`, the `main` head, whose tree equals `H` by construction.
+  Its own copy is therefore the candidate's claim, not an independent check.
+  When the cut carries the record, it reads the module and the standard as
+  blobs of the RC's recorded `M` (the `main` that stage 2 ran from) with the
+  same parser as stage 1, and ignores its checkout's copy.
 - Stage 1 (`rc-build.yml`) checks out and runs the code at `H`, so its own copy
   of the module is candidate data. `scripts/rc_decide.py preflight` therefore
   reads `scripts/adoption_ratification.py` and the standard file as blobs of the
@@ -44,8 +49,10 @@ change `rc_decide.py` itself. Reading `main`'s blobs keeps an honest stage 1
 consistent with stage 2 and stops a branch commit from silently changing the
 ratification an honest build uses. The security boundary is stage 2, which
 never runs code from `H`, recomputes the identity with `main`'s constants and
-refuses any provenance that disagrees. Promotion repeats the recompute with the
-reviewed squash and refuses while `release/ADOPTION.json` exists at `H`.
+refuses any provenance that disagrees. Promotion repeats the recompute with
+`M`'s values and refuses while `release/ADOPTION.json` exists at `H`. Code-owner
+review on `release/new` also covers `release/` and the vendored amendment, so
+neither can change without the same review as `scripts/`.
 
 Adoption dry-run mode (`--adoption-dry-run`) is used only when preflight sees a
 `workflow_dispatch` with `dry_run: true`. It evaluates the record without the
@@ -130,7 +137,8 @@ Any difference from the table stops the runbook until it is explained.
 ## Step 2: open the adoption issue
 
 Write. Use this body; fill in `A` from step 3 before opening, so the issue and
-the record name the same commit.
+the record name the same commit. If step 3 restarts with a new `A`, edit the
+issue's anchor to the new value before opening the new record pull request.
 
 ```markdown
 ## Adoption record for STD-U-821
@@ -185,7 +193,8 @@ Merge rules, because the engine checks the result exactly:
 - Merge with squash or rebase, never a merge commit (`C` must be a non-merge
   commit).
 - Merge only while the `main` head still equals `A`. If anything else merged
-  first, close the pull request and restart this step with the new head.
+  first, close the pull request, update the anchor in the adoption issue to the
+  new head, and restart this step with it.
 
 After the merge, verify on a fresh fetch:
 
@@ -326,7 +335,9 @@ done by this runbook and must never be replaced by a personal token. Enable
 them in this order:
 
 1. The repository ruleset for `release/new`: pull request required, code-owner
-   review for `scripts/` and `.github/`. Needed before step 6 so the two
+   review for `scripts/`, `.github/`, `release/` and
+   `docs/releases/std-u-821-amendment-1.3.md` (all listed in
+   `.github/CODEOWNERS`). Needed before step 6 so the two
    commits land through pull requests.
 2. The GitHub App installation and the `sdlc-bot` environment (deployment
    branch policy `main` only, environment secret `SDLC_APP_PRIVATE_KEY`,

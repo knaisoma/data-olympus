@@ -128,8 +128,12 @@ during the adoption cycle.
 The operator ratified the adoption amendment on 2026-10-07 (STD-U-821
 amendment 1.3, vendored at `docs/releases/std-u-821-amendment-1.3.md`). Tooling
 accepts the record only with the ratification pinned on `main` in
-`scripts/adoption_ratification.py`, never from workflow inputs or `H`; adoption
-dry-run mode is limited to dispatched dry-run builds and is never promotable.
+`scripts/adoption_ratification.py` and the vendored amendment, never from
+workflow inputs or `H`. Stage 2 imports them from its `main` checkout; stage 1
+and promotion read them as blobs of `main` (promotion: the RC's recorded `M`),
+because their checkouts are `H` and the squash `S`, whose tree equals `H`.
+Adoption dry-run mode is limited to dispatched dry-run builds and is never
+promotable.
 An adoption issue is still to be opened to record the anchor, base and reason;
 neither this document nor that issue grants anything beyond the amendment.
 The cut sequence is `docs/releases/adoption-cut-runbook.md`.

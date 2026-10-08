@@ -6,7 +6,8 @@ Stage 2 itself needs no bot credential: it uses only the job's `GITHUB_TOKEN`
 and OIDC (PyPI Trusted Publishing and Sigstore) and never falls back to a
 personal token. The W9 machine identity is not a stage-2 credential. It is
 needed for what surrounds this workflow: the R6 `release/new` ruleset with
-code-owner review of `.github/` and `scripts/` (or owner action to create it),
+code-owner review of `.github/`, `scripts/`, `release/` and the vendored
+amendment `docs/releases/std-u-821-amendment-1.3.md` (or owner action to create it),
 and the unattended merges, recuts and pushes of the pipeline. The existing
 `rc-publish.yml`, `tag-release.yml` and `set-channel.yml` keep their behaviour
 (R9).
@@ -35,7 +36,8 @@ Re-run any `rc-publish-stage` run that was skipped around activation.
   the `rc` tag, a version tag, a candidate Git tag or a GitHub prerelease as
   evidence. Push workflows can write all of those with `GITHUB_TOKEN`.
 - The R6 ruleset on `release/new` (pull request required, code-owner review of
-  `.github/` and `scripts/`) MUST exist. Activation is blocked until it does,
+  `.github/`, `scripts/`, `release/` and
+  `docs/releases/std-u-821-amendment-1.3.md`) MUST exist. Activation is blocked until it does,
   because only that review stops merged `release/new` code from adding a
   workflow that self-grants `contents: write` or `packages: write`.
 
@@ -205,7 +207,7 @@ Both stages pass the same pinned ratification, so they compute the same
 identity for an adoption cut. This stage imports `RATIFIED` and `STANDARD_FILE`
 from `scripts/adoption_ratification.py` in its own `main` checkout and resolves
 the vendored amendment relative to it; stage 1 reads the same two files as
-blobs of `origin/main`. Nothing comes from `H`, the artifacts or workflow
+blobs of `origin/main`, and promotion as blobs of the recorded `M`. Nothing comes from `H`, the artifacts or workflow
 inputs, and this stage has no adoption dry-run mode. The cut build (`N=0`) and
 the head after the R4 placeholder (record still at `H`, not promotable) are
 refused here; the first candidate this stage can publish is the head after the

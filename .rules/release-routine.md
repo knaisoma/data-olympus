@@ -24,7 +24,8 @@ The workflow names below describe the target pipeline, delivered separately
 from these rules, not yet in the repository. New publication and branch-management
 workflows remain disabled behind `SDLC_PIPELINE=enabled` until the bot or GitHub
 App is provisioned with protected-branch deletion/recut permissions, the `release/new` ruleset
-(PR required, code-owner review for `scripts/` and `.github/`), and the
+(PR required, code-owner review for `scripts/`, `.github/`, `release/` and
+`docs/releases/std-u-821-amendment-1.3.md`), and the
 `pypi-rc` environment with its own PyPI Trusted Publisher. Missing prerequisites
 mean BLOCKED; never substitute the operator's personal token. Product static
 token machine identity is separate work and is not granted here.
