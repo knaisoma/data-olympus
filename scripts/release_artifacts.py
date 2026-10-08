@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import csv
 import hashlib
@@ -12,6 +13,7 @@ import json
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import tomllib
 import zipfile
@@ -616,6 +618,201 @@ def _run_finalize_archive(args: argparse.Namespace) -> int:
     return 0
 
 
+def _promotion_metadata(content: bytes, version: str) -> bytes:
+    """Normalize exactly one header; Version-like lines in the body stay payload."""
+    header, separator, body = content.partition(b"\n\n")
+    pattern = re.compile(rb"^Version: ([^\r\n]+)$", re.MULTILINE)
+    versions = pattern.findall(header)
+    if versions != [version.encode()]:
+        raise ValueError("distribution metadata version does not match provenance")
+    return pattern.sub(b"Version: __VERSION__", header) + separator + body
+
+
+def _promotion_path(name: str) -> None:
+    if (not name or name.startswith("/") or "\\" in name
+            or any(part in ("", ".", "..") for part in name.split("/"))):
+        raise ValueError("unsafe distribution member path")
+
+
+def _promotion_wheel(path: Path, version: str) -> dict[str, bytes]:
+    info_root = f"data_olympus-{version}.dist-info"
+    metadata = f"{info_root}/METADATA"
+    record = f"{info_root}/RECORD"
+    with zipfile.ZipFile(path) as archive:
+        members = [member for member in archive.infolist() if not member.is_dir()]
+        entries: dict[str, bytes] = {}
+        modes: dict[str, int] = {}
+        for member in members:
+            name = member.filename
+            _promotion_path(name)
+            if name in entries:
+                raise ValueError("duplicate wheel member")
+            mode = member.external_attr >> 16
+            if mode & 0o170000 not in (0, 0o100000):
+                raise ValueError("wheel members must be regular files")
+            if ".dist-info/" in name and not name.startswith(info_root + "/"):
+                raise ValueError("unexpected wheel distribution metadata path")
+            entries[name] = archive.read(member)
+            modes[name] = mode
+    if metadata not in entries or record not in entries:
+        raise ValueError("wheel must contain METADATA and RECORD")
+    seen: set[str] = set()
+    for row in csv.reader(io.StringIO(entries[record].decode())):
+        if len(row) != 3 or row[0] not in entries or row[0] in seen:
+            raise ValueError("invalid wheel RECORD entry")
+        name, digest, size = row
+        seen.add(name)
+        if name == record:
+            if digest or size:
+                raise ValueError("wheel RECORD must not hash itself")
+            continue
+        actual = base64.urlsafe_b64encode(hashlib.sha256(entries[name]).digest()).rstrip(b"=")
+        if digest != "sha256=" + actual.decode() or size != str(len(entries[name])):
+            raise ValueError("wheel RECORD hash or size mismatch")
+    if seen != entries.keys():
+        raise ValueError("wheel RECORD does not cover every file")
+    entries[metadata] = _promotion_metadata(entries[metadata], version)
+    entries[record] = _normalize_record(entries[record])
+    return {
+        _normalize_dist_info_path(name): str(modes[name]).encode() + b"\0" + content
+        for name, content in entries.items()
+    }
+
+
+def _promotion_project(content: bytes, version: str) -> bytes:
+    text = content.decode()
+    if tomllib.loads(text).get("project", {}).get("version") != version:
+        raise ValueError("sdist project.version does not match provenance")
+    # Preserve every byte except the value in the [project] version assignment.
+    pattern = re.compile(r'(^\[project\]\n(?:(?!\[)[^\n]*\n)*?version = ")[^"]+("\n)',
+                         re.MULTILINE)
+    updated, count = pattern.subn(r"\g<1>__VERSION__\g<2>", text)
+    if count != 1:
+        raise ValueError("sdist must have one replaceable project.version")
+    return updated.encode()
+
+
+def _promotion_sdist(path: Path, version: str) -> dict[str, bytes]:
+    prefix = f"data_olympus-{version}/"
+    normalized: dict[str, bytes] = {}
+    with tarfile.open(path, "r:gz") as archive:
+        for member in archive:
+            if member.isdir():
+                continue
+            if not member.isfile() or not member.name.startswith(prefix):
+                raise ValueError("sdist must contain regular files under its versioned root")
+            name = member.name.removeprefix(prefix)
+            _promotion_path(name)
+            if name in normalized:
+                raise ValueError("duplicate sdist member")
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise ValueError("sdist file has no payload")
+            content = stream.read()
+            if name == "PKG-INFO":
+                content = _promotion_metadata(content, version)
+            elif name == "pyproject.toml":
+                content = _promotion_project(content, version)
+            elif name == "uv.lock":
+                text = content.decode()
+                roots = [item for item in tomllib.loads(text).get("package", [])
+                         if item.get("name") == "data-olympus"]
+                if len(roots) != 1 or roots[0].get("version") != version:
+                    raise ValueError("sdist lock root version does not match provenance")
+                pattern = re.compile(
+                    r'(\[\[package\]\]\nname = "data-olympus"\nversion = ")[^"]+("\n)',
+                )
+                text, count = pattern.subn(r"\g<1>__VERSION__\g<2>", text)
+                if count != 1:
+                    raise ValueError("sdist must have one replaceable lock root version")
+                content = text.encode()
+            normalized[name] = str(member.mode).encode() + b"\0" + content
+    if not {"PKG-INFO", "pyproject.toml"} <= normalized.keys():
+        raise ValueError("sdist must contain PKG-INFO and pyproject.toml")
+    return normalized
+
+
+def compare_distributions(
+    candidate_wheel: Path, stable_wheel: Path, candidate_sdist: Path, stable_sdist: Path,
+    *, candidate_version: str, stable_version: str,
+) -> dict[str, object]:
+    """Compare all file bytes and modes, except version metadata and archive envelopes.
+
+    Normalize the wheel dist-info directory, sole Version header and derived
+    METADATA RECORD hash/size; validate every RECORD entry first. For sdists,
+    normalize the root directory, PKG-INFO Version header, project.version and
+    optional uv.lock root version. All other bytes and file modes must match.
+    Compression, timestamps, archive ordering and ownership are not payload.
+    """
+    result: dict[str, object] = {}
+    for kind, candidate, stable, normalize in (
+        ("wheel", candidate_wheel, stable_wheel, _promotion_wheel),
+        ("sdist", candidate_sdist, stable_sdist, _promotion_sdist),
+    ):
+        before = normalize(candidate, candidate_version)
+        after = normalize(stable, stable_version)
+        if before != after:
+            mismatches = sorted(name for name in before.keys() | after.keys()
+                                if before.get(name) != after.get(name))
+            raise ValueError(f"{kind} payload mismatch: " + ", ".join(mismatches[:20]))
+        result[kind] = {
+            "candidate_sha256": _sha256(candidate), "stable_sha256": _sha256(stable),
+            "normalized_payload_sha256": _payload_hash(before),
+            "files_compared": len(before), "equivalent": True,
+        }
+    return result
+
+
+def _run_stable_promotion(args: argparse.Namespace) -> int:
+    record = json.loads(args.release_record.read_text(encoding="utf-8"))
+    provenance = json.loads(args.candidate_provenance.read_text(encoding="utf-8"))
+    if not isinstance(record, dict) or record.get("schema_version") != 1:
+        raise ValueError("invalid release record schema")
+    if not isinstance(provenance, dict):
+        raise ValueError("candidate provenance must be a JSON object")
+    for key in ("H", "S", "B", "M"):
+        if re.fullmatch(r"[0-9a-f]{40}", _receipt_string(record, key)) is None:
+            raise ValueError(f"release record requires an exact {key} SHA")
+    identity = CandidateVersion.from_tag(_receipt_string(record, "candidate_tag"))
+    if (identity.number == 0 or record.get("target") != identity.base
+            or record.get("tag") != identity.stable_tag
+            or record.get("candidate_version") != identity.pypi_version):
+        raise ValueError("release record version mapping is inconsistent")
+    if _IMAGE_DIGEST.fullmatch(_receipt_string(record, "image_digest")) is None:
+        raise ValueError("release record image digest is invalid")
+    if (provenance.get("promotable") is not True or provenance.get("dry_run") is not False
+            or provenance.get("N") != identity.number):
+        raise ValueError("candidate provenance is not promotable")
+    for key in ("H", "B", "M", "candidate_tag", "image_digest"):
+        if provenance.get(key) != record[key]:
+            raise ValueError(f"release record {key} does not match candidate provenance")
+    candidate = _load_candidate_receipt(args.candidate_provenance, args.candidate_wheel)
+    if candidate.source_sha != record["H"] or candidate.version != identity.pypi_version:
+        raise ValueError("candidate source SHA or version does not match release record")
+    if _sha256(args.candidate_sdist) != candidate.sdist_sha256:
+        raise ValueError("candidate sdist hash does not match provenance")
+    if _source_sha(args.source) != record["S"]:
+        raise ValueError("stable checkout source SHA does not match release record S")
+    stable = build_distribution(args.source, identity.base, args.output)
+    if stable.source_sha != record["S"]:
+        raise ValueError("stable build source SHA does not match release record S")
+    if stable.source_tree_sha256 != candidate.source_tree_sha256:
+        raise ValueError("candidate and stable source tree hashes differ")
+    if stable.lock_sha256 != candidate.lock_sha256:
+        raise ValueError("candidate and stable normalized lock hashes differ")
+    comparison = compare_distributions(
+        candidate.wheel, stable.wheel, args.candidate_sdist, stable.sdist,
+        candidate_version=candidate.version, stable_version=stable.version,
+    )
+    payload = record | {"candidate": _jsonable(candidate), "stable": _jsonable(stable),
+                        "comparison": comparison, "oci_version_label": identity.git_tag}
+    args.provenance.parent.mkdir(parents=True, exist_ok=True)
+    temporary = args.provenance.with_suffix(args.provenance.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(args.provenance)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="release_artifacts")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -637,6 +834,12 @@ def main(argv: list[str] | None = None) -> int:
     stable.add_argument("--candidate-wheel", required=True, type=Path)
     stable.add_argument("--provenance", required=True, type=Path)
     stable.set_defaults(handler=_run_stable)
+
+    promotion = subparsers.add_parser("stable-promotion")
+    for option in ("source", "release-record", "candidate-provenance", "candidate-wheel",
+                   "candidate-sdist", "output", "provenance"):
+        promotion.add_argument(f"--{option}", required=True, type=Path)
+    promotion.set_defaults(handler=_run_stable_promotion)
 
     finalize = subparsers.add_parser("finalize-candidate")
     finalize.add_argument("--provenance", required=True, type=Path)

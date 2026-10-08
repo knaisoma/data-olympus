@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import copy
 import hashlib
 import importlib.util
 import json
@@ -10,6 +12,7 @@ import sys
 import tomllib
 import zipfile
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -301,6 +304,87 @@ def test_compare_wheels_accepts_version_only_difference(built_pair) -> None:
     assert receipt.candidate_version == "0.6.0rc3"
     assert receipt.stable_version == "0.6.0"
     assert receipt.files_compared > 0
+
+
+def test_promotion_compares_real_wheel_and_sdist(built_pair) -> None:
+    module, candidate, stable = built_pair
+    comparison = module.compare_distributions(
+        candidate.wheel, stable.wheel, candidate.sdist, stable.sdist,
+        candidate_version=candidate.version, stable_version=stable.version,
+    )
+    assert comparison["wheel"]["equivalent"]
+    assert comparison["sdist"]["equivalent"]
+
+
+def _legacy_baseline() -> ModuleType:
+    """Reconstruct and fingerprint the pre-Task-5 executable, without Git history.
+
+    The pinned AST digest comes from 343f0509bb11c91fb99157321691c46ef3c76175.
+    This runs in shallow CI checkouts and refuses any edit to legacy functions.
+    Only the newly added promotion imports, functions and parser block are removed.
+    """
+    tree = ast.parse(SCRIPT.read_text())
+    tree.body = [node for node in tree.body if not (
+        (isinstance(node, ast.FunctionDef)
+         and (node.name.startswith("_promotion_")
+              or node.name in ("compare_distributions", "_run_stable_promotion")))
+        or (isinstance(node, ast.Import) and len(node.names) == 1
+            and node.names[0].name in ("base64", "tarfile"))
+    )]
+    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                and node.name == "main")
+    main.body = [node for node in main.body if not any(
+        isinstance(part, ast.Name) and part.id == "promotion" for part in ast.walk(node)
+    )]
+    digest = hashlib.sha256(ast.dump(tree).encode()).hexdigest()
+    assert digest == "19f3bf7fbf0bab4e2af99f1fc6ed838a4de3c634f6047ef7c258d94c924d39e2"
+    baseline = ModuleType("release_artifacts_legacy_baseline")
+    baseline.__file__ = str(SCRIPT)
+    sys.modules[baseline.__name__] = baseline
+    exec(compile(copy.deepcopy(tree), str(SCRIPT), "exec"), baseline.__dict__)
+    return baseline
+
+
+def test_r9_legacy_candidate_and_stable_bytes_match_baseline(tmp_path, monkeypatch) -> None:
+    """Run both old 0.x CLI paths and compare actual artifacts and provenance bytes."""
+    import subprocess
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "pyproject.toml").write_text(
+        '[project]\nname = "data-olympus"\nversion = "0.6.0"\n'
+        '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n',
+    )
+    (source / "uv.lock").write_text(
+        'version = 1\n[[package]]\nname = "data-olympus"\nversion = "0.6.0"\n'
+        'source = { editable = "." }\n',
+    )
+    package = source / "src/data_olympus"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('VALUE = "unchanged"\n')
+    for command in (["init"], ["config", "user.name", "Test"],
+                    ["config", "user.email", "test@example.invalid"],
+                    ["config", "commit.gpgsign", "false"], ["add", "."],
+                    ["commit", "-m", "chore: fixture"]):
+        subprocess.run(["git", *command], cwd=source, check=True, capture_output=True)
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    outputs = []
+    for name, module in (("baseline", _legacy_baseline()), ("current", _module())):
+        root = tmp_path / name
+        candidate_provenance = root / "candidate.json"
+        assert module.main([
+            "candidate", "--source", str(source), "--base", "0.6.0", "--number", "3",
+            "--output", str(root), "--provenance", str(candidate_provenance),
+        ]) == 0
+        assert module.main([
+            "stable", "--source", str(source), "--base", "0.6.0", "--output", str(root),
+            "--candidate-provenance", str(candidate_provenance),
+            "--candidate-wheel", str(next(root.glob("*.whl"))),
+            "--provenance", str(root / "stable.json"),
+        ]) == 0
+        outputs.append({path.name: path.read_bytes() for path in root.iterdir()})
+    assert len(outputs[0]) == 6  # Two wheels, two sdists, two provenance records.
+    assert outputs[0] == outputs[1]
 
 
 def _mutate_wheel(source: Path, output: Path, target: str) -> Path:
