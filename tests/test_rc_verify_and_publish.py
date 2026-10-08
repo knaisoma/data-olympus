@@ -906,13 +906,43 @@ def test_attest_hash_check_rejects_tampered_files(tmp_path):
 
     assert run() == 0
     assert run(WHEEL_SHA256=digest(b"other")) != 0
-    assert run(SDIST="../../evil.tar.gz") != 0
+    # Each unsafe name points at an existing file with the matching hash, so only
+    # the bash name regex can reject it.
+    # dist/../../ is to-delete/, outside the downloaded artifact.
+    (tmp_path / "to-delete" / "evil.tar.gz").write_bytes(b"sdist")
+    (tmp_path / "to-delete" / "evil.whl").write_bytes(b"wheel")
+    (dist / "data_olympus-a b.whl").write_bytes(b"wheel")
+    (dist / "data_olympus-a b.tar.gz").write_bytes(b"sdist")
+    for traversal in ("../../evil.tar.gz", "data_olympus-a b.tar.gz"):
+        assert run(SDIST=traversal) != 0, traversal
+    for traversal in ("../../evil.whl", "data_olympus-a b.whl"):
+        assert run(WHEEL=traversal) != 0, traversal
     assert run(IMAGE_DIGEST="sha256:" + "a" * 63) != 0
     # A symlink to identical bytes passes sha256sum, so only the -L check stops it.
     (dist / wheel).unlink()
     (tmp_path / "outside.whl").write_bytes(b"wheel")
     (dist / wheel).symlink_to(tmp_path / "outside.whl")
     assert run() != 0
+
+
+def test_docker_login_reads_token_from_stdin_only(tmp_path):
+    """The GHCR token reaches docker on stdin, never on argv."""
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    step = next(s for s in jobs["attest"]["steps"] if "docker login" in s.get("run", ""))
+    assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    assert "--password-stdin" in step["run"]
+    assert re.search(r"--password(?!-stdin)|-p\s", step["run"]) is None
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "docker").write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$OUT/argv"\n'
+                                 'cat > "$OUT/stdin"\n')
+    (fake / "docker").chmod(0o755)
+    token = "fake-token-value"
+    subprocess.run(["bash", "-c", step["run"]], check=True, env={
+        "PATH": f"{fake}:{os.environ['PATH']}", "OUT": str(tmp_path),
+        "GH_TOKEN": token, "GITHUB_ACTOR": "machine"})
+    assert token not in (tmp_path / "argv").read_text()
+    assert (tmp_path / "stdin").read_text() == token
 
 
 def test_secrets_live_only_in_declared_environments():

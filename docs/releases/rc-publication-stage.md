@@ -17,6 +17,11 @@ These carry the R8 boundary ("code merged to `release/new` must never run with
 publish credentials"). `SDLC_PIPELINE` MUST NOT be set to `enabled` until every
 item holds:
 
+Set `SDLC_PIPELINE=enabled` only while no `rc-build` run is in progress: the
+lock group is evaluated when a run is queued and the job gate when it starts,
+so a run admitted across the switch would execute outside the shared lock.
+Re-run any `rc-publish-stage` run that was skipped around activation.
+
 - The PyPI Trusted Publisher for `data-olympus` MUST be owner `knaisoma`,
   repository `data-olympus`, workflow `rc-publish-stage.yml`, environment
   `pypi-rc`. PyPI matches repository and workflow file name, not the ref, so
@@ -115,8 +120,9 @@ token, it follows the pipeline convention: the single `sdlc-bot` environment
 the non-secret variable `vars.SDLC_APP_ID`, and the private key as the
 environment secret `SDLC_APP_PRIVATE_KEY`, declared only by the job that uses
 it. A repository-wide Actions secret is not allowed. The `pypi-rc` environment
-stays the PyPI environment and is restricted to `main` in the same way. `workflow_run` jobs run with the `main` ref, so these policies admit
-this workflow and reject a definition from any other branch.
+stays the PyPI environment and is restricted to `main` in the same way.
+`workflow_run` jobs run with the `main` ref, so these policies admit this
+workflow and reject a definition from any other branch.
 `tests/test_rc_verify_and_publish.py` enforces that a job referencing
 `secrets.` declares an approved environment.
 
@@ -133,7 +139,8 @@ registry push, and runs `actions/attest-build-provenance` twice:
 - The wheel and sdist: subjects are the checked copies, byte-identical to the
   files that were hash-verified against provenance and uploaded to PyPI.
 
-Promotion (`promote-release`, Task 5) MUST verify each object before reusing it:
+Promotion (`promote-release`, Task 5) MUST verify each object before reusing
+it:
 
 ```bash
 gh attestation verify oci://ghcr.io/knaisoma/data-olympus@<digest> \

@@ -1,14 +1,16 @@
 name: rc-publish-stage
 
 # Stage 2 of the two-stage RC pipeline (W6 R8). workflow_run always uses the
-# definition on main, and every job checks out that same main commit
-# (github.sha) for the scripts. The candidate H is fetched as Git data only;
+# definition on main, and every job that runs scripts checks out that same
+# main commit (github.sha). The candidate H is fetched as Git data only;
 # no code from H runs here. Disabled unless vars.SDLC_PIPELINE is exactly
 # 'enabled' (R6). Only GITHUB_TOKEN and OIDC are used, never a personal
 # token; stage 2 needs no GitHub App token. If a job ever needs one, it uses
 # the `sdlc-bot` environment (main-only), App id `vars.SDLC_APP_ID` and the
-# environment secret `SDLC_APP_PRIVATE_KEY`, never a repository-wide secret. Every job repeats the full verification
-# under the shared lock.
+# environment secret `SDLC_APP_PRIVATE_KEY`, never a repository-wide secret.
+# Every job that runs repository code repeats the full verification under the
+# shared lock. `attest` runs none and only re-checks hashes; it must never get
+# a checkout or the script, because it holds the signing identity.
 #
 # Action pins: checkout, setup-uv, attest-build-provenance and
 # gh-action-pypi-publish use full commit SHAs with the tag in a trailing
