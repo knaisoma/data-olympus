@@ -89,9 +89,19 @@ Any other such tag, for example one on an old `release/new` tip, refuses both
 modes with `unreconciled stable tag <tag>`. A tag that does not resolve to a
 commit refuses with a message naming that tag.
 
-The recut tag must be annotated, the highest stable tag on main's first-parent
-line, and point to main's head or latest release squash. The squash must have
-the release subject for the tag, the recorded sole parent, and the same tree as
+The newest stable tag on main's first-parent line must then be a reconciled
+release in both modes: annotated, and on a commit whose subject is
+`release: <version>` (which may be main's head). A lightweight tag or a tag on
+an ordinary commit refuses with `release tag must be annotated: <tag>` or
+`release squash subject does not match tag <tag>`, so an ad hoc tag cannot
+steer hotfix numbering. Releases up to the adoption base `v0.11.0` predate the
+squash model and are tagged on ordinary commits; for them a hotfix cut
+requires only the annotation. Recut always requires the release subject, so it
+is never planned from a pre-model tag: the first recut follows the first
+new-model release.
+
+The recut tag must be that newest stable tag, and point to main's head or
+latest release squash. The squash must have the recorded sole parent, and the same tree as
 reviewed `H`. The released candidate is recomputed by the engine (fixes only
 for a hotfix release) and must be promotable at the tag's version. The planner
 also runs the engine on the recreated branch: it must cut at the verified tag
@@ -137,11 +147,14 @@ The guarantee is narrower than "every privileged workflow holds the lock":
   check, not a lock: an old-path run started after it is not blocked. Keep
   `SDLC_PIPELINE` unset, and these workflows disabled, until the old path is
   retired, or dispatch only when no old-path run can start.
-* GitHub keeps at most one pending run per concurrency group. A new dispatch of
-  any workflow in `data-olympus-promotion` cancels the run already waiting, even
-  with `cancel-in-progress: false`; that cancelled run may be a stage 2
-  publication or a promotion. Before dispatching, check that no run in the
-  group is pending. If one was cancelled, re-dispatch it after the current run
+* GitHub keeps at most one pending run per concurrency group. A new run that
+  enters `data-olympus-promotion` cancels the run already waiting, even with
+  `cancel-in-progress: false`; that cancelled run may be a stage 2 publication
+  or a promotion. Only admitted runs enter the group: a recut or hotfix
+  dispatch from a ref other than `main`, or while `SDLC_PIPELINE` is not
+  `enabled`, gets a private `sdlc-branch-noop-<run id>` group, so a refused
+  dispatch cannot cancel anything. An admitted but stale dispatch still can.
+  Before dispatching, check that no run in the group is pending. If one was cancelled, re-dispatch it after the current run
   finishes; publication is reconciled by `H` and digest, so a retry of the same
   `H` verifies and reuses what was published, and a recut is re-planned from
   fresh snapshots.
@@ -161,7 +174,7 @@ preservation and conflict checks.
 These are tracked prerequisites for setting `SDLC_PIPELINE=enabled`; until
 each is met, the workflows stay disabled:
 
-* The `sdlc-bot` environment, its two environment secrets and the W9 App
+* The `sdlc-bot` environment, its variable and secret, and the W9 App
   installation described above (W9 sitting 1).
 * Publication evidence must come from facts, not attestation: either the
   Task 5 release record (tag, `H`, squash and digest) is consumed as the

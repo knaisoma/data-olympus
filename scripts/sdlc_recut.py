@@ -178,6 +178,24 @@ def plan_hotfix(*, refs, stable, candidate):
     }
 
 
+def _require_release_tag(cwd, refs, tag, commit, *, strict):
+    """The newest stable tag on main's line must be a reconciled release.
+
+    It must be annotated and name a `release: X.Y.Z` squash for its version.
+    Releases up to the adoption base (v0.11.0 and older) predate the squash
+    model and are tagged on ordinary commits, so in hotfix mode only the
+    annotation is required for them. Recut is strict: a recut always follows
+    a new-model release, never a historical one.
+    """
+    if _git(cwd, "cat-file", "-t", refs[f"refs/tags/{tag}"]) != "tag":
+        raise RecutError(f"release tag must be annotated: {tag}")
+    historical = engine._version(tag) <= engine._version(f"v{engine.ADOPTION_BASE}")
+    if (strict or not historical) and _git(
+        cwd, "show", "-s", "--format=%s", commit,
+    ) != f"release: {tag[1:]}":
+        raise RecutError(f"release squash subject does not match tag {tag}")
+
+
 def _base(cwd, left, right):
     bases = _git(cwd, "merge-base", "--all", left, right).splitlines()
     if len(bases) != 1:
@@ -257,6 +275,7 @@ def prepare_plan(*, cwd, remote, mode, expected_main, expected_head, expected_ba
     for entry in off_line:
         if entry >= latest or not git.ancestor(entry[2], m):
             raise RecutError(f"unreconciled stable tag {entry[1]}: not on main's first-parent line")
+    _require_release_tag(cwd, refs, latest_tag, latest_commit, strict=mode == "recut")
     if mode == "hotfix":
         if expected_base != latest_commit or m != latest_commit:
             raise RecutError("hotfix base must be current stable main; adoption cannot cut hotfix")
@@ -270,8 +289,6 @@ def prepare_plan(*, cwd, remote, mode, expected_main, expected_head, expected_ba
     if tag != latest_tag:
         raise RecutError("tag is not the current stable release on main")
     tag_ref = f"refs/tags/{tag}"
-    if _git(cwd, "cat-file", "-t", refs[tag_ref]) != "tag":
-        raise RecutError("release tag must be annotated")
     release = git.resolve(tag_ref)
     if ev["squash"] != release:
         raise RecutError("unreconciled tag and squash evidence")
@@ -280,8 +297,6 @@ def prepare_plan(*, cwd, remote, mode, expected_main, expected_head, expected_ba
     )), None)
     if release != m and release != latest_release:
         raise RecutError("tag must name main head or latest release squash")
-    if _git(cwd, "show", "-s", "--format=%s", release) != f"release: {tag[1:]}":
-        raise RecutError("release squash subject does not match tag")
     parents = _git(cwd, "rev-list", "--parents", "-n", "1", release).split()[1:]
     if parents != [ev["B"]] or ev["M"] != ev["B"]:
         raise RecutError("unreconciled release parent/base")

@@ -26,7 +26,7 @@ class Repository:
         self.git("config", "user.name", "Test")
         self.git("config", "user.email", "test@example.invalid")
         self.git("config", "commit.gpgsign", "false")
-        self.base = self.commit("chore: initial", "initial\n")
+        self.base = self.commit("release: 1.4.2", "initial\n")
         self.git("tag", "-a", "v1.4.2", "-m", "Previous release")
         self.git("checkout", "-b", "release/new")
 
@@ -575,7 +575,8 @@ def test_unpromotable_released_candidate_is_refused(repo):
 
 def test_tag_must_be_the_latest_stable_tag_on_main(repo):
     evidence = repo.release()
-    repo.git("tag", "-a", "v1.4.4", "-m", "Newer stable tag", repo.base)
+    newer = repo.commit("release: 1.4.4")
+    repo.git("tag", "-a", "v1.4.4", "-m", "Newer stable release", newer)
     repo.publish_fixture()
     with pytest.raises(recut.RecutError, match="not the current stable release on main"):
         recut.prepare_plan(**repo.options(evidence))
@@ -656,7 +657,7 @@ def test_merged_off_line_stable_tag_is_allowed_only_when_older(tmp_path, side_ta
     side = repo.commit("fix: merged side release", "side\n")
     repo.git("tag", "-a", side_tag, "-m", "Historical release", side)
     repo.git("checkout", "main")
-    repo.git("merge", "--no-ff", "-m", "chore: merge side", "side")
+    repo.git("merge", "--no-ff", "-m", "release: 1.4.3", "side")
     merged = repo.git("rev-parse", "HEAD")
     repo.git("tag", "-a", "v1.4.3", "-m", "Current stable", merged)
     repo.git("branch", "-f", "release/new", merged)
@@ -757,3 +758,66 @@ def test_cli_refuses_active_old_path_run(repo):
     assert result.returncode == 1
     assert "old-path workflow run active" in result.stderr
     assert result.stdout == ""
+
+
+# --- The newest stable tag must be a reconciled release in both modes. -------
+
+def test_hotfix_refuses_lightweight_latest_stable_tag(repo):
+    repo.git("checkout", "main")
+    head = repo.commit("release: 1.5.0")
+    repo.git("tag", "v1.5.0", head)
+    repo.publish_fixture()
+    with pytest.raises(recut.RecutError, match="release tag must be annotated: v1.5.0"):
+        recut.prepare_plan(**_hotfix_options(repo, head))
+
+
+def test_hotfix_refuses_latest_stable_tag_on_non_release_commit(repo):
+    repo.git("checkout", "main")
+    head = repo.commit("feat: unreleased work")
+    repo.git("tag", "-a", "v1.5.0", "-m", "Ad hoc tag", head)
+    repo.publish_fixture()
+    with pytest.raises(recut.RecutError, match="subject does not match tag v1.5.0"):
+        recut.prepare_plan(**_hotfix_options(repo, head))
+
+
+def _historical_repo(tmp_path, *, annotated: bool) -> Repository:
+    """Pre-model releases (v0.11.0 and older) are tags on ordinary commits."""
+    repo = Repository.__new__(Repository)
+    repo.path = tmp_path / "source"
+    repo.path.mkdir()
+    repo.remote = tmp_path / "remote.git"
+    repo.git("init", "-b", "main")
+    repo.git("config", "user.name", "Test")
+    repo.git("config", "user.email", "test@example.invalid")
+    repo.git("config", "commit.gpgsign", "false")
+    repo.base = repo.commit("fix(config): refuse an unrecognised value", "old path\n")
+    repo.git("tag", *(["-a", "-m", "Old path release"] if annotated else []), "v0.11.0")
+    repo.git("branch", "release/new")
+    repo.publish_fixture()
+    return repo
+
+
+def test_hotfix_accepts_historical_annotated_tag_on_ordinary_commit(tmp_path):
+    repo = _historical_repo(tmp_path, annotated=True)
+    plan = recut.prepare_plan(**_hotfix_options(repo, repo.base))
+    assert plan["updates"] == {"refs/heads/hotfix/new": repo.base}
+    assert plan["candidate"]["candidate"] == "0.11.1-hotfix.rc.0"
+
+
+def test_historical_tag_must_still_be_annotated(tmp_path):
+    repo = _historical_repo(tmp_path, annotated=False)
+    with pytest.raises(recut.RecutError, match="release tag must be annotated: v0.11.0"):
+        recut.prepare_plan(**_hotfix_options(repo, repo.base))
+
+
+def test_recut_of_a_historical_tag_is_refused(tmp_path):
+    """Recut follows a new-model release; a pre-model tag never qualifies."""
+    repo = _historical_repo(tmp_path, annotated=True)
+    evidence = {
+        "tag": "v0.11.0", "squash": repo.base, "H": repo.base, "B": repo.base,
+        "M": repo.base, "branch": "release/new", "digest": "sha256:" + "d" * 64,
+        "publication": {"pypi": True, "ghcr": True, "github": True, "mcp": True},
+        "delivery_verified": True, "unpromoted_heads": [],
+    }
+    with pytest.raises(recut.RecutError, match="subject does not match tag v0.11.0"):
+        recut.prepare_plan(**repo.options(evidence))

@@ -20,8 +20,12 @@ on:
         required: true
         type: string
 
+# Only an admitted run (main, pipeline enabled: the same conditions both jobs
+# enforce) takes the shared promotion lock. Any other run gets a private
+# per-run group, so a refused dispatch can never cancel a pending
+# publication, promotion or recut.
 concurrency:
-  group: data-olympus-promotion
+  group: ${{ (github.ref == 'refs/heads/main' && vars.SDLC_PIPELINE == 'enabled') && 'data-olympus-promotion' || format('sdlc-branch-noop-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
