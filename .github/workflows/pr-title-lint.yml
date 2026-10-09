@@ -33,4 +33,11 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: .venv/bin/python -I scripts/lint_pr_title.py --base "$PR_BASE" --head "$PR_HEAD" --body "$PR_BODY"
+          PR_BASE_REF: ${{ github.base_ref }}
+          PR_HEAD_REF: ${{ github.head_ref }}
+          PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: >-
+          .venv/bin/python -I scripts/lint_pr_title.py --base "$PR_BASE" --head "$PR_HEAD"
+          --body "$PR_BODY" --base-ref "$PR_BASE_REF" --head-ref "$PR_HEAD_REF"
+          --base-repo "$PR_BASE_REPO" --head-repo "$PR_HEAD_REPO"

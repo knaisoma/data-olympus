@@ -80,6 +80,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `SDLC_REQUIRED_CODEQL_CHECKS`. The proof that the trees of `S` and `H` are
   equal ties the two results to the same code. All other rules stay fail
   closed.
+* Accept the subject `release: X.Y.Z` (STD-U-821) in the PR title lint, only for
+  a same-repository pull request from `release/new` or `hotfix/new` into `main`;
+  every other base or head still rejects the `release` type, and malformed
+  versions stay rejected. For that subject the squash-impact comparison is
+  skipped, since the engine computes the version from the commits and promotion
+  proves subject and body byte for byte. The workflow passes the branch names
+  and repositories as environment variables. The workflow runs the base-ref
+  copy of the linter, so this change applies to pull requests only after it
+  lands on the base branch they target.
 * Tolerate GitHub release listing lag after creating a draft and after
   uploading assets, in stage 2 `reserve` and in the stable release step: the
   read is repeated with bounded backoff (about 60 seconds) and then fails
