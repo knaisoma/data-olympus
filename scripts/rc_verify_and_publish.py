@@ -306,10 +306,29 @@ class Release:
     assets: dict[str, bytes]
 
 
+def tag_message(verified: Verified) -> str:
+    """The annotated candidate tag message; it binds H and every asset's bytes.
+
+    Exact format, lines joined by "\n" with no trailing newline:
+
+        Candidate <version>
+        H: <head>
+        <empty line>
+        sha256 <64 lowercase hex>  <asset name>    (one per asset, sorted by name)
+
+    The read-only jobs cannot see draft releases, so this contents-readable
+    message is what binds the bytes PyPI and GHCR receive to the reservation.
+    """
+    hashes = [f"sha256 {hashlib.sha256(data).hexdigest()}  {name}"
+              for name, data in sorted(verified.assets.items())]
+    return "\n".join([f"Candidate {verified.version}", f"H: {verified.head}", "", *hashes])
+
+
 class Client(Protocol):
     def python_hashes(self, version: str) -> dict[str, str]: ...
     def image_digest(self, reference: str) -> str | None: ...
     def tag_head(self, tag: str) -> str | None: ...
+    def tag_message(self, tag: str) -> str | None: ...
     def release(self, tag: str) -> Release | None: ...
     def reserve(self, verified: Verified) -> None: ...
     def publish_release(self, verified: Verified) -> None: ...
@@ -351,11 +370,18 @@ def inventory(verified: Verified, client: Client, *, drafts_visible: bool = True
                     "existing publication lacks same-H provenance")
         else:
             require(tag == verified.head, "existing publication lacks a tag at H")
+    if tag is not None:
+        # Exact match; only a trailing newline added by Git is tolerated.
+        message = client.tag_message(verified.version)
+        require(isinstance(message, str) and message.rstrip("\n") == tag_message(verified),
+                "candidate tag does not bind these asset hashes; this H was reserved "
+                "with other bytes or before the hash-binding tag format")
     return python, image, release
 
 
 def reservation_bound(verified: Verified, client: Client) -> tuple[dict[str, str], str | None]:
-    """Later read-only jobs: the tag binds H and any visible release is complete."""
+    """Later read-only jobs: the tag binds H and the asset hashes (checked in
+    inventory), and any visible release is complete."""
     python, image, release = inventory(verified, client, drafts_visible=False)
     require(client.tag_head(verified.version) == verified.head
             and (release is None or release.assets == verified.assets),
@@ -488,6 +514,10 @@ def _stderr_excerpt(raw: bytes) -> str:
             text = text.replace(value, _REDACTED)
     text = _TERMINAL_ESCAPES.sub(" ", text)
     text = " ".join(re.sub(r"[^\x20-\x7e]", " ", text).split())
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = os.environ.get(name)
+        if value:
+            text = text.replace(value, _REDACTED)
     for pattern, replacement in _SECRET_PATTERNS:
         text = pattern.sub(replacement, text)
     while "::" in text or "##[" in text:
@@ -565,16 +595,28 @@ class Registries:
                       f"docker://{IMAGE}:{reference}", absent=r"manifest unknown|MANIFEST_UNKNOWN")
         return "sha256:" + hashlib.sha256(raw).hexdigest() if raw is not None else None
 
-    def tag_head(self, tag: str) -> str | None:
+    def tag_object(self, tag: str) -> dict[str, Any] | None:
         result = self.api(f"git/ref/tags/{tag}")
         if result is None:
             return None
         obj = result["object"]
         require(obj["type"] == "tag", "candidate tag must be annotated")
         tag_data = self.api(f"git/tags/{obj['sha']}")
-        require(tag_data is not None and tag_data["object"]["type"] == "commit",
+        require(isinstance(tag_data, dict) and tag_data["object"]["type"] == "commit",
                 "candidate tag must point directly to a commit")
-        return str(tag_data["object"]["sha"])
+        return dict(tag_data)
+
+    def tag_head(self, tag: str) -> str | None:
+        tag_data = self.tag_object(tag)
+        return None if tag_data is None else str(tag_data["object"]["sha"])
+
+    def tag_message(self, tag: str) -> str | None:
+        tag_data = self.tag_object(tag)
+        if tag_data is None:
+            return None
+        message = tag_data.get("message")
+        require(isinstance(message, str), "unreadable candidate tag message")
+        return str(message)
 
     def find_release(self, tag: str) -> dict[str, Any] | None:
         """List releases (drafts too, given push access); match tag_name exactly.
@@ -620,7 +662,7 @@ class Registries:
     def reserve(self, verified: Verified) -> None:
         if self.tag_head(verified.version) is None:
             tag = self.api("git/tags", {"tag": verified.version,
-                           "message": f"Candidate {verified.version}\nH: {verified.head}",
+                           "message": tag_message(verified),
                            "object": verified.head, "type": "commit"})
             self.api("git/refs", {"ref": f"refs/tags/{verified.version}", "sha": tag["sha"]})
         current = self.release(verified.version)

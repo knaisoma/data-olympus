@@ -197,6 +197,10 @@ jobs:
 
   attest:
     needs: publish
+    # Explicit: a skipped pypi (PyPI already holds the files, e.g. "Re-run all
+    # jobs") would otherwise skip this job and finalize, leaving a green run
+    # with an unpublished draft and no attestation.
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
     # The signing identity lives only here. This job runs no repository code
     # and parses no archive: it re-checks the downloaded files against the
@@ -261,6 +265,7 @@ jobs:
 
   finalize:
     needs: [publish, attest]
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.attest.result == 'success' }}
     runs-on: ubuntu-latest
     # Last on purpose: publishing freezes the release (immutable releases), so
     # it happens only after every other surface is complete and re-verified.

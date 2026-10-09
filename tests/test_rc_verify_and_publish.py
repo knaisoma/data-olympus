@@ -106,6 +106,7 @@ class Registry:
         self.python = {}
         self.image = None
         self.tag = None
+        self.tag_text = None
         self.assets = None
         self.draft = True
         # Production read-only jobs (contents: read) cannot list draft releases.
@@ -122,6 +123,9 @@ class Registry:
     def tag_head(self, _tag):
         return self.tag
 
+    def tag_message(self, _tag):
+        return self.tag_text if self.tag is not None else None
+
     def release(self, _tag):
         if self.assets is None or (self.draft and self.hide_drafts):
             return None
@@ -129,7 +133,8 @@ class Registry:
 
     def reserve(self, verified):
         assert self.draft, "assets uploaded to a published (immutable) release"
-        self.tag = verified.head
+        if self.tag is None:
+            bind_tag(self, verified)
         self.assets = dict(self.assets or {})
         for name, data in verified.assets.items():
             self.assets.setdefault(name, data)
@@ -146,6 +151,11 @@ class Registry:
 
     def move_channel(self, _verified):
         self.writes.append("rc")
+
+
+def bind_tag(registry, verified):
+    """The annotated tag a correct reserve writes: H plus every asset hash."""
+    registry.tag, registry.tag_text = verified.head, stage.tag_message(verified)
 
 
 def no_sleep(_seconds):
@@ -248,7 +258,7 @@ def test_duplicate_identity_with_different_content(build, surface):
     elif surface == "tag":
         registry.tag = "0" * 40
     else:
-        registry.tag = verified.head
+        bind_tag(registry, verified)
         registry.assets = {"release-provenance.json": b"other H"}
     with pytest.raises(ValueError, match="collision"):
         stage.reserve(verified, registry)
@@ -531,7 +541,7 @@ def test_oci_directory_traversal_refused(build, name):
 def test_publish_requires_complete_reservation(build):
     """M34: a partial release (provenance only) never reaches the image push."""
     verified, registry = verify(build), Registry()
-    registry.tag = verified.head
+    bind_tag(registry, verified)
     registry.assets = {stage.PROVENANCE: verified.assets[stage.PROVENANCE]}
     registry.python = verified.python_hashes.copy()
     with pytest.raises(ValueError, match="incomplete GitHub reservation"):
@@ -653,7 +663,8 @@ def test_production_lightweight_tag_refused(monkeypatch):
 
 def test_production_clients_with_fake_gh_skopeo_and_pypi(build, tmp_path, monkeypatch):
     verified = verify(build)
-    state = {"tag": None, "release": None, "assets": {}, "python": {}, "images": {}}
+    state = {"tag": None, "message": None, "release": None, "assets": {}, "python": {},
+             "images": {}}
     # 150 foreign releases first, so the candidate is only found on page 2.
     foreign = [{"tag_name": f"0.0.{n}", "id": 1000 + n, "draft": False, "prerelease": False,
                 "assets": []} for n in range(150)]
@@ -680,6 +691,8 @@ def test_production_clients_with_fake_gh_skopeo_and_pypi(build, tmp_path, monkey
             payload = json.loads(kwargs["input"]) if kwargs.get("input") else None
             if endpoint == "git/tags" and payload:
                 assert payload["object"] == verified.head and payload["type"] == "commit"
+                assert payload["message"] == stage.tag_message(verified)
+                state["message"] = payload["message"] + "\n"
                 writes.append("tag-object")
                 return response({"sha": "a" * 40})
             if endpoint == "git/refs" and payload:
@@ -690,7 +703,8 @@ def test_production_clients_with_fake_gh_skopeo_and_pypi(build, tmp_path, monkey
                 return (response({"object": {"type": "tag", "sha": "a" * 40}})
                         if state["tag"] else response(error=b"gh: Not Found (HTTP 404)"))
             if endpoint.startswith("git/tags/"):
-                return response({"object": {"type": "commit", "sha": state["tag"]}})
+                return response({"object": {"type": "commit", "sha": state["tag"]},
+                                 "message": state["message"]})
             if endpoint.startswith("releases?"):
                 query = dict(item.split("=") for item in endpoint.split("?", 1)[1].split("&"))
                 listing = foreign + ([{
@@ -815,12 +829,18 @@ def test_workflow_security_contract():
     assert jobs["pypi"]["needs"] == "reserve"
     assert jobs["publish"]["needs"] == ["reserve", "pypi"]
     assert jobs["attest"]["needs"] == "publish"
-    assert "if" not in jobs["attest"]
+    # A skipped pypi (files already on PyPI) must not skip attest or finalize:
+    # GitHub's implicit success() treats a skipped ancestor as not successful.
+    assert jobs["attest"]["if"] == "${{ !cancelled() && needs.publish.result == 'success' }}"
     # Immutable releases: the draft is published last, after attestations.
     assert jobs["finalize"]["needs"] == ["publish", "attest"]
-    assert "if" not in jobs["finalize"]
+    assert jobs["finalize"]["if"] == (
+        "${{ !cancelled() && needs.publish.result == 'success' && "
+        "needs.attest.result == 'success' }}")
+    assert squash(jobs["publish"]["if"]) == (
+        "!cancelled() && needs.reserve.result == 'success' && "
+        "(needs.pypi.result == 'success' || needs.pypi.result == 'skipped')")
     assert list(jobs)[-1] == "finalize"
-    assert "needs.reserve.result == 'success'" in jobs["publish"]["if"]
     assert jobs["reserve"]["permissions"] == {
         "actions": "read", "contents": "write", "packages": "read"}
     assert jobs["pypi"]["permissions"] == {
@@ -1270,7 +1290,8 @@ def test_finalize_readback_must_show_a_published_release(build):
 @pytest.mark.parametrize("assets", ["none", "provenance_only"])
 def test_published_release_with_missing_assets_is_burned(build, tmp_path, phase, assets):
     verified, registry = verify(build), Registry()
-    registry.tag, registry.draft = verified.head, False
+    bind_tag(registry, verified)
+    registry.draft = False
     registry.assets = ({} if assets == "none"
                        else {stage.PROVENANCE: verified.assets[stage.PROVENANCE]})
     registry.python = verified.python_hashes.copy()
@@ -1287,7 +1308,8 @@ def test_published_release_with_missing_assets_is_burned(build, tmp_path, phase,
 
 def test_published_release_with_different_bytes_is_burned(build):
     verified, registry = verify(build), Registry()
-    registry.tag, registry.draft = verified.head, False
+    bind_tag(registry, verified)
+    registry.draft = False
     registry.assets = {**verified.assets, stage.PROVENANCE: b"other"}
     with pytest.raises(ValueError, match="burned"):
         stage.reserve(verified, registry)
@@ -1296,7 +1318,8 @@ def test_published_release_with_different_bytes_is_burned(build):
 
 def test_complete_published_release_is_reused(build, tmp_path):
     verified, registry = verify(build), Registry()
-    registry.tag, registry.draft, registry.assets = verified.head, False, verified.assets.copy()
+    bind_tag(registry, verified)
+    registry.draft, registry.assets = False, verified.assets.copy()
     assert stage.reserve(verified, registry) == 2
     assert stage.stage_upload(verified, registry, tmp_path / "upload") == 2
     registry.python = verified.python_hashes.copy()
@@ -1307,7 +1330,7 @@ def test_complete_published_release_is_reused(build, tmp_path):
 
 def test_partial_draft_is_reused_and_completed(build):
     verified, registry = verify(build), Registry()
-    registry.tag = verified.head
+    bind_tag(registry, verified)
     registry.assets = {stage.PROVENANCE: verified.assets[stage.PROVENANCE]}
     stage.reserve(verified, registry)
     assert registry.writes == ["reserve"]
@@ -1318,7 +1341,7 @@ def test_partial_draft_is_reused_and_completed(build):
 
 def test_wrong_draft_asset_bytes_are_refused(build):
     verified, registry = verify(build), Registry()
-    registry.tag = verified.head
+    bind_tag(registry, verified)
     name = next(iter(verified.python_hashes))
     registry.assets = {name: b"partial or substituted bytes"}
     with pytest.raises(ValueError, match="draft asset differs"):
@@ -1339,7 +1362,7 @@ def test_read_only_jobs_bind_an_invisible_draft_through_the_tag(build, tmp_path)
     with pytest.raises(ValueError):
         publish(verified, registry)
     # The draft-aware finalize never trusts that shortcut.
-    registry.tag = verified.head
+    bind_tag(registry, verified)
     registry.hide_drafts = False
     registry.assets.pop(next(iter(verified.python_hashes)))
     with pytest.raises(ValueError, match="incomplete GitHub reservation"):
@@ -1452,3 +1475,123 @@ def test_finalize_cli_runs_only_finalize(build, tmp_path, monkeypatch):
     assert stage.main(["finalize", "--artifacts", str(build[1]),
                        "--history", str(build[0].path)]) == 0
     assert calls == [verified]
+
+
+@pytest.mark.parametrize("fault", ["drop", "bytes"])
+def test_reserve_refuses_an_upload_that_does_not_read_back(build, fault):
+    """The reserve readback is the byte check before PyPI: a lossy upload fails it."""
+    verified, registry = verify(build), Registry()
+    real = registry.reserve
+    victim = next(iter(verified.python_hashes))
+
+    def lossy(v):
+        real(v)
+        if fault == "drop":
+            del registry.assets[victim]
+        else:
+            registry.assets[victim] = b"truncated"
+
+    registry.reserve = lossy
+    with pytest.raises(ValueError):
+        stage.reserve(verified, registry)
+    with pytest.raises(ValueError):
+        stage.finalize(verified, registry)
+    assert registry.draft is True
+
+
+@pytest.mark.parametrize("change", ["hash", "older_format", "missing"])
+def test_read_only_jobs_require_the_tag_to_bind_the_asset_hashes(build, tmp_path, change):
+    """C1: pypi/publish cannot see the draft, so the tag message binds the bytes."""
+    verified, registry = reserved(build, hide_drafts=True)
+    if change == "hash":
+        registry.tag_text = registry.tag_text.replace(
+            hashlib.sha256(verified.assets[stage.PROVENANCE]).hexdigest(), "0" * 64)
+    elif change == "older_format":
+        registry.tag_text = f"Candidate {verified.version}\nH: {verified.head}"
+    else:
+        registry.tag_text = None
+    with pytest.raises(ValueError, match="does not bind these asset hashes"):
+        stage.stage_upload(verified, registry, tmp_path / "upload")
+    with pytest.raises(ValueError, match="does not bind these asset hashes"):
+        publish(verified, registry)
+    registry.hide_drafts = False
+    with pytest.raises(ValueError, match="does not bind these asset hashes"):
+        stage.reserve(verified, registry)
+    assert not registry.writes and not (tmp_path / "upload").exists()
+
+
+def test_tag_message_format_is_exact(build):
+    verified = verify(build)
+    lines = stage.tag_message(verified).split("\n")
+    assert lines[:3] == [f"Candidate {verified.version}", f"H: {verified.head}", ""]
+    assert lines[3:] == [f"sha256 {digest(data)}  {name}"
+                         for name, data in sorted(verified.assets.items())]
+
+
+def production_reserve_fake(monkeypatch, verified, listing):
+    """gh fake for Registries.reserve; listing(calls) returns the current releases."""
+    calls = []
+
+    def ok(value):
+        data = value if isinstance(value, bytes) else json.dumps(value).encode()
+        return SimpleNamespace(returncode=0, stdout=data, stderr=b"")
+
+    def run(args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("gh", "api") and "git/ref/tags/" in args[2]:
+            return ok({"object": {"type": "tag", "sha": "a" * 40}})
+        if args[:2] == ("gh", "api") and "git/tags/" in args[2]:
+            return ok({"object": {"type": "commit", "sha": verified.head},
+                       "message": stage.tag_message(verified)})
+        if args[:2] == ("gh", "api") and "releases?" in args[2]:
+            return ok(listing(calls))
+        if args[:3] in (("gh", "release", "create"), ("gh", "release", "upload")):
+            return ok(b"")
+        if args[:2] == ("gh", "api") and "/releases/" in args[2] and "PATCH" in args:
+            return ok({})
+        pytest.fail(f"unexpected call {args[:3]}")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return calls
+
+
+def test_reserve_refuses_when_the_created_release_is_not_a_draft(build, monkeypatch):
+    """If create ever published the release, stop before any upload or PyPI."""
+    verified = verify(build)
+
+    def listing(calls):
+        created = any(a[:3] == ("gh", "release", "create") for a in calls)
+        return [entry(verified.version, draft=False)] if created else []
+
+    calls = production_reserve_fake(monkeypatch, verified, listing)
+    with pytest.raises(ValueError, match="draft release was not created"):
+        stage.Registries().reserve(verified)
+    assert not any(a[:3] == ("gh", "release", "upload") for a in calls)
+
+
+def test_reserve_refuses_a_release_published_after_inventory(build, monkeypatch):
+    """Nit 1: a release that became published since inventory is never uploaded to."""
+    verified = verify(build)
+    calls = production_reserve_fake(
+        monkeypatch, verified, lambda _calls: [entry(verified.version, draft=False)])
+    with pytest.raises(ValueError, match="burned"):
+        stage.Registries().reserve(verified)
+    assert not any(a[:3] == ("gh", "release", "upload") for a in calls)
+
+
+def test_publish_release_refuses_a_non_draft(build, monkeypatch):
+    verified = verify(build)
+    calls = production_reserve_fake(
+        monkeypatch, verified, lambda _calls: [entry(verified.version, draft=False)])
+    with pytest.raises(ValueError, match="no draft release to publish"):
+        stage.Registries().publish_release(verified)
+    assert not any("PATCH" in a for a in calls)
+
+
+
+def test_environment_token_split_by_control_bytes_is_redacted(monkeypatch):
+    """A token interleaved with escapes survives the first pass; the second catches it."""
+    monkeypatch.setenv("GH_TOKEN", "fake env token")
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    excerpt = stage._stderr_excerpt(b"denied for fake\x1b[0m env\ttoken here")
+    assert excerpt == "denied for [REDACTED] here"

@@ -353,6 +353,24 @@ each from the first real runs:
   jobs.
 - `docker login ghcr.io` in the stage 2 `attest` job and the registry
   attestation push (`push-to-registry: true`).
+- Stage 2 draft-first publication (immutable releases), see
+  [the stage 2 release ordering](rc-publication-stage.md#release-ordering-under-immutable-releases):
+  - Listing `releases` with the `contents: write` `GITHUB_TOKEN` returns the
+    draft with `tag_name`, `prerelease: true` and each asset's `state`.
+  - The release read back right after `gh release create --draft
+    --verify-tag --prerelease` is `draft: true` before `pypi` starts (the
+    highest-impact check: a published release here would burn the candidate,
+    as happened to `0.11.1-rc.2`).
+  - `gh release upload` targets the draft by tag.
+  - `gh api -H "Accept: application/octet-stream"
+    repos/<repo>/releases/assets/<id>` returns the full bytes of a draft
+    asset. If the run reports a differing draft asset, confirm the bytes
+    before deleting anything: a correct asset must not be deleted.
+  - `PATCH releases/<id>` with `draft: false`, `prerelease: true` and
+    `make_latest: "false"` publishes the release, keeps it a prerelease, leaves
+    Latest unchanged, and the listing shows it as published at once.
+  - "Re-run all jobs" on a completed candidate skips `pypi` but still runs
+    `attest` and `finalize` (as a readback).
 
 ## Blocked items and enable order
 
@@ -376,7 +394,10 @@ them in this order:
    are verified.
 5. `SDLC_RC_CHANNEL=enabled`, only after the first new-model release is
    published and verified. Until then `set-channel.yml` stays the only writer
-   of `rc`.
+   of `rc`. Enabling it also requires moving the stage 2 `rc` move into a job
+   after `finalize` (or enabling it only together with that change), because
+   today `publish` moves `rc` before the draft release is published; see
+   [the `rc` channel](rc-publication-stage.md#the-rc-channel).
 
 The adoption issue (step 2) is also an owner action.
 

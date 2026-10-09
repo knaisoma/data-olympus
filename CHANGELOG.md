@@ -67,6 +67,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the stable release as a draft and `release_record.py release` publishes it
   after verifying every asset. A published release with a missing or different
   asset is refused as burned; `0.11.1-rc.2` is the known burned candidate.
+  The candidate tag message now binds every asset's SHA-256 so the read-only
+  jobs check bytes, `reserve` refuses a created release that is not a draft,
+  and `attest` and `finalize` still run when `pypi` is skipped.
 * Show a sanitized, single-line, redacted stderr excerpt of at most 300 characters when a stage-two `gh` or `skopeo` command fails, never stdout or arguments.
 * Accept the documented `0.0.0+unreleased` placeholder package version only
   where the engine-managed cycle puts it. `version-free-guard` skips it with an
