@@ -86,8 +86,14 @@ uv run data-olympus lint example-bundle
 
 Require isolated installed wheel and sdist smoke tests, exact SHA CI success,
 and zero open security alerts using `scripts/security_alerts.py`. Dependency
-vulnerability remediation and CodeQL fixes are mandatory. Require the aggregate
-`CodeQL` check and successful required language analyses with zero findings.
+vulnerability remediation and CodeQL fixes are mandatory, with zero findings.
+The reviewed head `H` (the release pull request head) needs successful `test`
+and the aggregate `CodeQL` check result, which GitHub produces only on pull
+request heads. The release squash `S` on `main` needs successful `test` and every
+per-language `Analyze (...)` check named in `SDLC_REQUIRED_CODEQL_CHECKS`;
+those are push-time checks, and the aggregate `CodeQL` is not produced on
+pushes to `main`. The proof that the trees of `S` and `H` are equal ties both
+results to the same code (see `docs/releases/reviewed-promotion.md`).
 Missing, stale, unreadable, or ambiguous evidence blocks. GitHub Code Quality is
 not a dependency. Resolve all review threads and failed required checks. Never
 dismiss alerts, waive tests, or bypass the entire GitHub ruleset to meet a date.

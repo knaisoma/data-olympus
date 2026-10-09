@@ -91,13 +91,13 @@ jobs:
             --notes-output to-delete/promotion/release-notes.md \
             --env-output to-delete/promotion/outputs
           cat to-delete/promotion/outputs >> "$GITHUB_OUTPUT"
-      # Code scanning is guaranteed only on main and on pull requests into
-      # main: H on release/new is not guaranteed CodeQL; S is. The proof above
-      # showed tree(S) ==
-      # tree(H): the code scanned on S is byte for byte the reviewed H. H
-      # therefore needs only `test`; S needs `test`, `CodeQL` and every
-      # configured analysis (release_record.py check_gate).
-      - name: Require exact-source CI on H and CI plus CodeQL on S
+      # GitHub produces the aggregate `CodeQL` check run only on pull request
+      # heads; a push to main gets only the per-language analyses. H, the
+      # release pull request head, needs `test` and `CodeQL`; S, the push to
+      # main, needs `test` and every configured analysis. The proof above
+      # showed tree(S) == tree(H), so both results cover the same code
+      # (release_record.py check_gate).
+      - name: Require exact-source CI and CodeQL on H and CI and analyses on S
         env:
           REQUIRED_ANALYSES: ${{ vars.SDLC_REQUIRED_CODEQL_CHECKS }}
         run: |

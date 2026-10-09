@@ -300,8 +300,9 @@ def test_attestations_are_verified_in_prove_before_any_publication():
             assert "gh attestation verify" not in scripts(job), name
 
 
-def test_codeql_is_required_on_s_and_ci_on_h():
-    step = step_named(workflow()["jobs"]["prove"], "Require exact-source CI on H")
+def test_codeql_is_required_on_h_and_analyses_on_s():
+    step = step_named(workflow()["jobs"]["prove"],
+                      "Require exact-source CI and CodeQL on H and CI and analyses on S")
     text = step["run"]
     assert step["env"] == {"REQUIRED_ANALYSES": "${{ vars.SDLC_REQUIRED_CODEQL_CHECKS }}"}
     assert 'test -n "$REQUIRED_ANALYSES"' in text

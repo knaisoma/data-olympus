@@ -276,29 +276,43 @@ def env_lines(record: dict) -> str:
 
 CHECK_ROLES = ("head", "squash")
 CHECK_APPS = ("github-actions", "github-code-scanning")
+# GitHub publishes the aggregate CodeQL check run from the advanced security
+# app (the only observed producer); code scanning is kept as the alternate slug.
+# A workflow (github-actions) can post any check run name, so it is refused.
+CODEQL_APPS = ("github-advanced-security", "github-code-scanning")
 
 
-def required_checks(role: str, analyses: str) -> set[str]:
-    """Check run names the promotion gate requires on H ("head") or S ("squash").
+def _check_apps(name: str) -> tuple[str, ...]:
+    return CODEQL_APPS if name == "CodeQL" else CHECK_APPS
 
-    Code scanning is guaranteed only on main and on pull requests into main:
-    the reviewed H on release/new is not guaranteed CodeQL; S is. The proof
-    shows that the tree of S equals the tree of H, so the code CodeQL scans on
-    S is byte for byte the reviewed H: H needs only "test", and S needs
-    "test", the aggregate
-    "CodeQL" and every configured language analysis. The configured list is
-    validated for both roles, so an empty or malformed variable fails closed.
-    """
-    if role not in CHECK_ROLES:
-        raise ValueError("check role must be head or squash")
+
+def _check_names(analyses: str) -> list[str]:
     if not isinstance(analyses, str):
         raise ValueError("invalid required analysis names")
     names = analyses.split(",")
     if any(not name.strip() or name != name.strip() for name in names):
         raise ValueError("invalid required analysis names")
+    return names
+
+
+def required_checks(role: str, analyses: str) -> set[str]:
+    """Check run names the promotion gate requires on H ("head") or S ("squash").
+
+    GitHub produces the aggregate "CodeQL" check run only on pull request
+    heads; a push to main gets only the per-language analyses. H, the head of
+    the release pull request, therefore needs "test" and the aggregate
+    "CodeQL"; S, the push to main, needs "test" and every configured language
+    analysis. The proof shows that the tree of S equals the tree of H, so the
+    aggregate result on H and the analyses of S cover the same code. The
+    configured list is validated for both roles, so an empty or malformed
+    variable fails closed.
+    """
+    if role not in CHECK_ROLES:
+        raise ValueError("check role must be head or squash")
+    names = _check_names(analyses)
     if role == "head":
-        return {"test"}
-    return {"test", "CodeQL", *names}
+        return {"test", "CodeQL"}
+    return {"test", *names}
 
 
 def check_gate(pages: object, *, sha: str, role: str, analyses: str) -> None:
@@ -306,15 +320,16 @@ def check_gate(pages: object, *, sha: str, role: str, analyses: str) -> None:
 
     pages is the output of `gh api --paginate --slurp .../check-runs`. A run
     counts only when its head_sha is exactly sha and its app is GitHub Actions
-    or code scanning; among those, the highest id (the latest run) decides,
-    and only status "completed" with conclusion "success" passes (neutral,
-    skipped, cancelled, timed_out, action_required and stale do not). On H,
-    CodeQL and the configured analyses are optional, but one that did run
-    must also have succeeded.
+    or code scanning (for the aggregate "CodeQL", only GitHub Advanced
+    Security or code scanning); among those, the highest id (the latest run) decides, and only
+    status "completed" with conclusion "success" passes (neutral, skipped,
+    cancelled, timed_out, action_required and stale do not). A check that is
+    not required for the role (the analyses on H, "CodeQL" on S) is optional,
+    but one that did run must also have succeeded.
     """
     _match(SHA, sha, "check SHA")
     required = required_checks(role, analyses)
-    optional = required_checks("squash", analyses) - required
+    optional = {"test", "CodeQL", *_check_names(analyses)} - required
     if not isinstance(pages, list) or not all(
             isinstance(page, dict) and isinstance(page.get("check_runs"), list)
             for page in pages):
@@ -326,7 +341,7 @@ def check_gate(pages: object, *, sha: str, role: str, analyses: str) -> None:
         matches = [run for run in runs if run.get("name") == name
                    and run.get("head_sha") == sha
                    and isinstance(run.get("app"), dict)
-                   and run["app"].get("slug") in CHECK_APPS
+                   and run["app"].get("slug") in _check_apps(name)
                    and type(run.get("id")) is int]
         if not matches:
             if name in optional:

@@ -49,17 +49,36 @@ no fallback to a human token:
   [tracked prerequisites](#tracked-prerequisites).
 - `SDLC_REQUIRED_CODEQL_CHECKS`: the exact required language-analysis check
   names, comma-separated, without spaces around the commas. An unset or
-  malformed value fails closed. `H` needs a successful `test`; `S` needs
-  successful `test`, aggregate `CodeQL` and each of those checks. Code
-  scanning is guaranteed only on `main` and on pull requests into `main`, so
-  `H` on `release/new` is not guaranteed CodeQL; `S` is. The proof shows that
-  the trees of `S` and
-  `H` are equal, so the code scanned on `S` is byte for byte the reviewed `H`.
+  malformed value fails closed. GitHub produces the aggregate `CodeQL` check
+  run only on pull request heads (from the GitHub Advanced Security app); a
+  push to `main` gets only the per-language analyses. `H`, the head of the
+  release pull request, therefore needs successful `test` and aggregate
+  `CodeQL`; `S`, the push to `main`, needs successful `test` and each of
+  those analyses. Pull request code scanning analyses the merge commit of the
+  pull request, not `H` itself. That merge has the tree of `H`, because the
+  version engine requires the pre-squash `main` to be an ancestor of `H` (it
+  refuses with `recut_required` otherwise), and the proof shows that `S`, whose
+  sole parent is the cut `B`, has the tree of `H`. So the aggregate result on
+  `H` and the analyses of `S` cover the same code. The aggregate `CodeQL`
+  result means no new alerts relative to the base; zero open alerts is a
+  separate requirement checked by `scripts/security_alerts.py`. A check that
+  is not required for the role (the analyses on `H`, `CodeQL` on `S`) may be
+  absent, but if it ran it must have succeeded.
   `release_record.py checks` applies the rule: a check run counts only when its
   `head_sha` is exactly the commit and its app is GitHub Actions or code
-  scanning, and the latest such run (highest id) of each name decides; it must
-  be completed with conclusion `success` (neutral, skipped, cancelled,
-  timed out, action required and stale are refused).
+  scanning (for the aggregate `CodeQL`, only GitHub Advanced Security, the
+  only observed producer, or code scanning as the alternate slug; a workflow
+  posting a run named `CodeQL` is refused), and the latest such run (highest
+  id) of each name decides; it must be completed with conclusion `success`
+  (neutral, skipped, cancelled, timed out, action required and stale are
+  refused).
+
+  Lesson: the earlier design required the aggregate `CodeQL` on `S` and
+  assumed it exists on pushes to `main`. It exists only on pull request heads,
+  which was discovered when the first promotion gate was about to run.
+  Fail-closed behaviour made the error safe, because the gate refuses with
+  `missing required check: CodeQL` instead of publishing; the rule now asks
+  each commit for the evidence GitHub actually produces there.
 - Adoption ratification needs no repository setting. This workflow's checkout
   is the squash `S`, whose tree equals `H`, so the proof does not use its own
   copy: when the cut carries `release/ADOPTION.json` it reads
@@ -260,3 +279,10 @@ These are not implemented and block activation:
   retired or changed, the remaining stable promotion path must take the
   `data-olympus-promotion` lock (Task 6). Until then the procedure above is
   the only mutual exclusion.
+- Check runs tied to their producing workflow. The gate accepts a `test` or
+  `Analyze (...)` check run from the GitHub Actions app by name and exact
+  `head_sha`, so a check run that an unrelated workflow posts through the
+  checks API under the same name could satisfy it. Tie each to the workflow
+  run that produced it (for example through
+  `actions/runs?head_sha=...`, matching the CI and CodeQL workflow paths)
+  before relying on these names alone.

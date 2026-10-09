@@ -426,7 +426,8 @@ def test_tag_object_headers_are_checked(header, error):
                                     notes="# Release 0.4.3\n", tagger=BOT)
 
 
-ANALYSES = "Analyze (python),Analyze (actions)"
+ANALYSES = "Analyze (python),Analyze (actions),Analyze (javascript-typescript)"
+ANALYSIS_NAMES = ANALYSES.split(",")
 H_SHA, S_SHA = "a" * 40, "b" * 40
 
 
@@ -436,39 +437,73 @@ def check_run(name, sha, run_id=1, *, slug="github-actions", status="completed",
             "status": status, "conclusion": conclusion}
 
 
-def green(sha, *, codeql=True):
-    runs = [check_run("test", sha)]
-    if codeql:
-        runs += [check_run("CodeQL", sha, slug="github-code-scanning"),
-                 check_run("Analyze (python)", sha), check_run("Analyze (actions)", sha)]
+def head_runs(sha=H_SHA):
+    """The real shape on a release pull request head: aggregate CodeQL from GHAS."""
+    runs = [check_run("CodeQL", sha, 1, slug="github-advanced-security")]
+    runs += [check_run(name, sha, 2 + i) for i, name in enumerate(ANALYSIS_NAMES)]
+    runs.append(check_run("test", sha, 9))
     return [{"total_count": len(runs), "check_runs": runs}]
 
 
-def test_head_needs_only_test_because_s_carries_the_same_tree():
-    """H on release/new is not guaranteed CodeQL; S is, and tree(S) == tree(H)."""
-    release.check_gate(green(H_SHA, codeql=False), sha=H_SHA, role="head",
-                       analyses=ANALYSES)
+def squash_runs(sha=S_SHA):
+    """The real shape on a push to main: no aggregate CodeQL, all github-actions."""
+    names = ["test", "test-python-3-14", "doc-consistency-guard", "update-uv-graph",
+             *ANALYSIS_NAMES]
+    runs = [check_run(name, sha, 1 + i) for i, name in enumerate(names)]
+    return [{"total_count": len(runs), "check_runs": runs}]
 
 
-def test_head_without_test_is_refused():
-    pages = [{"check_runs": [check_run("CodeQL", H_SHA, slug="github-code-scanning")]}]
-    with pytest.raises(ValueError, match="missing required check: test"):
-        release.check_gate(pages, sha=H_SHA, role="head", analyses=ANALYSES)
+def shape(role, sha=None):
+    if role == "head":
+        return head_runs(sha or H_SHA), sha or H_SHA
+    return squash_runs(sha or S_SHA), sha or S_SHA
 
 
-def test_squash_without_codeql_is_refused():
-    with pytest.raises(ValueError, match="missing required check: "):
-        release.check_gate(green(S_SHA, codeql=False), sha=S_SHA, role="squash",
+def drop(pages, name):
+    pages[0]["check_runs"] = [r for r in pages[0]["check_runs"] if r["name"] != name]
+    return pages
+
+
+def test_real_shapes_pass():
+    release.check_gate(head_runs(), sha=H_SHA, role="head", analyses=ANALYSES)
+    release.check_gate(squash_runs(), sha=S_SHA, role="squash", analyses=ANALYSES)
+
+
+def test_squash_without_codeql_is_accepted():
+    """GitHub produces the aggregate CodeQL only on pull request heads, never on S."""
+    pages = squash_runs()
+    assert not any(r["name"] == "CodeQL" for r in pages[0]["check_runs"])
+    release.check_gate(pages, sha=S_SHA, role="squash", analyses=ANALYSES)
+
+
+@pytest.mark.parametrize("name", ANALYSIS_NAMES)
+def test_squash_missing_an_analysis_is_refused(name):
+    with pytest.raises(ValueError, match="missing required check: " + re.escape(name)):
+        release.check_gate(drop(squash_runs(), name), sha=S_SHA, role="squash",
                            analyses=ANALYSES)
-    pages = green(S_SHA)
-    pages[0]["check_runs"] = [r for r in pages[0]["check_runs"] if r["name"] != "CodeQL"]
-    with pytest.raises(ValueError, match="missing required check: CodeQL"):
+
+
+def test_squash_with_codeql_but_no_analyses_is_refused():
+    pages = squash_runs()
+    for name in ANALYSIS_NAMES:
+        drop(pages, name)
+    pages[0]["check_runs"].append(
+        check_run("CodeQL", S_SHA, 50, slug="github-advanced-security"))
+    with pytest.raises(ValueError, match=r"missing required check: Analyze \("):
         release.check_gate(pages, sha=S_SHA, role="squash", analyses=ANALYSES)
 
 
-@pytest.mark.parametrize("fault", ["missing", "failed", "in_progress", "other_sha"])
+def test_squash_codeql_that_ran_must_succeed():
+    pages = squash_runs()
+    pages[0]["check_runs"].append(check_run("CodeQL", S_SHA, 50, conclusion="neutral",
+                                            slug="github-advanced-security"))
+    with pytest.raises(ValueError, match="did not succeed: CodeQL"):
+        release.check_gate(pages, sha=S_SHA, role="squash", analyses=ANALYSES)
+
+
+@pytest.mark.parametrize("fault", ["missing", "failed", "in_progress", "other_sha", "evil_app"])
 def test_squash_analysis_must_exist_and_succeed(fault):
-    pages = green(S_SHA)
+    pages = squash_runs()
     runs = pages[0]["check_runs"]
     victim = next(r for r in runs if r["name"] == "Analyze (actions)")
     if fault == "missing":
@@ -477,29 +512,99 @@ def test_squash_analysis_must_exist_and_succeed(fault):
         victim["conclusion"] = "failure"
     elif fault == "in_progress":
         victim["status"], victim["conclusion"] = "in_progress", None
+    elif fault == "evil_app":
+        victim["app"]["slug"] = "evil"
     else:
         victim["head_sha"] = H_SHA
     with pytest.raises(ValueError, match=r"Analyze \(actions\)"):
         release.check_gate(pages, sha=S_SHA, role="squash", analyses=ANALYSES)
-    release.check_gate(green(S_SHA), sha=S_SHA, role="squash", analyses=ANALYSES)
+
+
+def test_analysis_from_advanced_security_app_is_refused():
+    """Only the aggregate CodeQL may come from github-advanced-security."""
+    pages = squash_runs()
+    victim = next(r for r in pages[0]["check_runs"] if r["name"] == "Analyze (python)")
+    victim["app"]["slug"] = "github-advanced-security"
+    with pytest.raises(ValueError, match=r"missing required check: Analyze \(python\)"):
+        release.check_gate(pages, sha=S_SHA, role="squash", analyses=ANALYSES)
+
+
+def test_head_without_codeql_is_refused():
+    with pytest.raises(ValueError, match="missing required check: CodeQL"):
+        release.check_gate(drop(head_runs(), "CodeQL"), sha=H_SHA, role="head",
+                           analyses=ANALYSES)
+
+
+@pytest.mark.parametrize("slug", ["evil", "github-advanced-securityx", "", None,
+                                  "github-actions"])
+def test_head_codeql_from_the_wrong_app_is_refused(slug):
+    pages = head_runs()
+    victim = next(r for r in pages[0]["check_runs"] if r["name"] == "CodeQL")
+    victim["app"]["slug"] = slug
+    with pytest.raises(ValueError, match="missing required check: CodeQL"):
+        release.check_gate(pages, sha=H_SHA, role="head", analyses=ANALYSES)
+
+
+@pytest.mark.parametrize("slug", ["github-advanced-security", "github-code-scanning"])
+def test_head_codeql_accepted_apps(slug):
+    pages = head_runs()
+    next(r for r in pages[0]["check_runs"] if r["name"] == "CodeQL")["app"]["slug"] = slug
+    release.check_gate(pages, sha=H_SHA, role="head", analyses=ANALYSES)
+
+
+def test_head_codeql_for_another_sha_is_refused():
+    pages = head_runs()
+    next(r for r in pages[0]["check_runs"] if r["name"] == "CodeQL")["head_sha"] = S_SHA
+    with pytest.raises(ValueError, match="missing required check: CodeQL"):
+        release.check_gate(pages, sha=H_SHA, role="head", analyses=ANALYSES)
+
+
+def test_head_without_test_is_refused():
+    with pytest.raises(ValueError, match="missing required check: test"):
+        release.check_gate(drop(head_runs(), "test"), sha=H_SHA, role="head",
+                           analyses=ANALYSES)
+
+
+def test_head_analyses_are_optional_but_must_succeed_when_present():
+    pages = head_runs()
+    for name in ANALYSIS_NAMES:
+        drop(pages, name)
+    release.check_gate(pages, sha=H_SHA, role="head", analyses=ANALYSES)
+    pages[0]["check_runs"].append(
+        check_run("Analyze (python)", H_SHA, 50, conclusion="cancelled"))
+    with pytest.raises(ValueError, match=r"did not succeed: Analyze \(python\)"):
+        release.check_gate(pages, sha=H_SHA, role="head", analyses=ANALYSES)
 
 
 @pytest.mark.parametrize("role", ["head", "squash"])
 def test_wrong_app_slug_is_refused(role):
-    pages = green(S_SHA)
+    pages, sha = shape(role)
     for run in pages[0]["check_runs"]:
         run["app"]["slug"] = "impostor-app"
     with pytest.raises(ValueError, match="missing required check: "):
-        release.check_gate(pages, sha=S_SHA, role=role, analyses=ANALYSES)
+        release.check_gate(pages, sha=sha, role=role, analyses=ANALYSES)
 
 
-def test_latest_run_by_id_wins():
-    pages = green(S_SHA)
-    pages.append({"check_runs": [check_run("test", S_SHA, 9, conclusion="failure")]})
-    with pytest.raises(ValueError, match="did not succeed: test"):
+@pytest.mark.parametrize(("role", "name"), [
+    ("head", "test"), ("head", "CodeQL"), ("squash", "test"), ("squash", "Analyze (python)"),
+])
+def test_latest_run_by_id_wins(role, name):
+    pages, sha = shape(role)
+    slug = "github-advanced-security" if name == "CodeQL" else "github-actions"
+    pages.append({"check_runs": [check_run(name, sha, 90, slug=slug, conclusion="failure")]})
+    with pytest.raises(ValueError, match="did not succeed: " + re.escape(name)):
+        release.check_gate(pages, sha=sha, role=role, analyses=ANALYSES)
+    pages.append({"check_runs": [check_run(name, sha, 91, slug=slug)]})
+    release.check_gate(pages, sha=sha, role=role, analyses=ANALYSES)
+
+
+def test_stale_success_does_not_mask_a_newer_failure():
+    pages = squash_runs()
+    victim = next(r for r in pages[0]["check_runs"] if r["name"] == "Analyze (actions)")
+    victim["id"], victim["conclusion"] = 99, "failure"
+    pages[0]["check_runs"].append(check_run("Analyze (actions)", S_SHA, 3))
+    with pytest.raises(ValueError, match=r"did not succeed: Analyze \(actions\)"):
         release.check_gate(pages, sha=S_SHA, role="squash", analyses=ANALYSES)
-    pages.append({"check_runs": [check_run("test", S_SHA, 10)]})
-    release.check_gate(pages, sha=S_SHA, role="squash", analyses=ANALYSES)
 
 
 @pytest.mark.parametrize("analyses", [
@@ -508,8 +613,9 @@ def test_latest_run_by_id_wins():
 ])
 @pytest.mark.parametrize("role", ["head", "squash"])
 def test_whitespace_or_empty_analysis_names_are_refused(analyses, role):
+    pages, sha = shape(role)
     with pytest.raises(ValueError, match="invalid required analysis names"):
-        release.check_gate(green(S_SHA), sha=S_SHA, role=role, analyses=analyses)
+        release.check_gate(pages, sha=sha, role=role, analyses=analyses)
 
 
 @pytest.mark.parametrize("pages", [{}, [{"check_runs": None}], [[]], [{"check_runs": ["x"]}]])
@@ -520,18 +626,24 @@ def test_unreadable_check_runs_are_refused(pages):
 
 def test_check_gate_validates_sha_and_role():
     with pytest.raises(ValueError, match="check SHA"):
-        release.check_gate(green(S_SHA), sha="b" * 39, role="squash", analyses=ANALYSES)
+        release.check_gate(squash_runs(), sha="b" * 39, role="squash", analyses=ANALYSES)
     with pytest.raises(ValueError, match="head or squash"):
-        release.check_gate(green(S_SHA), sha=S_SHA, role="main", analyses=ANALYSES)
+        release.check_gate(squash_runs(), sha=S_SHA, role="main", analyses=ANALYSES)
 
 
-def test_checks_cli_reports_refusal(tmp_path, capsys):
-    path = tmp_path / "checks.json"
-    path.write_text(json.dumps(green(S_SHA, codeql=False)))
-    base = ["checks", "--sha", S_SHA, "--analyses", ANALYSES, "--check-runs", str(path)]
-    assert release.main([*base, "--role", "head"]) == 0
-    assert release.main([*base, "--role", "squash"]) == 1
-    assert "missing required check" in capsys.readouterr().err
+def test_checks_cli_applies_the_role_rules(tmp_path, capsys):
+    head, squash = tmp_path / "head.json", tmp_path / "squash.json"
+    head.write_text(json.dumps(head_runs()))
+    squash.write_text(json.dumps(squash_runs()))
+    base = ["checks", "--analyses", ANALYSES]
+    assert release.main([*base, "--role", "head", "--sha", H_SHA,
+                         "--check-runs", str(head)]) == 0
+    assert release.main([*base, "--role", "squash", "--sha", S_SHA,
+                         "--check-runs", str(squash)]) == 0
+    head.write_text(json.dumps(drop(head_runs(), "CodeQL")))
+    assert release.main([*base, "--role", "head", "--sha", H_SHA,
+                         "--check-runs", str(head)]) == 1
+    assert "missing required check: CodeQL" in capsys.readouterr().err
 
 
 NOT_SUCCESS = ["neutral", "skipped", "cancelled", "timed_out", "action_required", "stale",
@@ -539,14 +651,16 @@ NOT_SUCCESS = ["neutral", "skipped", "cancelled", "timed_out", "action_required"
 
 
 @pytest.mark.parametrize("conclusion", NOT_SUCCESS)
-@pytest.mark.parametrize("name", ["test", "CodeQL", "Analyze (python)"])
-@pytest.mark.parametrize(("role", "sha"), [("head", H_SHA), ("squash", S_SHA)])
-def test_only_a_successful_conclusion_passes(role, sha, name, conclusion):
+@pytest.mark.parametrize(("role", "name"), [
+    ("head", "test"), ("head", "CodeQL"), ("head", "Analyze (python)"),
+    ("squash", "test"), *[("squash", name) for name in ANALYSIS_NAMES],
+])
+def test_only_a_successful_conclusion_passes(role, name, conclusion):
     """Neutral, skipped and the other non-success conclusions never pass, on H or S.
 
-    On H, CodeQL and the analyses are optional, but one that ran must succeed.
+    On H the analyses are optional, but one that ran must succeed.
     """
-    pages = green(sha)
+    pages, sha = shape(role)
     victim = next(r for r in pages[0]["check_runs"] if r["name"] == name)
     victim["conclusion"] = conclusion
     with pytest.raises(ValueError, match="did not succeed: " + re.escape(name)):
@@ -556,9 +670,9 @@ def test_only_a_successful_conclusion_passes(role, sha, name, conclusion):
 
 
 @pytest.mark.parametrize("status", ["queued", "in_progress", "waiting", "pending"])
-@pytest.mark.parametrize(("role", "sha"), [("head", H_SHA), ("squash", S_SHA)])
-def test_a_success_conclusion_on_an_unfinished_run_does_not_pass(role, sha, status):
-    pages = green(sha)
-    pages[0]["check_runs"][0]["status"] = status
+@pytest.mark.parametrize("role", ["head", "squash"])
+def test_a_success_conclusion_on_an_unfinished_run_does_not_pass(role, status):
+    pages, sha = shape(role)
+    next(r for r in pages[0]["check_runs"] if r["name"] == "test")["status"] = status
     with pytest.raises(ValueError, match="did not succeed: test"):
         release.check_gate(pages, sha=sha, role=role, analyses=ANALYSES)
