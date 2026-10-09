@@ -5,7 +5,9 @@ The positional title-only CLI retains its STD-U-810 behavior. Range mode uses
 the STD-U-821 grammar and reads PR_TITLE from the environment, with optional
 --body for the proposed squash message body. Scopes contain one or more ASCII
 lowercase letters, digits, periods, underscores, slashes or hyphens [a-z0-9._/-].
-It needs only
+The subject
+``release: X.Y.Z`` is accepted only when the caller reports a same-repository
+pull request from ``release/new`` or ``hotfix/new`` into ``main``. It needs only
 the standard library and Git, so CI can run a trusted base-ref copy without
 installing or executing anything from a pull request.
 """
@@ -32,6 +34,10 @@ _ALLOWED = {
 }
 
 _SUBJECT = re.compile(r"([a-z]+)(?:\([a-z0-9._/-]+\))?(!)?: (\S.*)")
+# STD-U-821 release squash subject: strict X.Y.Z, no prefix, no suffix.
+_RELEASE_SUBJECT = re.compile(r"release: (0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+_RELEASE_BASE = "main"
+_RELEASE_HEADS = frozenset({"release/new", "hotfix/new"})
 _BREAKING_FOOTER = re.compile(r"^BREAKING[ -]CHANGE: \S", re.MULTILINE)
 _IMPACTS = ("other", "fix", "feat", "breaking")
 
@@ -51,8 +57,21 @@ def commit_impact(message: str) -> int:
     return {"feat": 2, "fix": 1}.get(match[1], 0)
 
 
-def lint_range(repo: Path, base: str, head: str, title: str, body: str = "") -> list[str]:
-    """Lint every non-merge message and the proposed squash title and body."""
+def is_release_squash(base_ref: str, head_ref: str, same_repo: bool) -> bool:
+    """True only for a same-repository release/new or hotfix/new PR into main."""
+    return same_repo and base_ref == _RELEASE_BASE and head_ref in _RELEASE_HEADS
+
+
+def lint_range(
+    repo: Path, base: str, head: str, title: str, body: str = "",
+    *, release_squash: bool = False,
+) -> list[str]:
+    """Lint every non-merge message and the proposed squash title and body.
+
+    ``release_squash`` is set by the caller only for the release or hotfix
+    integration PR into main (see ``is_release_squash``). Only then is the
+    subject ``release: X.Y.Z`` accepted.
+    """
     # Resolve first, preventing option/revision-expression injection into log.
     refs = [subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "--verify", "--end-of-options",
@@ -77,7 +96,21 @@ def lint_range(repo: Path, base: str, head: str, title: str, body: str = "") -> 
     try:
         if "\n" in title or "\r" in title:
             raise ValueError("PR title must be a single subject line")
-        proposed = commit_impact(f"{title}\n\n{body}")
+        if release_squash and _RELEASE_SUBJECT.fullmatch(title):
+            # The release squash carries no conventional impact of its own:
+            # the engine computes the version from the source commits, and
+            # promotion proves subject and body byte for byte. Comparing an
+            # impact here would be meaningless, so the comparison is skipped.
+            proposed = highest
+        else:
+            if title.startswith("release"):
+                subject = _SUBJECT.fullmatch(title)
+                if subject is not None and subject[1] == "release":
+                    raise ValueError(
+                        "type 'release' is reserved for 'release: X.Y.Z' on a "
+                        "release/new or hotfix/new pull request into main"
+                    )
+            proposed = commit_impact(f"{title}\n\n{body}")
         if proposed < highest:
             errors.append(
                 f"Proposed squash impact {_IMPACTS[proposed]} is lower than "
@@ -105,10 +138,16 @@ def main(argv: list[str]) -> int:
         parser.add_argument("--head", default="HEAD")
         parser.add_argument("--repo", type=Path, default=Path.cwd())
         parser.add_argument("--body", default="", help="Proposed squash message body")
+        parser.add_argument("--base-ref", default="", help="PR base branch name")
+        parser.add_argument("--head-ref", default="", help="PR head branch name")
+        parser.add_argument("--base-repo", default="", help="PR base repository full name")
+        parser.add_argument("--head-repo", default="", help="PR head repository full name")
         args = parser.parse_args(argv)
         try:
+            same_repo = bool(args.base_repo) and args.base_repo == args.head_repo
             errors = lint_range(
                 args.repo, args.base, args.head, os.environ.get("PR_TITLE", ""), args.body,
+                release_squash=is_release_squash(args.base_ref, args.head_ref, same_repo),
             )
         except UnicodeDecodeError as exc:
             print(
