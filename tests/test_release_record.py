@@ -111,11 +111,9 @@ PHASE_INDEPENDENT = [
 @pytest.mark.parametrize(("change", "error", "phase"), [
     *((change, error, phase) for phase in release.PHASES
       for change, error in PHASE_INDEPENDENT),
-    # Resume deliberately accepts these two; see the resume tests. resume-pypi
-    # accepts an advanced main but never an existing stable tag.
+    # Both resume phases deliberately accept these two; see the resume tests.
     ("main_moved", "main head", "initial"),
     ("existing_annotated_tag", "already exists", "initial"),
-    ("existing_annotated_tag", "refused after tag creation", "resume-pypi"),
 ])
 def test_each_proof_refuses(promotion, monkeypatch, change, error, phase):
     """Every proof except the main head and own-tag rules is phase independent."""
@@ -326,6 +324,10 @@ def test_resume_phase_accepts_advanced_main_and_own_annotated_tag(promotion):
     raw = subprocess.check_output(["git", "cat-file", "tag", "v0.4.3"], cwd=p.path, text=True)
     assert raw.endswith("\n\n" + p.notes)
     assert p.prove(phase="resume", tagger=BOT) == initial
+    # The initial phase refuses the tag before the engine runs, then main.
+    with pytest.raises(ValueError, match="stable tag already exists"):
+        p.prove()
+    p.git("tag", "-d", "v0.4.3")
     with pytest.raises(ValueError, match="main head"):
         p.prove()
 
@@ -422,18 +424,14 @@ def test_resume_pypi_accepts_s_on_an_advanced_main_without_a_stable_tag(promotio
 
 
 @pytest.mark.parametrize(("change", "error"), [
-    ("own_annotated_tag", "refused after tag creation"),
-    ("lightweight_tag", "refused after tag creation"),
-    ("tag_elsewhere", "refused after tag creation"),
+    ("lightweight_tag", "already exists"),
+    ("tag_elsewhere", "already exists"),
     ("s_not_in_main", "no longer reachable"),
     ("s_beside_main", "no longer reachable"),
 ])
-def test_resume_pypi_refuses_a_tag_or_an_s_outside_main(promotion, change, error):
+def test_resume_pypi_refuses_a_foreign_tag_or_an_s_outside_main(promotion, change, error):
     p = promotion
-    if change == "own_annotated_tag":
-        p.squash(parents=[p.s], message="fix: later")
-        p.stable_tag()
-    elif change == "lightweight_tag":
+    if change == "lightweight_tag":
         p.git("tag", "v0.4.3", p.s)
     elif change == "tag_elsewhere":
         p.stable_tag(p.h)
@@ -453,11 +451,17 @@ def test_resume_pypi_record_is_byte_identical_to_the_original_record(promotion):
     p.squash(parents=[p.s], message="fix: unrelated later change")
     assert cli_prove(p, "resume-pypi", "resumed.json").returncode == 0
     assert (p.path / "initial.json").read_bytes() == (p.path / "resumed.json").read_bytes()
+    # After the App's own tag exists the resumed record is still the same.
     p.stable_tag()
-    refused = cli_prove(p, "resume-pypi", "tagged.json")
+    tagged = cli_prove(p, "resume-pypi", "tagged.json")
+    assert tagged.returncode == 0, tagged.stderr
+    assert (p.path / "initial.json").read_bytes() == (p.path / "tagged.json").read_bytes()
+    p.git("tag", "-d", "v0.4.3")
+    p.stable_tag(notes="# Release 0.4.3\n\nForged notes\n")
+    refused = cli_prove(p, "resume-pypi", "forged.json")
     assert refused.returncode == 1
-    assert "refused after tag creation" in refused.stderr
-    assert not (p.path / "tagged.json").exists()
+    assert "message differs" in refused.stderr
+    assert not (p.path / "forged.json").exists()
 
 
 def test_unknown_phase_is_refused(promotion):

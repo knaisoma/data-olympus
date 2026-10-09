@@ -88,6 +88,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* Continue a `promote-release.yml` promotion after its stable tag exists. The
+  engine counted the new `vX.Y.Z` on `S` as a released version, so the
+  recheck after tagging recomputed the release against a stable tag above its
+  own base, and every promotion of an adoption cut (as well as hotfixes and
+  first releases) failed its post-tag recheck with `bad_adoption`. The first
+  live promotion stopped there with `v0.11.1` pushed and nothing after it.
+  `compute_version` takes `ignore_tags` (exact `vX.Y.Z` names, empty by
+  default). The resume proofs pass only the release's own tag, and only after
+  verifying that it is annotated, names `S`, has the App bot as tagger and
+  carries the generated notes byte for byte. The `resume-pypi` phase accepts
+  that tag, `prove` resolves the App identity before its proof, and
+  `resume-state` requires GitHub's ref to name the verified tag object. It
+  also accepts the states the later jobs leave behind (GHCR `vX.Y.Z` absent or
+  on the candidate digest, a channel on the candidate only after `vX.Y.Z`),
+  and it checks a release visible to its token before any channel moves:
+  generated notes, not a prerelease, only this run's assets, and all four on
+  a published release. `create-tag` stays idempotent. Any other tag fails
+  closed. The docs no longer claim a ruleset restricts `v*` tag creation; the
+  control is content equality with the generated tag.
 * Verify the stable PyPI upload of `promote-release.yml` without the
   attestation files. The PyPI publish action writes a
   `<file>.publish.attestation` next to each uploaded file, and the inline

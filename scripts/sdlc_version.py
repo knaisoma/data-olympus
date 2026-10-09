@@ -14,6 +14,14 @@ It requires --adoption-ratified YYYY-MM-DD:<ref>, with a nonempty reference toke
 and a date no later than today UTC, plus --standard-file (standard_file in the
 API) carrying an exact Ratification: YYYY-MM-DD line. --adoption-dry-run evaluates an unratified
 record without allowing promotion.
+
+ignore_tags (API only, default empty) removes exact stable tag names from the
+enumeration of released versions, which decides the highest stable tag for the
+adoption record and the hotfix scope and the released-product check. Promotion
+passes only its own stable tag, after verifying it, because the tag it creates
+on S would otherwise make every later recomputation of the same release see a
+higher stable version than its base. A name that is not a strict vX.Y.Z or
+that tags the cut itself is refused.
 """
 from __future__ import annotations
 
@@ -144,6 +152,7 @@ def compute_version(
     bootstrap: dict[str, str] | None = None,
     adoption_ratified: str | None = None, adoption_dry_run: bool = False,
     standard_file: str | Path | None = None, today: date | None = None,
+    ignore_tags: frozenset[str] = frozenset(),
 ) -> dict:
     """Freeze refs, validate the cut, and derive a candidate from its commit set.
 
@@ -152,6 +161,10 @@ def compute_version(
     """
     if branch not in ("release/new", "hotfix/new"):
         raise VersionError("bad_branch", "expected release/new or hotfix/new")
+    # Exact names only: a set or list of patterns could hide any tag.
+    if not isinstance(ignore_tags, frozenset) or not all(
+            isinstance(tag, str) and _STABLE.fullmatch(tag) for tag in ignore_tags):
+        raise VersionError("bad_ignore_tags", "ignore_tags must be exact vX.Y.Z names")
     git = Git(cwd)
     if git.run("rev-parse", "--is-shallow-repository").strip() == "true":
         raise VersionError("git_error", "full history and tags required; fetch before computing")
@@ -182,7 +195,9 @@ def compute_version(
     if invalid:
         raise VersionError("invalid_stable_tag", f"non-strict version tags: {', '.join(invalid)}")
     stable = [tag for tag in base_tags if _STABLE.fullmatch(tag)]
-    all_stable = [tag for tag in tags if _STABLE.fullmatch(tag)]
+    if ignore_tags & set(stable):
+        raise VersionError("bad_ignore_tags", "an ignored tag cannot tag the cut")
+    all_stable = [tag for tag in tags if _STABLE.fullmatch(tag) and tag not in ignore_tags]
     if len(stable) > 1:
         raise VersionError("ambiguous_stable_tag", "more than one stable tag on cut")
     # A stable cut tag takes precedence even if an adoption record remains.

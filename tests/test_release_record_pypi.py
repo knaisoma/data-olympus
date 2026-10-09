@@ -203,9 +203,9 @@ def test_verify_cli_reports_and_refuses(dist, tmp_path, monkeypatch, capsys):
 
 def state(**changes):
     facts = {
-        "version": VERSION, "image_digest": CANDIDATE, "pypi": pypi(), "ghcr_tag": False,
+        "version": VERSION, "image_digest": CANDIDATE, "pypi": pypi(), "ghcr_tag": "",
         "channels": {"stable": PREVIOUS, "latest": PREVIOUS}, "release": False,
-        "release_tags": ["0.11.1-rc.5", "v0.11.0"], "git_tag": False,
+        "release_tags": ["0.11.1-rc.5", "v0.11.0"], "git_tag": "",
     } | changes
     return release.validate_resume_state(**facts)
 
@@ -224,13 +224,14 @@ def test_resume_state_accepts_the_live_state():
      "unexpected file"),
     ({"pypi": pypi({**HASHES, "data_olympus-0.11.1.zip": "3" * 64})}, "unexpected file"),
     ({"pypi": pypi(yanked=True)}, "yanked"),
-    ({"git_tag": True}, "Git tag v0.11.1 already exists"),
+    ({"git_tag": "b" * 40}, "Git tag v0.11.1 on GitHub is not the tag the proof verified"),
     ({"git_tag": None}, "cannot read the Git tag"),
     ({"release": True}, "GitHub release v0.11.1 already exists"),
     ({"release": None}, "cannot read the GitHub release"),
     ({"release_tags": ["v0.11.1"]}, "GitHub release for v0.11.1 is listed"),
     ({"release_tags": None}, "cannot list"),
-    ({"ghcr_tag": True}, "GHCR tag v0.11.1 already exists"),
+    ({"ghcr_tag": CANDIDATE}, "GHCR tag v0.11.1 already exists"),
+    ({"ghcr_tag": PREVIOUS}, "GHCR tag v0.11.1 already exists"),
     ({"ghcr_tag": None}, "cannot read the GHCR tag"),
     ({"channels": {"stable": CANDIDATE, "latest": PREVIOUS}}, "stable already points"),
     ({"channels": {"stable": PREVIOUS, "latest": CANDIDATE}}, "latest already points"),
@@ -248,13 +249,12 @@ def test_resume_state_refuses(changes, error):
 def test_resume_state_cli_reads_every_registry(monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(release, "fetch_pypi", lambda version: calls.append(version) or pypi())
-    monkeypatch.setattr(release, "_ghcr_present", lambda tag: calls.append(tag) or False)
     monkeypatch.setattr(release, "_channel_digest", lambda channel: calls.append(channel)
-                        or PREVIOUS)
+                        or ("" if channel == "v0.11.1" else PREVIOUS))
     monkeypatch.setattr(release, "_gh_release_present",
                         lambda tag, repo: calls.append(("release", tag, repo)) or False)
-    monkeypatch.setattr(release, "_gh_tag_present",
-                        lambda tag, repo: calls.append(("tag", tag, repo)) or False)
+    monkeypatch.setattr(release, "_gh_tag_object",
+                        lambda tag, repo: calls.append(("tag", tag, repo)) or "")
     monkeypatch.setattr(release, "_release_tags",
                         lambda repo: calls.append(("listing", repo)) or [])
     argv = ["resume-state", "--version", VERSION, "--image-digest", CANDIDATE,

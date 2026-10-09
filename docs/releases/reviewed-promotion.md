@@ -10,7 +10,7 @@ repository variable `SDLC_PIPELINE` is `enabled` and the dispatch ref is
 - `candidate_tag`: the existing `X.Y.Z-rc.N` or `X.Y.Z-hotfix.rc.N` prerelease.
 - `resume_pypi`: `false` (the default) for every normal promotion. Set it to
   `true` only to complete a promotion that uploaded the stable files to PyPI
-  and stopped before the stable tag; see
+  and stopped before or after the stable tag; see
   [resuming after the PyPI upload](#resuming-after-the-pypi-upload).
 
 ## Prerequisites (blocked until W9)
@@ -47,10 +47,17 @@ no fallback to a human token:
   `publish-pypi.yml` must be dispatched from `main`; the release tag is still
   selected by its `ref` input. `rc-publish.yml` and `tag-release.yml` already
   require `main`.
-- A repository ruleset that limits who can create `v*` tags. The tagger check
-  is self-asserted metadata, so this ruleset is the actual access control. It
-  is not in place yet; see the `v*` tag creation item under
-  [tracked prerequisites](#tracked-prerequisites).
+- A repository ruleset that limits who can create `v*` tags. It is not in
+  place: the `w10-protected-tags` ruleset makes `v*` tags undeletable and
+  unmovable but does not restrict their creation, because a creation rule
+  cannot exempt `github-actions[bot]` (see
+  [repository settings](repository-settings.md) and the `v*` tag creation item
+  under [tracked prerequisites](#tracked-prerequisites)). The tagger check is
+  self-asserted metadata and only an audit hint. The control that holds today
+  is content equality: an existing tag is accepted only with the exact name
+  `vX.Y.Z`, as an annotated tag whose object is `S`, and with a message that
+  is byte for byte the generated notes, so any accepted tag is identical in
+  content to the one the App would create.
 - `SDLC_REQUIRED_CODEQL_CHECKS`: the exact required language-analysis check
   names, comma-separated, without spaces around the commas. An unset or
   malformed value fails closed. GitHub produces the aggregate `CodeQL` check
@@ -142,10 +149,25 @@ on `S`, its tag object names `S` and `vX.Y.Z`, its message is byte for byte
 the generated notes, and its tagger is the App bot identity
 (`<app-slug>[bot]` with the `<id>+<app-slug>[bot]@users.noreply.github.com`
 address, resolved from the App token). A tag pushed by anyone else, or with
-other notes, is refused. Git tagger metadata is self-asserted, so this is an
-audit check and not an access control: the W9 tag ruleset must restrict who may
-create `v*` tags. This keeps "Re-run failed jobs" usable after a partial
+other notes, is refused. Git tagger metadata is self-asserted, so the tagger
+check is an audit hint and not an access control, and no ruleset restricts who
+may create `v*` tags today (a tracked prerequisite). The binding that holds is
+the content: exact name, object `S`, and the generated notes as the message.
+This keeps "Re-run failed jobs" usable after a partial
 publication. Re-running all jobs is refused once anything is published.
+
+The engine counts every stable tag as a released version. Once `vX.Y.Z` exists
+on `S`, recomputing the same release would see a stable version above its own
+base: an adoption record must name the highest stable tag, a hotfix the
+current one, and a first release none. The resume phases therefore pass
+exactly that one tag to the engine as `ignore_tags`, and only after verifying
+it: it must be annotated, its tag object must name `S` (not another tag or
+commit) and `vX.Y.Z`, and its tagger must be the App bot identity. After the
+notes are generated, the proof also requires its message to be byte for byte
+those notes. If any check fails, the tag is not ignored and the proof fails
+closed. The engine refuses any name that is not an exact `vX.Y.Z` as well as an
+ignored tag on the cut itself, ignores nothing by default, and no other caller
+passes the option. Notes generation and base selection are unchanged.
 
 The proof job also requires zero open security alerts (repeated after
 environment approval), that the RC GHCR tag still resolves to the recorded
@@ -249,11 +271,14 @@ gitops, and rollback uses the recorded prior digest with `set-channel.yml`.
 
 ## Resuming after the PyPI upload
 
-Use `resume_pypi: true` only when a promotion published the stable wheel and
-sdist to PyPI and stopped before creating the stable tag. A fresh dispatch is
-otherwise refused, because the `initial` proof requires `main` head to equal
-`S` and `version_free.py` requires the version to be absent from PyPI, and
-"Re-run failed jobs" reuses the run's original workflow definition.
+Use `resume_pypi: true` when a promotion published the stable wheel and sdist
+to PyPI and then stopped, either before the stable tag or after it. A normal
+dispatch is refused in that state: the `initial` proof requires `main` head to
+equal `S` (which no longer holds once `main` has advanced) and requires the
+stable tag to be absent, and `version_free.py` requires the version to be
+absent from PyPI. "Re-run failed jobs" reuses the run's original workflow
+definition and scripts, so it can continue only runs that started on code that
+already handles their state.
 
 Operator checklist:
 
@@ -266,7 +291,17 @@ Operator checklist:
   the recorded `B`), and `verify-pypi` requires the files on PyPI to equal the
   rebuild of that `S` byte for byte, but nothing compares the inputs with the
   stopped run itself.
-- Approve the `pypi` environment once more when `publish-pypi` waits.
+- Approve the `pypi` environment once more when `publish-pypi` waits, if the
+  environment has a required reviewer.
+- Do not dispatch `set-channel.yml` or `tag-release.yml` while the promotion
+  runs. Neither takes the `data-olympus-promotion` lock, and either could move
+  `stable` or `latest` or create a `vX.Y.Z` release between `prove` and the
+  later jobs (see the tracked prerequisites).
+- After the run, check that the new release is the latest one:
+  `gh api repos/knaisoma/data-olympus/releases/latest --jq .tag_name` must
+  print the promoted `vX.Y.Z` (`v0.11.1` for the first live promotion). The
+  release job publishes the draft without setting `make_latest`, so GitHub's
+  default decides; correct it by hand if needed.
 
 The resumed run proves everything a normal run proves about `S`, `H`, `B`, `M`,
 the candidate tag, its provenance, image digest, labels and stage-two
@@ -275,41 +310,83 @@ attestations, the exact-source gate (`test` and aggregate `CodeQL` on `H`,
 
 - The proof runs in the `resume-pypi` phase. `S` must be an ancestor of
   `main`, which may have advanced past it (for example by the fix that made
-  the resume necessary), and the stable tag must be absent. A lightweight,
-  foreign or even this workflow's own annotated tag is refused.
+  the resume necessary). A stable tag is accepted exactly as in `resume`: only
+  the App's own annotated tag on `S` carrying the generated notes, verified
+  before the engine ignores it (see [Proofs](#proofs)). The `prove` job
+  resolves the App bot identity before its proof for this reason. A
+  lightweight tag, a tag on another commit or object, another tagger or other
+  notes are refused.
 - `release_record.py resume-state` replaces `version_free.py`. PyPI must
   already hold the stable version with exactly one wheel and one sdist of that
   version and nothing else (none yanked, and an entry without a `yanked`
-  state is refused). The GHCR `vX.Y.Z` tag and the Git tag `vX.Y.Z` must be
-  absent, and so must a GitHub release `vX.Y.Z` among the releases visible to
-  the job's read-only token. GitHub lists draft releases only to tokens with
-  push access, so a draft is probably invisible here; the `release` job
-  refuses a foreign draft (one whose body or assets are not this run's) and
-  never publishes it. GHCR `stable` and `latest` must not yet point at
-  the candidate digest (their previous digests are expected). Any registry
-  that cannot be read fails closed. If PyPI lacks the version, resume is
-  impossible and the normal dispatch is the path.
+  state is refused). Any registry or release that cannot be read fails
+  closed. If PyPI
+  lacks the version, resume is impossible and the normal dispatch is the path.
+  The rest depends on the tag the proof saw, which the step passes as the
+  local tag object (no fetch happens between the proof and this check):
+  - Without a stable tag, nothing after PyPI may exist. The Git tag on GitHub,
+    the GHCR `vX.Y.Z` tag and a GitHub release `vX.Y.Z` among the releases
+    visible to the job's read-only token must be absent, and GHCR `stable`
+    and `latest` must not point at the candidate digest. GitHub lists draft
+    releases only to tokens with push access, so a draft is probably
+    invisible here; the `release` job refuses a foreign draft (one whose body
+    or assets are not this run's) and never publishes it.
+  - With the verified tag, GitHub's ref `refs/tags/vX.Y.Z` must name that same
+    tag object. The states the later jobs leave behind are accepted, so the
+    resume stays idempotent: GHCR `vX.Y.Z` is absent or on the candidate
+    digest, never on another one; `stable` or `latest` may point at the
+    candidate only if `vX.Y.Z` already does, because `promote-image` writes
+    the version tag first; otherwise they keep whatever digest they had.
+    There is no recorded previous digest to compare them with, and
+    `set-channel.yml` moves the two channels independently, so equality
+    between them cannot be required. `promote-image` sets and reads back all
+    three. A GitHub release visible to the job's token (a published one, or
+    a draft if the token can see drafts) is checked here, before
+    `promote-image` can move a channel. Its body must be the generated notes,
+    it must not be a prerelease, every asset name must be one of the four
+    this run uploads (the PyPI wheel and sdist, `release-provenance.json` and
+    `release-record.json`), and an asset digest that GitHub reports must equal
+    the PyPI hash or this run's release record. A published release must
+    already hold all four, since an immutable release can never gain an
+    asset. The `release` job checks every byte again, completes a draft and
+    publishes it last, and refuses anything else, including a foreign draft
+    this token could not see.
 
 `build-stable` runs unchanged and compares the rebuild of `S` with both
-candidate payloads. `publish-pypi` stays bound to the `pypi` environment, so
-the operator approves once more. After approval it rechecks the proof in the
-`resume-pypi` phase (the tag must still be absent), rechecks the alerts, skips
-only the upload step, and runs `verify-pypi` without attestations: the files
-already on PyPI must equal the rebuild of `S` byte for byte. Tag creation, the
-image channels, the GitHub release and the MCP registry then run as in a
-normal promotion.
+candidate payloads. `publish-pypi` stays bound to the `pypi` environment.
+After any approval it rechecks the proof in the `resume-pypi` phase, rechecks
+the alerts, skips only the upload step, and runs `verify-pypi` without
+attestations: the files already on PyPI must equal the rebuild of `S` byte for
+byte. `create-tag` rechecks the proof. If the verified tag already exists, it
+neither pushes nor moves it; otherwise it creates and pushes it and rechecks
+again. The image channels, the GitHub release and the MCP registry then run as
+in a normal promotion. A run started on this code that fails later can be
+continued with "Re-run failed jobs" or with another `resume_pypi` dispatch.
 
-Once the stable tag exists, `resume_pypi` is refused. Continue with "Re-run
-failed jobs" on the run that created the tag, whose `resume` rechecks accept
-the workflow's own annotated tag.
-
-Lesson: the verifier assumed a clean distribution directory, and no live
+Lesson 1: the verifier assumed a clean distribution directory, and no live
 promotion had run before the first one. In run 37942200995 (`0.11.1-rc.5`) the
 upload succeeded and the verifier failed, because the directory also held the
 two attestation files the publish action writes. That left PyPI with `0.11.1`
 (wheel `7fbbfa13...`, sdist `b0d5853f...`, equal to the build of `S`) and
-nothing else: no tag, no channel move and no GitHub release. `resume_pypi`
-completes that promotion without re-uploading anything.
+nothing else: no tag, no channel move and no GitHub release.
+
+Lesson 2: the recheck after the tag ran the adoption proof again. The adoption
+record is single use, since it names `v0.11.0` as the highest stable tag, so
+every promotion of an adoption cut failed its own post-tag recheck. The same
+held for hotfix promotions (the hotfix scope requires the base to be the
+highest stable tag) and first releases. No test caught it, because the proof
+fixtures with an existing tag used an ordinary release cut. The first live
+promotion found it. Resume run 37958694040 (from `5f348d9`) published nothing
+new on PyPI and verified the files. It then pushed the App's `v0.11.1` on `S`
+(tag object `bcf25d21...`, message byte for byte the 61,199 bytes of generated
+notes), and its post-push recheck failed with `bad_adoption`. The image
+channels, the GitHub release and the MCP registry were skipped. "Re-run failed
+jobs" of that run would fail again, because it runs `5f348d9`'s code. A normal
+dispatch is refused because `main` has advanced past `S`. Once the fix is on
+`main`, the way on is one new `resume_pypi: true` dispatch with the inputs
+above. `tests/test_promotion_resume_after_tag.py` reproduces that live shape
+and runs the real step scripts of every remaining job against fake GHCR,
+GitHub, PyPI and registry services.
 
 ## Old and new promotion paths during the R9 window
 
@@ -353,8 +430,10 @@ These are not implemented and block activation:
   an audit check and not an access control.
 - Shared lock on the old path. After adoption, when `tag-release.yml` is
   retired or changed, the remaining stable promotion path must take the
-  `data-olympus-promotion` lock (Task 6). Until then the procedure above is
-  the only mutual exclusion.
+  `data-olympus-promotion` lock (Task 6). Join `set-channel.yml` and
+  `tag-release.yml` to the `data-olympus-promotion` concurrency group (both
+  files stay unchanged until the R9 window closes). Until then the procedure
+  above and the dispatch checklist are the only mutual exclusion.
 - Pin the build backend (hatchling). The stable rebuild of `S` must equal the
   candidate payloads and, on a resumed promotion, the files already on PyPI
   byte for byte; an unpinned build backend can drift between the candidate

@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       # Only after a promotion uploaded the stable files to PyPI and stopped
-      # before the stable tag. See docs/releases/reviewed-promotion.md.
+      # before or after the stable tag. See docs/releases/reviewed-promotion.md.
       resume_pypi:
         description: Resume a promotion whose stable files are already on PyPI (true or false)
         required: false
@@ -97,17 +97,41 @@ jobs:
             --pattern '*.whl' --pattern '*.tar.gz' --dir to-delete/promotion/candidate
           git fetch --tags origin +refs/heads/main:refs/remotes/origin/main \
             "refs/tags/$RC_TAG:refs/tags/$RC_TAG"
+      # GITHUB_TOKEN cannot read Dependabot alerts. No human-token fallback:
+      # without the W9 App this step fails and nothing is published.
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        id: security-app
+        with:
+          app-id: ${{ vars.SDLC_APP_ID }}
+          private-key: ${{ secrets.SDLC_APP_PRIVATE_KEY }}
+          permission-vulnerability-alerts: read
+          permission-security-events: read
+      # The resume proof verifies an existing stable tag against this identity.
+      - name: Resolve the release App bot identity
+        env:
+          GH_TOKEN: ${{ steps.security-app.outputs.token }}
+          APP_SLUG: ${{ steps.security-app.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+          BOT_ID="$(gh api "users/${APP_SLUG}[bot]" --jq .id)"
+          [[ "$BOT_ID" =~ ^[1-9][0-9]*$ ]]
+          echo "BOT_NAME=${APP_SLUG}[bot]" >> "$GITHUB_ENV"
+          echo "BOT_EMAIL=${BOT_ID}+${APP_SLUG}[bot]@users.noreply.github.com" >> "$GITHUB_ENV"
       - name: Prove squash and recorded RC after acquiring the shared lock
         id: proof
         run: |
           set -euo pipefail
           # initial: main head is S and the stable tag is absent. resume-pypi:
-          # S is on main and the stable tag is still absent.
+          # S is on main, and a stable tag is accepted only as the App's own
+          # annotated tag on S carrying the generated notes; that tag alone is
+          # then left out of the engine's released versions.
           PHASE=initial
           if [ "$RESUME_PYPI" = true ]; then PHASE=resume-pypi; fi
           python scripts/release_record.py prove --phase "$PHASE" --squash "$SQUASH" \
             --head "$REVIEWED_HEAD" --candidate-tag "$RC_TAG" \
             --candidate-provenance to-delete/promotion/candidate/release-provenance.json \
+            --tagger "$BOT_NAME <$BOT_EMAIL>" \
             --output to-delete/promotion/release-record.json \
             --notes-output to-delete/promotion/release-notes.md \
             --env-output to-delete/promotion/outputs
@@ -133,15 +157,6 @@ jobs:
           }
           gate head "$REVIEWED_HEAD"
           gate squash "$SQUASH"
-      # GITHUB_TOKEN cannot read Dependabot alerts. No human-token fallback:
-      # without the W9 App this step fails and nothing is published.
-      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
-        id: security-app
-        with:
-          app-id: ${{ vars.SDLC_APP_ID }}
-          private-key: ${{ secrets.SDLC_APP_PRIVATE_KEY }}
-          permission-vulnerability-alerts: read
-          permission-security-events: read
       - name: Require zero open security alerts
         env:
           GH_TOKEN: ${{ steps.security-app.outputs.token }}
@@ -179,13 +194,20 @@ jobs:
               raise SystemExit('candidate payload/PyPI hashes differ from the RC record')
           PY
           if [ "$RESUME_PYPI" = true ]; then
-            # PyPI already holds exactly one wheel and one sdist of VERSION;
-            # the GHCR tag, any GitHub release visible to this read-only token
-            # (drafts probably are not; the release job refuses a foreign
-            # draft) and the Git tag are absent and stable/latest are not on
-            # the candidate.
+            # PyPI already holds exactly one wheel and one sdist of VERSION.
+            # Without a stable tag the GHCR tag, any GitHub release visible to
+            # this read-only token (drafts probably are not; the release job
+            # refuses a foreign draft) and the Git tag are absent and
+            # stable/latest are not on the candidate. With the tag the proof
+            # above verified (no fetch since), GitHub's ref must name that same
+            # tag object, the GHCR tag is absent or on the candidate, a
+            # channel is on the candidate only if the GHCR tag is, and a
+            # release visible to this token must already be this release's.
+            TAG_OBJECT="$(git rev-parse -q --verify "refs/tags/v$VERSION" || true)"
             python scripts/release_record.py resume-state --version "$VERSION" \
-              --image-digest "$IMAGE_DIGEST" --repo "$GITHUB_REPOSITORY"
+              --image-digest "$IMAGE_DIGEST" --repo "$GITHUB_REPOSITORY" \
+              --tag-object "$TAG_OBJECT" --notes to-delete/promotion/release-notes.md \
+              --record to-delete/promotion/release-record.json
           else
             python scripts/version_free.py --version "$VERSION" --repo "$GITHUB_REPOSITORY"
           fi
@@ -326,7 +348,7 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --tags origin +refs/heads/main:refs/remotes/origin/main
-          # A resumed promotion must still find the stable tag absent.
+          # Both phases accept only the App's own verified stable tag on S.
           case "$RESUME_PYPI" in
             false) PHASE=resume ;;
             true) PHASE=resume-pypi ;;
@@ -422,10 +444,12 @@ jobs:
               --output to-delete/promotion/rechecked.json
             cmp to-delete/promotion/release-record.json to-delete/promotion/rechecked.json
           }
+          # With the tag present, the resume proof accepts it only if it is
+          # annotated, on S, carries the generated notes and was tagged by the
+          # App, and only then leaves it out of the engine's released versions.
           recheck
-          # The resume proof accepts an existing tag only if it is annotated,
-          # on S, carries the generated notes and was tagged by the App.
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            # Idempotent: an existing verified tag is never pushed or moved.
             echo "$TAG already exists as this workflow's annotated tag on S"
           else
             git config user.name "$BOT_NAME"
