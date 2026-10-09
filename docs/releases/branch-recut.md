@@ -47,9 +47,10 @@ Owner provisioning, not done by this change and tracked under W9 sitting 1:
   branch could use it; the environment's branch policy is enforced by GitHub,
   not by editable workflow YAML. The `GITHUB_REF` check stays as defense in
   depth.
-* Install the W9 App on this repository only, with Contents write, and allow
-  it, and nothing else, to bypass the `release/new` and `hotfix/new`
-  protections for replacement and deletion.
+* Install the W9 App on this repository only, with Contents write. No App
+  holds a ruleset bypass. The `release/new` and `hotfix/new` rulesets require
+  pull requests for updates but leave creation and deletion permitted, and
+  apply uses only those two operations (see below).
 
 Every App-token job in the SDLC workflows, including promotion, uses this one
 `sdlc-bot` environment with the same variable and secret names.
@@ -125,20 +126,97 @@ reachable at `refs/heads/sdlc-preserve/release-new/<oldsha>`. A `hotfix/new`
 carrying commits after the released `H` is never deleted.
 
 Without `--apply`, the CLI prints a JSON plan and changes no remote branch.
-An unacknowledged pending-work plan exits with status 2. `--apply` prints the
-plan, rechecks remote refs, then runs one `git push --atomic` that replaces
-`release/new`, creates its preservation ref, and removes a verified hotfix
-branch when applicable. Atomic replacement avoids the gap of separate delete
-and create pushes. Each updated ref carries its own `--force-with-lease` with
-the expected value from the snapshot (empty for a new preservation ref); there
-is no plain force. After the push the remote refs are read back and compared.
+An unacknowledged pending-work plan exits with status 2. The plan's
+`operations` list shows the pushes `--apply` will make, in order.
+
+## Apply: delete and recreate
+
+The protected branches require pull requests for updates, and no App holds a
+bypass, so apply never moves `release/new` in place. It replaces the branch by
+deleting it and creating it again, which the rulesets permit. `--apply` prints
+the plan, re-reads every remote ref (main, tags, `release/new`, `hotfix/new`
+and preservation refs) and refuses unless all still match the plan. It then
+runs these single-ref pushes, one at a time:
+
+1. Create the preservation ref `refs/heads/sdlc-preserve/release-new/<oldsha>`
+   at the old head (skipped when it already exists at that head), with
+   `git push <remote> <oldsha>:<ref>`.
+2. Delete `release/new` with a compare-and-swap push,
+   `git push --force-with-lease=refs/heads/release/new:<oldsha> <remote> :refs/heads/release/new`.
+3. Create `release/new` at the new base with
+   `git push <remote> <newbase>:refs/heads/release/new`.
+4. After a hotfix release, delete the verified `hotfix/new` the same way as
+   step 2, only once `release/new` is recreated.
+
+A hotfix cut is a single creation of `hotfix/new` at the stable commit.
+
+No push uses a plain `--force`, a `+` refspec or `--atomic`. The only lease
+is on a deletion, and it names exactly the deleted ref and the planned old
+head. Creations carry no lease: a plain push to an absent ref is a creation.
+If the ref exists at a commit that is not an ancestor, Git refuses the push.
+If it exists at an ancestor, Git itself would fast-forward it; only the
+rulesets, which refuse any update that is not a pull request, stop that, so
+the read before each creation (which requires the ref to be absent) is the
+script's own check. The plan never names `main`, a tag or any branch other
+than `release/new`, `hotfix/new` and the preservation refs; apply refuses
+such a ref with `unsupported ref in plan`.
+
+Before each push the remote is read again and every ref must match what the
+previous step left; after each push it is read back. A step whose read does
+not match stops the run, fail closed. The backup therefore always exists
+before anything is deleted, and a refused deletion leaves `release/new`
+unchanged.
+
+### Deletion is a compare-and-swap
+
+The read immediately before the deletion is the early check: it refuses a
+moved branch before anything is pushed. The deletion itself carries a lease on
+the planned old head, so the server deletes `release/new` (or `hotfix/new`)
+only if it still points there. A pull request merged into the branch between
+that read and the push makes the server refuse the deletion, and the run stops
+with `refused by its lease` and nothing deleted. The read after the deletion
+catches a branch recreated immediately afterwards and stops before creating
+anything.
+
+If GitHub ever rejects a leased deletion that the rulesets would otherwise
+permit, falling back to a plain deletion is an explicit, recorded decision,
+taken by changing this script and this page through review, never a silent
+retry. A plain deletion reopens the window above: a commit merged between the
+read and the push would be deleted undetected.
+
+### Recovery when recreation fails
+
+If `release/new` was deleted, or may have been (the deletion push reported a
+failure, or the read after it did not match or could not be made), and it is
+not recreated at the new base, the script never leaves the repository without
+the branch silently. Unless the branch is known to exist again, it makes
+exactly one recovery push of the old head, again a plain creation,
+`git push origin <oldhead>:refs/heads/release/new`. That holds when the
+remote cannot be read at all, for example after a network or token failure:
+a plain creation cannot overwrite a branch that diverged. The run then fails
+with an error that names the old head, the backup ref and that command, and
+states the outcome: the branch was restored; the push succeeded but could
+not be confirmed; or the push failed and `release/new` is `ABSENT` or
+unknown, in which case run the printed command. If another writer recreated
+the branch in the meantime, no recovery push is made and the error names both
+heads. The backup ref stays in place in every case.
+
+### Rulesets toggled by the controller
+
+Rules that require linear history or passing checks can also refuse the
+creation of a ref whose history contains merge commits. When the recreation
+of `release/new`, or a recovery push of an old head that contains merges, can
+meet such a rule, the controller that dispatches the workflow toggles the
+ruleset around the apply. That toggle is outside this script, which never
+changes rulesets and holds no bypass.
 
 ## Limits of the lock
 
 The guarantee is narrower than "every privileged workflow holds the lock":
 
-* `main` and tags carry no lease in the push. The apply-time snapshot only
-  narrows the window in which they can move.
+* Only the deletions carry a lease, on the deleted branch. `main`, tags and
+  the preservation refs are checked by the reads before and after each push,
+  which only narrow the window in which they can move.
 * The old-path workflows `tag-release.yml`, `rc-publish.yml` and
   `set-channel.yml` are not in the `data-olympus-promotion` group. While they
   can run, a main or tag move can race a recut or hotfix cut. Both jobs list

@@ -56,6 +56,20 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 * Record the lessons of the first adoption cut in the adoption cut runbook, including the main-first ordering, the burned candidates and the minimum commit count on `release/new`.
+* `scripts/sdlc_recut.py --apply` now replaces `release/new` by deleting it
+  and creating it again at the new base, instead of one atomic
+  `--force-with-lease` update. The protected-branch rulesets require pull
+  requests for updates and no App holds a bypass, while creation and deletion
+  stay permitted. The old head is backed up to its preservation ref first,
+  each single-ref push is guarded by remote reads before and after it, each
+  deletion is a compare-and-swap push leased on the planned old head,
+  creations carry no lease, no push uses a plain force, a `+` refspec or
+  `--atomic`, and a verified `hotfix/new` is deleted only after the
+  recreation. If recreation fails after the deletion, one recovery push
+  restores the old head, also when the remote cannot be read, and the error
+  names the old head, the backup ref and the exact recovery command. `docs/releases/branch-recut.md` documents the leased
+  deletion, the explicit decision any plain-delete fallback would need, and
+  the controller's ruleset toggle.
 
 ### Security
 
