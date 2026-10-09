@@ -26,7 +26,9 @@ be corrected or removed once it exists, by anyone, with any identity.
   `reserve` job creates the annotated candidate tag and a draft GitHub
   prerelease, which `finalize` publishes last. `0.11.1-rc.2` is burned (see
   [the known burned candidate](rc-publication-stage.md#known-burned-candidate-0111-rc2-empty-immutable-release-and-tag-created-by-the-first-live-run-before-the-draft-first-fix)),
-  so the first complete candidate is `0.11.1-rc.3` or later. It can only run after
+  so the first complete candidate is later than `0.11.1-rc.2` (see "Lessons from
+the first live cut (2026-10-09)": `rc.2` to `rc.4` are burned, and `release/new`
+needs at least five commits before a publishable candidate). It can only run after
   `SDLC_PIPELINE=enabled` (item 4 of the enable order). From then on that
   identity is permanent, and a mistake is corrected only by a newer candidate.
 - Never create a tag matching those patterns for testing, in this repository
@@ -276,8 +278,10 @@ squash with exactly these subjects, in this order:
 Each push to `release/new` starts `rc-build`. The first yields `0.11.1-rc.1`
 (not promotable, the record is still at `H`); the second yields
 `0.11.1-rc.2`, promotable. That candidate was burned by the first live run
-(published empty before the draft-first fix), so the first complete candidate
-is `0.11.1-rc.3` or later, from the next push to `release/new`.
+(published empty before the draft-first fix). With `rc.2` to `rc.4` burned, the
+candidate number is the commit count on `release/new` since the cut, so a
+publishable candidate needs at least five commits there (see the lessons
+section at the end).
 
 ## Step 7: engine run and dry-run RC build
 
@@ -292,8 +296,10 @@ uv run python scripts/sdlc_version.py --head refs/remotes/origin/release/new \
   --standard-file docs/releases/std-u-821-amendment-1.3.md
 ```
 
-Expected: `0.11.1-rc.2`, `N` 2, `B` equal to `C`, `promotable` true,
-`adoption_retired` true.
+Expected: `N` equal to the number of commits on `release/new` (2 with only the
+placeholder and retirement commits, which names the burned `0.11.1-rc.2`; the
+published candidate needs `N` of at least 5), `B` equal to `C`, `promotable`
+true, `adoption_retired` true.
 
 Then dispatch a dry-run build (write: starts a workflow, publishes nothing):
 
@@ -431,3 +437,46 @@ After the first publication the cut is no longer rolled back this way: the
 candidate tag cannot be deleted or moved under the organization rulesets. Use
 the documented release rollback (`.rules/release-rollback.md`), which only
 redeploys recorded digests and never retags.
+
+## Lessons from the first live cut (2026-10-09)
+
+The first live cut was rolled back once and redone. These are the facts that
+changed the procedure.
+
+1. Land every fix on `main` before the record commit. The stage 2 workflow
+   definition always comes from `main` (`workflow_run`), and any commit on
+   `main` after the record commit `C` makes the engine refuse `release/new`
+   (`recut_required`); under amendment 1.3 that needs a new anchor and a new
+   record. The first cut was rolled back for this reason: `release/new` was
+   deleted, the record removed, and a new anchor and record created. Merge all
+   stage 2 and workflow fixes first, then add `C`.
+2. Immutable releases stay enabled. A published release can never gain assets,
+   so stage 2 creates the release as a draft, uploads and verifies the assets,
+   and publishes last. The first live run published an empty release for
+   `0.11.1-rc.2`, which is burned permanently: the tag and release cannot be
+   deleted or moved, because tags matching `v*` and `*-rc.*` are protected.
+3. Burned names and the N>=5 rule. The candidate number is the commit count on
+   `release/new` since the cut. With `rc.2` to `rc.4` burned, the replay needed
+   at least five commits on `release/new` before a publishable candidate.
+   Stage 2 refuses a colliding candidate cleanly (`Git tag collision: different
+   H`) and writes nothing. `rc.1` and the other low numbers are refused because
+   they are not promotable or collide.
+4. Release listing lag. Right after a draft release is created the listing may
+   not show it, and the first two runs failed with `draft release was not
+   created`. Both passed on one re-run of the failed job. The bounded retry
+   (#348) takes effect once it lands on `main`.
+5. The aggregate CodeQL check run exists only on pull request heads (app
+   `github-advanced-security`) and never on pushes to `main`. The promotion
+   gate therefore requires `test` and the aggregate CodeQL on the release pull
+   request head `H`, and `test` plus the per-language `Analyze` checks on the
+   squash `S`. The first design expected the aggregate on `S` and failed closed
+   before anything was published.
+6. Ruleset interaction. Creating `release/new` at a commit whose history
+   contains a merge commit is blocked by the linear history rule. The
+   controller disabled the ruleset only for the creation push and re-enabled it
+   right after. Recut deletes and recreates the branch (no force, no lease).
+7. KB consult hook. `pyproject.toml` and `uv.lock` are governed paths, so the
+   commit needs an explicit consult whose workspace key is the basename of the
+   main worktree (`data-olympus`), not the name of the linked worktree.
+8. The `lint-title` check rejects the `release` subject type until the lint fix
+   lands. The fix is tracked and was applied on `release/new` in this cycle.

@@ -52,6 +52,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   per-run GitHub App token, and remain disabled until W9 bot activation.
   See [branch recut and hotfix cuts](docs/releases/branch-recut.md).
 
+### Changed
+
+* Record the lessons of the first adoption cut in the adoption cut runbook, including the main-first ordering, the burned candidates and the minimum commit count on `release/new`.
+
 ### Security
 
 * Promotion now verifies the stage-two GitHub artifact attestations of the
