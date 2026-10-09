@@ -69,6 +69,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* Make the promotion check gate (`release_record.py checks`) ask each commit
+  for the evidence GitHub produces there. The aggregate `CodeQL` check run
+  exists only on pull request heads, so it was never present on the squash
+  `S` pushed to `main` and the gate could never pass. `H`, the release pull
+  request head, now requires `test` and aggregate `CodeQL` from the GitHub
+  Advanced Security app, the only observed producer of that check run
+  (`github-code-scanning` is kept as the alternate slug; a run named `CodeQL`
+  from GitHub Actions is refused); `S` requires `test` and every analysis in
+  `SDLC_REQUIRED_CODEQL_CHECKS`. The proof that the trees of `S` and `H` are
+  equal ties the two results to the same code. All other rules stay fail
+  closed.
 * Tolerate GitHub release listing lag after creating a draft and after
   uploading assets, in stage 2 `reserve` and in the stable release step: the
   read is repeated with bounded backoff (about 60 seconds) and then fails
