@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       squash:
-        description: Full SHA of the release squash S at main HEAD
+        description: Full SHA of the release squash S at main HEAD (with resume_pypi, S on main)
         required: true
         type: string
       reviewed_head:
@@ -15,6 +15,16 @@ on:
         description: Existing X.Y.Z-rc.N or X.Y.Z-hotfix.rc.N prerelease
         required: true
         type: string
+      # Only after a promotion uploaded the stable files to PyPI and stopped
+      # before the stable tag. See docs/releases/reviewed-promotion.md.
+      resume_pypi:
+        description: Resume a promotion whose stable files are already on PyPI (true or false)
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 permissions:
   contents: read
@@ -49,6 +59,7 @@ jobs:
       SQUASH: ${{ inputs.squash }}
       REVIEWED_HEAD: ${{ inputs.reviewed_head }}
       RC_TAG: ${{ inputs.candidate_tag }}
+      RESUME_PYPI: ${{ inputs.resume_pypi }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -72,7 +83,13 @@ jobs:
           [[ "$SQUASH" =~ ^[0-9a-f]{40}$ ]]
           [[ "$REVIEWED_HEAD" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RC_TAG" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(hotfix\.)?rc\.[1-9][0-9]*$ ]]
-          test "$SQUASH" = "$GITHUB_SHA"
+          # Exactly true or false. A normal promotion starts at S; a resumed one
+          # proves below that S is still on main, which may have advanced.
+          case "$RESUME_PYPI" in
+            false) test "$SQUASH" = "$GITHUB_SHA" ;;
+            true) ;;
+            *) echo "resume_pypi must be exactly true or false" >&2; exit 1 ;;
+          esac
           mkdir -p to-delete/promotion/candidate
           gh release view "$RC_TAG" --json tagName,isDraft,isPrerelease \
             | jq -e --arg tag "$RC_TAG" '.tagName == $tag and .isPrerelease and (.isDraft | not)'
@@ -84,7 +101,11 @@ jobs:
         id: proof
         run: |
           set -euo pipefail
-          python scripts/release_record.py prove --squash "$SQUASH" \
+          # initial: main head is S and the stable tag is absent. resume-pypi:
+          # S is on main and the stable tag is still absent.
+          PHASE=initial
+          if [ "$RESUME_PYPI" = true ]; then PHASE=resume-pypi; fi
+          python scripts/release_record.py prove --phase "$PHASE" --squash "$SQUASH" \
             --head "$REVIEWED_HEAD" --candidate-tag "$RC_TAG" \
             --candidate-provenance to-delete/promotion/candidate/release-provenance.json \
             --output to-delete/promotion/release-record.json \
@@ -157,7 +178,17 @@ jobs:
           if local != expected or remote != expected:
               raise SystemExit('candidate payload/PyPI hashes differ from the RC record')
           PY
-          python scripts/version_free.py --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+          if [ "$RESUME_PYPI" = true ]; then
+            # PyPI already holds exactly one wheel and one sdist of VERSION;
+            # the GHCR tag, any GitHub release visible to this read-only token
+            # (drafts probably are not; the release job refuses a foreign
+            # draft) and the Git tag are absent and stable/latest are not on
+            # the candidate.
+            python scripts/release_record.py resume-state --version "$VERSION" \
+              --image-digest "$IMAGE_DIGEST" --repo "$GITHUB_REPOSITORY"
+          else
+            python scripts/version_free.py --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+          fi
       # Anchors the candidate: stage 2 on main (rc-publish-stage.yml) signs the
       # image digest and the wheel and sdist it verified and published. The
       # files are the ones just checked against the provenance and PyPI; the
@@ -253,6 +284,7 @@ jobs:
       REVIEWED_HEAD: ${{ inputs.reviewed_head }}
       RC_TAG: ${{ needs.prove.outputs.rc_tag }}
       VERSION: ${{ needs.prove.outputs.version }}
+      RESUME_PYPI: ${{ inputs.resume_pypi }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -294,7 +326,13 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --tags origin +refs/heads/main:refs/remotes/origin/main
-          python scripts/release_record.py prove --phase resume --squash "$SQUASH" \
+          # A resumed promotion must still find the stable tag absent.
+          case "$RESUME_PYPI" in
+            false) PHASE=resume ;;
+            true) PHASE=resume-pypi ;;
+            *) echo "resume_pypi must be exactly true or false" >&2; exit 1 ;;
+          esac
+          python scripts/release_record.py prove --phase "$PHASE" --squash "$SQUASH" \
             --head "$REVIEWED_HEAD" --candidate-tag "$RC_TAG" \
             --candidate-provenance to-delete/promotion/candidate/release-provenance.json \
             --tagger "$BOT_NAME <$BOT_EMAIL>" \
@@ -305,30 +343,29 @@ jobs:
           GH_TOKEN: ${{ steps.security-app.outputs.token }}
         run: python scripts/security_alerts.py --repo "$GITHUB_REPOSITORY"
       # A re-run after a partial upload skips files already on PyPI; the hash
-      # verification below then requires every remote file to be ours.
+      # verification below then requires every remote file to be ours. A
+      # resumed promotion (resume_pypi) never uploads: PyPI already holds the
+      # files, and this job only verifies them after the approval.
       - name: Publish stable Python artifacts using Trusted Publishing
+        if: inputs.resume_pypi == 'false'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: to-delete/stable/dist/
           skip-existing: true
+      # The upload writes <file>.publish.attestation next to each file; PyPI
+      # lists only the wheel and the sdist. Those two must equal the build of S
+      # exactly, and the attestations must exist only when the upload ran.
       - name: Verify published stable Python hashes
         run: |
-          python - <<'PY'
-          import hashlib, json, os, pathlib, time, urllib.request
-          local = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                   for p in pathlib.Path('to-delete/stable/dist').iterdir()}
-          for attempt in range(12):
-              try:
-                  with urllib.request.urlopen('https://pypi.org/pypi/data-olympus/' + os.environ['VERSION'] + '/json', timeout=30) as response:
-                      remote = {p['filename']: p['digests']['sha256'] for p in json.load(response)['urls']}
-                  if local == remote:
-                      break
-              except OSError:
-                  pass
-              if attempt == 11:
-                  raise SystemExit('stable PyPI hashes do not match built distributions')
-              time.sleep(5)
-          PY
+          set -euo pipefail
+          case "$RESUME_PYPI" in
+            false) ATTESTATIONS=required ;;
+            true) ATTESTATIONS=absent ;;
+            *) echo "resume_pypi must be exactly true or false" >&2; exit 1 ;;
+          esac
+          python scripts/release_record.py verify-pypi --dist to-delete/stable/dist \
+            --stable-provenance to-delete/stable/release-provenance.json \
+            --version "$VERSION" --attestations "$ATTESTATIONS"
 
   create-tag:
     if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'

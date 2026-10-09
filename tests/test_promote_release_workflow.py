@@ -89,12 +89,17 @@ def test_security_gate_uses_machine_app_alert_permissions():
 def test_initial_proof_is_strict_and_later_rechecks_are_resumable():
     jobs = workflow()["jobs"]
     prove = scripts(jobs["prove"])
-    assert "--phase" not in prove  # Default initial phase: main head is S, tag absent.
-    assert 'test "$SQUASH" = "$GITHUB_SHA"' in prove
-    assert "scripts/version_free.py" in prove
+    # Without resume_pypi: initial phase, main head is S, version free everywhere.
+    assert "false) test \"$SQUASH\" = \"$GITHUB_SHA\" ;;" in prove
+    assert "PHASE=initial\n" in prove
+    assert 'prove --phase "$PHASE"' in prove
+    assert "else\n  python scripts/version_free.py" in prove
+    assert "prove --phase resume" in scripts(jobs["create-tag"])
+    publish = scripts(jobs["publish-pypi"])
+    assert "false) PHASE=resume ;;" in publish
+    assert "true) PHASE=resume-pypi ;;" in publish
     for name in ("publish-pypi", "create-tag"):
         text = scripts(jobs[name])
-        assert "prove --phase resume" in text
         assert "cmp to-delete/promotion/release-record.json" in text
         assert "version_free.py" not in text
 
@@ -104,7 +109,9 @@ def test_publication_retries_never_replace_published_bytes():
     publish = next(step for step in jobs["publish-pypi"]["steps"]
                    if "gh-action-pypi-publish@" in step.get("uses", ""))
     assert publish["with"]["skip-existing"] is True
-    assert "local == remote" in scripts(jobs["publish-pypi"])
+    verify = step_named(jobs["publish-pypi"], "Verify published stable Python hashes")
+    assert "python scripts/release_record.py verify-pypi" in verify["run"]
+    assert "python - <<" not in scripts(jobs["publish-pypi"])
     release = scripts(jobs["release"])
     assert "scripts/release_record.py release" in release
     assert "--stable-provenance" in release
@@ -313,3 +320,65 @@ def test_codeql_is_required_on_h_and_analyses_on_s():
     assert 'gate head "$REVIEWED_HEAD"' in text
     assert 'gate squash "$SQUASH"' in text
     assert "python - <<" not in text
+
+
+def test_resume_pypi_is_a_strict_choice_input():
+    data = workflow()
+    resume = data.get("on", data.get(True))["workflow_dispatch"]["inputs"]["resume_pypi"]
+    assert resume["type"] == "choice"
+    assert resume["options"] == ["false", "true"]
+    assert resume["default"] == "false"
+    assert resume["required"] is False
+    jobs = data["jobs"]
+    assert jobs["prove"]["env"]["RESUME_PYPI"] == "${{ inputs.resume_pypi }}"
+    assert jobs["publish-pypi"]["env"]["RESUME_PYPI"] == "${{ inputs.resume_pypi }}"
+    # The shell validates the value again: anything but true or false fails.
+    for text in (step_named(jobs["prove"], "Validate dispatch")["run"],
+                 step_named(jobs["publish-pypi"], "Recheck the proof")["run"],
+                 step_named(jobs["publish-pypi"], "Verify published stable")["run"]):
+        assert '*) echo "resume_pypi must be exactly true or false" >&2; exit 1 ;;' in text
+    # Only the two jobs that read the input see it; nothing else changes.
+    for name, job in jobs.items():
+        if name not in ("prove", "publish-pypi"):
+            assert "resume_pypi" not in str(job), name
+
+
+def test_resume_proves_ancestry_pypi_and_unpublished_later_channels():
+    prove = workflow()["jobs"]["prove"]
+    validate = step_named(prove, "Validate dispatch")["run"]
+    assert "true) ;;" in validate  # main may have advanced past S.
+    proof = step_named(prove, "Prove squash")["run"]
+    assert 'if [ "$RESUME_PYPI" = true ]; then PHASE=resume-pypi; fi' in proof
+    state = step_named(prove, "Verify candidate publication")
+    assert state["env"]["IMAGE_DIGEST"] == "${{ steps.proof.outputs.image_digest }}"
+    text = state["run"]
+    resume = text.index("python scripts/release_record.py resume-state")
+    assert text.index('if [ "$RESUME_PYPI" = true ]; then') < resume
+    assert resume < text.index("python scripts/version_free.py")
+    assert '--image-digest "$IMAGE_DIGEST" --repo "$GITHUB_REPOSITORY"' in text
+    # The exact-source gate, alerts and attestations run in both modes.
+    for name in ("Require exact-source CI", "Require zero open security alerts",
+                 "Verify stage-two attestations"):
+        assert "if" not in step_named(prove, name), name
+
+
+def test_resume_skips_only_the_upload_and_keeps_the_human_gate():
+    jobs = workflow()["jobs"]
+    job = jobs["publish-pypi"]
+    assert job["environment"] == {"name": "pypi", "url": "https://pypi.org/p/data-olympus"}
+    conditional = [step for step in job["steps"] if "if" in step]
+    upload = next(step for step in job["steps"]
+                  if "gh-action-pypi-publish@" in step.get("uses", ""))
+    assert conditional == [upload]
+    assert upload["if"] == "inputs.resume_pypi == 'false'"
+    verify = step_named(job, "Verify published stable Python hashes")
+    assert job["steps"].index(upload) < job["steps"].index(verify)
+    assert "false) ATTESTATIONS=required ;;" in verify["run"]
+    assert "true) ATTESTATIONS=absent ;;" in verify["run"]
+    assert '--attestations "$ATTESTATIONS"' in verify["run"]
+    for name in ("Recheck the proof", "Require zero open security alerts"):
+        assert "if" not in step_named(job, name), name
+    # Every other job is unconditional within its job-level gate.
+    for name, other in jobs.items():
+        if name != "publish-pypi":
+            assert all("if" not in step for step in other["steps"]), name
