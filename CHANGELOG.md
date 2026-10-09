@@ -14,6 +14,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+* This is the first release cut under the STD-U-821 branch model (`release/new`, content-derived versions, reviewed promotion). Candidates are built unprivileged and published by a separate trusted stage; releases are drafted, filled with assets and published last, which GitHub immutable releases require. Candidate `0.11.1-rc.2` of the first live run is burned.
 * Add a disabled-by-default trusted RC publication stage (`rc-publish-stage.yml`)
   that runs only `main` scripts, recomputes the candidate version from `H`'s
   history as data, verifies package hashes and the OCI digest, splits
@@ -53,12 +54,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+* Promotion now verifies the stage-two GitHub artifact attestations of the
+  candidate wheel, sdist and image digest (`gh attestation verify` with the
+  `rc-publish-stage.yml` signer workflow and `refs/heads/main` source ref) in
+  the `prove` job, before any publication. The exact-source check gate moves
+  into `release_record.py checks`: the reviewed head needs `test`, and the
+  squash, whose tree the proof shows equal to the head's, needs `test`,
+  `CodeQL` and every configured analysis, since `release/new` heads are not
+  guaranteed CodeQL while the squash on `main` is. Only a completed run with
+  conclusion `success` counts.
 * Validate manual publication identities and reject collisions, bind Python
   builds to validated commit SHAs, and move image channels by verified digest.
   Remove tag-triggered rebuild publication and OIDC grants from PR packaging builds.
 
 ### Fixed
 
+* Tolerate GitHub release listing lag after creating a draft and after
+  uploading assets, in stage 2 `reserve` and in the stable release step: the
+  read is repeated with bounded backoff (about 60 seconds) and then fails
+  closed as before.
 * Publish candidate and stable GitHub releases draft first, for immutable
   releases. Stage 2 `reserve` now creates a draft prerelease, uploads and reads
   back every asset, and a new last `finalize` job publishes the draft only

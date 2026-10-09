@@ -76,6 +76,11 @@ BURNED = ("published GitHub release is incomplete and immutable: this candidate 
           "the next push to the branch yields the next rc number")
 PYPI_ATTEMPTS = 20
 PYPI_DELAY_SECONDS = 15.0
+# The release listing can lag a moment behind `gh release create` and
+# `upload` (the first live run once failed with "draft release was not
+# created" and passed on re-run). Reads are repeated after these delays,
+# about 60 s in total, and then the ordinary checks fail closed.
+LISTING_DELAYS = (1.0, 2.0, 4.0, 8.0, 15.0, 30.0)
 # Upper bounds for untrusted metadata read into memory (fail closed above them).
 METADATA_LIMIT = 1024 * 1024
 PROVENANCE_LIMIT = 1024 * 1024
@@ -85,6 +90,21 @@ def require(condition: bool, message: str) -> None:
     """Fail closed. Messages are fixed strings, never untrusted input."""
     if not condition:
         raise ValueError(message)
+
+
+def poll[T](read: Callable[[], T], ready: Callable[[T], bool], *,
+         sleep: Callable[[float], None]) -> T:
+    """Return the first ready read, or the last read after LISTING_DELAYS.
+
+    A read that raises (a collision, a burned release) is never retried.
+    """
+    value = read()
+    for delay in LISTING_DELAYS:
+        if ready(value):
+            break
+        sleep(delay)
+        value = read()
+    return value
 
 
 def sha256(path: Path) -> str:
@@ -389,16 +409,21 @@ def reservation_bound(verified: Verified, client: Client) -> tuple[dict[str, str
     return python, image
 
 
-def reserve(verified: Verified, client: Client) -> int:
+def reserve(verified: Verified, client: Client, *,
+            sleep: Callable[[float], None] = time.sleep) -> int:
     """Bind the identity to H (tag, draft prerelease, assets); return missing PyPI files.
 
     The release stays a draft: finalize publishes it only after PyPI, the image
-    and the attestations are complete.
+    and the attestations are complete. The readback after the upload tolerates
+    listing lag within LISTING_DELAYS; any collision still fails at once.
     """
     python, _, release = inventory(verified, client)
     if release is None or release.assets != verified.assets:
         client.reserve(verified)
-        python, _, release = inventory(verified, client)
+        python, _, release = poll(
+            lambda: inventory(verified, client),
+            lambda found: found[2] is not None and found[2].assets == verified.assets,
+            sleep=sleep)
         require(release is not None and release.assets == verified.assets,
                 "GitHub reservation readback mismatch")
     return len(set(verified.python_hashes) - set(python))
@@ -552,8 +577,9 @@ class Registries:
     gets it through --password-stdin into a private auth file, never argv.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, sleep: Callable[[float], None] = time.sleep) -> None:
         self._authdir: str | None = None
+        self._sleep = sleep
 
     def close(self) -> None:
         if self._authdir is not None:
@@ -674,7 +700,9 @@ class Registries:
             command("gh", "release", "create", verified.version, "--repo", REPOSITORY,
                     "--draft", "--verify-tag", "--prerelease", "--title", verified.version,
                     "--notes", f"Candidate from {verified.head}. See {PROVENANCE}.")
-            current = self.release(verified.version)
+            # The listing can lag behind the create; poll it, bounded.
+            current = poll(lambda: self.release(verified.version),
+                           lambda found: found is not None, sleep=self._sleep)
             if current is None or not current.draft:
                 raise ValueError("draft release was not created")
         require(current.draft, BURNED)

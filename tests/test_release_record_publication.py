@@ -57,17 +57,32 @@ class FakeGitHub:
     """Offline stand-in for the gh CLI: one existing release, no replacement."""
 
     def __init__(self, assets, *, body=NOTES, draft=False, prerelease=False, digests=False,
-                 forged_digest=False):
+                 forged_digest=False, hidden_views=0, upload_lag=0):
         self.assets = dict(assets)
         self.body, self.draft, self.prerelease, self.digests = body, draft, prerelease, digests
         self.forged_digest = forged_digest
         self.uploads: list[list[str]] = []
         self.events: list[str] = []
+        # Listing lag: the first hidden_views views report the release absent,
+        # and uploaded assets stay unlisted for upload_lag views.
+        self.hidden_views, self.upload_lag = hidden_views, upload_lag
+        self.lagging: set[str] = set()
+        self.views = 0
 
     def __call__(self, *args):
         if args[:2] == ("release", "view"):
+            self.views += 1
+            if self.hidden_views:
+                self.hidden_views -= 1
+                raise subprocess.CalledProcessError(1, "gh", stderr=b"release not found")
+            listed = {name: data for name, data in self.assets.items()
+                      if name not in self.lagging}
+            if self.lagging:
+                self.upload_lag -= 1
+                if not self.upload_lag:
+                    self.lagging.clear()
             assets = [{"name": name} | ({"digest": "sha256:" + sha(data)} if self.digests else {})
-                      for name, data in self.assets.items()]
+                      for name, data in listed.items()]
             if self.forged_digest:
                 # The API digest disagrees with the downloaded bytes.
                 assets[0]["digest"] = "sha256:" + "0" * 64
@@ -90,14 +105,17 @@ class FakeGitHub:
                 if Path(path).name in self.assets:
                     raise subprocess.CalledProcessError(1, "gh")
                 self.assets[Path(path).name] = Path(path).read_bytes()
+                if self.upload_lag:
+                    self.lagging.add(Path(path).name)
             return b""
         raise AssertionError(args)
 
 
-def complete(run):
+def complete(run, sleeps=None):
     record, provenance, paths = run
     release.complete_release(tag=TAG, notes=NOTES, record=record,
-                             stable_provenance=provenance, files=paths)
+                             stable_provenance=provenance, files=paths,
+                             sleep=(sleeps if sleeps is not None else []).append)
 
 
 def test_expected_assets_bind_every_file_to_the_record(run):
@@ -280,3 +298,49 @@ def test_cli_release_command_reports_refusal(run, monkeypatch, capsys):
     assert code == 1
     assert "different hash" in capsys.readouterr().err
     assert github.uploads == []
+
+
+def test_draft_shown_only_on_the_third_listing_is_accepted(run, monkeypatch):
+    """Listing lag right after `gh release create --draft` is tolerated, bounded."""
+    _, _, paths = run
+    github = FakeGitHub({}, draft=True, hidden_views=2)
+    monkeypatch.setattr(release, "_gh", github)
+    sleeps: list[float] = []
+    complete(run, sleeps)
+    assert sleeps == [1.0, 2.0]
+    assert github.events == ["upload", "publish"] and github.draft is False
+    assert github.assets == {path.name: path.read_bytes() for path in paths}
+
+
+def test_draft_never_listed_is_refused_after_the_bounded_attempts(run, monkeypatch):
+    github = FakeGitHub({}, draft=True, hidden_views=10**6)
+    monkeypatch.setattr(release, "_gh", github)
+    sleeps: list[float] = []
+    with pytest.raises(ValueError, match="draft release was not created"):
+        complete(run, sleeps)
+    assert sleeps == list(release.LISTING_DELAYS)
+    assert sum(sleeps) == pytest.approx(60.0)
+    assert github.views == len(release.LISTING_DELAYS) + 1
+    assert github.uploads == [] and github.events == []
+
+
+def test_uploaded_assets_listed_late_are_awaited_before_publication(run, monkeypatch):
+    _, _, paths = run
+    github = FakeGitHub({path.name: path.read_bytes() for path in paths[:2]}, draft=True,
+                        upload_lag=2)
+    monkeypatch.setattr(release, "_gh", github)
+    sleeps: list[float] = []
+    complete(run, sleeps)
+    assert sleeps == [1.0, 2.0]
+    assert github.events == ["upload", "publish"]
+
+
+def test_other_view_failures_are_never_read_as_absence(run, monkeypatch):
+    def broken(*_args):
+        raise subprocess.CalledProcessError(1, "gh", stderr=b"HTTP 502: Bad Gateway")
+
+    monkeypatch.setattr(release, "_gh", broken)
+    sleeps: list[float] = []
+    with pytest.raises(subprocess.CalledProcessError):
+        complete(run, sleeps)
+    assert sleeps == []

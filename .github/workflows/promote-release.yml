@@ -38,6 +38,7 @@ jobs:
       contents: read
       checks: read
       packages: read
+      attestations: read
     outputs:
       tag: ${{ steps.proof.outputs.tag }}
       version: ${{ steps.proof.outputs.version }}
@@ -90,33 +91,27 @@ jobs:
             --notes-output to-delete/promotion/release-notes.md \
             --env-output to-delete/promotion/outputs
           cat to-delete/promotion/outputs >> "$GITHUB_OUTPUT"
-      - name: Require exact-source CI and CodeQL on H and S
+      # Code scanning is guaranteed only on main and on pull requests into
+      # main: H on release/new is not guaranteed CodeQL; S is. The proof above
+      # showed tree(S) ==
+      # tree(H): the code scanned on S is byte for byte the reviewed H. H
+      # therefore needs only `test`; S needs `test`, `CodeQL` and every
+      # configured analysis (release_record.py check_gate).
+      - name: Require exact-source CI on H and CI plus CodeQL on S
         env:
           REQUIRED_ANALYSES: ${{ vars.SDLC_REQUIRED_CODEQL_CHECKS }}
         run: |
           set -euo pipefail
           test -n "$REQUIRED_ANALYSES"
-          for SHA in "$REVIEWED_HEAD" "$SQUASH"; do
-            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs" \
-              > to-delete/promotion/checks.json
-            CHECK_SHA="$SHA" python - <<'PY'
-          import json, os
-          required = {'test', 'CodeQL'} | set(os.environ['REQUIRED_ANALYSES'].split(','))
-          if any(not name.strip() or name != name.strip() for name in required):
-              raise SystemExit('invalid required analysis names')
-          checks = [c for page in json.load(open('to-delete/promotion/checks.json'))
-                    for c in page['check_runs']]
-          for name in required:
-              matches = [c for c in checks if c['name'] == name
-                         and c['head_sha'] == os.environ['CHECK_SHA']
-                         and c['app']['slug'] in ('github-actions', 'github-code-scanning')]
-              if not matches:
-                  raise SystemExit('missing required check: ' + name)
-              latest = max(matches, key=lambda c: c['id'])
-              if latest['status'] != 'completed' or latest['conclusion'] != 'success':
-                  raise SystemExit('required check did not succeed: ' + name)
-          PY
-          done
+          mkdir -p to-delete/checks
+          gate() {
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$2/check-runs" \
+              > "to-delete/checks/$1.json"
+            python scripts/release_record.py checks --role "$1" --sha "$2" \
+              --analyses "$REQUIRED_ANALYSES" --check-runs "to-delete/checks/$1.json"
+          }
+          gate head "$REVIEWED_HEAD"
+          gate squash "$SQUASH"
       # GITHUB_TOKEN cannot read Dependabot alerts. No human-token fallback:
       # without the W9 App this step fails and nothing is published.
       - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
@@ -163,6 +158,37 @@ jobs:
               raise SystemExit('candidate payload/PyPI hashes differ from the RC record')
           PY
           python scripts/version_free.py --version "$VERSION" --repo "$GITHUB_REPOSITORY"
+      # Anchors the candidate: stage 2 on main (rc-publish-stage.yml) signs the
+      # image digest and the wheel and sdist it verified and published. The
+      # files are the ones just checked against the provenance and PyPI; the
+      # image is the recorded digest. The ghcr.io login above serves the image
+      # read; attestations: read lets GITHUB_TOKEN read the attestations.
+      # Every later job needs prove, so nothing publishes first.
+      # The exact --cert-identity (rc-publish-stage.yml@refs/heads/main) cannot
+      # be used: gh makes it mutually exclusive with --signer-workflow, and
+      # --signer-workflow only matches the workflow path. --source-ref pins
+      # refs/heads/main; stage 2 is not a reusable workflow, so its signing
+      # workflow file comes from that same ref.
+      - name: Verify stage-two attestations of the candidate files and image
+        env:
+          IMAGE_DIGEST: ${{ steps.proof.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          WHEELS=(to-delete/promotion/candidate/*.whl)
+          SDISTS=(to-delete/promotion/candidate/*.tar.gz)
+          test "${#WHEELS[@]}" = 1
+          test "${#SDISTS[@]}" = 1
+          test -f "${WHEELS[0]}"
+          test -f "${SDISTS[0]}"
+          verify_attestation() {
+            gh attestation verify "$1" --repo knaisoma/data-olympus \
+              --signer-workflow knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml \
+              --source-ref refs/heads/main --deny-self-hosted-runners
+          }
+          verify_attestation "${WHEELS[0]}"
+          verify_attestation "${SDISTS[0]}"
+          verify_attestation "oci://ghcr.io/knaisoma/data-olympus@$IMAGE_DIGEST"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: promotion-inputs

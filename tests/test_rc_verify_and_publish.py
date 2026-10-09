@@ -1492,8 +1492,11 @@ def test_reserve_refuses_an_upload_that_does_not_read_back(build, fault):
             registry.assets[victim] = b"truncated"
 
     registry.reserve = lossy
+    sleeps = []
     with pytest.raises(ValueError):
-        stage.reserve(verified, registry)
+        stage.reserve(verified, registry, sleep=sleeps.append)
+    # A dropped asset is awaited within the bound; different bytes fail at once.
+    assert sleeps == (list(stage.LISTING_DELAYS) if fault == "drop" else [])
     with pytest.raises(ValueError):
         stage.finalize(verified, registry)
     assert registry.draft is True
@@ -1614,3 +1617,72 @@ def test_realistic_token_split_by_an_escape_is_redacted(monkeypatch, splitter):
     monkeypatch.setenv("GH_TOKEN", token)
     assert stage._stderr_excerpt(raw) == "denied [REDACTED] end"
 
+
+
+def listing_after_create(verified, shown_on):
+    """Releases as listed: the created draft appears on the shown_on-th listing."""
+    def listing(calls):
+        created = [i for i, a in enumerate(calls) if a[:3] == ("gh", "release", "create")]
+        if not created:
+            return []
+        reads = sum(1 for a in calls[created[0]:] if a[:2] == ("gh", "api")
+                    and "releases?" in a[2])
+        return [entry(verified.version)] if shown_on and reads >= shown_on else []
+    return listing
+
+
+def test_reserve_tolerates_a_draft_listed_only_on_the_third_read(build, monkeypatch):
+    """The first live run failed once on listing lag right after the create."""
+    verified = verify(build)
+    calls = production_reserve_fake(monkeypatch, verified, listing_after_create(verified, 3))
+    sleeps = []
+    stage.Registries(sleep=sleeps.append).reserve(verified)
+    assert sleeps == [1.0, 2.0]
+    assert len([a for a in calls if a[:3] == ("gh", "release", "create")]) == 1
+    assert sorted(Path(a[4]).name for a in calls if a[:3] == ("gh", "release", "upload")) == \
+        sorted(verified.files)
+
+
+def test_reserve_refuses_a_draft_never_listed_after_the_bounded_reads(build, monkeypatch):
+    verified = verify(build)
+    calls = production_reserve_fake(monkeypatch, verified, listing_after_create(verified, 0))
+    sleeps = []
+    with pytest.raises(ValueError, match="draft release was not created"):
+        stage.Registries(sleep=sleeps.append).reserve(verified)
+    assert sleeps == list(stage.LISTING_DELAYS)
+    assert sum(sleeps) == pytest.approx(60.0)
+    create = next(i for i, a in enumerate(calls) if a[:3] == ("gh", "release", "create"))
+    assert sum(1 for a in calls[create:] if "releases?" in a[2]) == len(stage.LISTING_DELAYS) + 1
+    assert not any(a[:3] == ("gh", "release", "upload") for a in calls)
+
+
+def test_reserve_readback_waits_for_uploaded_assets_to_be_listed(build):
+    verified, registry = verify(build), Registry()
+    real = registry.release
+    reads = []
+
+    def lagging(tag):
+        reads.append(tag)
+        found = real(tag)
+        if found is not None and len(reads) < 4:
+            # The second and third reads (after the upload) list no assets yet.
+            return stage.Release(found.draft, {})
+        return found
+
+    registry.release = lagging
+    sleeps = []
+    assert stage.reserve(verified, registry, sleep=sleeps.append) == len(verified.python_hashes)
+    assert sleeps == [1.0, 2.0]
+    assert registry.writes == ["reserve"]
+
+
+def test_listing_poll_never_retries_a_refusal():
+    reads = []
+
+    def read():
+        reads.append(1)
+        raise ValueError("GitHub release asset collision")
+
+    with pytest.raises(ValueError, match="collision"):
+        stage.poll(read, lambda _value: False, sleep=lambda _s: pytest.fail("slept"))
+    assert reads == [1]
