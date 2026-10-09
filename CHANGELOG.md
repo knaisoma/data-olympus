@@ -14,6 +14,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+* Add `docs/releases/repository-settings.md`, a checklist of the GitHub repository and organization settings the release pipeline requires (immutable releases, variables, environments, Trusted Publishers, rulesets, code scanning, Dependabot, the GitHub App and the Actions policy), each with a read-only `gh api` read-back.
 * This is the first release cut under the STD-U-821 branch model (`release/new`, content-derived versions, reviewed promotion). Candidates are built unprivileged and published by a separate trusted stage; releases are drafted, filled with assets and published last, which GitHub immutable releases require. Candidate `0.11.1-rc.2` of the first live run is burned.
 * Add a disabled-by-default trusted RC publication stage (`rc-publish-stage.yml`)
   that runs only `main` scripts, recomputes the candidate version from `H`'s
