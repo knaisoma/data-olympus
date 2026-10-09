@@ -10,17 +10,31 @@ recheck in later jobs, which may be re-run after a partial publication: S must
 still be reachable from main, and the stable tag may exist only as an
 annotated tag on S whose message is the generated notes and whose tagger is the
 release App. Phase "resume-pypi" replaces "initial" when a promotion stopped
-after its PyPI upload and before the stable tag (dispatch input resume_pypi):
-S must be reachable from main, which may have advanced, and the stable tag must
-still be absent; after the tag exists only "Re-run failed jobs" continues. Every
-other proof is identical in all phases.
+after its PyPI upload (dispatch input resume_pypi): S must be reachable from
+main, which may have advanced, and the stable tag is accepted exactly as in
+"resume". Every other proof is identical in all phases.
+
+The stable tag on S is a released version to the engine, so once it exists
+the recomputed release would see a stable version above its own base (an
+adoption record names the highest stable tag, a hotfix the current one). The
+resume phases therefore pass that one tag, and nothing else, as ignore_tags,
+and only after verifying it: annotated, its object is S, its tag field names
+it, its tagger is the release App, and (once the notes exist) its message is
+byte for byte the generated notes. Any other tag state fails closed.
 
 The "resume-state" command proves the external state resume-pypi requires:
-PyPI already holds exactly the stable wheel and sdist, and the GHCR version
-tag, the stable and latest channels, the GitHub release and the Git tag show
-that nothing after PyPI was published. The "verify-pypi" command compares the
-stable files built from S with PyPI, ignoring nothing but the upload's
-attestation files, which must be present exactly when the upload ran.
+PyPI already holds exactly the stable wheel and sdist. Without a stable tag,
+the GHCR version tag, the stable and latest channels, the GitHub release and
+the Git tag show that nothing after PyPI was published. With the stable tag the
+proof verified, the Git tag on GitHub must be that very tag object, the GHCR
+version tag absent or on the candidate digest, and a channel may be on the
+candidate only if the version tag is (the order promote-image writes them);
+a GitHub release visible to the job's token must already be this release's
+(notes, not a prerelease, only this run's assets), so a foreign one is refused
+before any channel moves; the release job checks every byte again. The
+"verify-pypi" command compares the stable files built from S with PyPI,
+ignoring nothing but the upload's attestation files, which must be present
+exactly when the upload ran.
 
 The "release" command completes or verifies the GitHub release: its body must
 be the generated notes and every asset must be one of this run's verified files
@@ -60,11 +74,7 @@ if ROOT not in sys.path:
 from scripts.rc_decide import main_ratification_kwargs  # noqa: E402
 from scripts.release_artifacts import CandidateVersion  # noqa: E402
 from scripts.sdlc_version import Git, VersionError, _impact, compute_version  # noqa: E402
-from scripts.version_free import (  # noqa: E402
-    _gh_release_present,
-    _gh_tag_present,
-    _ghcr_present,
-)
+from scripts.version_free import _gh_release_present  # noqa: E402
 
 SHA = re.compile(r"[0-9a-f]{40}")
 HASH = re.compile(r"[0-9a-f]{64}")
@@ -153,10 +163,14 @@ def generate_notes(*, cwd: str | Path, version: dict) -> str:
 PHASES = ("initial", "resume", "resume-pypi")
 
 
-def validate_tag_object(
-    raw: str | None, *, squash: str, tag: str, notes: str, tagger: str | None,
-) -> None:
-    """Accept an existing stable tag only as this workflow's own annotated tag."""
+def validate_tag_header(
+    raw: str | None, *, squash: str, tag: str, tagger: str | None,
+) -> str:
+    """Check everything of an existing stable tag object but its message.
+
+    Returns the message. The message is the generated notes, which exist only
+    after the engine ran; validate_tag_object adds that comparison.
+    """
     if tagger is None:
         raise ValueError("an existing stable tag requires the expected tagger identity")
     _match(TAGGER, tagger, "tagger")
@@ -175,8 +189,35 @@ def validate_tag_object(
     stamp = re.escape(tagger) + r" [0-9]+ [+-][0-9]{4}"
     if re.fullmatch(stamp, fields.get("tagger", "")) is None:
         raise ValueError("existing stable tag tagger differs from the release App")
-    if not separator or message != notes:
+    if not separator:
         raise ValueError("existing stable tag message differs from generated notes")
+    return message
+
+
+def validate_tag_object(
+    raw: str | None, *, squash: str, tag: str, notes: str, tagger: str | None,
+) -> None:
+    """Accept an existing stable tag only as this workflow's own annotated tag."""
+    if validate_tag_header(raw, squash=squash, tag=tag, tagger=tagger) != notes:
+        raise ValueError("existing stable tag message differs from generated notes")
+
+
+def verified_ignore_tags(
+    *, phase: str, squash: str, tag: str, tag_exists: bool, tag_target: str | None,
+    tag_annotated: bool, tag_object: str | None, tagger: str | None,
+) -> frozenset[str]:
+    """The engine's ignore_tags: this release's own tag, once verified, else nothing.
+
+    Runs before the engine, so it checks every property but the message;
+    validate_proof then requires the message to be the generated notes. A tag
+    that fails any check is never ignored: the proof fails closed here.
+    """
+    if not tag_exists:
+        return frozenset()
+    if phase == "initial" or tag_target != squash or not tag_annotated:
+        raise ValueError("stable tag already exists")
+    validate_tag_header(tag_object, squash=squash, tag=tag, tagger=tagger)
+    return frozenset({tag})
 
 
 def validate_proof(
@@ -186,8 +227,14 @@ def validate_proof(
     phase: str = "initial", main_contains_squash: bool = False,
     tag_target: str | None = None, tag_annotated: bool = False,
     tag_object: str | None = None, tagger: str | None = None,
+    ignored_tags: frozenset[str] = frozenset(),
 ) -> dict:
-    """Pure validation of immutable Git facts and the recomputed engine result."""
+    """Pure validation of immutable Git facts and the recomputed engine result.
+
+    ignored_tags are the tags the engine result was computed without; only
+    this release's own stable tag may be among them, and only when it exists
+    and passes the full tag validation below.
+    """
     if phase not in PHASES:
         raise ValueError("phase must be initial or resume")
     validate_inputs(squash=squash, head=head, candidate_tag=candidate_tag)
@@ -219,10 +266,10 @@ def validate_proof(
         raise ValueError("squash subject differs from engine release target")
     if not separator or body != notes.rstrip("\n"):
         raise ValueError("squash release notes differ from generated notes")
+    if ignored_tags and (ignored_tags != {identity.stable_tag} or not tag_exists
+                         or phase == "initial"):
+        raise ValueError("only this release's own existing stable tag may be ignored")
     if tag_exists:
-        if phase == "resume-pypi":
-            raise ValueError("stable tag already exists: resume_pypi is refused after tag "
-                             "creation; re-run the failed jobs of the original run instead")
         if phase == "initial" or tag_target != squash or not tag_annotated:
             raise ValueError("stable tag already exists")
         validate_tag_object(tag_object, squash=squash, tag=identity.stable_tag,
@@ -235,7 +282,8 @@ def validate_proof(
     }
 
 
-def _compute(git: Git, *, cwd: str | Path, head: str, main: str, branch: str) -> dict:
+def _compute(git: Git, *, cwd: str | Path, head: str, main: str, branch: str,
+             ignore_tags: frozenset[str] = frozenset()) -> dict:
     """Recompute, taking adoption ratification only from main's blobs.
 
     This checkout is the squash S, whose tree equals the reviewed H, so its own
@@ -245,6 +293,7 @@ def _compute(git: Git, *, cwd: str | Path, head: str, main: str, branch: str) ->
     """
     with tempfile.TemporaryDirectory(prefix="adoption-ratification-") as trusted:
         return compute_version(cwd=cwd, head=head, main=main, branch=branch,
+                               ignore_tags=ignore_tags,
                                **main_ratification_kwargs(git, head=head, main=main,
                                                           trusted_dir=Path(trusted)))
 
@@ -255,20 +304,28 @@ def prove_release(
     tagger: str | None = None,
 ) -> dict:
     """Read Git facts and recompute against the RC's frozen pre-squash main."""
+    if phase not in PHASES:
+        raise ValueError("phase must be initial, resume or resume-pypi")
     validate_inputs(squash=squash, head=head, candidate_tag=candidate_tag)
     identity = validate_candidate(provenance, head=head, candidate_tag=candidate_tag)
     git = Git(cwd)
     if git.file(head, "release/ADOPTION.json") is not None:
         raise ValueError("release/ADOPTION.json must be absent at H")
     branch = "hotfix/new" if "-hotfix.rc." in candidate_tag else "release/new"
-    version = _compute(git, cwd=cwd, head=head, main=provenance["M"], branch=branch)
-    notes = generate_notes(cwd=cwd, version=version)
-    main_head = git.resolve(main)
+    # Tag facts first: the engine may ignore the stable tag only once verified.
     tag_ref = f"refs/tags/{identity.stable_tag}"
     tag_exists = identity.stable_tag in git.run("tag", "--list").splitlines()
     tag_target = git.resolve(tag_ref) if tag_exists else None
     tag_annotated = tag_exists and git.run("cat-file", "-t", tag_ref).strip() == "tag"
     tag_object = git.run("cat-file", "tag", tag_ref) if tag_annotated else None
+    ignored = verified_ignore_tags(
+        phase=phase, squash=squash, tag=identity.stable_tag, tag_exists=tag_exists,
+        tag_target=tag_target, tag_annotated=tag_annotated, tag_object=tag_object,
+        tagger=tagger)
+    version = _compute(git, cwd=cwd, head=head, main=provenance["M"], branch=branch,
+                       ignore_tags=ignored)
+    notes = generate_notes(cwd=cwd, version=version)
+    main_head = git.resolve(main)
     return validate_proof(
         version=version, provenance=provenance, squash=squash, head=head,
         candidate_tag=candidate_tag,
@@ -280,7 +337,7 @@ def prove_release(
         adoption_present=False, tag_exists=tag_exists, phase=phase,
         main_contains_squash=git.ancestor(squash, main_head),
         tag_target=tag_target, tag_annotated=tag_annotated,
-        tag_object=tag_object, tagger=tagger,
+        tag_object=tag_object, tagger=tagger, ignored_tags=ignored,
     )
 
 
@@ -567,23 +624,40 @@ def verify_published(
 
 
 def validate_resume_state(
-    *, version: str, image_digest: str, pypi: object | None, ghcr_tag: bool | None,
+    *, version: str, image_digest: str, pypi: object | None, ghcr_tag: str | None,
     channels: dict[str, str | None], release: bool | None,
-    release_tags: list[str] | None, git_tag: bool | None,
+    release_tags: list[str] | None, git_tag: str | None, tag_object: str = "",
+    release_view: object = False, notes: str | None = None,
+    record_sha256: str | None = None,
 ) -> dict[str, str]:
-    """Pure check of what resume_pypi needs: PyPI done, nothing after it published.
+    """Pure check of what resume_pypi needs: PyPI done, nothing unexpected after it.
 
-    pypi is the PyPI JSON of the stable version (None: absent). The other
-    registry facts are True (present), False (confirmed absent) or None
-    (unreadable, which fails closed). channels maps stable and latest to their
-    current digest ("" when the tag is explicitly absent, None when
-    unreadable). release_tags lists the tag names of every release the token
-    can list; drafts appear only to a token with push access, so a read-only
-    token probably misses them and the release job's refusal of a foreign
-    draft is the backstop. Returns the PyPI inventory {kind: name}.
+    pypi is the PyPI JSON of the stable version (None: absent). ghcr_tag and
+    channels map the GHCR version tag and the stable and latest channels to
+    their current digest ("" when explicitly absent, None when unreadable).
+    git_tag is the object the GitHub ref of the stable tag names ("" absent,
+    None unreadable). tag_object is the annotated tag object the proof verified
+    in this job ("" when the proof saw no stable tag). release is True, False
+    or None (unreadable, which fails closed) for a release visible by tag;
+    release_tags lists the tag names of every release the token can list;
+    drafts appear only to a token with push access, so a read-only token
+    probably misses them and the release job's refusal of a foreign draft is
+    the backstop.
+
+    Without a stable tag nothing after PyPI may exist. With the verified tag
+    the states promote-image and the release job leave are accepted: the
+    version tag absent or on the candidate digest (never on another one), a
+    channel on the candidate only when the version tag is, since promote-image
+    writes the version tag first. A release visible to this token
+    (release_view: the `gh release view` JSON, False when not found, None when
+    unreadable) must already be this release's, checked before promote-image
+    can move a channel (validate_visible_release); the release job checks
+    every byte again. Returns the PyPI inventory {kind: name}.
     """
     _stable_version(version)
     _match(DIGEST, image_digest, "image digest")
+    if tag_object:
+        _match(SHA, tag_object, "verified tag object")
     tag = f"v{version}"
     if pypi is None:
         raise ValueError(f"PyPI does not hold data-olympus {version}: resume_pypi is "
@@ -594,13 +668,11 @@ def validate_resume_state(
     for name, present in facts:
         if present is None:
             raise ValueError(f"cannot read the {name} (fail closed)")
-        if present:
-            raise ValueError(f"{name} already exists: resume_pypi is refused after PyPI")
     if release_tags is None:
         raise ValueError("cannot list the GitHub releases (fail closed)")
-    if tag in release_tags:
-        raise ValueError(f"a GitHub release for {tag} is listed (the token lists drafts "
-                         "only with push access)")
+    if git_tag != tag_object:
+        raise ValueError(f"Git tag {tag} on GitHub is not the tag the proof verified "
+                         f"(GitHub: {git_tag or 'absent'}, verified: {tag_object or 'none'})")
     if set(channels) != set(CHANNELS):
         raise ValueError("stable and latest channel digests are required")
     for channel in CHANNELS:
@@ -609,9 +681,127 @@ def validate_resume_state(
             raise ValueError(f"cannot read the GHCR {channel} channel (fail closed)")
         if digest and DIGEST.fullmatch(digest) is None:
             raise ValueError(f"GHCR {channel} channel digest is unreadable")
-        if digest == image_digest:
-            raise ValueError(f"GHCR {channel} already points at the candidate digest")
+    if not tag_object:
+        if ghcr_tag:
+            raise ValueError(f"GHCR tag {tag} already exists: resume_pypi before the stable "
+                             "tag is refused")
+        if release:
+            raise ValueError(f"GitHub release {tag} already exists before the stable tag")
+        if tag in release_tags:
+            raise ValueError(f"a GitHub release for {tag} is listed (the token lists drafts "
+                             "only with push access)")
+        for channel in CHANNELS:
+            if channels[channel] == image_digest:
+                raise ValueError(f"GHCR {channel} already points at the candidate digest")
+        return inventory
+    if ghcr_tag not in ("", image_digest):
+        raise ValueError(f"GHCR tag {tag} points at another digest than the candidate")
+    for channel in CHANNELS:
+        if channels[channel] == image_digest and ghcr_tag != image_digest:
+            raise ValueError(f"GHCR {channel} points at the candidate digest but {tag} "
+                             "does not")
+    if release_view is None:
+        raise ValueError(f"cannot read the GitHub release {tag} (fail closed)")
+    if release_tags.count(tag) > 1:
+        raise ValueError(f"GitHub lists more than one release for {tag}")
+    if release or tag in release_tags or release_view is not False:
+        if release_view is False:
+            raise ValueError(f"GitHub release {tag} is listed but cannot be read")
+        if notes is None:
+            raise ValueError("the generated notes are required to check a visible release")
+        validate_visible_release(release_view, tag=tag, notes=notes,
+                                 pypi_hashes=pypi_files(pypi, version=version),
+                                 record_sha256=record_sha256)
     return inventory
+
+
+RECORD_ASSETS = ("release-provenance.json", "release-record.json")
+
+
+def validate_visible_release(
+    view: object, *, tag: str, notes: str, pypi_hashes: dict[str, str],
+    record_sha256: str | None,
+) -> None:
+    """Refuse a visible release that is not this release's, before any channel moves.
+
+    The body must be the generated notes, the release not a prerelease, every
+    asset one of the four this run uploads (the PyPI wheel and sdist and the
+    two records), and an asset digest, when GitHub reports one, equal to the
+    PyPI hash or this run's release record. A published release must already
+    hold all four: assets can never be added to an immutable release.
+    """
+    if (not isinstance(view, dict) or not isinstance(view.get("assets"), list)
+            or view.get("tagName") != tag):
+        raise ValueError(f"GitHub release {tag} is unreadable or names another tag")
+    if view.get("isPrerelease") is not False:
+        raise ValueError(f"GitHub release {tag} is a prerelease")
+    if view.get("isDraft") not in (True, False):
+        raise ValueError(f"GitHub release {tag} has no draft state")
+    if _normalize_body(view.get("body")) != notes.rstrip("\n"):
+        raise ValueError(f"GitHub release {tag} notes differ from the generated notes")
+    expected = {**pypi_hashes, RECORD_ASSETS[0]: None, RECORD_ASSETS[1]: record_sha256}
+    names = [asset.get("name") if isinstance(asset, dict) else None
+             for asset in view["assets"]]
+    if len(names) != len(set(names)):
+        raise ValueError(f"GitHub release {tag} has duplicate asset names")
+    foreign = sorted(str(name) for name in names if name not in expected)
+    if foreign:
+        raise ValueError(f"GitHub release {tag} has unexpected assets: " + ", ".join(foreign))
+    for asset in view["assets"]:
+        wanted = expected[asset["name"]]
+        digest = asset.get("digest")
+        if digest is not None and wanted is not None and digest != "sha256:" + wanted:
+            raise ValueError(f"GitHub release {tag} asset {asset['name']} has a different hash")
+    missing = sorted(set(expected) - set(names))
+    if missing and view["isDraft"] is False:
+        raise ValueError(BURNED + ": missing " + ", ".join(missing))
+
+
+def _release_view(tag: str, repo: str) -> object:
+    """`gh release view` JSON of a visible release, False if not found, None unreadable."""
+    try:
+        raw = _gh("release", "view", tag, "--repo", repo, "--json",
+                  "tagName,body,isDraft,isPrerelease,assets")
+    except subprocess.CalledProcessError as error:
+        stderr = error.stderr if isinstance(error.stderr, bytes) else b""
+        return False if NOT_FOUND in stderr else None
+    except OSError:
+        return None
+    try:
+        view = json.loads(raw)
+    except ValueError:
+        return None
+    return view if isinstance(view, dict) else None
+
+
+def _gh_tag_object(tag: str, repo: str) -> str | None:
+    """The tag object the GitHub ref of an annotated tag names; "" if absent.
+
+    A lightweight ref returns a value that never equals a tag object SHA. An
+    unreadable or unexpected answer is None (fail closed).
+    """
+    try:
+        raw = _gh("api", f"repos/{repo}/git/ref/tags/{tag}")
+    except subprocess.CalledProcessError as error:
+        stderr = error.stderr if isinstance(error.stderr, bytes) else b""
+        return "" if b"HTTP 404" in stderr else None
+    except OSError:
+        return None
+    try:
+        ref = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(ref, dict) or ref.get("ref") != f"refs/tags/{tag}":
+        return None
+    target = ref.get("object")
+    if not isinstance(target, dict):
+        return None
+    sha, kind = target.get("sha"), target.get("type")
+    if not isinstance(sha, str) or SHA.fullmatch(sha) is None:
+        return None
+    if kind != "tag":
+        return f"{kind}:{sha}"
+    return sha
 
 
 def _channel_digest(channel: str) -> str | None:
@@ -648,13 +838,17 @@ def _release_tags(repo: str) -> list[str] | None:
     return [tag for tag in tags if isinstance(tag, str)]
 
 
-def gather_resume_state(*, version: str, image_digest: str, repo: str) -> dict[str, str]:
+def gather_resume_state(*, version: str, image_digest: str, repo: str,
+                        tag_object: str = "", notes: str | None = None,
+                        record_sha256: str | None = None) -> dict[str, str]:
     tag = f"v{_stable_version(version)}"
     return validate_resume_state(
         version=version, image_digest=image_digest, pypi=fetch_pypi(version),
-        ghcr_tag=_ghcr_present(tag), channels={c: _channel_digest(c) for c in CHANNELS},
+        ghcr_tag=_channel_digest(tag), channels={c: _channel_digest(c) for c in CHANNELS},
         release=_gh_release_present(tag, repo), release_tags=_release_tags(repo),
-        git_tag=_gh_tag_present(tag, repo),
+        git_tag=_gh_tag_object(tag, repo), tag_object=tag_object,
+        release_view=_release_view(tag, repo) if tag_object else False,
+        notes=notes, record_sha256=record_sha256,
     )
 
 
@@ -702,8 +896,17 @@ def validate_existing_release(
     return missing
 
 
+GH_TIMEOUT = 60.0
+
+
 def _gh(*args: str) -> bytes:
-    return subprocess.run(["gh", *args], check=True, capture_output=True).stdout
+    """Run gh; a call that exceeds GH_TIMEOUT is an OSError, so readers fail closed."""
+    try:
+        return subprocess.run(["gh", *args], check=True, capture_output=True,
+                              timeout=GH_TIMEOUT).stdout
+    except subprocess.TimeoutExpired as error:
+        raise OSError(f"gh {args[0] if args else ''} timed out after {GH_TIMEOUT:g} s") \
+            from error
 
 
 # The release listing behind `gh release view` (a draft is not served by the
@@ -832,6 +1035,11 @@ def main(argv: list[str] | None = None) -> int:
     state.add_argument("--version", required=True)
     state.add_argument("--image-digest", required=True)
     state.add_argument("--repo", required=True)
+    # The local stable tag object the proof of this job verified; empty: none.
+    state.add_argument("--tag-object", default="")
+    # This run's generated notes and release record, to check a visible release.
+    state.add_argument("--notes", type=Path)
+    state.add_argument("--record", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "verify-pypi":
@@ -842,10 +1050,18 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"PyPI holds exactly the stable wheel and sdist of {args.version}")
         elif args.command == "resume-state":
-            inventory = gather_resume_state(version=args.version, repo=args.repo,
-                                            image_digest=args.image_digest)
+            if args.tag_object and (args.notes is None or args.record is None):
+                raise ValueError("--notes and --record are required with --tag-object")
+            inventory = gather_resume_state(
+                version=args.version, repo=args.repo, image_digest=args.image_digest,
+                tag_object=args.tag_object,
+                notes=args.notes.read_text(encoding="utf-8") if args.notes else None,
+                record_sha256=_sha256(args.record) if args.record else None)
+            after = ("the verified stable tag exists and every later item is absent "
+                     "or this release's" if args.tag_object
+                     else "nothing after PyPI is published")
             print(f"PyPI holds {inventory['wheel']} and {inventory['sdist']}; "
-                  f"nothing after PyPI is published for v{args.version}")
+                  f"{after} for v{args.version}")
         elif args.command == "checks":
             check_gate(json.loads(args.check_runs.read_text(encoding="utf-8")),
                        sha=args.sha, role=args.role, analyses=args.analyses)

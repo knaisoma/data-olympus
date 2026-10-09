@@ -188,7 +188,7 @@ def test_stable_tag_is_pushed_with_the_app_token_only():
 
 def test_existing_tag_is_verified_as_the_apps_own_tag():
     jobs = workflow()["jobs"]
-    for name in ("publish-pypi", "create-tag"):
+    for name in ("prove", "publish-pypi", "create-tag"):
         text = scripts(jobs[name])
         assert '--tagger "$BOT_NAME <$BOT_EMAIL>"' in text
         identity = next(step for step in jobs[name]["steps"]
@@ -356,6 +356,16 @@ def test_resume_proves_ancestry_pypi_and_unpublished_later_channels():
     assert text.index('if [ "$RESUME_PYPI" = true ]; then') < resume
     assert resume < text.index("python scripts/version_free.py")
     assert '--image-digest "$IMAGE_DIGEST" --repo "$GITHUB_REPOSITORY"' in text
+    # The tag object the proof of this job verified, without a fetch between.
+    assert 'TAG_OBJECT="$(git rev-parse -q --verify "refs/tags/v$VERSION" || true)"' in text
+    assert '--tag-object "$TAG_OBJECT"' in text
+    # A visible release is checked against this run's notes and record in prove.
+    assert "--notes to-delete/promotion/release-notes.md" in text
+    assert "--record to-delete/promotion/release-record.json" in text
+    steps = prove["steps"]
+    identity = step_named(prove, "Resolve the release App bot identity")
+    assert steps.index(identity) < steps.index(step_named(prove, "Prove squash"))
+    assert "git fetch" not in text
     # The exact-source gate, alerts and attestations run in both modes.
     for name in ("Require exact-source CI", "Require zero open security alerts",
                  "Verify stage-two attestations"):
