@@ -139,7 +139,8 @@ def test_no_workflow_starts_on_tag_push():
 
 
 PERMISSIONS = {
-    "prove": {"contents": "read", "checks": "read", "packages": "read"},
+    "prove": {"contents": "read", "checks": "read", "packages": "read",
+              "attestations": "read"},
     "build-stable": {"contents": "read"},
     "publish-pypi": {"contents": "read", "id-token": "write"},
     "create-tag": {"contents": "read"},
@@ -244,3 +245,70 @@ def test_privileged_actions_are_pinned_by_full_commit_sha():
                 assert ref == PINNED[action], action
     assert {"actions/checkout", "astral-sh/setup-uv", "actions/create-github-app-token",
             "pypa/gh-action-pypi-publish"} <= seen
+
+
+SIGNER = "knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml"
+
+
+def step_named(job, prefix):
+    return next(step for step in job["steps"] if step.get("name", "").startswith(prefix))
+
+
+def test_attestations_are_verified_in_prove_before_any_publication():
+    jobs = workflow()["jobs"]
+    prove = jobs["prove"]
+    step = step_named(prove, "Verify stage-two attestations")
+    text = step["run"]
+    assert "${{" not in text
+    assert step["env"] == {"IMAGE_DIGEST": "${{ steps.proof.outputs.image_digest }}"}
+    command = re.search(r"verify_attestation\(\) \{(.*?)\n\s*\}", text, re.S).group(1)
+    flags = " ".join(command.replace("\\\n", " ").split())
+    assert flags == ('gh attestation verify "$1" --repo knaisoma/data-olympus '
+                     f"--signer-workflow {SIGNER} --source-ref refs/heads/main "
+                     "--deny-self-hosted-runners")
+    calls = [line.strip() for line in text.splitlines()
+             if line.strip().startswith("verify_attestation ")]
+    assert calls == ['verify_attestation "${WHEELS[0]}"',
+                     'verify_attestation "${SDISTS[0]}"',
+                     'verify_attestation "oci://ghcr.io/knaisoma/data-olympus@$IMAGE_DIGEST"']
+    assert "WHEELS=(to-delete/promotion/candidate/*.whl)" in text
+    assert "SDISTS=(to-delete/promotion/candidate/*.tar.gz)" in text
+    assert 'test "${#WHEELS[@]}" = 1' in text and 'test "${#SDISTS[@]}" = 1' in text
+    assert "[[ \"$IMAGE_DIGEST\" =~ ^sha256:[0-9a-f]{64}$ ]]" in text
+    assert text.startswith("set -euo pipefail")
+    # The exact files verified against provenance and PyPI, and the registry
+    # login, come first; the promotion inputs are published to later jobs after.
+    steps = prove["steps"]
+    order = [steps.index(s) for s in (
+        next(s for s in steps if "docker/login-action@" in s.get("uses", "")),
+        step_named(prove, "Verify candidate publication"),
+        step,
+        next(s for s in steps if "upload-artifact@" in s.get("uses", "")),
+    )]
+    assert order == sorted(order)
+    assert prove["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert prove["permissions"]["attestations"] == "read"
+    # gh refuses --cert-identity together with --signer-workflow.
+    assert "--cert-identity" not in text
+    # Every publishing job depends directly on prove.
+    for name, job in jobs.items():
+        if name != "prove":
+            needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
+            assert "prove" in needs, name
+    for name, job in jobs.items():
+        if name != "prove":
+            assert "gh attestation verify" not in scripts(job), name
+
+
+def test_codeql_is_required_on_s_and_ci_on_h():
+    step = step_named(workflow()["jobs"]["prove"], "Require exact-source CI on H")
+    text = step["run"]
+    assert step["env"] == {"REQUIRED_ANALYSES": "${{ vars.SDLC_REQUIRED_CODEQL_CHECKS }}"}
+    assert 'test -n "$REQUIRED_ANALYSES"' in text
+    assert text.index('test -n "$REQUIRED_ANALYSES"') < text.index("gh api")
+    assert 'gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$2/check-runs"' in text
+    assert "python scripts/release_record.py checks --role \"$1\" --sha \"$2\"" in text
+    assert '--analyses "$REQUIRED_ANALYSES"' in text
+    assert 'gate head "$REVIEWED_HEAD"' in text
+    assert 'gate squash "$SQUASH"' in text
+    assert "python - <<" not in text

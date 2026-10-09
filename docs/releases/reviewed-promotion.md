@@ -44,10 +44,22 @@ no fallback to a human token:
   selected by its `ref` input. `rc-publish.yml` and `tag-release.yml` already
   require `main`.
 - A repository ruleset that limits who can create `v*` tags. The tagger check
-  is self-asserted metadata, so this ruleset is the actual access control.
+  is self-asserted metadata, so this ruleset is the actual access control. It
+  is not in place yet; see the `v*` tag creation item under
+  [tracked prerequisites](#tracked-prerequisites).
 - `SDLC_REQUIRED_CODEQL_CHECKS`: the exact required language-analysis check
-  names, comma-separated. `H` and `S` both need successful `test`, aggregate
-  `CodeQL` and each of those checks.
+  names, comma-separated, without spaces around the commas. An unset or
+  malformed value fails closed. `H` needs a successful `test`; `S` needs
+  successful `test`, aggregate `CodeQL` and each of those checks. Code
+  scanning is guaranteed only on `main` and on pull requests into `main`, so
+  `H` on `release/new` is not guaranteed CodeQL; `S` is. The proof shows that
+  the trees of `S` and
+  `H` are equal, so the code scanned on `S` is byte for byte the reviewed `H`.
+  `release_record.py checks` applies the rule: a check run counts only when its
+  `head_sha` is exactly the commit and its app is GitHub Actions or code
+  scanning, and the latest such run (highest id) of each name decides; it must
+  be completed with conclusion `success` (neutral, skipped, cancelled,
+  timed out, action required and stale are refused).
 - Adoption ratification needs no repository setting. This workflow's checkout
   is the squash `S`, whose tree equals `H`, so the proof does not use its own
   copy: when the cut carries `release/ADOPTION.json` it reads
@@ -117,6 +129,35 @@ environment approval), that the RC GHCR tag still resolves to the recorded
 digest, that the image's `org.opencontainers.image.version` and `revision`
 labels equal the candidate tag and `H` on every platform, and that the
 candidate wheel and sdist hashes match the provenance and PyPI.
+
+Before the promotion inputs reach any later job, the proof job verifies the
+GitHub artifact attestations that stage 2 signs (see
+[build provenance attestations](rc-publication-stage.md#build-provenance-attestations-contract)).
+For the candidate wheel and sdist (the exact files it just checked against
+the provenance and PyPI) and for
+`oci://ghcr.io/knaisoma/data-olympus@<recorded digest>` it runs:
+
+```bash
+gh attestation verify <subject> --repo knaisoma/data-olympus \
+  --signer-workflow knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml \
+  --source-ref refs/heads/main --deny-self-hosted-runners
+```
+
+Any failure stops the run. The job's existing `ghcr.io` login serves the image
+read, and the job adds `attestations: read` so `GITHUB_TOKEN` can read the
+attestations; its permissions are `contents: read`, `checks: read`,
+`packages: read` and `attestations: read`. Every later job needs `prove`, so
+nothing is published before this check. The exact certificate identity
+(`--cert-identity` with
+`https://github.com/knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml@refs/heads/main`)
+is not used because `gh` refuses it together with `--signer-workflow`, which
+matches only the workflow path. `--source-ref refs/heads/main` pins the ref,
+and since stage 2 is not a reusable workflow its signing workflow file comes
+from that same ref. This binds the promoted digest and files to
+the trusted stage-two workflow on `main`. The candidate's
+`release-provenance.json` is not itself attested: it is anchored by the
+published, immutable candidate release and by the candidate tag message,
+which records its SHA-256 (promotion does not compare that hash today).
 
 ## Stable Python artifacts
 
@@ -206,18 +247,15 @@ changing `tag-release.yml`, so the operator keeps them mutually exclusive:
 
 ## Tracked prerequisites
 
-These are not implemented in this change and block activation:
+These are not implemented and block activation:
 
-- RC image anchoring. The RC provenance asset and the `X.Y.Z-rc.N` GHCR tag are
-  mutable, and the RC image labels can be set by anyone who can push an
-  image, so today the promoted digest is not bound to anything immutable.
-  Stage 2 (Task 4, `rc-publish-stage.yml`) must emit GitHub artifact
-  attestations (`actions/attest-build-provenance`) for the image digest and
-  for `release-provenance.json`, and `promote-release.yml` must verify them
-  with `gh attestation verify --signer-workflow
-  knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml` (and the
-  source ref) before promoting the RC digest. Immutable GitHub releases are an
-  additional or alternative anchor for the provenance asset.
+- `v*` tag creation restriction. Candidate tags (`X.Y.Z-rc.N`) have no `v`
+  prefix, so the rule concerns stable tags only. The old `tag-release.yml`
+  pushes `v*` tags as `github-actions[bot]`, which a ruleset creation rule
+  cannot exempt, so the rule is infeasible while the old path is in use. On
+  the new path stable tags are created by the `sdlc-bot` App, which the rule
+  would need as a bypass actor. Until it exists, the tagger check above remains
+  an audit check and not an access control.
 - Shared lock on the old path. After adoption, when `tag-release.yml` is
   retired or changed, the remaining stable promotion path must take the
   `data-olympus-promotion` lock (Task 6). Until then the procedure above is
