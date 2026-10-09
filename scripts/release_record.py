@@ -15,6 +15,9 @@ The "release" command completes or verifies the GitHub release: its body must
 be the generated notes and every asset must be one of this run's verified files
 with the same SHA-256. Missing assets are uploaded without replacement.
 
+The "checks" command decides whether the exact-source check runs of the
+reviewed H or the squash S satisfy the promotion gate (see check_gate).
+
 Immutable releases are enabled on the repository, so assets can be added only
 while the release is a draft. The workflow creates the release as a draft;
 this command uploads the missing assets, verifies every byte, and only then
@@ -30,7 +33,12 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 ROOT = str(Path(__file__).resolve().parents[1])
 if ROOT not in sys.path:
@@ -266,6 +274,69 @@ def env_lines(record: dict) -> str:
             f"image_digest={digest}\nrc_tag={identity.git_tag}\n")
 
 
+CHECK_ROLES = ("head", "squash")
+CHECK_APPS = ("github-actions", "github-code-scanning")
+
+
+def required_checks(role: str, analyses: str) -> set[str]:
+    """Check run names the promotion gate requires on H ("head") or S ("squash").
+
+    Code scanning is guaranteed only on main and on pull requests into main:
+    the reviewed H on release/new is not guaranteed CodeQL; S is. The proof
+    shows that the tree of S equals the tree of H, so the code CodeQL scans on
+    S is byte for byte the reviewed H: H needs only "test", and S needs
+    "test", the aggregate
+    "CodeQL" and every configured language analysis. The configured list is
+    validated for both roles, so an empty or malformed variable fails closed.
+    """
+    if role not in CHECK_ROLES:
+        raise ValueError("check role must be head or squash")
+    if not isinstance(analyses, str):
+        raise ValueError("invalid required analysis names")
+    names = analyses.split(",")
+    if any(not name.strip() or name != name.strip() for name in names):
+        raise ValueError("invalid required analysis names")
+    if role == "head":
+        return {"test"}
+    return {"test", "CodeQL", *names}
+
+
+def check_gate(pages: object, *, sha: str, role: str, analyses: str) -> None:
+    """Require the latest matching run of every required check to have succeeded.
+
+    pages is the output of `gh api --paginate --slurp .../check-runs`. A run
+    counts only when its head_sha is exactly sha and its app is GitHub Actions
+    or code scanning; among those, the highest id (the latest run) decides,
+    and only status "completed" with conclusion "success" passes (neutral,
+    skipped, cancelled, timed_out, action_required and stale do not). On H,
+    CodeQL and the configured analyses are optional, but one that did run
+    must also have succeeded.
+    """
+    _match(SHA, sha, "check SHA")
+    required = required_checks(role, analyses)
+    optional = required_checks("squash", analyses) - required
+    if not isinstance(pages, list) or not all(
+            isinstance(page, dict) and isinstance(page.get("check_runs"), list)
+            for page in pages):
+        raise ValueError("unreadable check runs")
+    runs = [run for page in pages for run in page["check_runs"]]
+    if not all(isinstance(run, dict) for run in runs):
+        raise ValueError("unreadable check runs")
+    for name in sorted(required | optional):
+        matches = [run for run in runs if run.get("name") == name
+                   and run.get("head_sha") == sha
+                   and isinstance(run.get("app"), dict)
+                   and run["app"].get("slug") in CHECK_APPS
+                   and type(run.get("id")) is int]
+        if not matches:
+            if name in optional:
+                continue
+            raise ValueError("missing required check: " + name)
+        latest = max(matches, key=lambda run: run["id"])
+        if latest.get("status") != "completed" or latest.get("conclusion") != "success":
+            raise ValueError("required check did not succeed: " + name)
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -350,9 +421,36 @@ def _gh(*args: str) -> bytes:
     return subprocess.run(["gh", *args], check=True, capture_output=True).stdout
 
 
-def _inspect_release(tag: str, expected: dict[str, str]) -> tuple[dict, dict[str, str]]:
-    release = json.loads(_gh("release", "view", tag, "--json",
-                             "tagName,body,isDraft,isPrerelease,assets"))
+# The release listing behind `gh release view` (a draft is not served by the
+# tags endpoint) can lag a moment behind `gh release create` and `upload`.
+# Reads are repeated after these delays (about 60 s in total), then the
+# ordinary checks fail closed.
+LISTING_DELAYS = (1.0, 2.0, 4.0, 8.0, 15.0, 30.0)
+NOT_FOUND = b"release not found"
+
+
+def _poll[T](read: Callable[[], T], ready: Callable[[T], bool], *,
+          sleep: Callable[[float], None]) -> T:
+    """Return the first ready read, or the last read after the bounded delays."""
+    value = read()
+    for delay in LISTING_DELAYS:
+        if ready(value):
+            break
+        sleep(delay)
+        value = read()
+    return value
+
+
+def _inspect_release(tag: str, expected: dict[str, str]
+                     ) -> tuple[dict, dict[str, str]] | None:
+    """Read the release and hash its assets; None only when gh reports it absent."""
+    try:
+        raw = _gh("release", "view", tag, "--json", "tagName,body,isDraft,isPrerelease,assets")
+    except subprocess.CalledProcessError as error:
+        if isinstance(error.stderr, bytes) and NOT_FOUND in error.stderr:
+            return None
+        raise
+    release = json.loads(raw)
     if not isinstance(release, dict) or not isinstance(release.get("assets"), list):
         raise ValueError("release view is unreadable")
     hashes = {}
@@ -364,28 +462,49 @@ def _inspect_release(tag: str, expected: dict[str, str]) -> tuple[dict, dict[str
     return release, hashes
 
 
+def _listed(found: tuple[dict, dict[str, str]] | None, names: set[str]) -> bool:
+    if found is None:
+        return False
+    assets = found[0].get("assets", [])
+    return names <= {asset.get("name") for asset in assets if isinstance(asset, dict)}
+
+
+def _read_release(tag: str, expected: dict[str, str], names: set[str], *,
+                  sleep: Callable[[float], None]) -> tuple[dict, dict[str, str]]:
+    """Poll until the release is listed with every name in names, within the bound."""
+    found = _poll(lambda: _inspect_release(tag, expected),
+                  lambda value: _listed(value, names), sleep=sleep)
+    if found is None:
+        raise ValueError("draft release was not created")
+    return found
+
+
 def complete_release(
     *, tag: str, notes: str, record: dict, stable_provenance: dict, files: list[Path],
+    sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Complete a draft release, verify every byte, then publish it last.
 
     A published release is accepted only when it is already complete, since
-    immutable releases cannot gain assets after publication.
+    immutable releases cannot gain assets after publication. The first read
+    after the workflow's `gh release create --draft` and the read after the
+    upload tolerate listing lag within LISTING_DELAYS; every check still
+    runs on the final read.
     """
     expected = expected_assets(record, stable_provenance, files, tag=tag, notes=notes)
-    release, hashes = _inspect_release(tag, expected)
+    release, hashes = _read_release(tag, expected, set(), sleep=sleep)
     missing = validate_existing_release(release, tag=tag, notes=notes, expected=expected,
                                         remote_hashes=hashes, allow_draft=True)
     if missing:
         by_name = {path.name: path for path in files}
         # No --clobber: a concurrent upload of the same name fails instead.
         _gh("release", "upload", tag, *(str(by_name[name]) for name in missing))
-        release, hashes = _inspect_release(tag, expected)
+        release, hashes = _read_release(tag, expected, set(expected), sleep=sleep)
     validate_existing_release(release, tag=tag, notes=notes, expected=expected,
                               remote_hashes=hashes, complete=True, allow_draft=True)
     if release.get("isDraft") is True:
         _gh("release", "edit", tag, "--draft=false")
-        release, hashes = _inspect_release(tag, expected)
+        release, hashes = _read_release(tag, expected, set(), sleep=sleep)
     validate_existing_release(release, tag=tag, notes=notes, expected=expected,
                               remote_hashes=hashes, complete=True)
 
@@ -414,9 +533,17 @@ def main(argv: list[str] | None = None) -> int:
     for arg in ("record", "stable-provenance", "notes"):
         published.add_argument(f"--{arg}", required=True, type=Path)
     published.add_argument("assets", type=Path, nargs="+")
+    checks = commands.add_parser("checks")
+    checks.add_argument("--role", required=True, choices=CHECK_ROLES)
+    checks.add_argument("--sha", required=True)
+    checks.add_argument("--analyses", required=True)
+    checks.add_argument("--check-runs", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        if args.command == "validate-inputs":
+        if args.command == "checks":
+            check_gate(json.loads(args.check_runs.read_text(encoding="utf-8")),
+                       sha=args.sha, role=args.role, analyses=args.analyses)
+        elif args.command == "validate-inputs":
             validate_inputs(squash=args.squash, head=args.head, candidate_tag=args.candidate_tag)
         elif args.command == "notes":
             version = _compute(Git(Path.cwd()), cwd=Path.cwd(), head=args.head,

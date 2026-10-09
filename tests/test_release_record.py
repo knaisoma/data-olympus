@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -423,3 +424,141 @@ def test_tag_object_headers_are_checked(header, error):
     with pytest.raises(ValueError, match=error):
         release.validate_tag_object(raw, squash=s, tag="v0.4.3",
                                     notes="# Release 0.4.3\n", tagger=BOT)
+
+
+ANALYSES = "Analyze (python),Analyze (actions)"
+H_SHA, S_SHA = "a" * 40, "b" * 40
+
+
+def check_run(name, sha, run_id=1, *, slug="github-actions", status="completed",
+              conclusion="success"):
+    return {"id": run_id, "name": name, "head_sha": sha, "app": {"slug": slug},
+            "status": status, "conclusion": conclusion}
+
+
+def green(sha, *, codeql=True):
+    runs = [check_run("test", sha)]
+    if codeql:
+        runs += [check_run("CodeQL", sha, slug="github-code-scanning"),
+                 check_run("Analyze (python)", sha), check_run("Analyze (actions)", sha)]
+    return [{"total_count": len(runs), "check_runs": runs}]
+
+
+def test_head_needs_only_test_because_s_carries_the_same_tree():
+    """H on release/new is not guaranteed CodeQL; S is, and tree(S) == tree(H)."""
+    release.check_gate(green(H_SHA, codeql=False), sha=H_SHA, role="head",
+                       analyses=ANALYSES)
+
+
+def test_head_without_test_is_refused():
+    pages = [{"check_runs": [check_run("CodeQL", H_SHA, slug="github-code-scanning")]}]
+    with pytest.raises(ValueError, match="missing required check: test"):
+        release.check_gate(pages, sha=H_SHA, role="head", analyses=ANALYSES)
+
+
+def test_squash_without_codeql_is_refused():
+    with pytest.raises(ValueError, match="missing required check: "):
+        release.check_gate(green(S_SHA, codeql=False), sha=S_SHA, role="squash",
+                           analyses=ANALYSES)
+    pages = green(S_SHA)
+    pages[0]["check_runs"] = [r for r in pages[0]["check_runs"] if r["name"] != "CodeQL"]
+    with pytest.raises(ValueError, match="missing required check: CodeQL"):
+        release.check_gate(pages, sha=S_SHA, role="squash", analyses=ANALYSES)
+
+
+@pytest.mark.parametrize("fault", ["missing", "failed", "in_progress", "other_sha"])
+def test_squash_analysis_must_exist_and_succeed(fault):
+    pages = green(S_SHA)
+    runs = pages[0]["check_runs"]
+    victim = next(r for r in runs if r["name"] == "Analyze (actions)")
+    if fault == "missing":
+        runs.remove(victim)
+    elif fault == "failed":
+        victim["conclusion"] = "failure"
+    elif fault == "in_progress":
+        victim["status"], victim["conclusion"] = "in_progress", None
+    else:
+        victim["head_sha"] = H_SHA
+    with pytest.raises(ValueError, match=r"Analyze \(actions\)"):
+        release.check_gate(pages, sha=S_SHA, role="squash", analyses=ANALYSES)
+    release.check_gate(green(S_SHA), sha=S_SHA, role="squash", analyses=ANALYSES)
+
+
+@pytest.mark.parametrize("role", ["head", "squash"])
+def test_wrong_app_slug_is_refused(role):
+    pages = green(S_SHA)
+    for run in pages[0]["check_runs"]:
+        run["app"]["slug"] = "impostor-app"
+    with pytest.raises(ValueError, match="missing required check: "):
+        release.check_gate(pages, sha=S_SHA, role=role, analyses=ANALYSES)
+
+
+def test_latest_run_by_id_wins():
+    pages = green(S_SHA)
+    pages.append({"check_runs": [check_run("test", S_SHA, 9, conclusion="failure")]})
+    with pytest.raises(ValueError, match="did not succeed: test"):
+        release.check_gate(pages, sha=S_SHA, role="squash", analyses=ANALYSES)
+    pages.append({"check_runs": [check_run("test", S_SHA, 10)]})
+    release.check_gate(pages, sha=S_SHA, role="squash", analyses=ANALYSES)
+
+
+@pytest.mark.parametrize("analyses", [
+    "", " Analyze (python)", "Analyze (python) ", "Analyze (python), Analyze (actions)",
+    "Analyze (python),,Analyze (actions)", "Analyze (python),",
+])
+@pytest.mark.parametrize("role", ["head", "squash"])
+def test_whitespace_or_empty_analysis_names_are_refused(analyses, role):
+    with pytest.raises(ValueError, match="invalid required analysis names"):
+        release.check_gate(green(S_SHA), sha=S_SHA, role=role, analyses=analyses)
+
+
+@pytest.mark.parametrize("pages", [{}, [{"check_runs": None}], [[]], [{"check_runs": ["x"]}]])
+def test_unreadable_check_runs_are_refused(pages):
+    with pytest.raises(ValueError, match="unreadable check runs"):
+        release.check_gate(pages, sha=S_SHA, role="squash", analyses=ANALYSES)
+
+
+def test_check_gate_validates_sha_and_role():
+    with pytest.raises(ValueError, match="check SHA"):
+        release.check_gate(green(S_SHA), sha="b" * 39, role="squash", analyses=ANALYSES)
+    with pytest.raises(ValueError, match="head or squash"):
+        release.check_gate(green(S_SHA), sha=S_SHA, role="main", analyses=ANALYSES)
+
+
+def test_checks_cli_reports_refusal(tmp_path, capsys):
+    path = tmp_path / "checks.json"
+    path.write_text(json.dumps(green(S_SHA, codeql=False)))
+    base = ["checks", "--sha", S_SHA, "--analyses", ANALYSES, "--check-runs", str(path)]
+    assert release.main([*base, "--role", "head"]) == 0
+    assert release.main([*base, "--role", "squash"]) == 1
+    assert "missing required check" in capsys.readouterr().err
+
+
+NOT_SUCCESS = ["neutral", "skipped", "cancelled", "timed_out", "action_required", "stale",
+               "failure", None]
+
+
+@pytest.mark.parametrize("conclusion", NOT_SUCCESS)
+@pytest.mark.parametrize("name", ["test", "CodeQL", "Analyze (python)"])
+@pytest.mark.parametrize(("role", "sha"), [("head", H_SHA), ("squash", S_SHA)])
+def test_only_a_successful_conclusion_passes(role, sha, name, conclusion):
+    """Neutral, skipped and the other non-success conclusions never pass, on H or S.
+
+    On H, CodeQL and the analyses are optional, but one that ran must succeed.
+    """
+    pages = green(sha)
+    victim = next(r for r in pages[0]["check_runs"] if r["name"] == name)
+    victim["conclusion"] = conclusion
+    with pytest.raises(ValueError, match="did not succeed: " + re.escape(name)):
+        release.check_gate(pages, sha=sha, role=role, analyses=ANALYSES)
+    victim["conclusion"] = "success"
+    release.check_gate(pages, sha=sha, role=role, analyses=ANALYSES)
+
+
+@pytest.mark.parametrize("status", ["queued", "in_progress", "waiting", "pending"])
+@pytest.mark.parametrize(("role", "sha"), [("head", H_SHA), ("squash", S_SHA)])
+def test_a_success_conclusion_on_an_unfinished_run_does_not_pass(role, sha, status):
+    pages = green(sha)
+    pages[0]["check_runs"][0]["status"] = status
+    with pytest.raises(ValueError, match="did not succeed: test"):
+        release.check_gate(pages, sha=sha, role=role, analyses=ANALYSES)

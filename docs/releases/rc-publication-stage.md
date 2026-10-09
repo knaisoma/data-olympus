@@ -216,17 +216,17 @@ registry push, and runs `actions/attest-build-provenance` twice:
 - The wheel and sdist: subjects are the checked copies, byte-identical to the
   files that were hash-verified against provenance and uploaded to PyPI.
 
-Promotion (`promote-release`, Task 5) MUST verify each object before reusing
-it:
+Promotion (`promote-release.yml`, its `prove` job) verifies each object
+before reusing it, and fails closed otherwise:
 
 ```bash
 gh attestation verify oci://ghcr.io/knaisoma/data-olympus@<digest> \
   --repo knaisoma/data-olympus \
   --signer-workflow knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml \
-  --source-ref refs/heads/main
+  --source-ref refs/heads/main --deny-self-hosted-runners
 gh attestation verify <wheel-or-sdist> --repo knaisoma/data-olympus \
   --signer-workflow knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml \
-  --source-ref refs/heads/main
+  --source-ref refs/heads/main --deny-self-hosted-runners
 ```
 
 The attestation proves that the trusted stage-two workflow on `main` verified
@@ -247,6 +247,19 @@ is refused, and the next candidate is the way forward.
 A draft release can exist while publication is incomplete; it is invisible to
 the public and reused (missing assets only) by a retry. A published release is
 complete by construction.
+
+The release listing can lag a moment behind `gh release create --draft` and
+`gh release upload`: the first live run once failed with `draft release was
+not created` right after the create, and a re-run passed. `reserve` therefore
+polls the listing after the create until the draft appears, and the readback
+after the upload until every asset is listed, with delays of 1, 2, 4, 8, 15
+and 30 seconds (about 60 seconds in total); after that it fails closed with
+the same messages as before. A collision or a burned release found by a read
+is never retried. Stable promotion (`release_record.py release`) applies the
+same bound to its first read of the draft and to the read after its upload.
+Stage 2's definition comes from `main` (`workflow_run`), so this takes effect
+for stage 2 only after the next squash into `main`; until then, re-running
+the failed job remains the workaround.
 
 A published candidate release that lacks an asset or carries different bytes
 cannot be repaired under immutable releases. Every phase refuses it with a
