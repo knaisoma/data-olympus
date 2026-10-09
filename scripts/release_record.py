@@ -14,6 +14,12 @@ release App. Every other proof is identical in both phases.
 The "release" command completes or verifies the GitHub release: its body must
 be the generated notes and every asset must be one of this run's verified files
 with the same SHA-256. Missing assets are uploaded without replacement.
+
+Immutable releases are enabled on the repository, so assets can be added only
+while the release is a draft. The workflow creates the release as a draft;
+this command uploads the missing assets, verifies every byte, and only then
+publishes it. A published release that lacks an asset cannot be completed: the
+version is burned and needs a new stable version.
 """
 from __future__ import annotations
 
@@ -302,14 +308,19 @@ def _normalize_body(body: object) -> str:
     return body.replace("\r\n", "\n").rstrip("\n")
 
 
+BURNED = ("published stable release is incomplete and immutable: this version is burned "
+          "and needs a new stable version")
+
+
 def validate_existing_release(
     release: dict, *, tag: str, notes: str, expected: dict[str, str],
-    remote_hashes: dict[str, str], complete: bool = False,
+    remote_hashes: dict[str, str], complete: bool = False, allow_draft: bool = False,
 ) -> list[str]:
     """Return missing asset names; refuse any release this workflow did not write."""
     if release.get("tagName") != tag:
         raise ValueError("release tag differs from the stable tag")
-    if release.get("isDraft") is not False or release.get("isPrerelease") is not False:
+    drafts = (True, False) if allow_draft else (False,)
+    if release.get("isDraft") not in drafts or release.get("isPrerelease") is not False:
         raise ValueError("existing stable release must be published and not a prerelease")
     if _normalize_body(release.get("body")) != notes.rstrip("\n"):
         raise ValueError("existing release notes differ from the generated notes")
@@ -327,6 +338,9 @@ def validate_existing_release(
         if remote_hashes.get(name) != expected[name]:
             raise ValueError(f"existing release asset {name} has a different hash")
     missing = sorted(set(expected) - set(names))
+    if missing and release.get("isDraft") is False:
+        # Immutable releases: assets can never be added after publication.
+        raise ValueError(BURNED + ": missing " + ", ".join(missing))
     if complete and missing:
         raise ValueError("release is missing assets: " + ", ".join(missing))
     return missing
@@ -353,15 +367,24 @@ def _inspect_release(tag: str, expected: dict[str, str]) -> tuple[dict, dict[str
 def complete_release(
     *, tag: str, notes: str, record: dict, stable_provenance: dict, files: list[Path],
 ) -> None:
-    """Verify an existing release, upload only missing assets, then verify all."""
+    """Complete a draft release, verify every byte, then publish it last.
+
+    A published release is accepted only when it is already complete, since
+    immutable releases cannot gain assets after publication.
+    """
     expected = expected_assets(record, stable_provenance, files, tag=tag, notes=notes)
     release, hashes = _inspect_release(tag, expected)
     missing = validate_existing_release(release, tag=tag, notes=notes, expected=expected,
-                                        remote_hashes=hashes)
+                                        remote_hashes=hashes, allow_draft=True)
     if missing:
         by_name = {path.name: path for path in files}
         # No --clobber: a concurrent upload of the same name fails instead.
         _gh("release", "upload", tag, *(str(by_name[name]) for name in missing))
+        release, hashes = _inspect_release(tag, expected)
+    validate_existing_release(release, tag=tag, notes=notes, expected=expected,
+                              remote_hashes=hashes, complete=True, allow_draft=True)
+    if release.get("isDraft") is True:
+        _gh("release", "edit", tag, "--draft=false")
         release, hashes = _inspect_release(tag, expected)
     validate_existing_release(release, tag=tag, notes=notes, expected=expected,
                               remote_hashes=hashes, complete=True)

@@ -446,9 +446,12 @@ jobs:
             to-delete/promotion/release-record.json)
           git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
           test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$SQUASH"
+          # Immutable releases: create a draft without assets; the script
+          # uploads the missing assets, verifies every byte, and publishes
+          # the draft last. A published release can never gain an asset.
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --title "$TAG" \
-              --notes-file to-delete/promotion/release-notes.md "${ASSETS[@]}"
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" \
+              --notes-file to-delete/promotion/release-notes.md
           fi
           # Fresh or re-run: the body must be the generated notes and every
           # asset one of ours with the same SHA-256 bound to the release

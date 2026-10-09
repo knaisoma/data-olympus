@@ -1,5 +1,6 @@
 """Security and sequencing contract for the disabled promotion workflow."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -109,6 +110,13 @@ def test_publication_retries_never_replace_published_bytes():
     assert "--stable-provenance" in release
     assert "--verify-tag" in release
     assert "--clobber" not in release
+    # Immutable releases: the release is created as a draft with no assets and
+    # published by release_record.py only after every asset is verified.
+    create = next(line for line in release.splitlines() if "gh release create" in line)
+    assert "--draft" in create
+    create_command = re.search(r"gh release create(.*?)\n\s*fi\n", release, re.S)
+    assert create_command and "ASSETS" not in create_command.group(1)
+    assert "--draft=false" not in release
     assert "git push --force" not in scripts(jobs["create-tag"])
     assert "tag -f" not in scripts(jobs["create-tag"])
 

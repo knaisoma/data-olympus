@@ -155,12 +155,18 @@ output to the module at commit c341940.
    provenance and release record. `release_record.py release` binds every
    asset to the run: the stable provenance must carry the release record's
    `H`, `S`, `B`, `M`, tag, candidate and digest, and its stable wheel and
-   sdist hashes must equal the files. An existing release is accepted only if
-   it is published, not a prerelease, its body equals the generated notes and
-   every asset it has is one of these four files with the same SHA-256 (the
-   downloaded bytes and, when GitHub reports it, the asset digest). Foreign
-   assets are refused. Only missing assets are uploaded, without replacement,
-   and the complete release is verified again afterwards.
+   sdist hashes must equal the files. Immutable releases are enabled, so the
+   workflow creates the release as a draft without assets, and the script
+   uploads the missing assets, verifies the complete draft, and publishes it
+   last (`gh release edit --draft=false`), then verifies it again as
+   published. An existing release (draft or published) is accepted only if it
+   is not a prerelease, its body equals the generated notes and every asset it
+   has is one of these four files with the same SHA-256 (the downloaded bytes
+   and, when GitHub reports it, the asset digest). Foreign assets are refused
+   and a foreign draft is never published. Only missing assets are uploaded,
+   without replacement, and only to a draft: a published release that lacks an
+   asset cannot be completed, is refused as burned, and needs a new stable
+   version.
 5. The MCP registry, last, with the pinned publisher, ownership marker, OIDC
    login and read-back of `tag-release.yml`. Only the job's workspace copy of
    `server.json` receives the version.
