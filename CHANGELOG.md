@@ -14,6 +14,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+* This is the first release cut under the STD-U-821 branch model (`release/new`, content-derived versions, reviewed promotion). Candidates are built unprivileged and published by a separate trusted stage; releases are drafted, filled with assets and published last, which GitHub immutable releases require. Candidate `0.11.1-rc.2` of the first live run is burned.
 * Add a disabled-by-default trusted RC publication stage (`rc-publish-stage.yml`)
   that runs only `main` scripts, recomputes the candidate version from `H`'s
   history as data, verifies package hashes and the OCI digest, splits
