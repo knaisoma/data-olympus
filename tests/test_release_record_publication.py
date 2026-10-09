@@ -62,6 +62,7 @@ class FakeGitHub:
         self.body, self.draft, self.prerelease, self.digests = body, draft, prerelease, digests
         self.forged_digest = forged_digest
         self.uploads: list[list[str]] = []
+        self.events: list[str] = []
 
     def __call__(self, *args):
         if args[:2] == ("release", "view"):
@@ -74,9 +75,17 @@ class FakeGitHub:
                                "isPrerelease": self.prerelease, "assets": assets}).encode()
         if args[:2] == ("release", "download"):
             return self.assets[args[4]]
+        if args[:2] == ("release", "edit"):
+            assert args[2:] == (TAG, "--draft=false") and self.draft
+            self.draft = False
+            self.events.append("publish")
+            return b""
         if args[:2] == ("release", "upload"):
             assert "--clobber" not in args
+            # Immutable releases refuse new assets once published.
+            assert self.draft, "upload to a published release"
             self.uploads.append(list(args[3:]))
+            self.events.append("upload")
             for path in args[3:]:
                 if Path(path).name in self.assets:
                     raise subprocess.CalledProcessError(1, "gh")
@@ -131,13 +140,15 @@ def test_expected_assets_refuse_unbound_files(run, change):
 def test_resume_uploads_only_missing_assets_after_verifying_existing(run, monkeypatch, digests):
     _, _, paths = run
     published = {path.name: path.read_bytes() for path in paths[:2]}
-    github = FakeGitHub(published, digests=digests)
+    github = FakeGitHub(published, digests=digests, draft=True)
     monkeypatch.setattr(release, "_gh", github)
     complete(run)
     assert [[Path(item).name for item in upload] for upload in github.uploads] == [
         ["release-provenance.json", "release-record.json"],
     ]
     assert github.assets == {path.name: path.read_bytes() for path in paths}
+    # Draft first: every asset is uploaded and verified before publication.
+    assert github.events == ["upload", "publish"] and github.draft is False
 
 
 def test_complete_release_is_idempotent(run, monkeypatch):
@@ -145,13 +156,32 @@ def test_complete_release_is_idempotent(run, monkeypatch):
     github = FakeGitHub({path.name: path.read_bytes() for path in paths})
     monkeypatch.setattr(release, "_gh", github)
     complete(run)
-    assert github.uploads == []
+    assert github.uploads == [] and github.events == []
+
+
+def test_complete_draft_is_published_without_uploads(run, monkeypatch):
+    _, _, paths = run
+    github = FakeGitHub({path.name: path.read_bytes() for path in paths}, draft=True)
+    monkeypatch.setattr(release, "_gh", github)
+    complete(run)
+    assert github.events == ["publish"]
+
+
+@pytest.mark.parametrize("present", [0, 2])
+def test_published_release_with_missing_assets_is_burned(run, monkeypatch, present):
+    """Immutable releases: a published release can never be completed."""
+    _, _, paths = run
+    github = FakeGitHub({path.name: path.read_bytes() for path in paths[:present]})
+    monkeypatch.setattr(release, "_gh", github)
+    with pytest.raises(ValueError, match="burned"):
+        complete(run)
+    assert github.events == []
 
 
 @pytest.mark.parametrize(("change", "error"), [
     ("tampered_asset", "different hash"), ("tampered_record", "different hash"),
     ("tampered_digest_field", "different hash"), ("foreign_asset", "unexpected assets"),
-    ("body", "notes differ"), ("draft", "prerelease"), ("prerelease", "prerelease"),
+    ("body", "notes differ"), ("prerelease", "prerelease"),
 ])
 def test_existing_release_must_be_this_workflows_own(run, monkeypatch, change, error):
     """Mutation style: any foreign byte in an existing release fails before upload."""
@@ -164,7 +194,7 @@ def test_existing_release_must_be_this_workflows_own(run, monkeypatch, change, e
         assets["release-record.json"] = b"{}"
     elif change == "foreign_asset":
         assets["backdoor.sh"] = b"echo"
-    elif change in ("draft", "prerelease"):
+    elif change == "prerelease":
         options[change] = True
     elif change == "body":
         options["body"] = "# Release 0.4.3\n\nWritten by someone else\n"
@@ -172,7 +202,25 @@ def test_existing_release_must_be_this_workflows_own(run, monkeypatch, change, e
     monkeypatch.setattr(release, "_gh", github)
     with pytest.raises(ValueError, match=error):
         complete(run)
-    assert github.uploads == []
+    assert github.uploads == [] and github.events == []
+
+
+@pytest.mark.parametrize("change", ["tampered_asset", "body", "prerelease"])
+def test_foreign_draft_is_never_published(run, monkeypatch, change):
+    _, _, paths = run
+    assets = {path.name: path.read_bytes() for path in paths[:2]}
+    options = {"draft": True}
+    if change == "tampered_asset":
+        assets[paths[0].name] = b"substituted wheel"
+    elif change == "body":
+        options["body"] = "forged\n"
+    else:
+        options["prerelease"] = True
+    github = FakeGitHub(assets, **options)
+    monkeypatch.setattr(release, "_gh", github)
+    with pytest.raises(ValueError):
+        complete(run)
+    assert github.events == [] and github.draft is True
 
 
 def test_body_line_endings_and_trailing_newline_are_not_payload(run):
@@ -188,7 +236,7 @@ def test_body_line_endings_and_trailing_newline_are_not_payload(run):
 
 def test_concurrent_upload_of_a_missing_asset_fails(run, monkeypatch):
     _, _, paths = run
-    github = FakeGitHub({path.name: path.read_bytes() for path in paths[:3]})
+    github = FakeGitHub({path.name: path.read_bytes() for path in paths[:3]}, draft=True)
     real = github.__call__
 
     def racing(*args):
@@ -204,7 +252,7 @@ def test_concurrent_upload_of_a_missing_asset_fails(run, monkeypatch):
 def test_final_verification_requires_every_asset_after_upload(run, monkeypatch):
     """An upload that exits 0 but leaves an asset missing must still fail."""
     _, _, paths = run
-    github = FakeGitHub({path.name: path.read_bytes() for path in paths[:2]})
+    github = FakeGitHub({path.name: path.read_bytes() for path in paths[:2]}, draft=True)
     real = github.__call__
 
     def lossy(*args):
@@ -216,6 +264,7 @@ def test_final_verification_requires_every_asset_after_upload(run, monkeypatch):
     monkeypatch.setattr(release, "_gh", lossy)
     with pytest.raises(ValueError, match="missing assets"):
         complete(run)
+    assert "publish" not in github.events and github.draft is True
 
 
 def test_cli_release_command_reports_refusal(run, monkeypatch, capsys):

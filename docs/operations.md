@@ -710,7 +710,11 @@ publishing uses `skip-existing`, followed by exact SHA256 verification. Never
 overwrite an immutable candidate or stable version.
 
 GitHub retries use `scripts/release_upload.py`: existing bytes must match exactly;
-only missing assets are uploaded. Mismatches block without replacement. Prepared
+only missing assets are uploaded. Mismatches block without replacement. Immutable
+releases are enabled, so assets can be added only while a release is a draft: a
+published release that lacks an asset cannot be completed and its version must be
+skipped, and a draft left by an interrupted `gh release create` must be completed
+and then published by hand (`release_upload.py` does not publish it). Prepared
 but unpublished versions require a fresh reviewed PR and authorized merge. Inventory
 all public surfaces; uncertain or conflicting state needs reviewed recovery.
 

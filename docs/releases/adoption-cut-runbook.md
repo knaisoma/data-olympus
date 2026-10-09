@@ -23,8 +23,10 @@ be corrected or removed once it exists, by anyone, with any identity.
   branch commits or workflow runs. The cut stays reversible by deleting
   `release/new` and reverting `C` (see "Rollback of the cut").
 - The point of no return is the first `X.Y.Z-rc.N` publication: stage 2's
-  `reserve` job creates the annotated candidate tag and the GitHub prerelease
-  (here `0.11.1-rc.2` or later). It can only run after
+  `reserve` job creates the annotated candidate tag and a draft GitHub
+  prerelease, which `finalize` publishes last. `0.11.1-rc.2` is burned (see
+  [the known burned candidate](rc-publication-stage.md#known-burned-candidate-0111-rc2-empty-immutable-release-and-tag-created-by-the-first-live-run-before-the-draft-first-fix)),
+  so the first complete candidate is `0.11.1-rc.3` or later. It can only run after
   `SDLC_PIPELINE=enabled` (item 4 of the enable order). From then on that
   identity is permanent, and a mistake is corrected only by a newer candidate.
 - Never create a tag matching those patterns for testing, in this repository
@@ -273,7 +275,9 @@ squash with exactly these subjects, in this order:
 
 Each push to `release/new` starts `rc-build`. The first yields `0.11.1-rc.1`
 (not promotable, the record is still at `H`); the second yields
-`0.11.1-rc.2`, promotable.
+`0.11.1-rc.2`, promotable. That candidate was burned by the first live run
+(published empty before the draft-first fix), so the first complete candidate
+is `0.11.1-rc.3` or later, from the next push to `release/new`.
 
 ## Step 7: engine run and dry-run RC build
 
@@ -353,6 +357,30 @@ each from the first real runs:
   jobs.
 - `docker login ghcr.io` in the stage 2 `attest` job and the registry
   attestation push (`push-to-registry: true`).
+- Stage 2 draft-first publication (immutable releases), see
+  [the stage 2 release ordering](rc-publication-stage.md#release-ordering-under-immutable-releases):
+  - Listing `releases` with the `contents: write` `GITHUB_TOKEN` returns the
+    draft with `tag_name`, `prerelease: true` and each asset's `state`.
+  - The release read back right after `gh release create --draft
+    --verify-tag --prerelease` is `draft: true` before `pypi` starts (the
+    highest-impact check: a published release here would burn the candidate,
+    as happened to `0.11.1-rc.2`).
+  - `gh release upload` targets the draft by tag.
+  - `gh api -H "Accept: application/octet-stream"
+    repos/<repo>/releases/assets/<id>` returns the full bytes of a draft
+    asset. If the run reports a differing draft asset, confirm the bytes
+    before deleting anything: a correct asset must not be deleted.
+  - `PATCH releases/<id>` with `draft: false`, `prerelease: true` and
+    `make_latest: "false"` publishes the release, keeps it a prerelease, leaves
+    Latest unchanged, and the listing shows it as published at once.
+  - "Re-run all jobs" on a completed candidate skips `pypi` but still runs
+    `attest` and `finalize` (as a readback).
+  - The annotated candidate tag message reads back (`git/tags/<sha>`) exactly
+    as written: the `Candidate`, `H:` and sorted `sha256` lines, with at most
+    a trailing newline added.
+  - Promotion: `gh release view`, `gh release download` and
+    `gh release edit --draft=false` resolve the stable draft by tag, so a
+    rerun finds the existing draft instead of creating a second one.
 
 ## Blocked items and enable order
 
@@ -376,7 +404,10 @@ them in this order:
    are verified.
 5. `SDLC_RC_CHANNEL=enabled`, only after the first new-model release is
    published and verified. Until then `set-channel.yml` stays the only writer
-   of `rc`.
+   of `rc`. Enabling it also requires moving the stage 2 `rc` move into a job
+   after `finalize` (or enabling it only together with that change), because
+   today `publish` moves `rc` before the draft release is published; see
+   [the `rc` channel](rc-publication-stage.md#the-rc-channel).
 
 The adoption issue (step 2) is also an owner action.
 

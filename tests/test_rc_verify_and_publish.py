@@ -106,7 +106,11 @@ class Registry:
         self.python = {}
         self.image = None
         self.tag = None
+        self.tag_text = None
         self.assets = None
+        self.draft = True
+        # Production read-only jobs (contents: read) cannot list draft releases.
+        self.hide_drafts = False
         self.writes = []
         self.corrupt_push = False
 
@@ -119,13 +123,27 @@ class Registry:
     def tag_head(self, _tag):
         return self.tag
 
-    def release_assets(self, _tag):
-        return self.assets
+    def tag_message(self, _tag):
+        return self.tag_text if self.tag is not None else None
+
+    def release(self, _tag):
+        if self.assets is None or (self.draft and self.hide_drafts):
+            return None
+        return stage.Release(self.draft, dict(self.assets))
 
     def reserve(self, verified):
-        self.tag = verified.head
-        self.assets = verified.assets.copy()
+        assert self.draft, "assets uploaded to a published (immutable) release"
+        if self.tag is None:
+            bind_tag(self, verified)
+        self.assets = dict(self.assets or {})
+        for name, data in verified.assets.items():
+            self.assets.setdefault(name, data)
         self.writes.append("reserve")
+
+    def publish_release(self, _verified):
+        assert self.draft
+        self.draft = False
+        self.writes.append("finalize")
 
     def push_image(self, verified):
         self.image = "sha256:" + "0" * 64 if self.corrupt_push else verified.image_digest
@@ -133,6 +151,11 @@ class Registry:
 
     def move_channel(self, _verified):
         self.writes.append("rc")
+
+
+def bind_tag(registry, verified):
+    """The annotated tag a correct reserve writes: H plus every asset hash."""
+    registry.tag, registry.tag_text = verified.head, stage.tag_message(verified)
 
 
 def no_sleep(_seconds):
@@ -213,11 +236,16 @@ def test_happy_publication_and_idempotent_retry(build, tmp_path):
     assert record["image"] == f"{stage.IMAGE}@{verified.image_digest}"
     assert record["rc_channel_moved"] is True
     assert registry.writes == ["reserve", "image", "rc"]
+    assert registry.draft is True
+    stage.finalize(verified, registry)
+    assert registry.writes == ["reserve", "image", "rc", "finalize"]
+    assert registry.draft is False
     # A rerun of the same stage-two run reuses every object and writes nothing new.
     assert stage.reserve(verified, registry) == 0
     assert stage.stage_upload(verified, registry, tmp_path / "retry") == 0
     publish(verified, registry)
-    assert registry.writes.count("reserve") == registry.writes.count("image") == 1
+    stage.finalize(verified, registry)
+    assert registry.writes == ["reserve", "image", "rc", "finalize"]
 
 
 @pytest.mark.parametrize("surface", ["python", "image", "tag", "assets"])
@@ -230,7 +258,7 @@ def test_duplicate_identity_with_different_content(build, surface):
     elif surface == "tag":
         registry.tag = "0" * 40
     else:
-        registry.tag = verified.head
+        bind_tag(registry, verified)
         registry.assets = {"release-provenance.json": b"other H"}
     with pytest.raises(ValueError, match="collision"):
         stage.reserve(verified, registry)
@@ -513,7 +541,7 @@ def test_oci_directory_traversal_refused(build, name):
 def test_publish_requires_complete_reservation(build):
     """M34: a partial release (provenance only) never reaches the image push."""
     verified, registry = verify(build), Registry()
-    registry.tag = verified.head
+    bind_tag(registry, verified)
     registry.assets = {stage.PROVENANCE: verified.assets[stage.PROVENANCE]}
     registry.python = verified.python_hashes.copy()
     with pytest.raises(ValueError, match="incomplete GitHub reservation"):
@@ -614,14 +642,15 @@ def fake_gh(monkeypatch, responses):
 
 
 @pytest.mark.parametrize("release", [
-    {"prerelease": True, "draft": True, "assets": []},
-    {"prerelease": False, "draft": False, "assets": []},
+    {"tag_name": "1.4.3-rc.1", "prerelease": False, "draft": False, "assets": []},
+    {"tag_name": "1.4.3-rc.1", "prerelease": False, "draft": True, "assets": []},
+    {"tag_name": "1.4.3-rc.1", "prerelease": True, "draft": None, "assets": []},
 ])
-def test_production_release_must_be_public_prerelease(monkeypatch, release):
-    """M36: a draft or a full release is never accepted as the reservation."""
-    fake_gh(monkeypatch, {"releases/tags/1.4.3-rc.1": release})
-    with pytest.raises(ValueError, match="public prerelease"):
-        stage.Registries().release_assets("1.4.3-rc.1")
+def test_production_release_must_be_a_prerelease(monkeypatch, release):
+    """M36: a full release is never accepted as the reservation."""
+    fake_gh(monkeypatch, {"releases?per_page=100&page=1": [release]})
+    with pytest.raises(ValueError, match="not a prerelease"):
+        stage.Registries().release("1.4.3-rc.1")
 
 
 def test_production_lightweight_tag_refused(monkeypatch):
@@ -634,7 +663,11 @@ def test_production_lightweight_tag_refused(monkeypatch):
 
 def test_production_clients_with_fake_gh_skopeo_and_pypi(build, tmp_path, monkeypatch):
     verified = verify(build)
-    state = {"tag": None, "release": False, "assets": {}, "python": {}, "images": {}}
+    state = {"tag": None, "message": None, "release": None, "assets": {}, "python": {},
+             "images": {}}
+    # 150 foreign releases first, so the candidate is only found on page 2.
+    foreign = [{"tag_name": f"0.0.{n}", "id": 1000 + n, "draft": False, "prerelease": False,
+                "assets": []} for n in range(150)]
     writes = []
     token = "fake-token-value"
     with tarfile.open(verified.archive) as archive:
@@ -650,11 +683,16 @@ def test_production_clients_with_fake_gh_skopeo_and_pypi(build, tmp_path, monkey
         if args[:2] == ("skopeo", "login"):
             assert "--password-stdin" in args and kwargs["input"] == token.encode()
             return response(b"")
+        if args[:4] == ("gh", "api", "-H", "Accept: application/octet-stream"):
+            asset_id = int(args[4].rsplit("/", 1)[1])
+            return response(list(state["assets"].values())[asset_id - 1])
         if args[:2] == ("gh", "api"):
             endpoint = args[2].removeprefix(f"repos/{stage.REPOSITORY}/")
             payload = json.loads(kwargs["input"]) if kwargs.get("input") else None
             if endpoint == "git/tags" and payload:
                 assert payload["object"] == verified.head and payload["type"] == "commit"
+                assert payload["message"] == stage.tag_message(verified)
+                state["message"] = payload["message"] + "\n"
                 writes.append("tag-object")
                 return response({"sha": "a" * 40})
             if endpoint == "git/refs" and payload:
@@ -665,24 +703,38 @@ def test_production_clients_with_fake_gh_skopeo_and_pypi(build, tmp_path, monkey
                 return (response({"object": {"type": "tag", "sha": "a" * 40}})
                         if state["tag"] else response(error=b"gh: Not Found (HTTP 404)"))
             if endpoint.startswith("git/tags/"):
-                return response({"object": {"type": "commit", "sha": state["tag"]}})
-            if endpoint.startswith("releases/tags/"):
-                return (response({"prerelease": True, "draft": False,
-                                  "assets": [{"name": n} for n in state["assets"]]})
-                        if state["release"] else response(error=b"gh: Not Found (HTTP 404)"))
+                return response({"object": {"type": "commit", "sha": state["tag"]},
+                                 "message": state["message"]})
+            if endpoint.startswith("releases?"):
+                query = dict(item.split("=") for item in endpoint.split("?", 1)[1].split("&"))
+                listing = foreign + ([{
+                    "tag_name": verified.version, "id": 7, "prerelease": True,
+                    "draft": state["release"] == "draft",
+                    "assets": [{"name": n, "id": i, "state": "uploaded"}
+                               for i, n in enumerate(state["assets"], start=1)],
+                }] if state["release"] else [])
+                size, page = int(query["per_page"]), int(query["page"])
+                return response(listing[(page - 1) * size:page * size])
+            if endpoint == "releases/7" and payload:
+                assert args[args.index("--method") + 1] == "PATCH"
+                assert payload == {"draft": False, "prerelease": True, "make_latest": "false"}
+                assert state["release"] == "draft"
+                state["release"] = "published"
+                writes.append("publish-release")
+                return response({})
         if args[:3] == ("gh", "release", "create"):
-            assert "--verify-tag" in args and "--prerelease" in args
-            state["release"] = True
+            assert {"--draft", "--verify-tag", "--prerelease"} <= set(args)
+            state["release"] = "draft"
             writes.append("release")
             return response(b"")
         if args[:3] == ("gh", "release", "upload"):
             path = Path(args[4])
             assert path.name not in state["assets"] and "--clobber" not in args
+            # Immutable releases refuse new assets once published.
+            assert state["release"] == "draft", "upload to a published release"
             state["assets"][path.name] = path.read_bytes()
             writes.append("asset")
             return response(b"")
-        if args[:3] == ("gh", "release", "download"):
-            return response(state["assets"][args[args.index("--pattern") + 1]])
         if args[:2] == ("skopeo", "inspect"):
             assert "--authfile" in args
             tag = args[-1].rsplit(":", 1)[1]
@@ -715,14 +767,19 @@ def test_production_clients_with_fake_gh_skopeo_and_pypi(build, tmp_path, monkey
     try:
         assert stage.reserve(verified, client) == 2
         assert writes == ["tag-object", "tag-ref", "release", "asset", "asset", "asset"]
+        assert state["release"] == "draft"
         assert stage.stage_upload(verified, client, tmp_path / "first") == 2
         state["python"] = verified.python_hashes.copy()
         publish(verified, client, move_rc=True)
         assert state["images"].keys() == {verified.version, "rc"}
+        assert state["release"] == "draft"
+        stage.finalize(verified, client)
+        assert state["release"] == "published" and writes[-1] == "publish-release"
         first_writes = writes.copy()
         assert stage.reserve(verified, client) == 0
         assert stage.stage_upload(verified, client, tmp_path / "retry") == 0
         publish(verified, client, move_rc=True)
+        stage.finalize(verified, client)
         assert writes == first_writes
     finally:
         client.close()
@@ -764,7 +821,7 @@ def test_workflow_security_contract():
         "workflow_run": {"workflows": ["rc-build"], "types": ["completed"]}}
     assert workflow["permissions"] == {}
     jobs = workflow["jobs"]
-    assert set(jobs) == {"reserve", "pypi", "publish", "attest"}
+    assert set(jobs) == {"reserve", "pypi", "publish", "attest", "finalize"}
     for gate in ("vars.SDLC_PIPELINE == 'enabled'", "conclusion == 'success'",
                  "head_branch == 'release/new'", "head_branch == 'hotfix/new'",
                  "event == 'push'", "head_repository.full_name == github.repository"):
@@ -772,8 +829,18 @@ def test_workflow_security_contract():
     assert jobs["pypi"]["needs"] == "reserve"
     assert jobs["publish"]["needs"] == ["reserve", "pypi"]
     assert jobs["attest"]["needs"] == "publish"
-    assert "if" not in jobs["attest"]
-    assert "needs.reserve.result == 'success'" in jobs["publish"]["if"]
+    # A skipped pypi (files already on PyPI) must not skip attest or finalize:
+    # GitHub's implicit success() treats a skipped ancestor as not successful.
+    assert jobs["attest"]["if"] == "${{ !cancelled() && needs.publish.result == 'success' }}"
+    # Immutable releases: the draft is published last, after attestations.
+    assert jobs["finalize"]["needs"] == ["publish", "attest"]
+    assert jobs["finalize"]["if"] == (
+        "${{ !cancelled() && needs.publish.result == 'success' && "
+        "needs.attest.result == 'success' }}")
+    assert squash(jobs["publish"]["if"]) == (
+        "!cancelled() && needs.reserve.result == 'success' && "
+        "(needs.pypi.result == 'success' || needs.pypi.result == 'skipped')")
+    assert list(jobs)[-1] == "finalize"
     assert jobs["reserve"]["permissions"] == {
         "actions": "read", "contents": "write", "packages": "read"}
     assert jobs["pypi"]["permissions"] == {
@@ -782,6 +849,13 @@ def test_workflow_security_contract():
         "actions": "read", "contents": "read", "packages": "write"}
     assert jobs["attest"]["permissions"] == {
         "actions": "read", "attestations": "write", "id-token": "write", "packages": "write"}
+    assert jobs["finalize"]["permissions"] == {
+        "actions": "read", "contents": "write", "packages": "read"}
+    assert [n for n, j in jobs.items() if j["permissions"].get("contents") == "write"] == [
+        "reserve", "finalize"]
+    finalize_run = [s["run"] for s in jobs["finalize"]["steps"]
+                    if "rc_verify_and_publish.py" in s.get("run", "")]
+    assert len(finalize_run) == 1 and "rc_verify_and_publish.py finalize" in finalize_run[0]
     assert [n for n, j in jobs.items() if "attestations" in j["permissions"]] == ["attest"]
     assert [n for n, j in jobs.items() if "id-token" in j["permissions"]] == ["pypi", "attest"]
     assert [name for name, job in jobs.items() if "environment" in job] == ["pypi"]
@@ -1032,3 +1106,511 @@ def test_attestation_outputs_refuse_unsafe_names(build, name):
     with pytest.raises(ValueError, match="invalid distribution output"):
         stage.attestation_outputs(replace(verified, python_hashes={
             n: "A" * 64 for n in verified.python_hashes}))
+
+
+def failing_run(monkeypatch, stderr, stdout=b"stdout-secret-marker"):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=1, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return calls
+
+
+def command_error(*args, **kwargs):
+    with pytest.raises(ValueError) as caught:
+        stage.command(*args, **kwargs)
+    return str(caught.value)
+
+
+def test_command_failure_carries_stderr_excerpt(monkeypatch):
+    failing_run(monkeypatch, b"HTTP 422: Validation Failed (ReleaseAsset.name already_exists)")
+    assert command_error("gh", "release", "upload") == (
+        "gh operation failed (exit 1): HTTP 422: Validation Failed "
+        "(ReleaseAsset.name already_exists)")
+
+
+def test_command_failure_without_stderr_keeps_plain_message(monkeypatch):
+    failing_run(monkeypatch, b" \n\t ")
+    assert command_error("gh", "api") == "gh operation failed (exit 1)"
+
+
+def test_stderr_excerpt_is_single_printable_line():
+    raw = (b"first\nsecond\r\n\tthird\x1b[31mred\x1b[0m\x00\x07\x7f"
+           b"\x1b]0;title\x07end \xc3\xa9\xff caf\xc3\xa9")
+    excerpt = stage._stderr_excerpt(raw)
+    assert excerpt == "first second thirdredend caf"
+    assert re.fullmatch(r"[\x20-\x7e]*", excerpt)
+
+
+@pytest.mark.parametrize("secret, kept", [
+    (b"github_pat_11ABCDEFG0123_ab", b""),
+    (b"ghp_" + b"a1" * 18, b""),
+    (b"ghs_" + b"Z9" * 18, b""),
+    (b"gho_" + b"q" * 20, b""),
+    (b"Authorization: Bearer abc.def.ghi", b"Authorization"),
+    (b"authorization: token sekrit-value", b"authorization"),
+    (b"Authorization: Basic dXNlcjpwYXNz", b"Authorization"),
+    (b"Bearer eyJhbGciOi.payload.sig", b"Bearer"),
+    (b"token 0123456789abcdef", b"token"),
+    (b"https://user:hunter2pass@github.com/x", b"github.com/x"),
+    (b"f" * 40, b""),
+    (b"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0123456789+/==", b""),
+])
+def test_stderr_excerpt_redacts_credentials(secret, kept):
+    excerpt = stage._stderr_excerpt(b"before " + secret + b" after")
+    assert "[REDACTED]" in excerpt
+    assert excerpt.startswith("before ") and excerpt.endswith(" after")
+    assert kept.decode() in excerpt
+    for fragment in (b"ABCDEFG012345", b"a1a1a1", b"Z9Z9Z9", b"qqqqqqqq", b"abc.def",
+                     b"sekrit", b"dXNlcjpw", b"eyJhbG", b"0123456789abcdef", b"hunter2",
+                     b"ffffffff", b"QUJDREVGR0hJ"):
+        assert fragment.decode() not in excerpt
+
+
+def test_stderr_excerpt_keeps_ordinary_token_wording():
+    assert stage._stderr_excerpt(b"token expired") == "token expired"
+
+
+@pytest.mark.parametrize("payload", [
+    b"::set-output name=x::y",
+    b"::add-mask::value",
+    b"x\n::error file=a::boom",
+    b"##[error]boom",
+    b"###[group]x",
+    b":::::",
+])
+def test_stderr_excerpt_neutralises_workflow_commands(payload):
+    excerpt = stage._stderr_excerpt(payload)
+    assert "::" not in excerpt
+    assert "##[" not in excerpt
+
+
+def test_workflow_command_cannot_start_printed_line(monkeypatch, capsys):
+    failing_run(monkeypatch, b"\n::set-output name=upload::true\n##[error]x")
+    with pytest.raises(ValueError) as caught:
+        stage.command("gh", "release", "upload")
+    print(f"RC publication refused: {stage._one_line(str(caught.value))}")
+    for line in capsys.readouterr().out.splitlines():
+        assert line.startswith("RC publication refused: gh operation failed (exit 1): ")
+        assert "::" not in line and "##[" not in line
+
+
+def test_stderr_excerpt_truncates():
+    excerpt = stage._stderr_excerpt(b"word " * 200)
+    assert len(excerpt) == stage.STDERR_EXCERPT_LIMIT + 3
+    assert excerpt.endswith("...")
+    exact = b"y " * 150
+    assert stage._stderr_excerpt(exact[:-1]) == exact[:-1].decode()
+    assert stage._one_line(f"gh operation failed (exit 1): {excerpt}").endswith("...")
+
+
+def test_command_failure_never_echoes_stdout_args_or_input(monkeypatch):
+    failing_run(monkeypatch, b"failure detail")
+    message = command_error("gh", "api", "--field", "argument-secret-marker",
+                            input_data=b"input-secret-marker")
+    assert "failure detail" in message
+    for marker in ("stdout-secret-marker", "argument-secret-marker", "input-secret-marker",
+                   "api", "--field"):
+        assert marker not in message
+
+
+def test_absent_matches_raw_stderr_before_sanitising(monkeypatch):
+    # The raw text spans lines and carries controls the excerpt would remove.
+    failing_run(monkeypatch, b"error:\n\x1b[1mmanifest\tunknown\x1b[0m")
+    assert stage.command("skopeo", "inspect", absent=r"manifest\tunknown") is None
+    assert stage.command("skopeo", "inspect", absent=r"error:\n") is None
+    message = command_error("skopeo", "inspect", absent=r"not-present")
+    assert message == "skopeo operation failed (exit 1): error: manifest unknown"
+
+
+def test_environment_token_value_is_redacted(monkeypatch):
+    fake = "fake-env-token-value-xyz"
+    monkeypatch.setenv("GH_TOKEN", fake)
+    monkeypatch.setenv("GITHUB_TOKEN", "other-fake-value")
+    failing_run(monkeypatch, f"bad credentials for {fake}; also other-fake-value".encode())
+    message = command_error("gh", "release", "upload")
+    assert fake not in message and "other-fake-value" not in message
+    assert message == ("gh operation failed (exit 1): bad credentials for [REDACTED]; "
+                       "also [REDACTED]")
+
+
+def reserved(build, **overrides):
+    verified, registry = verify(build), Registry()
+    stage.reserve(verified, registry)
+    for key, value in overrides.items():
+        setattr(registry, key, value)
+    registry.writes.clear()
+    return verified, registry
+
+
+def test_reservation_stays_draft_until_finalize_publishes_last(build, tmp_path):
+    verified, registry = verify(build), Registry()
+    stage.reserve(verified, registry)
+    assert (registry.draft, registry.assets) == (True, verified.assets)
+    stage.stage_upload(verified, registry, tmp_path / "upload")
+    registry.python = verified.python_hashes.copy()
+    publish(verified, registry, move_rc=True)
+    assert registry.draft is True
+    stage.finalize(verified, registry)
+    assert registry.writes == ["reserve", "image", "rc", "finalize"]
+    assert registry.draft is False
+
+
+@pytest.mark.parametrize("missing", ["python", "image", "asset", "tag"])
+def test_finalize_refuses_before_every_surface_is_complete(build, missing):
+    verified, registry = reserved(build)
+    registry.python = verified.python_hashes.copy()
+    registry.image = verified.image_digest
+    if missing == "python":
+        registry.python.popitem()
+    elif missing == "image":
+        registry.image = None
+    elif missing == "asset":
+        registry.assets.pop(stage.PROVENANCE)
+    else:
+        registry.tag = None
+    with pytest.raises(ValueError):
+        stage.finalize(verified, registry)
+    assert registry.draft is True and not registry.writes
+
+
+def test_finalize_readback_must_show_a_published_release(build):
+    verified, registry = reserved(build, image=None)
+    registry.python = verified.python_hashes.copy()
+    registry.image = verified.image_digest
+    registry.publish_release = lambda _v: registry.writes.append("noop")
+    with pytest.raises(ValueError, match="publication readback"):
+        stage.finalize(verified, registry)
+
+
+@pytest.mark.parametrize("phase", ["reserve", "stage_upload", "publish", "finalize"])
+@pytest.mark.parametrize("assets", ["none", "provenance_only"])
+def test_published_release_with_missing_assets_is_burned(build, tmp_path, phase, assets):
+    verified, registry = verify(build), Registry()
+    bind_tag(registry, verified)
+    registry.draft = False
+    registry.assets = ({} if assets == "none"
+                       else {stage.PROVENANCE: verified.assets[stage.PROVENANCE]})
+    registry.python = verified.python_hashes.copy()
+    registry.image = verified.image_digest
+    call = {"reserve": lambda: stage.reserve(verified, registry),
+            "stage_upload": lambda: stage.stage_upload(verified, registry, tmp_path / "u"),
+            "publish": lambda: publish(verified, registry),
+            "finalize": lambda: stage.finalize(verified, registry)}[phase]
+    with pytest.raises(ValueError, match="burned") as caught:
+        call()
+    assert "next rc number" in str(caught.value)
+    assert not registry.writes
+
+
+def test_published_release_with_different_bytes_is_burned(build):
+    verified, registry = verify(build), Registry()
+    bind_tag(registry, verified)
+    registry.draft = False
+    registry.assets = {**verified.assets, stage.PROVENANCE: b"other"}
+    with pytest.raises(ValueError, match="burned"):
+        stage.reserve(verified, registry)
+    assert not registry.writes
+
+
+def test_complete_published_release_is_reused(build, tmp_path):
+    verified, registry = verify(build), Registry()
+    bind_tag(registry, verified)
+    registry.draft, registry.assets = False, verified.assets.copy()
+    assert stage.reserve(verified, registry) == 2
+    assert stage.stage_upload(verified, registry, tmp_path / "upload") == 2
+    registry.python = verified.python_hashes.copy()
+    publish(verified, registry)
+    stage.finalize(verified, registry)
+    assert registry.writes == ["image"]
+
+
+def test_partial_draft_is_reused_and_completed(build):
+    verified, registry = verify(build), Registry()
+    bind_tag(registry, verified)
+    registry.assets = {stage.PROVENANCE: verified.assets[stage.PROVENANCE]}
+    stage.reserve(verified, registry)
+    assert registry.writes == ["reserve"]
+    assert (registry.draft, registry.assets) == (True, verified.assets)
+    assert stage.reserve(verified, registry) == 2
+    assert registry.writes == ["reserve"]
+
+
+def test_wrong_draft_asset_bytes_are_refused(build):
+    verified, registry = verify(build), Registry()
+    bind_tag(registry, verified)
+    name = next(iter(verified.python_hashes))
+    registry.assets = {name: b"partial or substituted bytes"}
+    with pytest.raises(ValueError, match="draft asset differs"):
+        stage.reserve(verified, registry)
+    assert not registry.writes
+
+
+def test_read_only_jobs_bind_an_invisible_draft_through_the_tag(build, tmp_path):
+    """contents: read cannot list drafts; the annotated tag at H binds instead."""
+    verified, registry = reserved(build, hide_drafts=True)
+    assert stage.stage_upload(verified, registry, tmp_path / "upload") == 2
+    registry.python = verified.python_hashes.copy()
+    publish(verified, registry)
+    assert registry.writes == ["image"]
+    registry.tag = None
+    with pytest.raises(ValueError):
+        stage.stage_upload(verified, registry, tmp_path / "other")
+    with pytest.raises(ValueError):
+        publish(verified, registry)
+    # The draft-aware finalize never trusts that shortcut.
+    bind_tag(registry, verified)
+    registry.hide_drafts = False
+    registry.assets.pop(next(iter(verified.python_hashes)))
+    with pytest.raises(ValueError, match="incomplete GitHub reservation"):
+        stage.finalize(verified, registry)
+    assert registry.draft is True
+
+
+def release_listing(monkeypatch, pages):
+    calls = []
+
+    def run(args, **_kwargs):
+        calls.append(args)
+        if args[:4] == ("gh", "api", "-H", "Accept: application/octet-stream"):
+            return SimpleNamespace(returncode=0, stdout=b"bytes", stderr=b"")
+        page = int(args[2].rsplit("page=", 1)[1])
+        assert "per_page=100" in args[2]
+        return SimpleNamespace(returncode=0, stdout=json.dumps(
+            pages[page - 1] if page <= len(pages) else []).encode(), stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return calls
+
+
+def entry(tag, **extra):
+    return {"tag_name": tag, "id": 9, "draft": True, "prerelease": True, "assets": []} | extra
+
+
+def test_release_lookup_paginates_and_matches_the_exact_tag(monkeypatch):
+    first = [entry("1.4.3-rc.10"), entry("v1.4.3-rc.1"), entry("1.4.3-rc.1 ")] + [
+        entry(f"0.0.{n}") for n in range(97)]
+    second = [entry("1.4.3-rc.1", assets=[{"name": stage.PROVENANCE, "id": 3,
+                                           "state": "uploaded"}])]
+    calls = release_listing(monkeypatch, [first, second])
+    found = stage.Registries().release("1.4.3-rc.1")
+    assert found == stage.Release(True, {stage.PROVENANCE: b"bytes"})
+    assert calls[-1][-1].endswith("releases/assets/3")
+    assert stage.Registries().release("1.4.3-rc.2") is None
+
+
+def test_release_lookup_refuses_ambiguity_and_unbounded_listings(monkeypatch):
+    release_listing(monkeypatch, [[entry("1.4.3-rc.1"), entry("1.4.3-rc.1", draft=False)]])
+    with pytest.raises(ValueError, match="ambiguous"):
+        stage.Registries().release("1.4.3-rc.1")
+    monkeypatch.setattr(stage, "RELEASE_PAGE_LIMIT", 2)
+    full = [entry(f"0.0.{n}") for n in range(100)]
+    release_listing(monkeypatch, [full, full, full])
+    with pytest.raises(ValueError, match="page limit"):
+        stage.Registries().release("1.4.3-rc.1")
+
+
+def test_interrupted_asset_upload_is_never_read_as_complete(monkeypatch):
+    release_listing(monkeypatch, [[entry("1.4.3-rc.1", assets=[
+        {"name": stage.PROVENANCE, "id": 3, "state": "starter"}])]])
+    with pytest.raises(ValueError, match="upload is incomplete"):
+        stage.Registries().release("1.4.3-rc.1")
+
+
+def test_production_reserve_creates_a_draft_and_uploads_only_missing(build, monkeypatch):
+    """Draft reuse: an existing draft is never recreated, published or clobbered."""
+    verified = verify(build)
+    calls = []
+    uploaded = {stage.PROVENANCE: verified.assets[stage.PROVENANCE]}
+
+    def run(args, **_kwargs):
+        calls.append(args)
+        if args[:4] == ("gh", "api", "-H", "Accept: application/octet-stream"):
+            return SimpleNamespace(returncode=0, stdout=list(uploaded.values())[
+                int(args[4].rsplit("/", 1)[1]) - 1], stderr=b"")
+        if args[:2] == ("gh", "api") and "git/ref/tags/" in args[2]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(
+                {"object": {"type": "tag", "sha": "a" * 40}}).encode(), stderr=b"")
+        if args[:2] == ("gh", "api") and "git/tags/" in args[2]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(
+                {"object": {"type": "commit", "sha": verified.head}}).encode(), stderr=b"")
+        if args[:2] == ("gh", "api") and "releases?" in args[2]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([entry(
+                verified.version, assets=[{"name": n, "id": i, "state": "uploaded"}
+                                          for i, n in enumerate(uploaded, start=1)])]).encode(),
+                stderr=b"")
+        if args[:3] == ("gh", "release", "upload"):
+            assert "--clobber" not in args
+            uploaded[Path(args[4]).name] = Path(args[4]).read_bytes()
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        pytest.fail(f"unexpected call {args[:3]}")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    stage.Registries().reserve(verified)
+    assert [Path(a[4]).name for a in calls if a[:3] == ("gh", "release", "upload")] == sorted(
+        set(verified.files) - {stage.PROVENANCE}, key=list(verified.files).index)
+    assert not any(a[:3] == ("gh", "release", "create") for a in calls)
+    assert uploaded == verified.assets
+
+
+
+def test_finalize_cli_runs_only_finalize(build, tmp_path, monkeypatch):
+    verified = verify(build)
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(build[3]))
+    for key, value in {"SDLC_PIPELINE": "enabled", "GITHUB_EVENT_NAME": "workflow_run",
+                       "GITHUB_REF": "refs/heads/main",
+                       "GITHUB_EVENT_PATH": str(event_path)}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(stage, "fetch_history", lambda *_a: None)
+    monkeypatch.setattr(stage, "verify", lambda *_a, **_kw: verified)
+    calls = []
+    monkeypatch.setattr(stage, "finalize", lambda v, _c: calls.append(v))
+    for name in ("reserve", "stage_upload", "publish"):
+        monkeypatch.setattr(stage, name, lambda *_a, **_kw: pytest.fail("wrong phase"))
+    assert stage.main(["finalize", "--artifacts", str(build[1]),
+                       "--history", str(build[0].path)]) == 0
+    assert calls == [verified]
+
+
+@pytest.mark.parametrize("fault", ["drop", "bytes"])
+def test_reserve_refuses_an_upload_that_does_not_read_back(build, fault):
+    """The reserve readback is the byte check before PyPI: a lossy upload fails it."""
+    verified, registry = verify(build), Registry()
+    real = registry.reserve
+    victim = next(iter(verified.python_hashes))
+
+    def lossy(v):
+        real(v)
+        if fault == "drop":
+            del registry.assets[victim]
+        else:
+            registry.assets[victim] = b"truncated"
+
+    registry.reserve = lossy
+    with pytest.raises(ValueError):
+        stage.reserve(verified, registry)
+    with pytest.raises(ValueError):
+        stage.finalize(verified, registry)
+    assert registry.draft is True
+
+
+@pytest.mark.parametrize("change", ["hash", "older_format", "missing", "extra_line"])
+def test_read_only_jobs_require_the_tag_to_bind_the_asset_hashes(build, tmp_path, change):
+    """C1: pypi/publish cannot see the draft, so the tag message binds the bytes."""
+    verified, registry = reserved(build, hide_drafts=True)
+    if change == "hash":
+        registry.tag_text = registry.tag_text.replace(
+            hashlib.sha256(verified.assets[stage.PROVENANCE]).hexdigest(), "0" * 64)
+    elif change == "older_format":
+        registry.tag_text = f"Candidate {verified.version}\nH: {verified.head}"
+    elif change == "extra_line":
+        registry.tag_text += f"\nsha256 {'a' * 64}  extra.bin"
+    else:
+        registry.tag_text = None
+    with pytest.raises(ValueError, match="does not bind these asset hashes"):
+        stage.stage_upload(verified, registry, tmp_path / "upload")
+    with pytest.raises(ValueError, match="does not bind these asset hashes"):
+        publish(verified, registry)
+    registry.hide_drafts = False
+    with pytest.raises(ValueError, match="does not bind these asset hashes"):
+        stage.reserve(verified, registry)
+    assert not registry.writes and not (tmp_path / "upload").exists()
+
+
+def test_tag_message_format_is_exact(build):
+    verified = verify(build)
+    lines = stage.tag_message(verified).split("\n")
+    assert lines[:3] == [f"Candidate {verified.version}", f"H: {verified.head}", ""]
+    assert lines[3:] == [f"sha256 {digest(data)}  {name}"
+                         for name, data in sorted(verified.assets.items())]
+
+
+def production_reserve_fake(monkeypatch, verified, listing):
+    """gh fake for Registries.reserve; listing(calls) returns the current releases."""
+    calls = []
+
+    def ok(value):
+        data = value if isinstance(value, bytes) else json.dumps(value).encode()
+        return SimpleNamespace(returncode=0, stdout=data, stderr=b"")
+
+    def run(args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("gh", "api") and "git/ref/tags/" in args[2]:
+            return ok({"object": {"type": "tag", "sha": "a" * 40}})
+        if args[:2] == ("gh", "api") and "git/tags/" in args[2]:
+            return ok({"object": {"type": "commit", "sha": verified.head},
+                       "message": stage.tag_message(verified)})
+        if args[:2] == ("gh", "api") and "releases?" in args[2]:
+            return ok(listing(calls))
+        if args[:3] in (("gh", "release", "create"), ("gh", "release", "upload")):
+            return ok(b"")
+        if args[:2] == ("gh", "api") and "/releases/" in args[2] and "PATCH" in args:
+            return ok({})
+        pytest.fail(f"unexpected call {args[:3]}")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return calls
+
+
+def test_reserve_refuses_when_the_created_release_is_not_a_draft(build, monkeypatch):
+    """If create ever published the release, stop before any upload or PyPI."""
+    verified = verify(build)
+
+    def listing(calls):
+        created = any(a[:3] == ("gh", "release", "create") for a in calls)
+        return [entry(verified.version, draft=False)] if created else []
+
+    calls = production_reserve_fake(monkeypatch, verified, listing)
+    with pytest.raises(ValueError, match="draft release was not created"):
+        stage.Registries().reserve(verified)
+    assert not any(a[:3] == ("gh", "release", "upload") for a in calls)
+
+
+def test_reserve_refuses_a_release_published_after_inventory(build, monkeypatch):
+    """Nit 1: a release that became published since inventory is never uploaded to."""
+    verified = verify(build)
+    calls = production_reserve_fake(
+        monkeypatch, verified, lambda _calls: [entry(verified.version, draft=False)])
+    with pytest.raises(ValueError, match="burned"):
+        stage.Registries().reserve(verified)
+    assert not any(a[:3] == ("gh", "release", "upload") for a in calls)
+
+
+def test_publish_release_refuses_a_non_draft(build, monkeypatch):
+    verified = verify(build)
+    calls = production_reserve_fake(
+        monkeypatch, verified, lambda _calls: [entry(verified.version, draft=False)])
+    with pytest.raises(ValueError, match="no draft release to publish"):
+        stage.Registries().publish_release(verified)
+    assert not any("PATCH" in a for a in calls)
+
+
+
+def test_environment_token_split_by_control_bytes_is_redacted(monkeypatch):
+    """A token interleaved with escapes survives the first pass; the second catches it."""
+    monkeypatch.setenv("GH_TOKEN", "fake env token")
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    excerpt = stage._stderr_excerpt(b"denied for fake\x1b[0m env\ttoken here")
+    assert excerpt == "denied for [REDACTED] here"
+
+
+@pytest.mark.parametrize("splitter", [b"\x1b[0m", b"\x01", b"\x1b]0;t\x07", b"\x7f"])
+def test_realistic_token_split_by_an_escape_is_redacted(monkeypatch, splitter):
+    """A 40-character ghs_ token cut by a control sequence is rejoined, then redacted."""
+    token = "ghs_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    assert len(token) == 40
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    raw = b"denied " + token[:22].encode() + splitter + token[22:].encode() + b" end"
+    excerpt = stage._stderr_excerpt(raw)
+    assert excerpt == "denied [REDACTED] end"
+    for start in range(0, 40 - 8):
+        assert token[start:start + 8] not in excerpt
+    monkeypatch.setenv("GH_TOKEN", token)
+    assert stage._stderr_excerpt(raw) == "denied [REDACTED] end"
+

@@ -9,9 +9,9 @@ never built, installed, extracted to disk or executed.
 Each phase runs in its own job, holds the shared promotion lock, and repeats
 the full verification (branch head, main, version recompute, hashes, digest):
 
-  reserve       annotated tag at H and a public prerelease whose wheel, sdist
-                and provenance assets bind the identity to H before PyPI
-                (contents: write)
+  reserve       annotated tag at H and a DRAFT prerelease whose wheel, sdist
+                and provenance assets are uploaded and read back byte for
+                byte, binding the identity to H before PyPI (contents: write)
   stage-upload  copy the Python files still missing from PyPI for the OIDC
                 upload action; id-token: write exists only in that job
   publish       wait for the PyPI readback, push the OCI archive by digest,
@@ -19,9 +19,18 @@ the full verification (branch head, main, version recompute, hashes, digest):
                 exactly "enabled", write the staging selection record
                 (packages: write) and emit the validated image digest and
                 Python file hashes as job outputs
+  finalize      after the attest job, re-verify everything and publish the
+                draft (contents: write); last on purpose
 
 A separate attest job, which never runs this script or parses the archives,
 re-checks the files against those hashes and signs the attestations.
+
+The repository has GitHub immutable releases enabled: a published release
+can never gain, lose or replace an asset. The GitHub release therefore stays a
+draft until every other surface is complete, so a published candidate release
+always means a complete publication. A published release that lacks an asset
+or carries different bytes cannot be repaired: that candidate is burned and
+the next push to the branch yields the next rc number.
 """
 from __future__ import annotations
 
@@ -61,6 +70,10 @@ BRANCHES = ("release/new", "hotfix/new")
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 PROVENANCE = "release-provenance.json"
+RELEASE_PAGE_SIZE = 100
+RELEASE_PAGE_LIMIT = 50
+BURNED = ("published GitHub release is incomplete and immutable: this candidate is burned; "
+          "the next push to the branch yields the next rc number")
 PYPI_ATTEMPTS = 20
 PYPI_DELAY_SECONDS = 15.0
 # Upper bounds for untrusted metadata read into memory (fail closed above them).
@@ -286,53 +299,114 @@ def verify(artifacts: Path, history: Path, event: dict[str, Any], *,
                     hashes, computed["B"], computed["M"], run["id"], run["run_attempt"])
 
 
+@dataclass(frozen=True)
+class Release:
+    """The one GitHub release whose tag_name is the candidate, draft or published."""
+    draft: bool
+    assets: dict[str, bytes]
+
+
+def tag_message(verified: Verified) -> str:
+    """The annotated candidate tag message; it binds H and every asset's bytes.
+
+    Exact format, lines joined by "\n" with no trailing newline:
+
+        Candidate <version>
+        H: <head>
+        <empty line>
+        sha256 <64 lowercase hex>  <asset name>    (one per asset, sorted by name)
+
+    The read-only jobs cannot see draft releases, so this contents-readable
+    message is what binds the bytes PyPI and GHCR receive to the reservation.
+    """
+    hashes = [f"sha256 {hashlib.sha256(data).hexdigest()}  {name}"
+              for name, data in sorted(verified.assets.items())]
+    return "\n".join([f"Candidate {verified.version}", f"H: {verified.head}", "", *hashes])
+
+
 class Client(Protocol):
     def python_hashes(self, version: str) -> dict[str, str]: ...
     def image_digest(self, reference: str) -> str | None: ...
     def tag_head(self, tag: str) -> str | None: ...
-    def release_assets(self, tag: str) -> dict[str, bytes] | None: ...
+    def tag_message(self, tag: str) -> str | None: ...
+    def release(self, tag: str) -> Release | None: ...
     def reserve(self, verified: Verified) -> None: ...
+    def publish_release(self, verified: Verified) -> None: ...
     def push_image(self, verified: Verified) -> None: ...
     def move_channel(self, verified: Verified) -> None: ...
 
 
-def inventory(verified: Verified, client: Client
-              ) -> tuple[dict[str, str], str | None, dict[str, bytes] | None]:
-    """Read every surface before writes; outages and ambiguous ownership fail closed."""
+def inventory(verified: Verified, client: Client, *, drafts_visible: bool = True
+              ) -> tuple[dict[str, str], str | None, Release | None]:
+    """Read every surface before writes; outages and ambiguous ownership fail closed.
+
+    Draft releases are listed only to tokens with push access. The reserve and
+    finalize jobs hold contents: write and see drafts; the pypi and publish
+    jobs hold contents: read, so for them (drafts_visible=False) an absent
+    release is not proof of absence and the annotated tag at H binds instead.
+    The finalize job repeats the full draft-aware check before publishing.
+    """
     python = client.python_hashes(verified.python_version)
     image = client.image_digest(verified.version)
     tag = client.tag_head(verified.version)
-    assets = client.release_assets(verified.version)
+    release = client.release(verified.version)
     require(tag in (None, verified.head), "Git tag collision: different H")
     require(image in (None, verified.image_digest), "image digest collision")
     require(all(verified.python_hashes.get(n) == h for n, h in python.items()),
             "PyPI hash collision")
-    if assets is not None:
+    if release is not None:
         require(tag == verified.head, "release is not bound to H")
-        require(all(verified.assets.get(n) == data for n, data in assets.items()),
-                "GitHub release asset collision")
+        if not release.draft:
+            # Immutable: a published release can never be completed or repaired.
+            require(release.assets == verified.assets, BURNED)
+        require(all(verified.assets.get(n) == data for n, data in release.assets.items()),
+                "GitHub release asset collision: a draft asset differs from the verified "
+                "file; review and delete the draft asset or draft by hand")
     if python or image:
         # Objects that exist must have been published for this same H and bytes.
-        require(assets is not None and assets.get(PROVENANCE) == verified.assets[PROVENANCE],
-                "existing publication lacks same-H provenance")
-    return python, image, assets
+        if drafts_visible or release is not None:
+            require(release is not None
+                    and release.assets.get(PROVENANCE) == verified.assets[PROVENANCE],
+                    "existing publication lacks same-H provenance")
+        else:
+            require(tag == verified.head, "existing publication lacks a tag at H")
+    if tag is not None:
+        # Exact match; only a trailing newline added by Git is tolerated.
+        message = client.tag_message(verified.version)
+        require(isinstance(message, str) and message.rstrip("\n") == tag_message(verified),
+                "candidate tag does not bind these asset hashes; this H was reserved "
+                "with other bytes or before the hash-binding tag format")
+    return python, image, release
+
+
+def reservation_bound(verified: Verified, client: Client) -> tuple[dict[str, str], str | None]:
+    """Later read-only jobs: the tag binds H and the asset hashes (checked in
+    inventory), and any visible release is complete."""
+    python, image, release = inventory(verified, client, drafts_visible=False)
+    require(client.tag_head(verified.version) == verified.head
+            and (release is None or release.assets == verified.assets),
+            "incomplete GitHub reservation")
+    return python, image
 
 
 def reserve(verified: Verified, client: Client) -> int:
-    """Bind the identity to H (tag, prerelease, assets); return missing PyPI files."""
-    python, _, assets = inventory(verified, client)
-    if assets != verified.assets:
+    """Bind the identity to H (tag, draft prerelease, assets); return missing PyPI files.
+
+    The release stays a draft: finalize publishes it only after PyPI, the image
+    and the attestations are complete.
+    """
+    python, _, release = inventory(verified, client)
+    if release is None or release.assets != verified.assets:
         client.reserve(verified)
-        _, _, assets = inventory(verified, client)
-        require(assets == verified.assets, "GitHub reservation readback mismatch")
+        python, _, release = inventory(verified, client)
+        require(release is not None and release.assets == verified.assets,
+                "GitHub reservation readback mismatch")
     return len(set(verified.python_hashes) - set(python))
 
 
 def stage_upload(verified: Verified, client: Client, upload: Path) -> int:
     """Copy only the verified files PyPI still lacks; the reservation must exist."""
-    python, _, assets = inventory(verified, client)
-    require(client.tag_head(verified.version) == verified.head and assets == verified.assets,
-            "incomplete GitHub reservation")
+    python, _ = reservation_bound(verified, client)
     require(not upload.exists(), "upload directory must be new")
     upload.mkdir(parents=True)
     missing = sorted(set(verified.python_hashes) - set(python))
@@ -351,8 +425,7 @@ def publish(verified: Verified, client: Client, *,
     new model (W6 spec invariant); move_rc is off unless SDLC_RC_CHANNEL is
     exactly "enabled", and even then a hotfix head never moves it.
     """
-    _, image, assets = inventory(verified, client)
-    require(assets == verified.assets, "incomplete GitHub reservation")
+    _, image = reservation_bound(verified, client)
     # The PyPI JSON API is eventually consistent after an upload.
     for attempt in range(attempts):
         python = client.python_hashes(verified.python_version)
@@ -381,6 +454,25 @@ def publish(verified: Verified, client: Client, *,
             "rc_channel_moved": moved}
 
 
+def finalize(verified: Verified, client: Client) -> None:
+    """Publish the draft release last, after every other surface is complete.
+
+    Immutable releases freeze assets on publication, so this repeats the full
+    draft-aware inventory and requires all assets, the PyPI files and the image
+    digest before the draft becomes a public prerelease.
+    """
+    python, image, release = inventory(verified, client)
+    if release is None or release.assets != verified.assets:
+        raise ValueError("incomplete GitHub reservation")
+    require(python == verified.python_hashes, "PyPI publication is incomplete")
+    require(image == verified.image_digest, "remote image digest mismatch")
+    if release.draft:
+        client.publish_release(verified)
+        _, _, release = inventory(verified, client)
+    require(release is not None and not release.draft and release.assets == verified.assets,
+            "GitHub release publication readback mismatch")
+
+
 def selection(record: dict[str, Any], history: Path) -> dict[str, Any]:
     """Branch-based staging selection (STD-U-821 1.2) from freshly fetched refs."""
     hotfix = Git(history).run(
@@ -392,14 +484,64 @@ def selection(record: dict[str, Any], history: Path) -> dict[str, Any]:
                      "selection_branch": "hotfix/new" if hotfix else "release/new"}
 
 
+STDERR_EXCERPT_LIMIT = 300
+_REDACTED = "[REDACTED]"
+_TERMINAL_ESCAPES = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?")
+_SECRET_PATTERNS = (
+    (re.compile(r"(?i)\b(authorization)\s*:\s*(?:(?:bearer|token|basic)\s+)?\S+"),
+     rf"\1: {_REDACTED}"),
+    (re.compile(r"(?i)\b(bearer)\s+\S+"), rf"\1 {_REDACTED}"),
+    (re.compile(r"(?i)\b(token)(\s*[:=]?\s+|\s*[:=]\s*)[A-Za-z0-9._~+/=-]{8,}"),
+     rf"\1\2{_REDACTED}"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]+"), _REDACTED),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"), _REDACTED),
+    (re.compile(r"[^\s/@:]+:[^\s/@]+@"), f"{_REDACTED}@"),
+    (re.compile(r"[A-Za-z0-9+/=_-]{40,}"), _REDACTED),
+)
+
+
+def _stderr_excerpt(raw: bytes) -> str:
+    """Single-line, allowlisted, redacted and truncated view of process stderr.
+
+    gh and the registries can reflect remote text, so only printable ASCII
+    survives, credential-shaped text is redacted, GitHub Actions workflow
+    command markers are broken up, and the result is capped.
+    """
+    text = raw.decode("utf-8", errors="replace")
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = os.environ.get(name)
+        if value:
+            text = text.replace(value, _REDACTED)
+    # Delete (never replace with a space) terminal escapes and every character
+    # outside printable ASCII except whitespace, so a token split by them is
+    # rejoined before the redaction below; whitespace then collapses to one line.
+    text = _TERMINAL_ESCAPES.sub("", text)
+    text = " ".join(re.sub(r"[^\x20-\x7e\t\n\r\v\f]", "", text).split())
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = os.environ.get(name)
+        if value:
+            text = text.replace(value, _REDACTED)
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    while "::" in text or "##[" in text:
+        text = text.replace("::", ": :").replace("##[", "# #[")
+    if len(text) > STDERR_EXCERPT_LIMIT:
+        text = text[:STDERR_EXCERPT_LIMIT] + "..."
+    return text
+
+
 def command(*args: str, input_data: bytes | None = None, absent: str | None = None
             ) -> bytes | None:
     result = subprocess.run(args, input=input_data, capture_output=True, check=False, timeout=600)
     if result.returncode:
         if absent and re.search(absent, result.stderr.decode(errors="replace")):
             return None
-        # Never echo arguments or output: registries and gh can reflect remote text.
-        raise ValueError(f"{args[0]} operation failed (exit {result.returncode})")
+        # Stdout, arguments and input are never echoed. Stderr appears only as a
+        # sanitized excerpt: registries and gh can reflect remote, attacker
+        # influenced text, hence the allowlist, redaction and truncation.
+        message = f"{args[0]} operation failed (exit {result.returncode})"
+        excerpt = _stderr_excerpt(result.stderr)
+        raise ValueError(f"{message}: {excerpt}" if excerpt else message)
     return bytes(result.stdout)
 
 
@@ -428,10 +570,11 @@ class Registries:
                     input_data=os.environ["GH_TOKEN"].encode())
         return str(Path(self._authdir) / "auth.json")
 
-    def api(self, path: str, payload: dict[str, Any] | None = None) -> Any:
+    def api(self, path: str, payload: dict[str, Any] | None = None, method: str = "POST"
+            ) -> Any:
         args = ["gh", "api", f"repos/{REPOSITORY}/{path}"]
         if payload is not None:
-            args += ["--method", "POST", "--input", "-"]
+            args += ["--method", method, "--input", "-"]
         raw = command(*args, input_data=json.dumps(payload).encode() if payload else None,
                       absent=r"\(HTTP 404\)" if payload is None else None)
         return json.loads(raw) if raw is not None else None
@@ -455,51 +598,98 @@ class Registries:
                       f"docker://{IMAGE}:{reference}", absent=r"manifest unknown|MANIFEST_UNKNOWN")
         return "sha256:" + hashlib.sha256(raw).hexdigest() if raw is not None else None
 
-    def tag_head(self, tag: str) -> str | None:
+    def tag_object(self, tag: str) -> dict[str, Any] | None:
         result = self.api(f"git/ref/tags/{tag}")
         if result is None:
             return None
         obj = result["object"]
         require(obj["type"] == "tag", "candidate tag must be annotated")
         tag_data = self.api(f"git/tags/{obj['sha']}")
-        require(tag_data is not None and tag_data["object"]["type"] == "commit",
+        require(isinstance(tag_data, dict) and tag_data["object"]["type"] == "commit",
                 "candidate tag must point directly to a commit")
-        return str(tag_data["object"]["sha"])
+        return dict(tag_data)
 
-    def release_assets(self, tag: str) -> dict[str, bytes] | None:
-        release = self.api(f"releases/tags/{tag}")
-        if release is None:
+    def tag_head(self, tag: str) -> str | None:
+        tag_data = self.tag_object(tag)
+        return None if tag_data is None else str(tag_data["object"]["sha"])
+
+    def tag_message(self, tag: str) -> str | None:
+        tag_data = self.tag_object(tag)
+        if tag_data is None:
             return None
-        require(release["prerelease"] is True and release["draft"] is False,
-                "existing release is not a public prerelease")
+        message = tag_data.get("message")
+        require(isinstance(message, str), "unreadable candidate tag message")
+        return str(message)
+
+    def find_release(self, tag: str) -> dict[str, Any] | None:
+        """List releases (drafts too, given push access); match tag_name exactly.
+
+        GET releases/tags/{tag} never returns a draft, so the listing is the
+        only uniform view. More than one match is ambiguous and fails closed.
+        """
+        found: list[dict[str, Any]] = []
+        for page in range(1, RELEASE_PAGE_LIMIT + 1):
+            batch = self.api(f"releases?per_page={RELEASE_PAGE_SIZE}&page={page}")
+            require(isinstance(batch, list) and all(isinstance(r, dict) for r in batch),
+                    "unreadable release listing")
+            found += [r for r in batch if r.get("tag_name") == tag]
+            if len(batch) < RELEASE_PAGE_SIZE:
+                break
+        else:
+            raise ValueError("release listing exceeds the page limit")
+        require(len(found) <= 1, "ambiguous releases for the candidate tag")
+        return found[0] if found else None
+
+    def release(self, tag: str) -> Release | None:
+        found = self.find_release(tag)
+        if found is None:
+            return None
+        require(found.get("prerelease") is True and type(found.get("draft")) is bool,
+                "existing release is not a prerelease")
         result: dict[str, bytes] = {}
-        for asset in release["assets"]:
-            name = asset["name"]
+        for asset in found["assets"]:
+            name, asset_id = asset["name"], asset["id"]
             require(isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.-]+", name) is not None
-                    and name not in result, "invalid release asset name")
-            data = command("gh", "release", "download", tag, "--repo", REPOSITORY,
-                           "--pattern", name, "--output", "-")
+                    and name not in result and type(asset_id) is int,
+                    "invalid release asset name")
+            # An interrupted upload leaves a non-uploaded asset; never guess its bytes.
+            require(asset.get("state") == "uploaded",
+                    "release asset upload is incomplete; review and delete the draft "
+                    "asset by hand")
+            data = command("gh", "api", "-H", "Accept: application/octet-stream",
+                           f"repos/{REPOSITORY}/releases/assets/{asset_id}")
             assert data is not None
             result[name] = data
-        return result
+        return Release(found["draft"], result)
 
     def reserve(self, verified: Verified) -> None:
         if self.tag_head(verified.version) is None:
             tag = self.api("git/tags", {"tag": verified.version,
-                           "message": f"Candidate {verified.version}\nH: {verified.head}",
+                           "message": tag_message(verified),
                            "object": verified.head, "type": "commit"})
             self.api("git/refs", {"ref": f"refs/tags/{verified.version}", "sha": tag["sha"]})
-        assets = self.release_assets(verified.version)
-        if assets is None:
+        current = self.release(verified.version)
+        if current is None:
+            # Draft first: immutability applies only once a release is published.
             command("gh", "release", "create", verified.version, "--repo", REPOSITORY,
-                    "--verify-tag", "--prerelease", "--title", verified.version,
+                    "--draft", "--verify-tag", "--prerelease", "--title", verified.version,
                     "--notes", f"Candidate from {verified.head}. See {PROVENANCE}.")
-            assets = {}
+            current = self.release(verified.version)
+            if current is None or not current.draft:
+                raise ValueError("draft release was not created")
+        require(current.draft, BURNED)
         # Never --clobber. Partial uploads are reconciled by byte readback.
         for name, path in verified.files.items():
-            if name not in assets:
+            if name not in current.assets:
                 command("gh", "release", "upload", verified.version, str(path),
                         "--repo", REPOSITORY)
+
+    def publish_release(self, verified: Verified) -> None:
+        found = self.find_release(verified.version)
+        if found is None or found.get("draft") is not True or type(found.get("id")) is not int:
+            raise ValueError("no draft release to publish")
+        self.api(f"releases/{found['id']}",
+                 {"draft": False, "prerelease": True, "make_latest": "false"}, method="PATCH")
 
     def push_image(self, verified: Verified) -> None:
         command("skopeo", "copy", "--all", "--preserve-digests", "--authfile", self.authfile(),
@@ -541,13 +731,14 @@ def attestation_outputs(verified: Verified) -> str:
 
 
 def _one_line(text: str) -> str:
-    # Never start a log line with "::" (workflow commands) or span lines.
-    return re.sub(r"[^\x20-\x7e]", "?", text)[:200]
+    # Never start a log line with "::" (workflow commands) or span lines. The
+    # cap leaves room for a command failure with its full stderr excerpt.
+    return re.sub(r"[^\x20-\x7e]", "?", text)[:400]
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("reserve", "stage-upload", "publish"))
+    parser.add_argument("phase", choices=("reserve", "stage-upload", "publish", "finalize"))
     parser.add_argument("--artifacts", required=True, type=Path)
     parser.add_argument("--history", required=True, type=Path)
     parser.add_argument("--upload", type=Path)
@@ -565,7 +756,9 @@ def main(argv: list[str] | None = None) -> int:
         fetch_history(args.history, event)
         verified = verify(args.artifacts, args.history, event)
         client = Registries()
-        if args.phase in ("reserve", "stage-upload"):
+        if args.phase == "finalize":
+            finalize(verified, client)
+        elif args.phase in ("reserve", "stage-upload"):
             if args.phase == "reserve":
                 count = reserve(verified, client)
             else:
