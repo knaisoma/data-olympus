@@ -640,7 +640,7 @@ wheels = [
 
 [[package]]
 name = "data-olympus"
-version = "0.11.0"
+version = "0.0.0+unreleased"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
