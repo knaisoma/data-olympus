@@ -392,14 +392,57 @@ def selection(record: dict[str, Any], history: Path) -> dict[str, Any]:
                      "selection_branch": "hotfix/new" if hotfix else "release/new"}
 
 
+STDERR_EXCERPT_LIMIT = 300
+_REDACTED = "[REDACTED]"
+_TERMINAL_ESCAPES = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?")
+_SECRET_PATTERNS = (
+    (re.compile(r"(?i)\b(authorization)\s*:\s*(?:(?:bearer|token|basic)\s+)?\S+"),
+     rf"\1: {_REDACTED}"),
+    (re.compile(r"(?i)\b(bearer)\s+\S+"), rf"\1 {_REDACTED}"),
+    (re.compile(r"(?i)\b(token)(\s*[:=]?\s+|\s*[:=]\s*)[A-Za-z0-9._~+/=-]{8,}"),
+     rf"\1\2{_REDACTED}"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]+"), _REDACTED),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"), _REDACTED),
+    (re.compile(r"[^\s/@:]+:[^\s/@]+@"), f"{_REDACTED}@"),
+    (re.compile(r"[A-Za-z0-9+/=_-]{40,}"), _REDACTED),
+)
+
+
+def _stderr_excerpt(raw: bytes) -> str:
+    """Single-line, allowlisted, redacted and truncated view of process stderr.
+
+    gh and the registries can reflect remote text, so only printable ASCII
+    survives, credential-shaped text is redacted, GitHub Actions workflow
+    command markers are broken up, and the result is capped.
+    """
+    text = raw.decode("utf-8", errors="replace")
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = os.environ.get(name)
+        if value:
+            text = text.replace(value, _REDACTED)
+    text = _TERMINAL_ESCAPES.sub(" ", text)
+    text = " ".join(re.sub(r"[^\x20-\x7e]", " ", text).split())
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    while "::" in text or "##[" in text:
+        text = text.replace("::", ": :").replace("##[", "# #[")
+    if len(text) > STDERR_EXCERPT_LIMIT:
+        text = text[:STDERR_EXCERPT_LIMIT] + "..."
+    return text
+
+
 def command(*args: str, input_data: bytes | None = None, absent: str | None = None
             ) -> bytes | None:
     result = subprocess.run(args, input=input_data, capture_output=True, check=False, timeout=600)
     if result.returncode:
         if absent and re.search(absent, result.stderr.decode(errors="replace")):
             return None
-        # Never echo arguments or output: registries and gh can reflect remote text.
-        raise ValueError(f"{args[0]} operation failed (exit {result.returncode})")
+        # Stdout, arguments and input are never echoed. Stderr appears only as a
+        # sanitized excerpt: registries and gh can reflect remote, attacker
+        # influenced text, hence the allowlist, redaction and truncation.
+        message = f"{args[0]} operation failed (exit {result.returncode})"
+        excerpt = _stderr_excerpt(result.stderr)
+        raise ValueError(f"{message}: {excerpt}" if excerpt else message)
     return bytes(result.stdout)
 
 
@@ -541,8 +584,9 @@ def attestation_outputs(verified: Verified) -> str:
 
 
 def _one_line(text: str) -> str:
-    # Never start a log line with "::" (workflow commands) or span lines.
-    return re.sub(r"[^\x20-\x7e]", "?", text)[:200]
+    # Never start a log line with "::" (workflow commands) or span lines. The
+    # cap leaves room for a command failure with its full stderr excerpt.
+    return re.sub(r"[^\x20-\x7e]", "?", text)[:400]
 
 
 def main(argv: list[str] | None = None) -> int:

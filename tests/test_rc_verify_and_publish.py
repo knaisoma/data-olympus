@@ -1032,3 +1032,132 @@ def test_attestation_outputs_refuse_unsafe_names(build, name):
     with pytest.raises(ValueError, match="invalid distribution output"):
         stage.attestation_outputs(replace(verified, python_hashes={
             n: "A" * 64 for n in verified.python_hashes}))
+
+
+def failing_run(monkeypatch, stderr, stdout=b"stdout-secret-marker"):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=1, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return calls
+
+
+def command_error(*args, **kwargs):
+    with pytest.raises(ValueError) as caught:
+        stage.command(*args, **kwargs)
+    return str(caught.value)
+
+
+def test_command_failure_carries_stderr_excerpt(monkeypatch):
+    failing_run(monkeypatch, b"HTTP 422: Validation Failed (ReleaseAsset.name already_exists)")
+    assert command_error("gh", "release", "upload") == (
+        "gh operation failed (exit 1): HTTP 422: Validation Failed "
+        "(ReleaseAsset.name already_exists)")
+
+
+def test_command_failure_without_stderr_keeps_plain_message(monkeypatch):
+    failing_run(monkeypatch, b" \n\t ")
+    assert command_error("gh", "api") == "gh operation failed (exit 1)"
+
+
+def test_stderr_excerpt_is_single_printable_line():
+    raw = (b"first\nsecond\r\n\tthird\x1b[31mred\x1b[0m\x00\x07\x7f"
+           b"\x1b]0;title\x07end \xc3\xa9\xff caf\xc3\xa9")
+    excerpt = stage._stderr_excerpt(raw)
+    assert excerpt == "first second third red end caf"
+    assert re.fullmatch(r"[\x20-\x7e]*", excerpt)
+
+
+@pytest.mark.parametrize("secret, kept", [
+    (b"github_pat_11ABCDEFG0123_ab", b""),
+    (b"ghp_" + b"a1" * 18, b""),
+    (b"ghs_" + b"Z9" * 18, b""),
+    (b"gho_" + b"q" * 20, b""),
+    (b"Authorization: Bearer abc.def.ghi", b"Authorization"),
+    (b"authorization: token sekrit-value", b"authorization"),
+    (b"Authorization: Basic dXNlcjpwYXNz", b"Authorization"),
+    (b"Bearer eyJhbGciOi.payload.sig", b"Bearer"),
+    (b"token 0123456789abcdef", b"token"),
+    (b"https://user:hunter2pass@github.com/x", b"github.com/x"),
+    (b"f" * 40, b""),
+    (b"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0123456789+/==", b""),
+])
+def test_stderr_excerpt_redacts_credentials(secret, kept):
+    excerpt = stage._stderr_excerpt(b"before " + secret + b" after")
+    assert "[REDACTED]" in excerpt
+    assert excerpt.startswith("before ") and excerpt.endswith(" after")
+    assert kept.decode() in excerpt
+    for fragment in (b"ABCDEFG012345", b"a1a1a1", b"Z9Z9Z9", b"qqqqqqqq", b"abc.def",
+                     b"sekrit", b"dXNlcjpw", b"eyJhbG", b"0123456789abcdef", b"hunter2", b"ffffffff",
+                     b"QUJDREVGR0hJ"):
+        assert fragment.decode() not in excerpt
+
+
+def test_stderr_excerpt_keeps_ordinary_token_wording():
+    assert stage._stderr_excerpt(b"token expired") == "token expired"
+
+
+@pytest.mark.parametrize("payload", [
+    b"::set-output name=x::y",
+    b"::add-mask::value",
+    b"x\n::error file=a::boom",
+    b"##[error]boom",
+    b"###[group]x",
+    b":::::",
+])
+def test_stderr_excerpt_neutralises_workflow_commands(payload):
+    excerpt = stage._stderr_excerpt(payload)
+    assert "::" not in excerpt
+    assert "##[" not in excerpt
+
+
+def test_workflow_command_cannot_start_printed_line(monkeypatch, capsys):
+    failing_run(monkeypatch, b"\n::set-output name=upload::true\n##[error]x")
+    with pytest.raises(ValueError) as caught:
+        stage.command("gh", "release", "upload")
+    print(f"RC publication refused: {stage._one_line(str(caught.value))}")
+    for line in capsys.readouterr().out.splitlines():
+        assert line.startswith("RC publication refused: gh operation failed (exit 1): ")
+        assert "::" not in line and "##[" not in line
+
+
+def test_stderr_excerpt_truncates():
+    excerpt = stage._stderr_excerpt(b"word " * 200)
+    assert len(excerpt) == stage.STDERR_EXCERPT_LIMIT + 3
+    assert excerpt.endswith("...")
+    exact = b"y " * 150
+    assert stage._stderr_excerpt(exact[:-1]) == exact[:-1].decode()
+    assert stage._one_line(f"gh operation failed (exit 1): {excerpt}").endswith("...")
+
+
+def test_command_failure_never_echoes_stdout_args_or_input(monkeypatch):
+    failing_run(monkeypatch, b"failure detail")
+    message = command_error("gh", "api", "--field", "argument-secret-marker",
+                            input_data=b"input-secret-marker")
+    assert "failure detail" in message
+    for marker in ("stdout-secret-marker", "argument-secret-marker", "input-secret-marker",
+                   "api", "--field"):
+        assert marker not in message
+
+
+def test_absent_matches_raw_stderr_before_sanitising(monkeypatch):
+    # The raw text spans lines and carries controls the excerpt would remove.
+    failing_run(monkeypatch, b"error:\n\x1b[1mmanifest\tunknown\x1b[0m")
+    assert stage.command("skopeo", "inspect", absent=r"manifest\tunknown") is None
+    assert stage.command("skopeo", "inspect", absent=r"error:\n") is None
+    message = command_error("skopeo", "inspect", absent=r"not-present")
+    assert message == "skopeo operation failed (exit 1): error: manifest unknown"
+
+
+def test_environment_token_value_is_redacted(monkeypatch):
+    fake = "fake-env-token-value-xyz"
+    monkeypatch.setenv("GH_TOKEN", fake)
+    monkeypatch.setenv("GITHUB_TOKEN", "other-fake-value")
+    failing_run(monkeypatch, f"bad credentials for {fake}; also other-fake-value".encode())
+    message = command_error("gh", "release", "upload")
+    assert fake not in message and "other-fake-value" not in message
+    assert message == ("gh operation failed (exit 1): bad credentials for [REDACTED]; "
+                       "also [REDACTED]")

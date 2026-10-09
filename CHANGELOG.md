@@ -59,6 +59,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* Show a sanitized, single-line, redacted stderr excerpt of at most 300 characters when a stage-two `gh` or `skopeo` command fails, never stdout or arguments.
 * Accept the documented `0.0.0+unreleased` placeholder package version only
   where the engine-managed cycle puts it. `version-free-guard` skips it with an
   explicit message on pull requests into `release/new` and `hotfix/new`, and
