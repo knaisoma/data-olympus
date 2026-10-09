@@ -88,6 +88,22 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* Verify the stable PyPI upload of `promote-release.yml` without the
+  attestation files. The PyPI publish action writes a
+  `<file>.publish.attestation` next to each uploaded file, and the inline
+  verifier compared every file in the directory with PyPI's two, so the first
+  live promotion uploaded `0.11.1` to PyPI and then failed before the tag, the
+  image channels and the GitHub release. `release_record.py verify-pypi` now
+  compares exactly the wheel and the sdist named by the stable provenance with
+  PyPI, requires both attestations when the upload ran (and their absence when
+  it did not) and refuses any other file. A new `resume_pypi` dispatch input
+  completes such a promotion: it proves `S` is still on `main` (which may have
+  advanced), that PyPI already holds exactly the stable wheel and sdist, and
+  that the stable tag, the GHCR version tag, a published GitHub release visible
+  to the job's token and the `stable`/`latest` move to the candidate are all
+  absent, then skips only the upload while keeping the `pypi` approval. A
+  draft release is probably invisible to that read-only token; the `release`
+  job refuses a foreign draft.
 * Make the promotion check gate (`release_record.py checks`) ask each commit
   for the evidence GitHub produces there. The aggregate `CodeQL` check run
   exists only on pull request heads, so it was never present on the squash

@@ -3,11 +3,15 @@
 `promote-release.yml` implements STD-U-821 stable promotion beside the
 unchanged transitional `tag-release.yml`. Every job is skipped unless the
 repository variable `SDLC_PIPELINE` is `enabled` and the dispatch ref is
-`main`. Dispatch it with three inputs:
+`main`. Dispatch it with these inputs:
 
 - `squash`: the full SHA of the release squash `S`, which must be the head of `main`.
 - `reviewed_head`: the full reviewed SHA `H` recorded by the published candidate.
 - `candidate_tag`: the existing `X.Y.Z-rc.N` or `X.Y.Z-hotfix.rc.N` prerelease.
+- `resume_pypi`: `false` (the default) for every normal promotion. Set it to
+  `true` only to complete a promotion that uploaded the stable files to PyPI
+  and stopped before the stable tag; see
+  [resuming after the PyPI upload](#resuming-after-the-pypi-upload).
 
 ## Prerequisites (blocked until W9)
 
@@ -201,8 +205,16 @@ output to the module at commit c341940.
 ## Publication order
 
 1. PyPI through Trusted Publishing in the `pypi` environment. A re-run skips
-   files already present, and the hash check then requires every remote file
-   to equal the local build.
+   files already present. `release_record.py verify-pypi` then requires PyPI
+   to list exactly the wheel and the sdist named by the stable provenance, with
+   the hashes of the build of `S`. The publish action writes a
+   `<file>.publish.attestation` next to each uploaded file; PyPI does not list
+   those, so the verifier excludes them from the comparison, requires both
+   (non-empty) when the upload ran and their absence when it did not, and
+   refuses any other file in the directory. Bumping the pin of
+   `pypa/gh-action-pypi-publish` requires re-checking the names of the files
+   it writes next to the distributions (today `<file>.publish.attestation`),
+   because any other name makes the verifier fail closed.
 2. The App creates the annotated `vX.Y.Z` tag on `S` as its bot identity,
    carrying the notes verbatim (`--cleanup=verbatim`; the default cleanup
    would strip the Markdown headings). The checkout credential is the App
@@ -234,6 +246,70 @@ output to the module at commit c341940.
 Recovery from a partial publication never replaces or re-tags a published
 item. The workflow never deploys: production stays digest-pinned in reviewed
 gitops, and rollback uses the recorded prior digest with `set-channel.yml`.
+
+## Resuming after the PyPI upload
+
+Use `resume_pypi: true` only when a promotion published the stable wheel and
+sdist to PyPI and stopped before creating the stable tag. A fresh dispatch is
+otherwise refused, because the `initial` proof requires `main` head to equal
+`S` and `version_free.py` requires the version to be absent from PyPI, and
+"Re-run failed jobs" reuses the run's original workflow definition.
+
+Operator checklist:
+
+- Dispatch from `main` with `squash`, `reviewed_head` and `candidate_tag`
+  equal to the stopped run's. For the first live promotion that is run
+  37942200995: `squash` `bd26f087fcbed98ed16aaf0731db47eef111163d`,
+  `reviewed_head` `9d91f8525c002f9aedf6ac1b2a68cc16a74d389c`, `candidate_tag`
+  `0.11.1-rc.5`. The proof binds the three to each other (the candidate tag
+  must resolve to the recorded `H`, and `S` must be the squash of that `H` on
+  the recorded `B`), and `verify-pypi` requires the files on PyPI to equal the
+  rebuild of that `S` byte for byte, but nothing compares the inputs with the
+  stopped run itself.
+- Approve the `pypi` environment once more when `publish-pypi` waits.
+
+The resumed run proves everything a normal run proves about `S`, `H`, `B`, `M`,
+the candidate tag, its provenance, image digest, labels and stage-two
+attestations, the exact-source gate (`test` and aggregate `CodeQL` on `H`,
+`test` and the analyses on `S`) and zero open alerts, with two differences:
+
+- The proof runs in the `resume-pypi` phase. `S` must be an ancestor of
+  `main`, which may have advanced past it (for example by the fix that made
+  the resume necessary), and the stable tag must be absent. A lightweight,
+  foreign or even this workflow's own annotated tag is refused.
+- `release_record.py resume-state` replaces `version_free.py`. PyPI must
+  already hold the stable version with exactly one wheel and one sdist of that
+  version and nothing else (none yanked, and an entry without a `yanked`
+  state is refused). The GHCR `vX.Y.Z` tag and the Git tag `vX.Y.Z` must be
+  absent, and so must a GitHub release `vX.Y.Z` among the releases visible to
+  the job's read-only token. GitHub lists draft releases only to tokens with
+  push access, so a draft is probably invisible here; the `release` job
+  refuses a foreign draft (one whose body or assets are not this run's) and
+  never publishes it. GHCR `stable` and `latest` must not yet point at
+  the candidate digest (their previous digests are expected). Any registry
+  that cannot be read fails closed. If PyPI lacks the version, resume is
+  impossible and the normal dispatch is the path.
+
+`build-stable` runs unchanged and compares the rebuild of `S` with both
+candidate payloads. `publish-pypi` stays bound to the `pypi` environment, so
+the operator approves once more. After approval it rechecks the proof in the
+`resume-pypi` phase (the tag must still be absent), rechecks the alerts, skips
+only the upload step, and runs `verify-pypi` without attestations: the files
+already on PyPI must equal the rebuild of `S` byte for byte. Tag creation, the
+image channels, the GitHub release and the MCP registry then run as in a
+normal promotion.
+
+Once the stable tag exists, `resume_pypi` is refused. Continue with "Re-run
+failed jobs" on the run that created the tag, whose `resume` rechecks accept
+the workflow's own annotated tag.
+
+Lesson: the verifier assumed a clean distribution directory, and no live
+promotion had run before the first one. In run 37942200995 (`0.11.1-rc.5`) the
+upload succeeded and the verifier failed, because the directory also held the
+two attestation files the publish action writes. That left PyPI with `0.11.1`
+(wheel `7fbbfa13...`, sdist `b0d5853f...`, equal to the build of `S`) and
+nothing else: no tag, no channel move and no GitHub release. `resume_pypi`
+completes that promotion without re-uploading anything.
 
 ## Old and new promotion paths during the R9 window
 
@@ -279,6 +355,10 @@ These are not implemented and block activation:
   retired or changed, the remaining stable promotion path must take the
   `data-olympus-promotion` lock (Task 6). Until then the procedure above is
   the only mutual exclusion.
+- Pin the build backend (hatchling). The stable rebuild of `S` must equal the
+  candidate payloads and, on a resumed promotion, the files already on PyPI
+  byte for byte; an unpinned build backend can drift between the candidate
+  build and the rebuild and make an otherwise valid promotion fail.
 - Check runs tied to their producing workflow. The gate accepts a `test` or
   `Analyze (...)` check run from the GitHub Actions app by name and exact
   `head_sha`, so a check run that an unrelated workflow posts through the

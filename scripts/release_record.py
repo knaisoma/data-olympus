@@ -9,7 +9,18 @@ head must equal S and the stable tag must be absent. Phase "resume" is the
 recheck in later jobs, which may be re-run after a partial publication: S must
 still be reachable from main, and the stable tag may exist only as an
 annotated tag on S whose message is the generated notes and whose tagger is the
-release App. Every other proof is identical in both phases.
+release App. Phase "resume-pypi" replaces "initial" when a promotion stopped
+after its PyPI upload and before the stable tag (dispatch input resume_pypi):
+S must be reachable from main, which may have advanced, and the stable tag must
+still be absent; after the tag exists only "Re-run failed jobs" continues. Every
+other proof is identical in all phases.
+
+The "resume-state" command proves the external state resume-pypi requires:
+PyPI already holds exactly the stable wheel and sdist, and the GHCR version
+tag, the stable and latest channels, the GitHub release and the Git tag show
+that nothing after PyPI was published. The "verify-pypi" command compares the
+stable files built from S with PyPI, ignoring nothing but the upload's
+attestation files, which must be present exactly when the upload ran.
 
 The "release" command completes or verifies the GitHub release: its body must
 be the generated notes and every asset must be one of this run's verified files
@@ -34,6 +45,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -47,6 +60,11 @@ if ROOT not in sys.path:
 from scripts.rc_decide import main_ratification_kwargs  # noqa: E402
 from scripts.release_artifacts import CandidateVersion  # noqa: E402
 from scripts.sdlc_version import Git, VersionError, _impact, compute_version  # noqa: E402
+from scripts.version_free import (  # noqa: E402
+    _gh_release_present,
+    _gh_tag_present,
+    _ghcr_present,
+)
 
 SHA = re.compile(r"[0-9a-f]{40}")
 HASH = re.compile(r"[0-9a-f]{64}")
@@ -132,7 +150,7 @@ def generate_notes(*, cwd: str | Path, version: dict) -> str:
     return render_notes(target=version["target"], messages=raw.split("\0")[:-1])
 
 
-PHASES = ("initial", "resume")
+PHASES = ("initial", "resume", "resume-pypi")
 
 
 def validate_tag_object(
@@ -192,7 +210,7 @@ def validate_proof(
         raise ValueError("reviewed H and squash S tree mismatch")
     if phase == "initial" and main_head != squash:
         raise ValueError("main head no longer equals S")
-    if phase == "resume" and main_head != squash and not main_contains_squash:
+    if phase != "initial" and main_head != squash and not main_contains_squash:
         raise ValueError("S is no longer reachable from main head")
     if rc_head != head:
         raise ValueError("RC tag does not resolve to recorded H")
@@ -202,6 +220,9 @@ def validate_proof(
     if not separator or body != notes.rstrip("\n"):
         raise ValueError("squash release notes differ from generated notes")
     if tag_exists:
+        if phase == "resume-pypi":
+            raise ValueError("stable tag already exists: resume_pypi is refused after tag "
+                             "creation; re-run the failed jobs of the original run instead")
         if phase == "initial" or tag_target != squash or not tag_annotated:
             raise ValueError("stable tag already exists")
         validate_tag_object(tag_object, squash=squash, tag=identity.stable_tag,
@@ -388,6 +409,255 @@ def expected_assets(
     return expected
 
 
+PYPI_PROJECT = "data-olympus"
+ATTESTATION = ".publish.attestation"
+PYPI_ATTEMPTS = 12
+PYPI_DELAY = 5.0
+CHANNELS = ("stable", "latest")
+IMAGE = "ghcr.io/knaisoma/data-olympus"
+STABLE_VERSION = re.compile(rf"{NUMBER}\.{NUMBER}\.{NUMBER}")
+
+
+def _stable_version(version: object) -> str:
+    return _match(STABLE_VERSION, version, "stable version")
+
+
+def stable_dist_kind(name: str, version: str) -> str | None:
+    """Return "wheel" or "sdist" for this version's distribution names, else None."""
+    project = "data_olympus-" + re.escape(_stable_version(version))
+    if re.fullmatch(project + r"-[A-Za-z0-9_.]+-[A-Za-z0-9_.]+-[A-Za-z0-9_.]+\.whl",
+                    name):
+        return "wheel"
+    if re.fullmatch(project + r"\.tar\.gz", name):
+        return "sdist"
+    return None
+
+
+def pypi_files(payload: object, *, version: str) -> dict[str, str]:
+    """Map the files of one PyPI release (its JSON API "urls") to their SHA-256.
+
+    The release must be this version, every file must carry a readable name and
+    SHA-256 digest, none may be yanked, and names are unique.
+    """
+    _stable_version(version)
+    if (not isinstance(payload, dict) or not isinstance(payload.get("info"), dict)
+            or not isinstance(payload.get("urls"), list)):
+        raise ValueError("unreadable PyPI release")
+    if payload["info"].get("version") != version:
+        raise ValueError("PyPI release version differs from the stable version")
+    files: dict[str, str] = {}
+    for entry in payload["urls"]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("digests"), dict):
+            raise ValueError("unreadable PyPI release file")
+        name = _match(ASSET, entry.get("filename"), "PyPI file name")
+        if name in files:
+            raise ValueError(f"PyPI release lists {name} twice")
+        if entry.get("yanked") is not False:
+            raise ValueError(f"PyPI file {name} is yanked or has no yanked state")
+        files[name] = _match(HASH, entry["digests"].get("sha256"), "PyPI file hash")
+    return files
+
+
+def require_stable_inventory(files: dict[str, str], *, version: str) -> dict[str, str]:
+    """Exactly one wheel and one sdist of this version, nothing else: {kind: name}."""
+    kinds: dict[str, str] = {}
+    for name in sorted(files):
+        kind = stable_dist_kind(name, version)
+        if kind is None or kind in kinds:
+            raise ValueError(f"PyPI release holds an unexpected file: {name}")
+        kinds[kind] = name
+    missing = sorted({"wheel", "sdist"} - set(kinds))
+    if missing:
+        raise ValueError("PyPI release lacks the stable " + " and ".join(missing))
+    return kinds
+
+
+def local_stable_files(dist: Path, stable_provenance: object, *, version: str,
+                       attestations: bool) -> dict[str, str]:
+    """The built wheel and sdist of S with their SHA-256, after checking the directory.
+
+    The directory must hold exactly the wheel and sdist named by the stable
+    provenance, with its hashes, and, when the upload ran, the two
+    `<file>.publish.attestation` files the PyPI publish action writes next to
+    them (non-empty). Without an upload they must be absent. Anything else in
+    the directory fails closed.
+    """
+    if not isinstance(stable_provenance, dict) or not isinstance(
+            stable_provenance.get("stable"), dict):
+        raise ValueError("stable provenance does not describe a stable build")
+    stable = stable_provenance["stable"]
+    if stable.get("version") != _stable_version(version):
+        raise ValueError("stable provenance version differs from the stable version")
+    expected: dict[str, str] = {}
+    for kind in ("wheel", "sdist"):
+        name = _match(ASSET, stable.get(kind), f"stable {kind}")
+        if stable_dist_kind(name, version) != kind:
+            raise ValueError(f"stable {kind} name is not this version's {kind}")
+        expected[name] = _match(HASH, stable.get(f"{kind}_sha256"), f"stable {kind} hash")
+    allowed = set(expected)
+    if attestations:
+        allowed |= {name + ATTESTATION for name in expected}
+    present = {path.name: path for path in dist.iterdir()}
+    unexpected = sorted(set(present) - allowed)
+    if unexpected:
+        raise ValueError("unexpected files next to the stable distributions: "
+                         + ", ".join(unexpected))
+    missing = sorted(allowed - set(present))
+    if missing:
+        raise ValueError("missing next to the stable distributions: " + ", ".join(missing))
+    for name, path in present.items():
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"{name} is not a regular file")
+        if name.endswith(ATTESTATION):
+            if path.stat().st_size == 0:
+                raise ValueError(f"{name} is empty")
+        elif _sha256(path) != expected[name]:
+            raise ValueError(f"{name} differs from the stable provenance")
+    return expected
+
+
+def compare_published(local: dict[str, str], remote: dict[str, str]) -> None:
+    """PyPI must hold exactly the local wheel and sdist, byte for byte."""
+    if remote != local:
+        foreign = sorted(set(remote) - set(local))
+        absent = sorted(set(local) - set(remote))
+        differ = sorted(name for name in set(local) & set(remote)
+                        if local[name] != remote[name])
+        raise ValueError("stable PyPI files do not match the build of S: "
+                         f"unexpected {foreign}, missing {absent}, different hash {differ}")
+
+
+def fetch_pypi(version: str) -> object | None:
+    """The PyPI JSON of one release, None when PyPI reports it absent (404)."""
+    url = f"https://pypi.org/pypi/{PYPI_PROJECT}/{_stable_version(version)}/json"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise
+
+
+def verify_published(
+    *, dist: Path, stable_provenance: object, version: str, attestations: bool,
+    fetch: Callable[[str], object | None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Check the local directory once, then wait for PyPI to list exactly those files.
+
+    Local faults (extra files, missing attestations, wrong hashes) fail at
+    once. PyPI's JSON can lag behind an upload, so an absent, unreadable or
+    different listing is read again within PYPI_ATTEMPTS, then fails closed.
+    """
+    local = local_stable_files(dist, stable_provenance, version=version,
+                               attestations=attestations)
+    read = fetch_pypi if fetch is None else fetch
+    for attempt in range(PYPI_ATTEMPTS):
+        try:
+            payload = read(version)
+            if payload is None:
+                raise ValueError(f"PyPI does not list data-olympus {version}")
+            compare_published(local, pypi_files(payload, version=version))
+            return
+        except (OSError, ValueError):
+            if attempt == PYPI_ATTEMPTS - 1:
+                raise
+            sleep(PYPI_DELAY)
+
+
+def validate_resume_state(
+    *, version: str, image_digest: str, pypi: object | None, ghcr_tag: bool | None,
+    channels: dict[str, str | None], release: bool | None,
+    release_tags: list[str] | None, git_tag: bool | None,
+) -> dict[str, str]:
+    """Pure check of what resume_pypi needs: PyPI done, nothing after it published.
+
+    pypi is the PyPI JSON of the stable version (None: absent). The other
+    registry facts are True (present), False (confirmed absent) or None
+    (unreadable, which fails closed). channels maps stable and latest to their
+    current digest ("" when the tag is explicitly absent, None when
+    unreadable). release_tags lists the tag names of every release the token
+    can list; drafts appear only to a token with push access, so a read-only
+    token probably misses them and the release job's refusal of a foreign
+    draft is the backstop. Returns the PyPI inventory {kind: name}.
+    """
+    _stable_version(version)
+    _match(DIGEST, image_digest, "image digest")
+    tag = f"v{version}"
+    if pypi is None:
+        raise ValueError(f"PyPI does not hold data-olympus {version}: resume_pypi is "
+                         "impossible; dispatch without it (the normal path)")
+    inventory = require_stable_inventory(pypi_files(pypi, version=version), version=version)
+    facts = (("GHCR tag " + tag, ghcr_tag), ("GitHub release " + tag, release),
+             ("Git tag " + tag, git_tag))
+    for name, present in facts:
+        if present is None:
+            raise ValueError(f"cannot read the {name} (fail closed)")
+        if present:
+            raise ValueError(f"{name} already exists: resume_pypi is refused after PyPI")
+    if release_tags is None:
+        raise ValueError("cannot list the GitHub releases (fail closed)")
+    if tag in release_tags:
+        raise ValueError(f"a GitHub release for {tag} is listed (the token lists drafts "
+                         "only with push access)")
+    if set(channels) != set(CHANNELS):
+        raise ValueError("stable and latest channel digests are required")
+    for channel in CHANNELS:
+        digest = channels[channel]
+        if digest is None:
+            raise ValueError(f"cannot read the GHCR {channel} channel (fail closed)")
+        if digest and DIGEST.fullmatch(digest) is None:
+            raise ValueError(f"GHCR {channel} channel digest is unreadable")
+        if digest == image_digest:
+            raise ValueError(f"GHCR {channel} already points at the candidate digest")
+    return inventory
+
+
+def _channel_digest(channel: str) -> str | None:
+    """The digest behind ghcr.io/knaisoma/data-olympus:<channel>, "" if absent."""
+    reference = f"{IMAGE}:{channel}"
+    try:
+        out = subprocess.run(
+            ["docker", "buildx", "imagetools", "inspect", reference,
+             "--format", "{{.Manifest.Digest}}"],
+            capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode == 0:
+        return out.stdout.strip()
+    diagnostic = f"{out.stdout}\n{out.stderr}".lower()
+    if ("manifest unknown" in diagnostic or "no such manifest" in diagnostic
+            or f"{reference}: not found" in diagnostic):
+        return ""
+    return None
+
+
+def _release_tags(repo: str) -> list[str] | None:
+    """Tag names of every release the token lists, drafts included when visible."""
+    try:
+        raw = _gh("api", "--paginate", "--slurp", f"repos/{repo}/releases")
+        pages = json.loads(raw)
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return None
+    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+        return None
+    tags = [entry.get("tag_name") for page in pages for entry in page
+            if isinstance(entry, dict)]
+    return [tag for tag in tags if isinstance(tag, str)]
+
+
+def gather_resume_state(*, version: str, image_digest: str, repo: str) -> dict[str, str]:
+    tag = f"v{_stable_version(version)}"
+    return validate_resume_state(
+        version=version, image_digest=image_digest, pypi=fetch_pypi(version),
+        ghcr_tag=_ghcr_present(tag), channels={c: _channel_digest(c) for c in CHANNELS},
+        release=_gh_release_present(tag, repo), release_tags=_release_tags(repo),
+        git_tag=_gh_tag_present(tag, repo),
+    )
+
+
 def _normalize_body(body: object) -> str:
     if not isinstance(body, str):
         raise ValueError("release body is unreadable")
@@ -553,9 +823,30 @@ def main(argv: list[str] | None = None) -> int:
     checks.add_argument("--sha", required=True)
     checks.add_argument("--analyses", required=True)
     checks.add_argument("--check-runs", required=True, type=Path)
+    verify = commands.add_parser("verify-pypi")
+    verify.add_argument("--dist", required=True, type=Path)
+    verify.add_argument("--stable-provenance", required=True, type=Path)
+    verify.add_argument("--version", required=True)
+    verify.add_argument("--attestations", required=True, choices=("required", "absent"))
+    state = commands.add_parser("resume-state")
+    state.add_argument("--version", required=True)
+    state.add_argument("--image-digest", required=True)
+    state.add_argument("--repo", required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == "checks":
+        if args.command == "verify-pypi":
+            verify_published(
+                dist=args.dist, version=args.version,
+                stable_provenance=json.loads(args.stable_provenance.read_text(encoding="utf-8")),
+                attestations=args.attestations == "required",
+            )
+            print(f"PyPI holds exactly the stable wheel and sdist of {args.version}")
+        elif args.command == "resume-state":
+            inventory = gather_resume_state(version=args.version, repo=args.repo,
+                                            image_digest=args.image_digest)
+            print(f"PyPI holds {inventory['wheel']} and {inventory['sdist']}; "
+                  f"nothing after PyPI is published for v{args.version}")
+        elif args.command == "checks":
             check_gate(json.loads(args.check_runs.read_text(encoding="utf-8")),
                        sha=args.sha, role=args.role, analyses=args.analyses)
         elif args.command == "validate-inputs":
