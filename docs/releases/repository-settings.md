@@ -97,7 +97,7 @@ branch.
 
 | Environment | Branch policy | Required reviewers | Variables | Secrets |
 |---|---|---|---|---|
-| `pypi` | `main` only | exactly one | `SDLC_APP_ID` (own copy) | `SDLC_APP_PRIVATE_KEY` (own copy) |
+| `pypi` | `main` and `v*` tags | none (operator decision of 2026-10-09) | `SDLC_APP_ID` (own copy) | `SDLC_APP_PRIVATE_KEY` (own copy) |
 | `pypi-rc` | `main` only | none | none | none |
 | `sdlc-bot` | `main` only | none | `SDLC_APP_ID` | `SDLC_APP_PRIVATE_KEY` |
 
@@ -105,9 +105,20 @@ branch.
   `publish-pypi` in `promote-release.yml` rechecks alerts and the tag after
   approval. Rotate both copies of the key together.
 - Why `sdlc-bot` has no reviewers: its jobs run unattended (recut, hotfix cut,
-  the promotion proof and tag creation). The real approval is the `pypi`
-  environment's reviewer.
-- Status: observed 2026-10-09 by the release lane.
+  the promotion proof and tag creation).
+- Why `pypi` and `pypi-rc` have no required reviewers: by operator decision of
+  2026-10-09 the human approval step was removed after the first promotion had
+  to be dispatched three times (the fixes needed a fresh approval each time).
+  The gate is now the pipeline's own proofs (reviewed head and squash proof,
+  exact-source checks, attestations, zero open alerts, byte comparison of the
+  stable payload with the candidate) plus the deployment branch and tag policy
+  of the environment (`main` and `v*`). Consequence: a promotion dispatch runs
+  straight through to the irreversible PyPI upload, the stable tag and the
+  channel moves, so a dispatch must only follow a green main and a reviewed
+  workflow. Re-adding a required reviewer to `pypi` is a one-line environment
+  change (read back with the commands below) if that decision is reversed.
+- Status: observed 2026-10-09 by the release lane (reviewer removal verified
+  the same day).
 - Read-back commands:
 
 ```bash
