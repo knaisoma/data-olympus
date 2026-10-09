@@ -1,13 +1,15 @@
 """Offline recut contracts.
 
-Fixture setup mutates the bare remote with update-ref. Transport tests run the
-production ``git push`` only against a temporary local bare repository, with
-global and system Git configuration disabled; no network remote exists.
+Fixture setup mutates the bare remote with update-ref. Apply tests run the
+production ``git push`` commands (backup creation, deletion, recreation) only
+against a temporary local bare repository, with global and system Git
+configuration disabled; no network remote exists.
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -45,6 +47,9 @@ class Repository:
 
     def publish_fixture(self) -> None:
         self.git("clone", "--bare", str(self.path), str(self.remote))
+        # As on GitHub, the remote's default branch is main, so release/new and
+        # hotfix/new can be deleted and recreated.
+        self.git("--git-dir", str(self.remote), "symbolic-ref", "HEAD", "refs/heads/main")
 
     def release(self, *, hotfix: bool = False, subject: str = "release: 1.4.3",
                 change: str = "fix: reviewed repair", tag: str = "v1.4.3") -> dict:
@@ -78,27 +83,33 @@ class Repository:
     def remote_ref(self, ref: str) -> str:
         return self.git("--git-dir", str(self.remote), "rev-parse", ref)
 
-    def apply_runner(self, plan: dict):
+    def push_runner(self, commands: list | None = None, *, refuse=None, after=None,
+                    before=None):
+        """Run each production push for real against the local bare remote.
+
+        Every push is recorded in ``commands``. ``refuse(command)`` returning
+        true simulates a server refusal without running the push; ``before``
+        and ``after`` run just before and once the push has completed, standing
+        in for a concurrent writer.
+        Global and system Git configuration are disabled for the push.
+        """
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
+               "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
+
         def execute(command: list[str]):
-            assert command[0:2] == ["git", "push"]
-            assert "--atomic" in command
-            updates = plan["updates"]
-            commands = ["start"]
-            for ref, sha in updates.items():
-                assert f"{sha or ''}:{ref}" in command
-                previous = plan["expected_refs"].get(ref)
-                previous = previous if previous not in (None, "absent") else "0" * 40
-                if sha is None:
-                    commands.append(f"delete {ref} {previous}")
-                else:
-                    commands.append(f"update {ref} {sha} {previous}")
-            commands.extend(["prepare", "commit"])
-            subprocess.run(
-                ["git", "--git-dir", str(self.remote), "update-ref", "--stdin"],
-                input="\n".join(commands) + "\n", text=True, check=True,
-                capture_output=True,
-            )
-            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+            assert command[:2] == ["git", "push"]
+            if commands is not None:
+                commands.append(command)
+            if refuse and refuse(command):
+                return subprocess.CompletedProcess(command, 1, stdout="",
+                                                   stderr="! [remote rejected] (simulated)")
+            if before:
+                before(command)
+            result = subprocess.run(command, cwd=self.path, env=env, text=True,
+                                    capture_output=True)
+            if after:
+                after(command)
+            return result
         return execute
 
 
@@ -115,7 +126,7 @@ def test_verified_squash_recut_preserves_release_history(repo):
     assert plan["pending_commits"] == []
     assert plan["new_base"] == evidence["squash"]
     assert plan["updates"]["refs/heads/release/new"] == evidence["squash"]
-    recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.apply_runner(plan))
+    recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.push_runner())
     assert repo.remote_ref("refs/heads/release/new") == evidence["squash"]
     assert repo.remote_ref("refs/heads/main") == evidence["squash"]
 
@@ -167,7 +178,7 @@ def test_pending_work_requires_exact_acknowledgement_and_remains_reachable(repo)
     assert plan["replay"]["commits"] == [pending]
     assert plan["replay"]["onto"] == evidence["squash"]
     assert plan["preservation_ref"]
-    recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.apply_runner(plan))
+    recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.push_runner())
     assert repo.remote_ref(plan["preservation_ref"]) == pending
     assert repo.remote_ref("refs/heads/release/new") == evidence["squash"]
 
@@ -191,7 +202,7 @@ def test_hotfix_cut_uses_current_stable_and_engine_identity(repo):
     assert plan["updates"]["refs/heads/hotfix/new"] == repo.base
     assert plan["candidate"]["candidate"] == "1.4.3-hotfix.rc.0"
     assert plan["candidate"]["promotable"] is False
-    recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.apply_runner(plan))
+    recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.push_runner())
     assert repo.remote_ref("refs/heads/hotfix/new") == repo.base
 
 
@@ -264,7 +275,7 @@ def test_hotfix_recut_preserves_normal_work_and_deletes_verified_hotfix(repo):
     assert plan["ready"] is True
     assert plan["pending_commits"] == [pending]
     assert plan["updates"]["refs/heads/hotfix/new"] is None
-    recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.apply_runner(plan))
+    recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.push_runner())
     assert repo.remote_ref(plan["preservation_ref"]) == pending
     assert repo.remote_ref("refs/heads/release/new") == evidence["squash"]
     assert not repo.git("--git-dir", str(repo.remote), "for-each-ref", "refs/heads/hotfix/new")
@@ -401,93 +412,479 @@ def _pending_plan(repo: Repository) -> tuple[dict, dict, str]:
     return evidence, plan, pending
 
 
+def _hotfix_recut_plan(repo: Repository) -> tuple[dict, dict, str]:
+    (repo.path / "feature.txt").write_text("pending feature\n")
+    pending = repo.commit("feat: pending normal feature")
+    evidence = repo.release(hotfix=True)
+    repo.publish_fixture()
+    plan = recut.prepare_plan(**repo.options(evidence), acknowledge=[pending])
+    assert plan["ready"] is True
+    return evidence, plan, pending
+
+
+RELEASE = "refs/heads/release/new"
+
+
+def _is_create(command: list[str], ref: str, sha: str | None = None) -> bool:
+    return len(command) == 4 and command[3].endswith(f":{ref}") and (
+        sha is None or command[3] == f"{sha}:{ref}")
+
+
+def _is_delete(command: list[str]) -> bool:
+    return command[-1].startswith(":")
+
+
+def _delete(remote: str, ref: str, old: str) -> list[str]:
+    """The only accepted deletion: a compare-and-swap lease on the old head."""
+    return ["git", "push", f"--force-with-lease={ref}:{old}", remote, f":{ref}"]
+
+
 @pytest.mark.usefixtures("isolated_git")
-def test_real_offline_push_replaces_release_branch_atomically(repo):
+def test_real_offline_push_deletes_and_recreates_release_branch(repo):
     evidence, plan, pending = _pending_plan(repo)
-    # Non-fast-forward replacement: only the per-ref lease makes this push legal.
+    # Non-fast-forward replacement, done as deletion plus creation, never an update.
     assert repo.git("rev-list", "--max-count=1", f"{evidence['squash']}..{pending}") != ""
+    before = _remote_refs(repo)
     recut.apply_plan(repo.path, str(repo.remote), plan)
-    assert repo.remote_ref("refs/heads/release/new") == evidence["squash"]
-    assert repo.remote_ref(plan["preservation_ref"]) == pending
-    assert repo.remote_ref("refs/heads/main") == evidence["squash"]
+    after = _remote_refs(repo)
+    assert after.pop(plan["preservation_ref"]) == pending
+    assert after.pop(RELEASE) == evidence["squash"]
+    before.pop(RELEASE)
+    assert after == before  # main, tags and everything else untouched
 
 
 @pytest.mark.usefixtures("isolated_git")
 def test_real_offline_push_deletes_verified_hotfix_branch(repo):
-    (repo.path / "feature.txt").write_text("pending feature\n")
-    pending = repo.commit("feat: pending normal feature")
-    evidence = repo.release(hotfix=True)
-    repo.publish_fixture()
-    plan = recut.prepare_plan(**repo.options(evidence), acknowledge=[pending])
+    evidence, plan, pending = _hotfix_recut_plan(repo)
     recut.apply_plan(repo.path, str(repo.remote), plan)
     refs = _remote_refs(repo)
     assert "refs/heads/hotfix/new" not in refs
-    assert refs["refs/heads/release/new"] == evidence["squash"]
+    assert refs[RELEASE] == evidence["squash"]
     assert refs[plan["preservation_ref"]] == pending
 
 
-@pytest.mark.usefixtures("isolated_git")
-def test_remote_moved_between_check_and_push_changes_nothing(repo):
-    evidence, plan, pending = _pending_plan(repo)
-    # The racing commit exists only on the remote, as a concurrent push would.
-    racer = repo.git("--git-dir", str(repo.remote), "-c", "user.name=Racer",
-                     "-c", "user.email=racer@example.invalid", "commit-tree",
-                     f"{pending}^{{tree}}", "-p", pending, "-m", "fix: racer")
-
-    def race_then_push(command):
-        # A concurrent writer moves release/new after apply_plan's snapshot.
-        repo.git("--git-dir", str(repo.remote), "update-ref",
-                 "refs/heads/release/new", racer, pending)
-        before.update(_remote_refs(repo))
-        return subprocess.run(command, cwd=repo.path, text=True, capture_output=True)
-
-    before: dict = {}
-    with pytest.raises(recut.RecutError, match="atomic push failed"):
-        recut.apply_plan(repo.path, str(repo.remote), plan, run=race_then_push)
-    after = _remote_refs(repo)
-    assert after == before
-    assert after["refs/heads/release/new"] == racer
-    assert plan["preservation_ref"] not in after
+def test_apply_backs_up_then_deletes_then_recreates_then_deletes_hotfix(repo):
+    evidence, plan, pending = _hotfix_recut_plan(repo)
+    remote = str(repo.remote)
+    commands: list = []
+    recut.apply_plan(repo.path, remote, plan, run=repo.push_runner(commands))
+    assert commands == [
+        ["git", "push", remote, f"{pending}:{plan['preservation_ref']}"],
+        _delete(remote, RELEASE, plan["expected_refs"][RELEASE]),
+        ["git", "push", remote, f"{evidence['squash']}:{RELEASE}"],
+        _delete(remote, "refs/heads/hotfix/new", evidence["H"]),
+    ]
+    assert [(op["op"], op["ref"]) for op in plan["operations"]] == [
+        ("create", plan["preservation_ref"]), ("delete", RELEASE), ("create", RELEASE),
+        ("delete", "refs/heads/hotfix/new")]
 
 
-def test_push_has_one_lease_per_updated_ref_and_never_forces(repo):
-    (repo.path / "feature.txt").write_text("pending feature\n")
-    pending = repo.commit("feat: pending normal feature")
-    evidence = repo.release(hotfix=True)
-    repo.publish_fixture()
+def test_deletions_are_leased_and_creations_are_plain(repo):
+    """Exact argv: a lease only on deletions, on the deleted ref and old head."""
+    evidence, plan, pending = _hotfix_recut_plan(repo)
+    remote = str(repo.remote)
+    commands: list = []
+    recut.apply_plan(repo.path, remote, plan, run=repo.push_runner(commands))
+    expected = plan["expected_refs"]
+    deletes = [c for c in commands if _is_delete(c)]
+    creates = [c for c in commands if not _is_delete(c)]
+    assert deletes == [_delete(remote, RELEASE, expected[RELEASE]),
+                       _delete(remote, "refs/heads/hotfix/new", expected["refs/heads/hotfix/new"])]
+    assert creates == [["git", "push", remote, f"{pending}:{plan['preservation_ref']}"],
+                       ["git", "push", remote, f"{evidence['squash']}:{RELEASE}"]]
+    for command in commands:
+        assert not any(arg in ("--force", "-f", "--atomic", "--mirror") or arg.startswith("+")
+                       for arg in command), command
+
+
+def test_only_the_leased_delete_form_in_any_git_invocation(repo, tmp_path, monkeypatch):
+    """A git wrapper on PATH records every invocation of planning and apply."""
+    real_git = shutil.which("git")
+    assert real_git
+    log = tmp_path / "git.log"
+    wrapper = tmp_path / "bin" / "git"
+    wrapper.parent.mkdir()
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        f"for arg in \"$@\"; do printf '%s\\037' \"$arg\"; done >> '{log}'\n"
+        f"printf '\\n' >> '{log}'\n"
+        f"exec '{real_git}' \"$@\"\n")
+    wrapper.chmod(0o755)
+    evidence, plan, pending = _hotfix_recut_plan(repo)
+    monkeypatch.setenv("PATH", f"{wrapper.parent}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     plan = recut.prepare_plan(**repo.options(evidence), acknowledge=[pending])
-    commands = []
-    runner = repo.apply_runner(plan)
+    recut.apply_plan(repo.path, str(repo.remote), plan)
+    remote = str(repo.remote)
+    invocations = [line.split("\x1f")[:-1] for line in log.read_text().splitlines()]
+    pushes = [args for args in invocations if args[:1] == ["push"]]
+    expected = plan["expected_refs"]
+    allowed_deletes = [_delete(remote, RELEASE, expected[RELEASE])[1:],
+                       _delete(remote, "refs/heads/hotfix/new",
+                               expected["refs/heads/hotfix/new"])[1:]]
+    assert [args for args in pushes if args[-1].startswith(":")] == allowed_deletes
+    assert [args for args in pushes if not args[-1].startswith(":")] == [
+        ["push", remote, f"{pending}:{plan['preservation_ref']}"],
+        ["push", remote, f"{evidence['squash']}:{RELEASE}"]]
+    for args in invocations:
+        if args in allowed_deletes:
+            continue
+        assert not any(arg.startswith("--force") or arg == "-f" or "force-with-lease" in arg
+                       for arg in args), args
+    for args in pushes:
+        assert not any(arg.startswith("+") or arg == "--atomic" for arg in args), args
+    assert _remote_refs(repo)[RELEASE] == evidence["squash"]
 
-    def record(command):
-        commands.append(command)
-        return runner(command)
 
-    recut.apply_plan(repo.path, str(repo.remote), plan, run=record)
-    [command] = commands
-    leases = [arg for arg in command if arg.startswith("--force-with-lease")]
-    expected = {f"--force-with-lease={ref}:{plan['expected_refs'].get(ref, '')}"
-                for ref in plan["updates"]}
-    assert len(leases) == len(plan["updates"]) == 3
-    assert set(leases) == expected
-    assert command[:3] == ["git", "push", "--atomic"]
-    assert "--force" not in command and "-f" not in command
-    assert not any(arg.startswith("--force") and not arg.startswith("--force-with-lease=")
-                   for arg in command)
-    refspecs = command[command.index(str(repo.remote)) + 1:]
-    assert sorted(refspecs) == sorted(f"{sha or ''}:{ref}" for ref, sha in
-                                      plan["updates"].items())
-    assert not any(spec.startswith("+") for spec in refspecs)
+def _racer(repo: Repository, parent: str) -> str:
+    # The racing commit exists only on the remote, as a concurrent push would.
+    return repo.git("--git-dir", str(repo.remote), "-c", "user.name=Racer",
+                    "-c", "user.email=racer@example.invalid", "commit-tree",
+                    f"{parent}^{{tree}}", "-p", parent, "-m", "fix: racer")
+
+
+def _race_before(monkeypatch, step: str, action) -> None:
+    """Run ``action`` once, just before the guard read that precedes ``step``."""
+    real = recut._require_state
+
+    def guarded(cwd, remote, expected, message):
+        if message.endswith(f"moved before {step}") and not fired:
+            fired.append(True)
+            action()
+        return real(cwd, remote, expected, message)
+
+    fired: list = []
+    monkeypatch.setattr(recut, "_require_state", guarded)
+
+
+def test_remote_moved_after_backup_is_refused_before_deletion(repo):
+    evidence, plan, pending = _pending_plan(repo)
+    racer = _racer(repo, pending)
+
+    def race(_command):
+        # A concurrent writer moves release/new as soon as the backup exists.
+        repo.git("--git-dir", str(repo.remote), "update-ref", RELEASE, racer, pending)
+
+    commands: list = []
+    with pytest.raises(recut.RecutError, match="post-apply state uncertain after creating "
+                                               "sdlc-preserve/"):
+        recut.apply_plan(repo.path, str(repo.remote), plan,
+                         run=repo.push_runner(commands, after=race))
+    assert len(commands) == 1 and _is_create(commands[0], plan["preservation_ref"], pending)
+    after = _remote_refs(repo)
+    assert after[RELEASE] == racer
+    assert after[plan["preservation_ref"]] == pending
+    assert after["refs/heads/main"] == evidence["squash"]
+
+
+def test_head_moved_just_before_deletion_is_refused(repo, monkeypatch):
+    """The read immediately before the deletion is what refuses a moved head."""
+    _, plan, pending = _pending_plan(repo)
+    racer = _racer(repo, pending)
+    _race_before(monkeypatch, "delete release/new", lambda: repo.git(
+        "--git-dir", str(repo.remote), "update-ref", RELEASE, racer, pending))
+    commands: list = []
+    with pytest.raises(recut.RecutError, match="moved before delete release/new"):
+        recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.push_runner(commands))
+    assert not any(_is_delete(command) for command in commands)
+    assert _remote_refs(repo)[RELEASE] == racer
+
+
+def test_lease_refuses_a_head_moved_inside_the_delete_push(repo):
+    """Past the read before it, the compare-and-swap lease still refuses."""
+    _, plan, pending = _pending_plan(repo)
+    racer = _racer(repo, pending)
+
+    def race(command):
+        if _is_delete(command):
+            repo.git("--git-dir", str(repo.remote), "update-ref", RELEASE, racer, pending)
+
+    commands: list = []
+    with pytest.raises(recut.RecutError, match=f"refused by its lease: it moved from "
+                                               f"{pending} to {racer}; nothing was deleted"):
+        recut.apply_plan(repo.path, str(repo.remote), plan,
+                         run=repo.push_runner(commands, before=race))
+    assert commands[-1] == _delete(str(repo.remote), RELEASE, pending)
+    assert not any(_is_create(c, RELEASE) for c in commands)
+    refs = _remote_refs(repo)
+    assert refs[RELEASE] == racer
+    assert refs[plan["preservation_ref"]] == pending
+
+
+def test_remote_moved_between_plan_and_apply_changes_nothing(repo):
+    _, plan, _ = _pending_plan(repo)
+    repo.git("--git-dir", str(repo.remote), "update-ref", "refs/heads/main", repo.base)
+    before = _remote_refs(repo)
+    commands: list = []
+    with pytest.raises(recut.RecutError, match="moved after planning"):
+        recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.push_runner(commands))
+    assert commands == []
+    assert _remote_refs(repo) == before
+
+
+def test_refused_deletion_leaves_branch_and_keeps_the_backup(repo):
+    _, plan, pending = _pending_plan(repo)
+    commands: list = []
+    with pytest.raises(recut.RecutError, match="deletion of release/new refused; it is "
+                                               f"unchanged at {pending}"):
+        recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.push_runner(
+            commands, refuse=_is_delete))
+    refs = _remote_refs(repo)
+    assert refs[RELEASE] == pending
+    assert refs[plan["preservation_ref"]] == pending
+    assert len(commands) == 2  # backup, then the refused deletion; no creation
+
+
+def test_creation_failure_after_deletion_recovers_the_old_head(repo):
+    evidence, plan, pending = _pending_plan(repo)
+    remote = str(repo.remote)
+    commands: list = []
+    runner = repo.push_runner(
+        commands, refuse=lambda command: _is_create(command, RELEASE, evidence["squash"]))
+    with pytest.raises(recut.RecutError) as raised:
+        recut.apply_plan(repo.path, remote, plan, run=runner)
+    message = str(raised.value)
+    assert "release/new was deleted by this run" in message
+    assert f"restored release/new at old head {pending}" in message
+    assert f"git push {remote} {pending}:{RELEASE}" in message
+    recovery = [c for c in commands if _is_create(c, RELEASE, pending)]
+    assert recovery == [["git", "push", remote, f"{pending}:{RELEASE}"]]
+    assert commands[-1] == recovery[0]
+    refs = _remote_refs(repo)
+    assert refs[RELEASE] == pending
+    assert refs[plan["preservation_ref"]] == pending
+
+
+def test_failed_recovery_reports_the_absent_branch_and_exact_command(repo):
+    _, plan, pending = _pending_plan(repo)
+    remote = str(repo.remote)
+    commands: list = []
+    runner = repo.push_runner(commands, refuse=lambda command: _is_create(command, RELEASE))
+    with pytest.raises(recut.RecutError) as raised:
+        recut.apply_plan(repo.path, remote, plan, run=runner)
+    message = str(raised.value)
+    assert "recovery push failed and release/new is ABSENT" in message
+    assert f"Old head: {pending}" in message
+    assert f"Recover with: git push {remote} {pending}:{RELEASE}" in message
+    assert len([c for c in commands if _is_create(c, RELEASE, pending)]) == 1
+    assert RELEASE not in _remote_refs(repo)
+
+
+def test_branch_recreated_right_after_deletion_is_never_overwritten(repo):
+    _, plan, pending = _pending_plan(repo)
+
+    def race(command):
+        if _is_delete(command):
+            repo.git("--git-dir", str(repo.remote), "update-ref", RELEASE, repo.base, "")
+
+    commands: list = []
+    with pytest.raises(recut.RecutError, match=f"deletion of release/new not confirmed; "
+                                               f"old head {pending}"):
+        recut.apply_plan(repo.path, str(repo.remote), plan,
+                         run=repo.push_runner(commands, after=race))
+    assert not any(_is_create(c, RELEASE) for c in commands)
+    assert _remote_refs(repo)[RELEASE] == repo.base
+
+
+def test_branch_recreated_before_creation_is_never_overwritten(repo, monkeypatch):
+    _, plan, pending = _pending_plan(repo)
+    _race_before(monkeypatch, "create release/new", lambda: repo.git(
+        "--git-dir", str(repo.remote), "update-ref", RELEASE, repo.base, ""))
+    commands: list = []
+    with pytest.raises(recut.RecutError) as raised:
+        recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.push_runner(commands))
+    message = str(raised.value)
+    assert f"now exists at {repo.base}, so no recovery push was made" in message
+    assert f"Old head: {pending}" in message
+    assert not any(_is_create(c, RELEASE) for c in commands)
+    assert _remote_refs(repo)[RELEASE] == repo.base
 
 
 def test_post_apply_state_is_verified(repo):
-    evidence, plan, _ = _pending_plan(repo)
+    _, plan, pending = _pending_plan(repo)
 
     def silent_success(command):
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     with pytest.raises(recut.RecutError, match="post-apply state uncertain"):
         recut.apply_plan(repo.path, str(repo.remote), plan, run=silent_success)
+    assert _remote_refs(repo)[RELEASE] == pending
+
+
+def test_unconfirmed_deletion_is_refused(repo):
+    _, plan, pending = _pending_plan(repo)
+    runner = repo.push_runner()
+
+    def deletion_noop(command):
+        if _is_delete(command):
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return runner(command)
+
+    with pytest.raises(recut.RecutError, match="deletion of release/new not confirmed"):
+        recut.apply_plan(repo.path, str(repo.remote), plan, run=deletion_noop)
+    assert _remote_refs(repo)[RELEASE] == pending
+
+
+@pytest.mark.usefixtures("isolated_git")
+def test_real_offline_hotfix_cut_is_a_plain_creation(repo):
+    repo.publish_fixture()
+    plan = recut.prepare_plan(
+        cwd=repo.path, remote=str(repo.remote), mode="hotfix", expected_main=repo.base,
+        expected_head=repo.base, expected_base=repo.base, expected_hotfix="absent",
+    )
+    assert plan["operations"] == [
+        {"op": "create", "ref": "refs/heads/hotfix/new", "sha": repo.base}]
+    commands: list = []
+    recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.push_runner(commands))
+    assert commands == [["git", "push", str(repo.remote), f"{repo.base}:refs/heads/hotfix/new"]]
+    assert _remote_refs(repo)["refs/heads/hotfix/new"] == repo.base
+
+
+def test_plan_never_creates_an_existing_ref():
+    plan = {"updates": {"refs/heads/hotfix/new": "a" * 40},
+            "expected_refs": {"refs/heads/hotfix/new": "b" * 40}}
+    with pytest.raises(recut.RecutError, match="creates an existing ref"):
+        recut.apply_operations(plan)
+
+
+def _recovery_facts(message: str, remote: str, old: str, backup: str) -> None:
+    assert f"Old head: {old}" in message
+    assert f"Backup ref: {backup}" in message
+    assert f"Recover with: git push {remote} {old}:{RELEASE}" in message
+
+
+def _fail_reads_after(monkeypatch, trigger) -> None:
+    """Every remote read fails once ``trigger`` has been set by the runner."""
+    real = recut.remote_snapshot
+
+    def snapshot(cwd, remote):
+        if trigger:
+            raise recut.RecutError("git ls-remote: could not read from remote")
+        return real(cwd, remote)
+
+    monkeypatch.setattr(recut, "remote_snapshot", snapshot)
+
+
+def test_unreadable_remote_after_deletion_still_recovers_once(repo, monkeypatch):
+    """Post-delete read fails (network or token): one recovery push, full facts."""
+    _, plan, pending = _pending_plan(repo)
+    remote = str(repo.remote)
+    trigger: list = []
+
+    def after(command):
+        if _is_delete(command):
+            trigger.append(True)
+
+    _fail_reads_after(monkeypatch, trigger)
+    commands: list = []
+    with pytest.raises(recut.RecutError) as raised:
+        recut.apply_plan(repo.path, remote, plan, run=repo.push_runner(commands, after=after))
+    message = str(raised.value)
+    assert "may have been deleted by this run" in message
+    assert "could not be read to confirm" in message
+    _recovery_facts(message, remote, pending, plan["preservation_ref"])
+    assert [c for c in commands if _is_create(c, RELEASE)] == [
+        ["git", "push", remote, f"{pending}:{RELEASE}"]]
+    assert _remote_refs(repo)[RELEASE] == pending
+
+
+def test_unreadable_remote_after_refused_creation_still_recovers_once(repo, monkeypatch):
+    """Creation refused, then every read fails: the recovery push is still made."""
+    evidence, plan, pending = _pending_plan(repo)
+    remote = str(repo.remote)
+    trigger: list = []
+
+    def refuse(command):
+        if _is_create(command, RELEASE, evidence["squash"]):
+            trigger.append(True)
+            return True
+        return False
+
+    _fail_reads_after(monkeypatch, trigger)
+    commands: list = []
+    with pytest.raises(recut.RecutError) as raised:
+        recut.apply_plan(repo.path, remote, plan, run=repo.push_runner(commands, refuse=refuse))
+    message = str(raised.value)
+    assert "release/new was deleted by this run" in message
+    _recovery_facts(message, remote, pending, plan["preservation_ref"])
+    assert commands[-1] == ["git", "push", remote, f"{pending}:{RELEASE}"]
+    assert len([c for c in commands if _is_create(c, RELEASE, pending)]) == 1
+    assert _remote_refs(repo)[RELEASE] == pending
+
+
+def test_ambiguous_deletion_reported_as_failed_is_recovered(repo):
+    """The deletion takes effect but the push reports failure."""
+    _, plan, pending = _pending_plan(repo)
+    remote = str(repo.remote)
+    runner = repo.push_runner()
+    commands: list = []
+
+    def lying(command):
+        commands.append(command)
+        result = runner(command)
+        if _is_delete(command):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="timeout")
+        return result
+
+    with pytest.raises(recut.RecutError) as raised:
+        recut.apply_plan(repo.path, remote, plan, run=lying)
+    message = str(raised.value)
+    assert "may have been deleted by this run" in message
+    assert f"restored release/new at old head {pending}" in message
+    _recovery_facts(message, remote, pending, plan["preservation_ref"])
+    assert [c for c in commands if _is_create(c, RELEASE)] == [
+        ["git", "push", remote, f"{pending}:{RELEASE}"]]
+    assert _remote_refs(repo)[RELEASE] == pending
+
+
+def test_main_moved_after_deletion_recovers_the_old_head(repo):
+    """The deletion succeeds, then main moves before the confirming read."""
+    _, plan, pending = _pending_plan(repo)
+    remote = str(repo.remote)
+
+    def move_main(command):
+        if _is_delete(command):
+            repo.git("--git-dir", remote, "update-ref", "refs/heads/main", repo.base)
+
+    commands: list = []
+    with pytest.raises(recut.RecutError) as raised:
+        recut.apply_plan(repo.path, remote, plan,
+                         run=repo.push_runner(commands, after=move_main))
+    message = str(raised.value)
+    assert "deletion of release/new not confirmed" in message
+    assert f"restored release/new at old head {pending}" in message
+    _recovery_facts(message, remote, pending, plan["preservation_ref"])
+    assert [c for c in commands if _is_create(c, RELEASE)] == [
+        ["git", "push", remote, f"{pending}:{RELEASE}"]]
+    refs = _remote_refs(repo)
+    assert refs[RELEASE] == pending
+    assert refs["refs/heads/main"] == repo.base
+
+
+@pytest.mark.parametrize("ref", ["refs/heads/main", "refs/tags/v1.0.0", "refs/heads/feature/x"])
+@pytest.mark.parametrize("sha", [None, "a" * 40])
+def test_plan_with_any_other_ref_is_refused(ref, sha):
+    plan = {"updates": {ref: sha}, "expected_refs": {ref: "b" * 40}}
+    with pytest.raises(recut.RecutError, match=f"unsupported ref in plan: {ref}"):
+        recut.apply_operations(plan)
+    for op in ("create", "delete"):
+        with pytest.raises(recut.RecutError, match=f"unsupported ref in plan: {ref}"):
+            recut._apply_command("origin", {"op": op, "ref": ref, "sha": "b" * 40})
+
+
+def test_apply_refuses_an_unready_plan_before_any_read_or_push(repo, monkeypatch):
+    evidence = repo.release()
+    repo.git("checkout", "release/new")
+    repo.commit("fix: pending repair", "pending\n")
+    repo.publish_fixture()
+    plan = recut.prepare_plan(**repo.options(evidence))
+    assert plan["ready"] is False
+    monkeypatch.setattr(recut, "remote_snapshot", lambda *_: pytest.fail("remote read"))
+    commands: list = []
+    with pytest.raises(recut.RecutError, match="acknowledge the exact listed pending SHAs"):
+        recut.apply_plan(repo.path, str(repo.remote), plan, run=repo.push_runner(commands))
+    assert commands == []
 
 
 # --- Pending-work and hotfix guards. -----------------------------------------

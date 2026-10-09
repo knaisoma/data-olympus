@@ -44,6 +44,9 @@ Re-run any `rc-publish-stage` run that was skipped around activation.
   because only that review stops merged `release/new` code from adding a
   workflow that self-grants `contents: write` or `packages: write`.
 
+The GitHub repository and organization settings this pipeline requires are
+listed, with read-back commands, in [repository settings](repository-settings.md).
+
 ## Admission and trust
 
 The workflow is triggered by `workflow_run`, so its definition is always the

@@ -249,3 +249,94 @@ def test_ci_includes_integration_branches_without_narrowing_prs() -> None:
     assert set(events["push"]["branches"]) == {"main", "release/new", "hotfix/new"}
     assert "pull_request" in events
     assert events["pull_request"] is None
+
+
+def run_release(
+    repo: pathlib.Path, base: str, title: str, *, base_ref: str = "main",
+    head_ref: str = "release/new", base_repo: str = "o/r", head_repo: str = "o/r",
+    body: str = "",
+) -> subprocess.CompletedProcess[str]:
+    import os
+
+    return subprocess.run(
+        [sys.executable, str(_REPO / "scripts/lint_pr_title.py"),
+         "--base", base, "--head", "HEAD", "--repo", str(repo), "--body", body,
+         "--base-ref", base_ref, "--head-ref", head_ref,
+         "--base-repo", base_repo, "--head-repo", head_repo],
+        env={**os.environ, "PR_TITLE": title}, capture_output=True, text=True,
+    )
+
+
+@pytest.mark.parametrize("head_ref", ["release/new", "hotfix/new"])
+def test_release_subject_accepted_from_integration_branches(history, head_ref) -> None:
+    repo, base = history
+    git(repo, "commit", "--allow-empty", "-m", "feat: export")
+    result = run_release(repo, base, "release: 1.2.3", head_ref=head_ref)
+    assert result.returncode == 0, result.stderr
+
+
+def test_release_subject_impact_comparison_skipped_only_for_special_case(history) -> None:
+    repo, base = history
+    git(repo, "commit", "--allow-empty", "-m", "feat: export")
+    assert run_release(repo, base, "release: 1.2.3").returncode == 0
+    # A conventional title on the same PR is still compared.
+    assert run_release(repo, base, "fix: export").returncode == 1
+
+
+def test_release_subject_still_requires_breaking_footer_in_body(history) -> None:
+    repo, base = history
+    git(repo, "commit", "--allow-empty", "-m", "fix: export\n\nBREAKING CHANGE: remove API")
+    footer = "BREAKING CHANGE: remove API"
+    assert run_release(repo, base, "release: 10.0.0", body=footer).returncode == 0
+    assert run_release(repo, base, "release: 10.0.0").returncode == 1
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"head_ref": "feature/x"},
+    {"head_ref": "release/new2"},
+    {"head_ref": "release/new", "base_ref": "release/new"},
+    {"head_ref": "hotfix/new", "base_ref": "hotfix/new"},
+    {"base_ref": ""},
+    {"head_ref": ""},
+    {"head_repo": "fork/r"},
+    {"base_repo": "", "head_repo": ""},
+])
+def test_release_subject_rejected_elsewhere(history, kwargs) -> None:
+    repo, base = history
+    git(repo, "commit", "--allow-empty", "-m", "feat: export")
+    assert run_release(repo, base, "release: 1.2.3", **kwargs).returncode == 1
+
+
+def test_release_subject_rejected_without_context(history) -> None:
+    repo, base = history
+    git(repo, "commit", "--allow-empty", "-m", "feat: export")
+    assert run_range(repo, base, "release: 1.2.3").returncode == 1
+    assert is_valid_title("release: 1.2.3") is False
+
+
+@pytest.mark.parametrize("title", [
+    "release: 1.2", "release: v1.2.3", "release: 1.2.3 extra", "release: 1.2.3.4",
+    "release: 01.2.3", "release: 1.02.3", "release: 1.2.03", "Release: 1.2.3",
+    "RELEASE: 1.2.3", "release: 1.2.3-rc.1", "release:1.2.3", "release(x): 1.2.3",
+    "release!: 1.2.3", "release: 1.2.3\n", "release: 1.2.3\nfeat: x",
+    "release: ١.2.3", "release: ",
+])
+def test_release_subject_malformed_rejected(history, title) -> None:
+    repo, base = history
+    git(repo, "commit", "--allow-empty", "-m", "feat: export")
+    assert run_release(repo, base, title).returncode == 1
+
+
+def test_workflow_passes_refs_through_environment() -> None:
+    import yaml
+
+    workflow = yaml.safe_load((_REPO / ".github/workflows/pr-title-lint.yml").read_text())
+    lint = workflow["jobs"]["lint-title"]["steps"][-1]
+    assert lint["env"]["PR_BASE_REF"] == "${{ github.base_ref }}"
+    assert lint["env"]["PR_HEAD_REF"] == "${{ github.head_ref }}"
+    assert lint["env"]["PR_BASE_REPO"] == "${{ github.event.pull_request.base.repo.full_name }}"
+    assert lint["env"]["PR_HEAD_REPO"] == "${{ github.event.pull_request.head.repo.full_name }}"
+    for flag, var in [("base-ref", "BASE_REF"), ("head-ref", "HEAD_REF"),
+                      ("base-repo", "BASE_REPO"), ("head-repo", "HEAD_REPO")]:
+        assert f'--{flag} "$PR_{var}"' in lint["run"]
+    assert "${{" not in lint["run"]

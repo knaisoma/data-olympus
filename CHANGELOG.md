@@ -14,6 +14,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+* Add `docs/releases/repository-settings.md`, a checklist of the GitHub repository and organization settings the release pipeline requires (immutable releases, variables, environments, Trusted Publishers, rulesets, code scanning, Dependabot, the GitHub App and the Actions policy), each with a read-only `gh api` read-back.
 * This is the first release cut under the STD-U-821 branch model (`release/new`, content-derived versions, reviewed promotion). Candidates are built unprivileged and published by a separate trusted stage; releases are drafted, filled with assets and published last, which GitHub immutable releases require. Candidate `0.11.1-rc.2` of the first live run is burned.
 * Add a disabled-by-default trusted RC publication stage (`rc-publish-stage.yml`)
   that runs only `main` scripts, recomputes the candidate version from `H`'s
@@ -52,6 +53,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   per-run GitHub App token, and remain disabled until W9 bot activation.
   See [branch recut and hotfix cuts](docs/releases/branch-recut.md).
 
+### Changed
+
+* Record the lessons of the first adoption cut in the adoption cut runbook, including the main-first ordering, the burned candidates and the minimum commit count on `release/new`.
+* `scripts/sdlc_recut.py --apply` now replaces `release/new` by deleting it
+  and creating it again at the new base, instead of one atomic
+  `--force-with-lease` update. The protected-branch rulesets require pull
+  requests for updates and no App holds a bypass, while creation and deletion
+  stay permitted. The old head is backed up to its preservation ref first,
+  each single-ref push is guarded by remote reads before and after it, each
+  deletion is a compare-and-swap push leased on the planned old head,
+  creations carry no lease, no push uses a plain force, a `+` refspec or
+  `--atomic`, and a verified `hotfix/new` is deleted only after the
+  recreation. If recreation fails after the deletion, one recovery push
+  restores the old head, also when the remote cannot be read, and the error
+  names the old head, the backup ref and the exact recovery command. `docs/releases/branch-recut.md` documents the leased
+  deletion, the explicit decision any plain-delete fallback would need, and
+  the controller's ruleset toggle.
+
 ### Security
 
 * Promotion now verifies the stage-two GitHub artifact attestations of the
@@ -80,6 +99,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `SDLC_REQUIRED_CODEQL_CHECKS`. The proof that the trees of `S` and `H` are
   equal ties the two results to the same code. All other rules stay fail
   closed.
+* Accept the subject `release: X.Y.Z` (STD-U-821) in the PR title lint, only for
+  a same-repository pull request from `release/new` or `hotfix/new` into `main`;
+  every other base or head still rejects the `release` type, and malformed
+  versions stay rejected. For that subject the squash-impact comparison is
+  skipped, since the engine computes the version from the commits and promotion
+  proves subject and body byte for byte. The workflow passes the branch names
+  and repositories as environment variables. The workflow runs the base-ref
+  copy of the linter, so this change applies to pull requests only after it
+  lands on the base branch they target.
 * Tolerate GitHub release listing lag after creating a draft and after
   uploading assets, in stage 2 `reserve` and in the stable release step: the
   read is repeated with bounded backoff (about 60 seconds) and then fails
