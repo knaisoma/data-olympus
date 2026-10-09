@@ -153,7 +153,7 @@ def plan_recut(*, refs, new_base, pending, acknowledge, pull_requests, after_hot
         updates[HOTFIX] = None
     acknowledged = validate_acknowledge(acknowledge)
     ready = len(acknowledged) == len(set(acknowledged)) and set(acknowledged) == set(pending)
-    return {
+    plan = {
         "mode": "recut", "ready": ready, "expected_refs": dict(refs),
         "updates": updates, "new_base": new_base, "pending_commits": list(pending),
         "preservation_ref": preservation, "pull_requests": pull_requests,
@@ -163,19 +163,23 @@ def plan_recut(*, refs, new_base, pending, acknowledge, pull_requests, after_hot
                     "selection": "successful current H and digest; N=0 is not publishable"},
         "blocked": None if ready else "acknowledge the exact listed pending SHAs",
     }
+    plan["operations"] = apply_operations(plan)
+    return plan
 
 
 def plan_hotfix(*, refs, stable, candidate):
     """Pure branch creation plan; the cut is not a promotable candidate."""
     if HOTFIX in refs:
         raise RecutError("hotfix/new already exists; reconcile it first")
-    return {
+    plan = {
         "mode": "hotfix", "ready": True, "expected_refs": dict(refs),
         "updates": {HOTFIX: stable}, "new_base": stable, "candidate": candidate,
         "pending_commits": [], "pull_requests": [],
         "staging": {"branch": "hotfix/new", "H": stable,
                     "selection": "successful current H and digest; N=0 is not publishable"},
     }
+    plan["operations"] = apply_operations(plan)
+    return plan
 
 
 def _require_release_tag(cwd, refs, tag, commit, *, strict):
@@ -362,35 +366,186 @@ def _released_candidate(cwd, evidence, refs):
                                   branch=evidence["branch"])
 
 
-def apply_plan(cwd, remote, plan, run=None):
-    """Apply once under the external lock, using remote leases on changed refs.
+def apply_operations(plan):
+    """Order the remote changes of a plan as single-ref creations and deletions.
 
-    The injected runner is for offline transport tests. Production uses Git's
-    atomic push. The lock, not a no-op main refspec, serializes main updates.
+    The protected branches allow creation and deletion but require pull requests
+    for updates, and no App holds a bypass, so a branch is never moved in place:
+    the backup is created first, then release/new is deleted and recreated at
+    the new base, and a verified hotfix branch is deleted last.
+    """
+    updates, expected = plan["updates"], plan["expected_refs"]
+    unknown = {ref for ref in updates if not _allowed(ref)}
+    if unknown:
+        raise RecutError(f"unsupported ref in plan: {sorted(unknown)[0]}")
+    operations = [{"op": "create", "ref": ref, "sha": sha}
+                  for ref, sha in updates.items() if ref.startswith(PRESERVE)]
+    if RELEASE in updates:
+        if RELEASE in expected:
+            operations.append({"op": "delete", "ref": RELEASE, "sha": expected[RELEASE]})
+        operations.append({"op": "create", "ref": RELEASE, "sha": updates[RELEASE]})
+    if HOTFIX in updates:
+        if updates[HOTFIX] is None:
+            operations.append({"op": "delete", "ref": HOTFIX, "sha": expected[HOTFIX]})
+        else:
+            operations.append({"op": "create", "ref": HOTFIX, "sha": updates[HOTFIX]})
+    deleted = set()
+    for operation in operations:
+        if operation["op"] == "delete":
+            deleted.add(operation["ref"])
+        elif operation["sha"] is None or (
+                operation["ref"] in expected and operation["ref"] not in deleted):
+            raise RecutError(f"plan creates an existing ref: {operation['ref']}")
+    return operations
+
+
+def _push(cwd, run, command):
+    if run:
+        return run(command)
+    return subprocess.run(command, cwd=cwd, text=True, capture_output=True)
+
+
+def _allowed(ref):
+    return ref in (RELEASE, HOTFIX) or ref.startswith(PRESERVE)
+
+
+def _apply_command(remote, operation):
+    """Single-ref pushes: never a plain --force, a "+" refspec or --atomic.
+
+    A deletion is a compare-and-swap: its lease names the deleted ref and the
+    planned old head, so the server refuses it if the branch moved. A creation
+    is a plain push with no lease. Git refuses it when the ref exists at a
+    commit that is not an ancestor; at an ancestor Git would fast-forward the
+    ref, and only the protected-branch rules, which refuse any update that is
+    not a pull request, stop that.
+    """
+    ref, sha = operation["ref"], operation["sha"]
+    if not _allowed(ref):  # second line of defence behind apply_operations
+        raise RecutError(f"unsupported ref in plan: {ref}")
+    if operation["op"] == "delete":
+        return ["git", "push", f"--force-with-lease={ref}:{sha}", remote, f":{ref}"]
+    return ["git", "push", remote, f"{sha}:{ref}"]
+
+
+def _branch(ref):
+    return ref.removeprefix("refs/heads/")
+
+
+def _require_state(cwd, remote, expected, message):
+    if remote_snapshot(cwd, remote) != expected:
+        raise RecutError(message)
+
+
+UNREADABLE = "UNREADABLE"  # a remote head that could not be read
+
+
+def _read_head(cwd, remote, ref):
+    """The remote head of ref, None when absent, UNREADABLE when the read fails."""
+    try:
+        return remote_snapshot(cwd, remote).get(ref)
+    except RecutError:
+        return UNREADABLE
+
+
+def _recover(cwd, remote, run, ref, old, error, *, backup, certain=True):
+    """Recreate a branch this run deleted, at its old head, with one plain push.
+
+    Recreating at the old head is a plain creation, like the recut itself, so
+    it needs no force and cannot overwrite a branch that diverged. It is tried
+    once, also when the remote cannot be read (network or token failure). The
+    error always names the old head, the backup ref and the exact command.
+    """
+    name, manual = _branch(ref), f"git push {remote} {old}:{ref}"
+    deleted = "was deleted" if certain else "may have been deleted"
+    context = f"{name} {deleted} by this run and the recut did not complete ({error})"
+    facts = (f"Old head: {old}. Backup ref: {backup or 'none'}. "
+             f"Recover with: {manual}")
+    head = _read_head(cwd, remote, ref)
+    if head not in (None, UNREADABLE):
+        raise RecutError(f"{context}; {name} now exists at {head}, so no recovery push was "
+                         f"made. Reconcile before retry. {facts}") from error
+    result = _push(cwd, run, ["git", "push", remote, f"{old}:{ref}"])
+    head = _read_head(cwd, remote, ref)
+    if not result.returncode and head == old:
+        raise RecutError(f"{context}; the recovery push restored {name} at old head {old}. "
+                         f"Reconcile before retry. {facts}") from error
+    if not result.returncode and head == UNREADABLE:
+        raise RecutError(f"{context}; the recovery push reported success but the remote "
+                         f"could not be read to confirm it. {facts}") from error
+    state = {None: "ABSENT", UNREADABLE: "UNKNOWN (remote unreadable)"}.get(head, f"at {head}")
+    raise RecutError(f"{context}; the recovery push failed and {name} is {state}. "
+                     f"{facts}") from error
+
+
+def _apply_operation(cwd, remote, run, operation, expected, attempted):
+    ref, sha, name = operation["ref"], operation["sha"], _branch(operation["ref"])
+    # The read immediately before the push: every ref must still be exactly as
+    # planned (or as the previous step left it), including main and tags.
+    _require_state(cwd, remote, expected,
+                   f"stale run: remote refs moved before {operation['op']} {name}")
+    attempted.add(ref)
+    result = _push(cwd, run, _apply_command(remote, operation))
+    if operation["op"] == "delete":
+        if result.returncode:
+            head = remote_snapshot(cwd, remote).get(ref)
+            if head == sha:
+                raise RecutError(f"deletion of {name} refused; it is unchanged at {sha}")
+            if head is not None:
+                raise RecutError(f"deletion of {name} refused by its lease: it moved from "
+                                 f"{sha} to {head}; nothing was deleted")
+            raise RecutError(f"deletion of {name} failed and its state is uncertain; "
+                             f"old head {sha}")
+        expected.pop(ref)
+        # The read right after: the deletion is confirmed, nothing else moved.
+        _require_state(cwd, remote, expected,
+                       f"deletion of {name} not confirmed; old head {sha}")
+        return
+    if result.returncode:
+        raise RecutError(f"creation of {name} at {sha} was refused")
+    expected[ref] = sha
+    _require_state(cwd, remote, expected,
+                   f"post-apply state uncertain after creating {name}; reconcile remote "
+                   "refs before retry")
+
+
+def apply_plan(cwd, remote, plan, run=None):
+    """Apply once under the external lock as guarded single-ref pushes.
+
+    Before each push the remote is re-read and every ref (main, tags, release,
+    hotfix, preservation) must match what the previous step left; afterwards it
+    is read back. A deletion also carries a lease on the planned old head, so
+    a branch that moves between the read and the push is not deleted.
+    A branch deleted here and not recreated is restored at its old head by one
+    recovery push. The injected runner, for offline tests, receives each push.
     """
     if not plan["ready"]:
         raise RecutError("acknowledge the exact listed pending SHAs before apply")
-    if remote_snapshot(cwd, remote) != plan["expected_refs"]:
-        raise RecutError("stale run: remote refs moved after planning")
-    updates = plan["updates"]
-    command = ["git", "push", "--atomic"]
-    for ref in updates:
-        command.append(f"--force-with-lease={ref}:{plan['expected_refs'].get(ref, '')}")
-    command.append(remote)
-    command.extend(f"{sha or ''}:{ref}" for ref, sha in updates.items())
-    result = (run(command) if run else subprocess.run(
-        command, cwd=cwd, text=True, capture_output=True,
-    ))
-    if result.returncode:
-        raise RecutError("atomic push failed; reconcile remote refs before retry")
+    operations = apply_operations(plan)
     expected = dict(plan["expected_refs"])
-    for ref, sha in updates.items():
-        if sha is None:
-            expected.pop(ref, None)
+    backup = plan.get("preservation_ref")
+    _require_state(cwd, remote, expected, "stale run: remote refs moved after planning")
+    recreated = {operation["ref"] for operation in operations if operation["op"] == "create"}
+    awaiting = {}  # branches deleted by this run whose recreation has not succeeded
+    attempted = set()  # refs whose push was sent
+    for operation in operations:
+        try:
+            _apply_operation(cwd, remote, run, operation, expected, attempted)
+        except RecutError as error:
+            for ref, old in awaiting.items():
+                _recover(cwd, remote, run, ref, old, error, backup=backup)
+            # A deletion that was sent but failed, was not confirmed, or could
+            # not be read back may still have taken effect; a branch that should
+            # be recreated is never left absent.
+            ref = operation["ref"]
+            if (operation["op"] == "delete" and ref in recreated and ref in attempted
+                    and _read_head(cwd, remote, ref) in (None, UNREADABLE)):
+                _recover(cwd, remote, run, ref, operation["sha"], error, backup=backup,
+                         certain=False)
+            raise
+        if operation["op"] == "delete":
+            awaiting[operation["ref"]] = operation["sha"]
         else:
-            expected[ref] = sha
-    if remote_snapshot(cwd, remote) != expected:
-        raise RecutError("post-apply state uncertain; reconcile remote refs before retry")
+            awaiting.pop(operation["ref"], None)
 
 
 def main(argv=None):
