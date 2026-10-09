@@ -1141,7 +1141,7 @@ def test_stderr_excerpt_is_single_printable_line():
     raw = (b"first\nsecond\r\n\tthird\x1b[31mred\x1b[0m\x00\x07\x7f"
            b"\x1b]0;title\x07end \xc3\xa9\xff caf\xc3\xa9")
     excerpt = stage._stderr_excerpt(raw)
-    assert excerpt == "first second third red end caf"
+    assert excerpt == "first second thirdredend caf"
     assert re.fullmatch(r"[\x20-\x7e]*", excerpt)
 
 
@@ -1499,7 +1499,7 @@ def test_reserve_refuses_an_upload_that_does_not_read_back(build, fault):
     assert registry.draft is True
 
 
-@pytest.mark.parametrize("change", ["hash", "older_format", "missing"])
+@pytest.mark.parametrize("change", ["hash", "older_format", "missing", "extra_line"])
 def test_read_only_jobs_require_the_tag_to_bind_the_asset_hashes(build, tmp_path, change):
     """C1: pypi/publish cannot see the draft, so the tag message binds the bytes."""
     verified, registry = reserved(build, hide_drafts=True)
@@ -1508,6 +1508,8 @@ def test_read_only_jobs_require_the_tag_to_bind_the_asset_hashes(build, tmp_path
             hashlib.sha256(verified.assets[stage.PROVENANCE]).hexdigest(), "0" * 64)
     elif change == "older_format":
         registry.tag_text = f"Candidate {verified.version}\nH: {verified.head}"
+    elif change == "extra_line":
+        registry.tag_text += f"\nsha256 {'a' * 64}  extra.bin"
     else:
         registry.tag_text = None
     with pytest.raises(ValueError, match="does not bind these asset hashes"):
@@ -1595,3 +1597,20 @@ def test_environment_token_split_by_control_bytes_is_redacted(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     excerpt = stage._stderr_excerpt(b"denied for fake\x1b[0m env\ttoken here")
     assert excerpt == "denied for [REDACTED] here"
+
+
+@pytest.mark.parametrize("splitter", [b"\x1b[0m", b"\x01", b"\x1b]0;t\x07", b"\x7f"])
+def test_realistic_token_split_by_an_escape_is_redacted(monkeypatch, splitter):
+    """A 40-character ghs_ token cut by a control sequence is rejoined, then redacted."""
+    token = "ghs_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    assert len(token) == 40
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    raw = b"denied " + token[:22].encode() + splitter + token[22:].encode() + b" end"
+    excerpt = stage._stderr_excerpt(raw)
+    assert excerpt == "denied [REDACTED] end"
+    for start in range(0, 40 - 8):
+        assert token[start:start + 8] not in excerpt
+    monkeypatch.setenv("GH_TOKEN", token)
+    assert stage._stderr_excerpt(raw) == "denied [REDACTED] end"
+

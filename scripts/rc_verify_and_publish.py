@@ -512,8 +512,11 @@ def _stderr_excerpt(raw: bytes) -> str:
         value = os.environ.get(name)
         if value:
             text = text.replace(value, _REDACTED)
-    text = _TERMINAL_ESCAPES.sub(" ", text)
-    text = " ".join(re.sub(r"[^\x20-\x7e]", " ", text).split())
+    # Delete (never replace with a space) terminal escapes and every character
+    # outside printable ASCII except whitespace, so a token split by them is
+    # rejoined before the redaction below; whitespace then collapses to one line.
+    text = _TERMINAL_ESCAPES.sub("", text)
+    text = " ".join(re.sub(r"[^\x20-\x7e\t\n\r\v\f]", "", text).split())
     for name in ("GH_TOKEN", "GITHUB_TOKEN"):
         value = os.environ.get(name)
         if value:

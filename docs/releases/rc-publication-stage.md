@@ -266,9 +266,9 @@ The first live run created and published the `0.11.1-rc.2` prerelease
 (release id 407441249) before uploading any asset, the order used before the
 draft-first fix. Immutability then refused the asset upload, so that release
 is published, immutable and empty, and its tag is permanent. It is never
-reused: every phase refuses it as burned. The first candidate this stage can
-publish under the adoption sequence is therefore the next one, from the next
-push to `release/new`.
+reused: every phase refuses it as burned. The first complete candidate this
+stage can publish under the adoption sequence is therefore `0.11.1-rc.3` or
+later, from the next push to `release/new`.
 
 ## Staging selection
 
@@ -310,6 +310,6 @@ inputs, and this stage has no adoption dry-run mode. The cut build (`N=0`) and
 the head after the R4 placeholder (record still at `H`, not promotable) are
 refused here; the first candidate this stage can publish is the head after the
 record is retired (`0.11.1-rc.2` in the planned sequence; that candidate is
-burned, see above, so the next push yields the next rc number). The threat model and
+burned, see above, so the first complete candidate is `0.11.1-rc.3` or later). The threat model and
 the cut sequence are in [the adoption cut runbook](adoption-cut-runbook.md).
 `SDLC_RC_CHANNEL` stays unset until the first new-model release.

@@ -23,8 +23,10 @@ be corrected or removed once it exists, by anyone, with any identity.
   branch commits or workflow runs. The cut stays reversible by deleting
   `release/new` and reverting `C` (see "Rollback of the cut").
 - The point of no return is the first `X.Y.Z-rc.N` publication: stage 2's
-  `reserve` job creates the annotated candidate tag and the GitHub prerelease
-  (here `0.11.1-rc.2` or later). It can only run after
+  `reserve` job creates the annotated candidate tag and a draft GitHub
+  prerelease, which `finalize` publishes last. `0.11.1-rc.2` is burned (see
+  [the known burned candidate](rc-publication-stage.md#known-burned-candidate-0111-rc2-empty-immutable-release-and-tag-created-by-the-first-live-run-before-the-draft-first-fix)),
+  so the first complete candidate is `0.11.1-rc.3` or later. It can only run after
   `SDLC_PIPELINE=enabled` (item 4 of the enable order). From then on that
   identity is permanent, and a mistake is corrected only by a newer candidate.
 - Never create a tag matching those patterns for testing, in this repository
@@ -273,7 +275,9 @@ squash with exactly these subjects, in this order:
 
 Each push to `release/new` starts `rc-build`. The first yields `0.11.1-rc.1`
 (not promotable, the record is still at `H`); the second yields
-`0.11.1-rc.2`, promotable.
+`0.11.1-rc.2`, promotable. That candidate was burned by the first live run
+(published empty before the draft-first fix), so the first complete candidate
+is `0.11.1-rc.3` or later, from the next push to `release/new`.
 
 ## Step 7: engine run and dry-run RC build
 
@@ -371,6 +375,12 @@ each from the first real runs:
     Latest unchanged, and the listing shows it as published at once.
   - "Re-run all jobs" on a completed candidate skips `pypi` but still runs
     `attest` and `finalize` (as a readback).
+  - The annotated candidate tag message reads back (`git/tags/<sha>`) exactly
+    as written: the `Candidate`, `H:` and sorted `sha256` lines, with at most
+    a trailing newline added.
+  - Promotion: `gh release view`, `gh release download` and
+    `gh release edit --draft=false` resolve the stable draft by tag, so a
+    rerun finds the existing draft instead of creating a second one.
 
 ## Blocked items and enable order
 
