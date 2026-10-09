@@ -55,6 +55,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+* Record that the `pypi` and `pypi-rc` environments have no required reviewers by operator decision of 2026-10-09, with the consequence for promotion dispatches and the read-back commands.
+
 * Record the lessons of the first adoption cut in the adoption cut runbook, including the main-first ordering, the burned candidates and the minimum commit count on `release/new`.
 * `scripts/sdlc_recut.py --apply` now replaces `release/new` by deleting it
   and creating it again at the new base, instead of one atomic
