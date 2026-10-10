@@ -9,8 +9,14 @@ on:
         required: true
         type: string
 
+# Shared product lock, replacing the former per-candidate group. Two different
+# candidates now serialise, which is intended: both move stable and latest.
+# Only a dispatch from main enters the lock, because the decide job refuses any
+# other ref; a refused run gets a private group and cannot replace a pending
+# promotion or publication. The candidate_tag format cannot be tested in a
+# concurrency expression, so a main dispatch with a malformed tag still enters.
 concurrency:
-  group: tag-release-${{ inputs.candidate_tag }}
+  group: ${{ github.ref == 'refs/heads/main' && 'data-olympus-promotion' || format('tag-release-noop-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:

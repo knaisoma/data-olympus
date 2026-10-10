@@ -1,7 +1,7 @@
 # Reviewed release promotion
 
 `promote-release.yml` implements STD-U-821 stable promotion beside the
-unchanged transitional `tag-release.yml`. Every job is skipped unless the
+transitional `tag-release.yml`, which shares its promotion lock. Every job is skipped unless the
 repository variable `SDLC_PIPELINE` is `enabled` and the dispatch ref is
 `main`. Dispatch it with these inputs:
 
@@ -294,10 +294,12 @@ Operator checklist:
   stopped run itself.
 - Approve the `pypi` environment once more when `publish-pypi` waits, if the
   environment has a required reviewer.
-- Do not dispatch `set-channel.yml` or `tag-release.yml` while the promotion
-  runs. Neither takes the `data-olympus-promotion` lock, and either could move
-  `stable` or `latest` or create a `vX.Y.Z` release between `prove` and the
-  later jobs (see the tracked prerequisites).
+- `set-channel.yml` and `tag-release.yml` take the `data-olympus-promotion`
+  lock, so they wait for the running promotion instead of moving `stable` or
+  `latest` or creating a `vX.Y.Z` release between `prove` and the later jobs.
+  Do not dispatch them while a resume is queued: GitHub keeps one pending run
+  per group, and the new dispatch would replace the queued resume. Dispatch the
+  resume again if that happens.
 - After the run, check that the new release is the latest one:
   `gh api repos/knaisoma/data-olympus/releases/latest --jq .tag_name` must
   print the promoted `vX.Y.Z` (`v0.11.1` for the first live promotion). The
@@ -391,32 +393,38 @@ GitHub, PyPI and registry services.
 
 ## Old and new promotion paths during the R9 window
 
-Until the first new-model release, `tag-release.yml` stays unchanged (R9) and
-does not take the `data-olympus-promotion` lock; it uses its own
-`tag-release-<candidate>` group. Both paths move `stable` and `latest`, so
-running them at the same time can leave the channels on whichever finished
-last, which may be the lower version. Code cannot prevent this without
-changing `tag-release.yml`, so the operator keeps them mutually exclusive:
+Until the first new-model release, `tag-release.yml` remains a supported
+promotion path beside `promote-release.yml`. Both paths move `stable` and
+`latest`, so running them at the same time could leave the channels on
+whichever finished last, which may be the lower version. The mutual exclusion
+is enforced by the shared concurrency group: `tag-release.yml` and
+`set-channel.yml` take the workflow-level group `data-olympus-promotion` with
+`cancel-in-progress: false`, the same lock that `promote-release.yml`,
+`rc-publish-stage.yml`, `recut-release-branch.yml` and `hotfix-cut.yml` take.
+`tag-release.yml` no longer has its own `tag-release-<candidate>` group, so two
+dispatches for different candidates now serialise as well, which is intended.
 
-1. Never dispatch `tag-release.yml` while a `promote-release.yml` run exists
-   in any non-completed state, and the reverse. A run waiting for `pypi`
-   approval counts as running.
-2. Before dispatching either workflow, check both are idle:
+- `tag-release.yml` enters the lock only when dispatched from `main` (its
+  `decide` job refuses any other ref); otherwise it gets a private
+  `tag-release-noop-<run id>` group and cannot replace a pending run. A `main`
+  dispatch with a malformed `candidate_tag` still enters the lock, because the
+  input format cannot be tested in a concurrency expression; it then fails in
+  `decide` and may replace a pending run (dispatch the replaced run again).
+- `set-channel.yml` is unconditional: it has no ref guard and acts from any
+  ref, so every run must hold the lock.
 
-   ```bash
-   for workflow in tag-release.yml promote-release.yml; do
-     for status in queued in_progress waiting pending requested action_required; do
-       gh run list --workflow "$workflow" --status "$status" \
-         --json databaseId,status,headBranch,createdAt
-     done
-   done
-   ```
+Recorded R9 deviation (operator follow-up decision of 2026-10-10): R9 kept both
+files unchanged, and this change alters their concurrency group inside the R9
+window. It changes grouping only. Inputs, permissions, jobs, steps and
+published artifacts are byte-identical, and the R9 golden tests are unaffected.
 
-   Every list must be empty (`[]`). If one is not, wait for it to complete
-   or cancel the queued run that should not proceed.
-3. After a run completes, verify the channels with
-   `docker buildx imagetools inspect ghcr.io/knaisoma/data-olympus:stable`
-   and `:latest` before dispatching the other path.
+One limit remains: GitHub keeps only one pending run per concurrency group, and
+a newer pending run cancels an older pending one (never an in-progress one).
+The replaced run may be a promotion or a stage 2 publication, not only an
+old-path run. If a queued dispatch of any lock member disappears, check the run
+list and dispatch it again once the current run completes. After a run completes, verify
+the channels with `docker buildx imagetools inspect
+ghcr.io/knaisoma/data-olympus:stable` and `:latest`.
 
 ## Tracked prerequisites
 
@@ -429,12 +437,6 @@ These are not implemented and block activation:
   the new path stable tags are created by the `sdlc-bot` App, which the rule
   would need as a bypass actor. Until it exists, the tagger check above remains
   an audit check and not an access control.
-- Shared lock on the old path. After adoption, when `tag-release.yml` is
-  retired or changed, the remaining stable promotion path must take the
-  `data-olympus-promotion` lock (Task 6). Join `set-channel.yml` and
-  `tag-release.yml` to the `data-olympus-promotion` concurrency group (both
-  files stay unchanged until the R9 window closes). Until then the procedure
-  above and the dispatch checklist are the only mutual exclusion.
 - Pin the build backend (hatchling). The stable rebuild of `S` must equal the
   candidate payloads and, on a resumed promotion, the files already on PyPI
   byte for byte; an unpinned build backend can drift between the candidate

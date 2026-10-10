@@ -18,8 +18,12 @@ on:
         required: true
         type: string
 
+# Shared product lock: this workflow moves a channel, so it must not run beside
+# a promotion, an RC publication or a branch cut. Unconditional on purpose: it
+# has no ref guard and acts (packages: write) from any ref, so every run must
+# hold the lock.
 concurrency:
-  group: set-channel-${{ inputs.channel }}
+  group: data-olympus-promotion
   cancel-in-progress: false
 
 jobs:
