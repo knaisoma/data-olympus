@@ -10,7 +10,7 @@ code-owner review of `.github/`, `scripts/`, `release/` and the vendored
 amendment `docs/releases/std-u-821-amendment-1.3.md` (or owner action to create it),
 and the unattended merges, recuts and pushes of the pipeline. The existing
 `rc-publish.yml`, `tag-release.yml` and `set-channel.yml` keep their behaviour
-(R9).
+(R9); the last two only join the shared promotion lock.
 
 ## Activation prerequisites (MUST)
 
@@ -167,8 +167,9 @@ Stage 2 owns the GHCR `rc` channel for `release/new` heads, but the W6 spec
 invariant keeps the `rc` digest and `set-channel.yml` semantics unchanged until
 the first release under the new model. Until then the repository variable
 `SDLC_RC_CHANNEL` is unset (default off), stage 2 never moves `rc`, and the old
-`set-channel.yml` (its own `set-channel-rc` lock, unchanged per R9) is the only
-writer of `rc`. Task 9 sets `SDLC_RC_CHANNEL=enabled` only after the first
+`set-channel.yml` (now in the shared `data-olympus-promotion` lock, see the R9
+deviation in [reviewed promotion](reviewed-promotion.md)) is the only writer of
+`rc`. Task 9 sets `SDLC_RC_CHANNEL=enabled` only after the first
 new-model release is published. From then on `set-channel.yml` MUST NOT be used
 for `rc`. A hotfix head never moves `rc`. The staging selection record carries
 `rc_channel_moved`.

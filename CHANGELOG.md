@@ -12,6 +12,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+* The old-path `set-channel.yml` and `tag-release.yml` workflows now take the shared `data-olympus-promotion` concurrency group (unconditional, `cancel-in-progress: false`), so they cannot run at the same time as `promote-release.yml`, `rc-publish-stage.yml`, `recut-release-branch.yml` or `hotfix-cut.yml`. `tag-release.yml` enters the lock only when dispatched from `main` and drops its per-candidate group, so two different candidates now serialise. Recorded as an R9 deviation (operator follow-up decision of 2026-10-10). GitHub keeps one pending run per group and a newer pending run cancels an older pending one: dispatch again if that happens.
+
 ### Added
 
 * Add `docs/releases/repository-settings.md`, a checklist of the GitHub repository and organization settings the release pipeline requires (immutable releases, variables, environments, Trusted Publishers, rulesets, code scanning, Dependabot, the GitHub App and the Actions policy), each with a read-only `gh api` read-back.

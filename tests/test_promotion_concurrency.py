@@ -3,7 +3,11 @@
 Admitted runs take the shared ``data-olympus-promotion`` group. A run that its
 jobs would refuse gets a private per-run group, so it can never cancel a
 pending publication, promotion or recut (GitHub keeps one pending run per
-group). The group expressions are evaluated here, not compared as text.
+group). The one exception is ``set-channel.yml``: it has no ref guard and acts
+from any ref, so it takes the bare lock unconditionally. ``tag-release.yml``
+is admitted from ``main`` only; a malformed ``candidate_tag`` cannot be
+expressed in a group, so such a run still enters the lock. The group
+expressions are evaluated here, not compared as text.
 """
 import re
 from pathlib import Path
@@ -18,7 +22,11 @@ REPOSITORY = "knaisoma/data-olympus"
 # A missing or renamed file must fail, never skip.
 DELIVERED = (
     "recut-release-branch.yml", "hotfix-cut.yml", "rc-publish-stage.yml", "promote-release.yml",
+    "set-channel.yml", "tag-release.yml",
 )
+# No ref guard and real work from any ref: the group is the bare lock, never a
+# conditional with a run-scoped fallback.
+UNCONDITIONAL = ("set-channel.yml",)
 # Every lock member has landed. Add a new one to DELIVERED and ADMISSION below.
 PENDING: dict[str, str] = {}  # keep: a new lock member starts here
 
@@ -48,6 +56,11 @@ ADMISSION = {
         {**_STAGE, _RUN + "head_repository.full_name": "fork/data-olympus"},
     ]),
 }
+ADMISSION["tag-release.yml"] = ([{"github.ref": "refs/heads/main"}], [
+    {"github.ref": "refs/heads/feature/x"},
+    {"github.ref": "refs/heads/release/new"},
+    {"github.ref": "refs/tags/main"},
+])
 ADMISSION["hotfix-cut.yml"] = ADMISSION["recut-release-branch.yml"]
 ADMISSION["promote-release.yml"] = ADMISSION["recut-release-branch.yml"]
 
@@ -102,6 +115,10 @@ def test_privileged_workflows_share_promotion_lock(name):
     group = concurrency["group"].strip()
     for job in workflow["jobs"].values():
         assert "concurrency" not in job, f"{name} must not override the lock per job"
+    if name in UNCONDITIONAL:
+        assert group == LOCK, f"{name} must take the bare shared lock, not a conditional"
+        assert "inputs." not in group
+        return
     if name not in DELIVERED and group == LOCK:
         return  # unconditional form, tolerated for workflows of other tasks
     assert LOCK in group

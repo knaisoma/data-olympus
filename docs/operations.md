@@ -722,6 +722,12 @@ The `set-channel.yml` workflow permits only `rc`, `stable`, or `latest`, default
 to `stable`. It rejects version tags and arbitrary names before registry access,
 preventing channel dispatch from replacing a published version tag.
 
+Both `set-channel.yml` and `tag-release.yml` take the shared `data-olympus-promotion`
+concurrency group, so they never run beside a promotion, an RC publication or a
+branch cut. GitHub keeps one pending run per group; dispatch again if a queued
+run was replaced (the replaced run may be a promotion or a stage 2 publication,
+not only an old-path run). `tag-release.yml` enters the lock only from `main`.
+
 Yank an unsuitable PyPI candidate and publish a higher candidate number. Roll a
 moving GHCR channel back by applying the channel tag to a previously verified
 digest with `docker buildx imagetools create`. Keep the immutable version tag for
