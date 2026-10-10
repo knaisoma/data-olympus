@@ -438,6 +438,52 @@ candidate tag cannot be deleted or moved under the organization rulesets. Use
 the documented release rollback (`.rules/release-rollback.md`), which only
 redeploys recorded digests and never retags.
 
+## Reusing the record route after a release
+
+Amendment 1.3 covers "a product that has already released" and reaches its cut
+with `main` ahead of its last stable tag. Its validity rules name no version:
+`v<base>` must be the highest stable tag by SemVer precedence and an ancestor
+of `B`. The engine follows that text and takes the base from the record, so the
+route is not limited to the first adoption. It applies whenever a release
+leaves `main` ahead of its tag, as after `0.11.1`, when the promotion fixes and
+docs (#358 to #361) had to land on `main` after the squash because stage 2 and
+promotion always run `main`'s definitions. Without a record that cycle cannot
+be cut: at the untagged `main` head the engine fails with
+`missing_tags_in_released_product`, and at the tag with `recut_required`.
+
+The procedure is steps 2 to 9 above with one change: `base` is the highest
+stable tag of the product, not `0.11.0`. The engine refuses any other value,
+including a lower tag that is still an ancestor, a version with no tag, a tag
+off the history of `B`, and anything that is not a strict `X.Y.Z` (no `v`
+prefix, prerelease, build metadata or whitespace). The ratification inputs in
+`scripts/adoption_ratification.py` and the vendored amendment do not change.
+In step 3, find the base and write the record (inside the worktree) with:
+
+```bash
+git fetch --tags origin +refs/heads/main:refs/remotes/origin/main
+BASE_TAG="$(git tag --list 'v[0-9]*' | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+  | sort -V | tail -n 1)"
+git merge-base --is-ancestor "$BASE_TAG" refs/remotes/origin/main   # must succeed
+git log --format='%h %s' "$BASE_TAG..refs/remotes/origin/main"      # the reason, for the issue
+A="$(git rev-parse refs/remotes/origin/main)"
+printf '{\n  "anchor": "%s",\n  "base": "%s"\n}\n' "$A" "${BASE_TAG#v}" > release/ADOPTION.json
+```
+
+The adoption issue records the anchor, the base tag and the commits that put
+`main` ahead of it. Expected engine output at `C` (step 4): `base` `v<base>`,
+`candidate` `<base with patch + 1>-rc.0` for a pre-1.0 product, `N` 0,
+`promotable` false. Impact and the release notes then cover `v<base>..H`, so
+the post-release commits on `main` appear in the next release's notes; `N`
+still counts `B..H`. The first commit on `release/new` retires the record; the
+placeholder is already on `main` after a new-model release, so no placeholder
+commit is needed. The record stays single use: once the next stable tag
+exists, `v<base>` is no longer the highest and the record is refused.
+
+A simulation of the cycle after `0.11.1` on a clone of the real history
+(anchor `956baa0`, base `0.11.1`) gave `0.11.2-rc.0` at `C`, and `0.11.2-rc.2`
+promotable after the retirement and one feature commit. The same shape is
+covered end to end in `tests/test_adoption_reuse.py`.
+
 ## Lessons from the first live cut (2026-10-09)
 
 The first live cut was rolled back once and redone. These are the facts that

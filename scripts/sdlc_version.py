@@ -7,7 +7,10 @@ engine's provenance fields and adds pypi_version. --format env emits the W6
 build contract. GA approval is read only from H, adoption only from untagged B.
 
 Adoption records the sole parent of untagged B as anchor, where the record
-must be absent. Adoption parses impact from the stable base, but counts from B.
+must be absent, and the base version X.Y.Z, whose vX.Y.Z must be the highest
+stable tag and an ancestor of B. The base is not fixed in the engine, so the
+route serves any cycle that reaches its cut with main ahead of the last stable
+tag. Adoption parses impact from the stable base, but counts from B.
 The cut must add only release/ADOPTION.json, and promotion requires its absence
 from H. Adoption JSON includes adoption_retired to report that absence.
 It requires --adoption-ratified YYYY-MM-DD:<ref>, with a nonempty reference token
@@ -40,8 +43,6 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from scripts.compute_release import classify  # noqa: E402
-
-ADOPTION_BASE = "0.11.0"
 
 _NUMBER = r"(0|[1-9][0-9]*)"
 _STABLE = re.compile(rf"v{_NUMBER}\.{_NUMBER}\.{_NUMBER}")
@@ -121,14 +122,18 @@ def _adoption_base(git: Git, cut: str, tags: list[str]) -> str | None:
         record = json.loads(raw)
     except (ValueError, TypeError) as error:
         raise VersionError("bad_adoption", "adoption record must be a JSON object") from error
+    # The base comes from the record, so it must be a strict X.Y.Z whose tag
+    # exists, is the highest stable tag by precedence, and is an ancestor of B.
+    base = record.get("base") if isinstance(record, dict) else None
+    tag = f"v{base}" if isinstance(base, str) and _STABLE.fullmatch(f"v{base}") else None
     if (
         not isinstance(record, dict)
         or not isinstance(record.get("anchor"), str)
         or not re.fullmatch(rf"[0-9a-fA-F]{{{len(cut)}}}", record["anchor"])
-        or record.get("base") != ADOPTION_BASE
-        or not tags
-        or max(tags, key=_version) != f"v{ADOPTION_BASE}"
-        or not git.ancestor(git.resolve(f"refs/tags/v{ADOPTION_BASE}"), cut)
+        or tag is None
+        or tag not in tags
+        or max(tags, key=_version) != tag
+        or not git.ancestor(git.resolve(f"refs/tags/{tag}"), cut)
     ):
         raise VersionError("bad_adoption", "record must name untagged cut and highest stable base")
     try:
@@ -144,7 +149,7 @@ def _adoption_base(git: Git, cut: str, tags: list[str]) -> str | None:
         "A\trelease/ADOPTION.json",
     ]:
         raise VersionError("bad_adoption", "cut must add only release/ADOPTION.json")
-    return f"v{ADOPTION_BASE}"
+    return tag
 
 
 def compute_version(

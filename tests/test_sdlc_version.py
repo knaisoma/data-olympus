@@ -353,6 +353,180 @@ def test_adoption_compares_stable_tags_numerically(repo, tag):
             repo.compute()
 
 
+# The record route after a release: main advanced past the last stable tag.
+POST_RELEASE = (
+    "fix(release): verify published stable files (#358)",
+    "fix(release): continue a promotion after the stable tag exists (#359)",
+    "docs(release): record that the pypi environments have no reviewers (#360)",
+    "docs(release): the pypi environment admits only main (#361)",
+)
+
+
+def released_twice(repo, *, base="0.11.1", tag_s=True):
+    """v0.11.0, a release squash tagged v0.11.1, four main commits, then the cut.
+
+    The squash carries a breaking commit before it, so impact computed from
+    v0.11.0 instead of v0.11.1 would name 0.12.0. Returns (squash, anchor, cut).
+    """
+    repo.git("tag", "-a", "v0.11.0", "-m", "Release 0.11.0")
+    repo.commit("feat!: breaking change released in 0.11.1")
+    squash = repo.commit("release: 0.11.1")
+    if tag_s:
+        repo.git("tag", "-a", "v0.11.1", "-m", "Release 0.11.1")
+    for message in POST_RELEASE:
+        anchor = repo.commit(message)
+    repo.write("release/ADOPTION.json",
+               json.dumps({"anchor": anchor, "base": base}, indent=2) + "\n")
+    cut = repo.commit("chore(release): record adoption cut")
+    repo.cut(None)
+    return squash, anchor, cut
+
+
+def test_record_route_after_a_release_simulates_the_next_cycle(repo):
+    """The live shape after 0.11.1: base 0.11.1, impact from the tag, N from B."""
+    _, _, cut = released_twice(repo)
+    at_cut = repo.compute()
+    assert at_cut == {
+        "base": "v0.11.1", "B": cut, "M": cut, "H": cut, "N": 0, "target": "0.11.2",
+        "candidate": "0.11.2-rc.0", "pypi_version": "0.11.2rc0", "promotable": False,
+        "adoption": "ratified", "adoption_retired": False,
+    }
+    repo.git("rm", "-q", "release/ADOPTION.json")
+    retired = repo.commit("chore(release): retire adoption record")
+    result = repo.compute()
+    assert (result["H"], result["N"], result["candidate"]) == (retired, 1, "0.11.2-rc.1")
+    assert (result["promotable"], result["adoption_retired"]) == (True, True)
+    head = repo.commit("feat(search): next cycle feature")
+    assert repo.compute() == {
+        "base": "v0.11.1", "B": cut, "M": cut, "H": head, "N": 2, "target": "0.11.2",
+        "candidate": "0.11.2-rc.2", "pypi_version": "0.11.2rc2", "promotable": True,
+        "adoption": "ratified", "adoption_retired": True,
+    }
+    # The impact range is v0.11.1..H: the post-release fixes and docs, the
+    # record and its retirement and the feature, never the breaking commit
+    # released in 0.11.1 nor the squash subject itself.
+    subjects = repo.git("log", "--no-merges", "--format=%s", "v0.11.1..HEAD").splitlines()
+    assert subjects == ["feat(search): next cycle feature",
+                        "chore(release): retire adoption record",
+                        "chore(release): record adoption cut", *reversed(POST_RELEASE)]
+    repo.commit("fix!: drop the legacy format")
+    assert repo.compute()["candidate"] == "0.12.0-rc.3"
+
+
+def test_record_route_after_a_release_survives_its_own_promotion_tag(repo):
+    """Promotion recomputes after tagging S with only its own tag ignored."""
+    _, _, cut = released_twice(repo)
+    repo.git("rm", "-q", "release/ADOPTION.json")
+    repo.commit("chore(release): retire adoption record")
+    head = repo.commit("fix: next cycle fix")
+    version = repo.compute(main=cut)
+    squash = repo.git("commit-tree", f"{head}^{{tree}}", "-p", cut, "-m", "release: 0.11.2")
+    repo.git("update-ref", "refs/heads/main", squash)
+    repo.git("tag", "-a", "v0.11.2", "-m", "Release 0.11.2", squash)
+    with pytest.raises(engine.VersionError, match="bad_adoption"):
+        repo.compute(main=cut)
+    assert repo.compute(main=cut, ignore_tags=frozenset({"v0.11.2"})) == version
+    assert version["candidate"] == "0.11.2-rc.2"
+    # Ignoring the base itself leaves no valid base: the record is refused.
+    with pytest.raises(engine.VersionError, match="bad_adoption"):
+        repo.compute(main=cut, ignore_tags=frozenset({"v0.11.1"}))
+
+
+@pytest.mark.parametrize("base", [
+    "0.11.0",  # exists and is an ancestor, but v0.11.1 is higher
+    "0.11.2", "0.12.0", "1.0.0",  # no such tag
+    "0.11", "v0.11.1", "0.11.1-rc.1", "0.11.1+build", " 0.11.1", "0.11.1 ", "0.11.1\n",
+    "00.11.1", "0.011.1", "0.11.01", "", 0.11, None, ["0.11.1"], {"v": "0.11.1"},
+])
+def test_record_route_after_a_release_refuses_other_bases(repo, base):
+    released_twice(repo, base=base)
+    with pytest.raises(engine.VersionError, match="bad_adoption"):
+        repo.compute()
+
+
+def test_record_without_any_stable_tag_is_refused(repo):
+    """No stable tag at all: a record is refused, never treated as a first release."""
+    anchor = repo.commit("fix: work")
+    repo.write("release/ADOPTION.json", json.dumps({"anchor": anchor, "base": "0.11.1"}))
+    repo.commit("chore(release): record adoption cut")
+    repo.cut(None)
+    with pytest.raises(engine.VersionError, match="bad_adoption"):
+        repo.compute()
+
+
+def test_record_route_after_a_release_refuses_a_missing_base_tag(repo):
+    released_twice(repo, tag_s=False)
+    with pytest.raises(engine.VersionError, match="bad_adoption"):
+        repo.compute()
+
+
+@pytest.mark.parametrize("tag", ["v0.11.2", "v0.12.0", "v1.0.0"])
+def test_record_route_after_a_release_refuses_a_newer_stable_tag(repo, tag):
+    """A newer stable tag anywhere, even off B's history, invalidates the record."""
+    squash, _, _ = released_twice(repo)
+    side = repo.git("commit-tree", f"{squash}^{{tree}}", "-p", squash, "-m", "fix: side")
+    repo.git("tag", tag, side)
+    with pytest.raises(engine.VersionError, match="bad_adoption"):
+        repo.compute()
+    repo.git("tag", "-d", tag)
+    assert repo.compute()["base"] == "v0.11.1"
+
+
+def test_record_route_after_a_release_refuses_a_base_off_b_history(repo):
+    """v0.11.1 is the highest stable tag but tags a side commit, not an ancestor of B."""
+    squash, _, _ = released_twice(repo, tag_s=False)
+    side = repo.git("commit-tree", f"{squash}^{{tree}}", "-p", squash, "-m", "release: 0.11.1")
+    repo.git("tag", "-a", "v0.11.1", "-m", "Release 0.11.1", side)
+    with pytest.raises(engine.VersionError, match="bad_adoption"):
+        repo.compute()
+
+
+def test_record_route_after_a_release_ignores_the_record_on_a_tagged_cut(repo):
+    _, _, cut = released_twice(repo)
+    repo.git("tag", "-a", "v0.11.2", "-m", "Release 0.11.2", cut)
+    result = repo.compute()
+    assert (result["base"], result["B"], result["candidate"]) == ("v0.11.2", cut, "0.11.3-rc.0")
+    assert "adoption" not in result
+
+
+@pytest.mark.parametrize("kind", ["record_at_anchor", "extra_file", "distant_anchor"])
+def test_record_route_after_a_release_keeps_the_cut_rules(repo, kind):
+    repo.git("tag", "-a", "v0.11.0", "-m", "Release 0.11.0")
+    repo.commit("release: 0.11.1")
+    repo.git("tag", "-a", "v0.11.1", "-m", "Release 0.11.1")
+    if kind == "record_at_anchor":
+        # The first cycle's record was never retired: single use.
+        repo.write("release/ADOPTION.json", json.dumps({"anchor": "0" * 40, "base": "0.11.0"}))
+    anchor = repo.commit(POST_RELEASE[0])
+    if kind == "distant_anchor":
+        repo.commit(POST_RELEASE[1])
+    if kind == "extra_file":
+        repo.write("src/extra.py", "extra = 1\n")
+    repo.write("release/ADOPTION.json", json.dumps({"anchor": anchor, "base": "0.11.1"}))
+    repo.commit("chore(release): record adoption cut")
+    repo.cut(None)
+    with pytest.raises(engine.VersionError, match="bad_adoption"):
+        repo.compute()
+
+
+def test_record_route_after_a_release_refuses_a_merge_cut(repo):
+    _, anchor, _ = released_twice(repo)
+    side = repo.git("commit-tree", f"{anchor}^{{tree}}", "-p", anchor, "-m", "chore: side")
+    tree = repo.git("rev-parse", "HEAD^{tree}")
+    merge = repo.git("commit-tree", tree, "-p", anchor, "-p", side, "-m", "Merge side")
+    with pytest.raises(engine.VersionError, match="bad_adoption"):
+        repo.compute(head=merge, main=merge)
+
+
+def test_record_route_after_a_release_keeps_ratification_and_hotfix_rules(repo):
+    released_twice(repo)
+    with pytest.raises(engine.VersionError, match="hotfix_scope"):
+        repo.compute(branch="hotfix/new")
+    with pytest.raises(engine.VersionError, match="adoption_unratified"):
+        repo.compute(adoption_ratified=None)
+    assert repo.compute(adoption_ratified=None, adoption_dry_run=True)["promotable"] is False
+
+
 @pytest.mark.parametrize(("flags", "state"), [
     ([], None),
     (["--adoption-dry-run"], "unratified"),

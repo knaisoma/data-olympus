@@ -122,6 +122,14 @@ also requires no stable tag on `B` and `v0.11.0` to be the highest stable tag
 and an ancestor of `B`. If `B` has a stable tag, ignore the adoption record
 and apply the normal stable-base checks.
 
+The engine does not fix the base at `0.11.0`. It takes `base` from the record
+as a strict `X.Y.Z` and requires `v<base>` to exist, to be the highest stable
+tag by SemVer precedence and to be an ancestor of `B`, which is the
+amendment's own validity rule for a released product. A later cycle whose
+`main` advanced past its last stable tag (as after `0.11.1`) uses the same
+route with that tag as `base`; see "Reusing the record route after a release"
+in `docs/releases/adoption-cut-runbook.md`.
+
 For this adoption cycle, compute impact and release notes over `v<base>..H`,
 but count `N` over `B..H`. The first commit on `release/new` sets the placeholder;
 the second deletes the record (`chore(release): retire adoption record`).

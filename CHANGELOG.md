@@ -119,6 +119,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   if the holder dies, so a crash no longer leaves a `.reclaim` lock file that
   blocks reclaim forever. The marker is written to a temporary file and renamed
   into place.
+* Let the STD-U-821 adoption record name the highest stable tag as its base.
+  The version engine accepted the record only with base `0.11.0`, so once
+  `v0.11.1` existed and `main` had advanced past it (#358 to #361) the next
+  cycle could be cut neither at `main` (`missing_tags_in_released_product`)
+  nor at the tag (`recut_required`). The engine now takes the base from the
+  record: a strict `X.Y.Z` whose `vX.Y.Z` exists, is the highest stable tag by
+  SemVer precedence, and is an ancestor of the cut. Every other record rule
+  and the pinned ratification are unchanged, and the record stays single use.
+  The runbook gains "Reusing the record route after a release".
 * Continue a `promote-release.yml` promotion after its stable tag exists. The
   engine counted the new `vX.Y.Z` on `S` as a released version, so the
   recheck after tagging recomputed the release against a stable tag above its

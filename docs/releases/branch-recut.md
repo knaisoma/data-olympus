@@ -95,10 +95,10 @@ release in both modes: annotated, and on a commit whose subject is
 `release: <version>` (which may be main's head). A lightweight tag or a tag on
 an ordinary commit refuses with `release tag must be annotated: <tag>` or
 `release squash subject does not match tag <tag>`, so an ad hoc tag cannot
-steer hotfix numbering. Releases up to the adoption base `v0.11.0` predate the
-squash model and are tagged on ordinary commits; for them a hotfix cut
-requires only the annotation. Recut always requires the release subject, so it
-is never planned from a pre-model tag: the first recut follows the first
+steer hotfix numbering. Releases up to `v0.11.0` (the first adoption base)
+predate the squash model and are tagged on ordinary commits; for them a hotfix
+cut requires only the annotation. Recut always requires the release subject, so
+it is never planned from a pre-model tag: the first recut follows the first
 new-model release.
 
 The recut tag must be that newest stable tag, and point to main's head or

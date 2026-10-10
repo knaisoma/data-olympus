@@ -27,6 +27,9 @@ MAIN = "refs/heads/main"
 RELEASE = "refs/heads/release/new"
 HOTFIX = "refs/heads/hotfix/new"
 PRESERVE = "refs/heads/sdlc-preserve/"
+# The last release tagged before the squash model, on an ordinary commit. This
+# is a fixed historical fact, not the adoption base, which each record names.
+LAST_PRE_SQUASH_RELEASE = "v0.11.0"
 # Old-path privileged workflows outside the data-olympus-promotion lock group.
 OLD_PATH_WORKFLOWS = ("tag-release.yml", "rc-publish.yml", "set-channel.yml")
 
@@ -186,14 +189,14 @@ def _require_release_tag(cwd, refs, tag, commit, *, strict):
     """The newest stable tag on main's line must be a reconciled release.
 
     It must be annotated and name a `release: X.Y.Z` squash for its version.
-    Releases up to the adoption base (v0.11.0 and older) predate the squash
-    model and are tagged on ordinary commits, so in hotfix mode only the
+    Releases up to v0.11.0 (the base of the first adoption cut) predate the
+    squash model and are tagged on ordinary commits, so in hotfix mode only the
     annotation is required for them. Recut is strict: a recut always follows
     a new-model release, never a historical one.
     """
     if _git(cwd, "cat-file", "-t", refs[f"refs/tags/{tag}"]) != "tag":
         raise RecutError(f"release tag must be annotated: {tag}")
-    historical = engine._version(tag) <= engine._version(f"v{engine.ADOPTION_BASE}")
+    historical = engine._version(tag) <= engine._version(LAST_PRE_SQUASH_RELEASE)
     if (strict or not historical) and _git(
         cwd, "show", "-s", "--format=%s", commit,
     ) != f"release: {tag[1:]}":
