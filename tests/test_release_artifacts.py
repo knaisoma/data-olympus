@@ -606,3 +606,18 @@ def test_stable_cli_rejects_candidate_from_another_source(
                 str(tmp_path / "stable.json"),
             ]
         )
+
+
+def test_build_backend_requirement_is_pinned_exactly() -> None:
+    build_system = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "build-system"
+    ]
+    requires = build_system["requires"]
+    assert requires, "[build-system].requires must not be empty"
+    for requirement in requires:
+        name, separator, version = requirement.partition("==")
+        assert separator == "==" and version.strip(), (
+            f"build requirement {requirement!r} must be pinned with an exact =="
+        )
+        assert not any(ch in version for ch in "<>=!~*,;"), requirement
+    assert any(r.startswith("hatchling==") for r in requires)
