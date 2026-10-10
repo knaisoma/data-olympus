@@ -90,6 +90,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* Make the onboarding bootstrap in-flight claim single-winner. The claim took
+  a lock-free `O_CREAT|O_EXCL` fast path and locked only the reclaim of a stale
+  marker, and the two paths did not exclude each other. A marker created but
+  not yet written read as expired and was reclaimed under its writer, and a
+  reclaimer's unlink let a fast-path contender recreate the marker in the gap.
+  Concurrent claims could therefore both win, reopening the double-bootstrap
+  race the guard exists to close, or fail with `FileExistsError` (about 1% and
+  10 to 20% of rounds at 16 threads). This is also why
+  `test_concurrent_reclaim_grants_exactly_one_winner` failed intermittently in
+  CI. Claim and release now run under a per-key `flock`, which the kernel drops
+  if the holder dies, so a crash no longer leaves a `.reclaim` lock file that
+  blocks reclaim forever. The marker is written to a temporary file and renamed
+  into place.
 * Continue a `promote-release.yml` promotion after its stable tag exists. The
   engine counted the new `vX.Y.Z` on `S` as a released version, so the
   recheck after tagging recomputed the release against a stable tag above its
