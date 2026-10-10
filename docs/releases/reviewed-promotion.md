@@ -94,8 +94,8 @@ no fallback to a human token:
 - Adoption ratification needs no repository setting. This workflow's checkout
   is the squash `S`, whose tree equals `H`, so the proof does not use its own
   copy: when the cut carries `release/ADOPTION.json` it reads
-  `scripts/adoption_ratification.py` and the vendored amendment as blobs of the
-  RC's recorded `M`, and it still refuses while the record exists at `H`. See
+  `scripts/adoption_ratification.py` and both vendored amendments (1.3 and 1.5)
+  as blobs of the RC's recorded `M`, and it still refuses while the record exists at `H`. See
   [the adoption cut runbook](adoption-cut-runbook.md).
 
 ## Preparing the release squash

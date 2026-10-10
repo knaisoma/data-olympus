@@ -78,7 +78,8 @@ object contains:
 
 Any other evidence field is ignored. In particular, adoption ratification is
 never taken from evidence: the planner passes the pinned values from
-`scripts/adoption_ratification.py` and the vendored amendment to the engine.
+`scripts/adoption_ratification.py` and both vendored amendments (1.3 and 1.5)
+to the engine.
 
 ## Checks before any change
 

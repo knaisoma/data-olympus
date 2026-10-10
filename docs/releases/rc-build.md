@@ -25,10 +25,10 @@ be promoted. A dry-run dispatch on a work branch uses the normal release version
 rules while checking that branch's exact head. It still requires a valid tagged
 cut or a valid adoption record.
 
-When the cut carries `release/ADOPTION.json`, preflight reads the pinned
-ratification (`scripts/adoption_ratification.py`) and the vendored STD-U-821
-amendment from `origin/main`'s Git blobs, never from the checked-out `H`, and
-the engine validates the record with them. Only a dispatched dry run evaluates
+When the cut carries `release/ADOPTION.json`, preflight reads both pinned
+ratifications (`scripts/adoption_ratification.py`, STD-U-821 amendments 1.3
+and 1.5) and both vendored amendments from `origin/main`'s Git blobs, never
+from the checked-out `H`, and the engine validates the record with them. Only a dispatched dry run evaluates
 the record in adoption dry-run mode, which is never promotable. The cut build
 itself (`N=0`) builds and verifies but is not promotable. The reasoning and the
 cut sequence are in [the adoption cut runbook](adoption-cut-runbook.md).

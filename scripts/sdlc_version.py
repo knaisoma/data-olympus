@@ -8,15 +8,21 @@ build contract. GA approval is read only from H, adoption only from untagged B.
 
 Adoption records the sole parent of untagged B as anchor, where the record
 must be absent, and the base version X.Y.Z, whose vX.Y.Z must be the highest
-stable tag and an ancestor of B. The base is not fixed in the engine, so the
-route serves any cycle that reaches its cut with main ahead of the last stable
-tag. Adoption parses impact from the stable base, but counts from B.
+stable tag, an ancestor of B and a strict ancestor of the anchor (STD-U-821
+amendment 1.5). Every v<digit> tag in the repository must be a strict stable
+or prerelease version, so a malformed tag cannot hide a higher release.
+Adoption parses impact from the stable base, but counts from B.
 The cut must add only release/ADOPTION.json, and promotion requires its absence
 from H. Adoption JSON includes adoption_retired to report that absence.
-It requires --adoption-ratified YYYY-MM-DD:<ref>, with a nonempty reference token
-and a date no later than today UTC, plus --standard-file (standard_file in the
-API) carrying an exact Ratification: YYYY-MM-DD line. --adoption-dry-run evaluates an unratified
-record without allowing promotion.
+It requires two ratifications, each YYYY-MM-DD:<ref> with a nonempty reference
+token and a date no later than today UTC, and each with a standard file
+carrying the exact line Ratification: YYYY-MM-DD inside its amendment section:
+--adoption-ratified with --standard-file (amendment 1.3) and
+--extension-ratified with --extension-standard-file (amendment 1.5); the API
+names are adoption_ratified, standard_file, extension_ratified and
+extension_standard_file. --adoption-dry-run evaluates a record that lacks
+them without allowing promotion; a ratification that is given is always
+checked.
 
 ignore_tags (API only, default empty) removes exact stable tag names from the
 enumeration of released versions, which decides the highest stable tag for the
@@ -114,10 +120,18 @@ def _impact(message: str) -> int:
     return 3 if breaking else 2 if kind == "feat" else 1 if kind == "fix" else 0
 
 
-def _adoption_base(git: Git, cut: str, tags: list[str]) -> str | None:
+def _adoption_base(git: Git, cut: str, tags: list[str], every_tag: list[str]) -> str | None:
     raw = git.file(cut, "release/ADOPTION.json")
     if raw is None:
         return None
+    # Amendment 1.5: a malformed version tag anywhere could hide a higher
+    # release from the highest-tag rule, so refuse the record outright.
+    malformed = [tag for tag in every_tag if re.match(r"v[0-9]", tag)
+                 and not _STABLE.fullmatch(tag) and not _PRERELEASE.fullmatch(tag)]
+    if malformed:
+        raise VersionError(
+            "invalid_stable_tag", f"non-strict version tags in repository: {', '.join(malformed)}",
+        )
     try:
         record = json.loads(raw)
     except (ValueError, TypeError) as error:
@@ -145,11 +159,54 @@ def _adoption_base(git: Git, cut: str, tags: list[str]) -> str | None:
         or git.file(anchor, "release/ADOPTION.json") is not None
     ):
         raise VersionError("bad_adoption", "anchor must be sole parent and have no adoption record")
+    # Amendment 1.5: the route exists only while main is ahead of the tag.
+    if int(git.run("rev-list", "--count", f"{git.resolve(f'refs/tags/{tag}')}..{anchor}")) < 1:
+        raise VersionError("bad_adoption", "base tag must be a strict ancestor of the anchor")
     if git.run("diff", "--no-ext-diff", "--name-status", anchor, cut).splitlines() != [
         "A\trelease/ADOPTION.json",
     ]:
         raise VersionError("bad_adoption", "cut must add only release/ADOPTION.json")
     return tag
+
+
+_AMENDMENTS = (("1.3", "adoption_ratified", "standard_file"),
+               ("1.5", "extension_ratified", "extension_standard_file"))
+
+
+def _check_ratification(
+    amendment: str, ratified: object, standard_file: object, today: date,
+) -> None:
+    """Require <date>:<ref> and the exact Ratification line in the amendment's section."""
+    try:
+        if not isinstance(ratified, str) or not isinstance(standard_file, (str, Path)):
+            raise ValueError
+        match = re.fullmatch(r"([0-9]{4}-[0-9]{2}-[0-9]{2}):\S+", ratified)
+        if match is None:
+            raise ValueError
+        ratified_date = match[1]
+        if date.fromisoformat(ratified_date) > today:
+            raise ValueError
+        # The engine, not each caller, requires the standard's ratification line.
+        lines = Path(standard_file).read_text(encoding="utf-8").splitlines()
+        number = re.escape(amendment)
+        heading = next((i for i, line in enumerate(lines) if re.fullmatch(
+            rf"## (?:Amendment|Proposed amendment) {number}(?:: .+)?", line,
+        )), None)
+        if heading is None:
+            raise ValueError
+        section_start = heading + 1
+        section_end = next((i for i in range(section_start, len(lines))
+                            if lines[i].startswith(("### ", "## "))), len(lines))
+        if f"Ratification: {ratified_date}" not in lines[section_start:section_end]:
+            raise ValueError
+    except (ValueError, OSError) as error:
+        raise VersionError(
+            "adoption_unratified",
+            f"amendment {amendment} ratification requires YYYY-MM-DD:<ref>, a non-future "
+            f"UTC date, and a matching Ratification line under ## Amendment {amendment} "
+            f"or ## Proposed amendment {amendment} before the next section in its "
+            "standard file",
+        ) from error
 
 
 def compute_version(
@@ -158,6 +215,8 @@ def compute_version(
     adoption_ratified: str | None = None, adoption_dry_run: bool = False,
     standard_file: str | Path | None = None, today: date | None = None,
     ignore_tags: frozenset[str] = frozenset(),
+    extension_ratified: str | None = None,
+    extension_standard_file: str | Path | None = None,
 ) -> dict:
     """Freeze refs, validate the cut, and derive a candidate from its commit set.
 
@@ -206,44 +265,29 @@ def compute_version(
     if len(stable) > 1:
         raise VersionError("ambiguous_stable_tag", "more than one stable tag on cut")
     # A stable cut tag takes precedence even if an adoption record remains.
-    base = stable[0] if stable else _adoption_base(git, b, all_stable)
+    base = stable[0] if stable else _adoption_base(git, b, all_stable, tags)
     if branch == "hotfix/new" and (not stable or base != max(all_stable, key=_version)):
         raise VersionError("hotfix_scope", "hotfix/new requires the current stable main tag")
     adoption = base is not None and not stable
-    if adoption and adoption_ratified is not None:
-        try:
-            match = re.fullmatch(r"([0-9]{4}-[0-9]{2}-[0-9]{2}):\S+", adoption_ratified)
-            if match is None:
-                raise ValueError
-            ratified_date = match[1]
-            if date.fromisoformat(ratified_date) > (today or datetime.now(UTC).date()):
-                raise ValueError
-            # The engine, not each caller, requires the standard's ratification line.
-            if standard_file is None:
-                raise ValueError
-            lines = Path(standard_file).read_text(encoding="utf-8").splitlines()
-            heading = next((i for i, line in enumerate(lines) if re.fullmatch(
-                r"## (?:Amendment|Proposed amendment) 1\.3(?:: .+)?", line,
-            )), None)
-            if heading is None:
-                raise ValueError
-            section_start = heading + 1
-            section_end = next((i for i in range(section_start, len(lines))
-                                if lines[i].startswith(("### ", "## "))), len(lines))
-            if f"Ratification: {ratified_date}" not in lines[section_start:section_end]:
-                raise ValueError
-        except (ValueError, OSError) as error:
+    ratifications = {"adoption_ratified": adoption_ratified, "standard_file": standard_file,
+                     "extension_ratified": extension_ratified,
+                     "extension_standard_file": extension_standard_file}
+    ratified = False
+    if adoption:
+        # Amendment 1.5: a valid record in effect needs both ratifications.
+        for amendment, value, document in _AMENDMENTS:
+            if ratifications[value] is not None:
+                _check_ratification(amendment, ratifications[value],
+                                    ratifications[document], today or datetime.now(UTC).date())
+        missing = [amendment for amendment, value, _ in _AMENDMENTS
+                   if ratifications[value] is None]
+        ratified = not missing
+        if missing and not adoption_dry_run:
             raise VersionError(
                 "adoption_unratified",
-                "ratification requires YYYY-MM-DD:<ref>, a non-future UTC date, "
-                "and a matching Ratification line under ## Amendment 1.3 "
-                "or ## Proposed amendment 1.3 "
-                "before the next section in --standard-file",
-            ) from error
-    if adoption and adoption_ratified is None and not adoption_dry_run:
-        raise VersionError(
-            "adoption_unratified", "pass --adoption-ratified YYYY-MM-DD:<ref> or dry-run",
-        )
+                f"amendment {' and '.join(missing)} ratification missing: pass "
+                "--adoption-ratified and --extension-ratified YYYY-MM-DD:<ref> or dry-run",
+            )
 
     ga = False
     if branch == "release/new":
@@ -296,10 +340,8 @@ def compute_version(
     return {
         "base": base, "B": b, "H": h, "M": m, "N": count, "target": target,
         "candidate": candidate, "pypi_version": f"{target}{'.dev' if hotfix else 'rc'}{count}",
-        "promotable": count > 0 and adoption_retired and (
-            not adoption or adoption_ratified is not None
-        ),
-        **({"adoption": "ratified" if adoption_ratified else "unratified",
+        "promotable": count > 0 and adoption_retired and (not adoption or ratified),
+        **({"adoption": "ratified" if ratified else "unratified",
             "adoption_retired": adoption_retired} if adoption else {}),
     }
 
@@ -328,12 +370,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env-output", type=Path)
     parser.add_argument("--adoption-ratified", metavar="YYYY-MM-DD:<ref>")
     parser.add_argument("--standard-file", type=Path)
+    parser.add_argument("--extension-ratified", metavar="YYYY-MM-DD:<ref>")
+    parser.add_argument("--extension-standard-file", type=Path)
     parser.add_argument("--adoption-dry-run", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.adoption_ratified is not None and args.standard_file is None:
             raise VersionError(
                 "adoption_unratified", "--adoption-ratified requires --standard-file",
+            )
+        if args.extension_ratified is not None and args.extension_standard_file is None:
+            raise VersionError(
+                "adoption_unratified", "--extension-ratified requires --extension-standard-file",
             )
         if args.fetch:
             git = Git(Path.cwd())
@@ -346,6 +394,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.bootstrap_cut else None,
             adoption_ratified=args.adoption_ratified, adoption_dry_run=args.adoption_dry_run,
             standard_file=args.standard_file,
+            extension_ratified=args.extension_ratified,
+            extension_standard_file=args.extension_standard_file,
         )
         document = json.dumps(result, indent=2) + "\n"
         env = env_lines(result)

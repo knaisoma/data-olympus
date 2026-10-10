@@ -112,8 +112,7 @@ def validate_candidate(*, cwd, head, main, branch):
     try:
         return engine.compute_version(
             cwd=cwd, head=head, main=main, branch=branch,
-            adoption_ratified=ratification.RATIFIED,
-            standard_file=Path(ROOT) / ratification.STANDARD_FILE,
+            **ratification.engine_kwargs(Path(ROOT)),
         )
     except engine.VersionError as error:
         raise RecutError(str(error)) from error

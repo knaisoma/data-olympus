@@ -50,11 +50,15 @@ adoption record and its ratification are valid. The question this section
 answers is where the ratification arguments come from, because the code that
 supplies them must not be controllable by the code it judges.
 
-- The values are the constants `RATIFIED` and `STANDARD_FILE` in
+- The values are two pairs of constants in
   `scripts/adoption_ratification.py`, checked into `main` through a reviewed
-  pull request, plus the vendored amendment at `STANDARD_FILE`. They are never
-  workflow inputs, repository variables, release evidence or files from the
-  tree of `H`.
+  pull request: `RATIFIED` with `STANDARD_FILE` for amendment 1.3 (the record
+  route) and `EXTENSION_RATIFIED` with `EXTENSION_STANDARD_FILE` for amendment
+  1.5 (the reuse of the route after a release, see "Reusing the record route
+  after a release"), plus the vendored amendments at both paths. Since
+  amendment 1.5 the engine requires both ratifications for every record,
+  including a first adoption. They are never workflow inputs, repository
+  variables, release evidence or files from the tree of `H`.
 - Stage 2 (`rc-publish-stage.yml`, `scripts/rc_verify_and_publish.py`) runs
   from a checkout of `main` through `workflow_run`. It imports the constants
   and resolves the standard file relative to that checkout. `H` is fetched as
@@ -69,10 +73,10 @@ supplies them must not be controllable by the code it judges.
   there is the code-owner review of `scripts/` on `release/new`.
 - Stage 1 (`rc-build.yml`) checks out and runs the code at `H`, so its own copy
   of the module is candidate data. `scripts/rc_decide.py preflight` therefore
-  reads `scripts/adoption_ratification.py` and the standard file as blobs of the
-  fetched `origin/main` (the frozen `M`), parses the module with `ast` (it is
-  never imported or executed, and anything other than one string literal per
-  constant is refused), writes the standard blob to `to-delete/rc-trusted/`
+  reads `scripts/adoption_ratification.py` and both standard files as blobs of
+  the fetched `origin/main` (the frozen `M`), parses the module with `ast` (it
+  is never imported or executed, and anything other than one string literal per
+  constant is refused), writes the standard blobs to `to-delete/rc-trusted/`
   (outside the uploaded artifact), and runs the engine once with them. A
   missing blob leaves no file, so the engine refuses; a leftover file from an
   earlier run is deleted first.
@@ -84,12 +88,12 @@ ratification an honest build uses. The security boundary is stage 2, which
 never runs code from `H`, recomputes the identity with `main`'s constants and
 refuses any provenance that disagrees. Promotion repeats the recompute with
 `M`'s values and refuses while `release/ADOPTION.json` exists at `H`. Code-owner
-review on `release/new` also covers `release/` and the vendored amendment, so
+review on `release/new` also covers `release/` and the vendored amendments, so
 neither can change without the same review as `scripts/`.
 
 Adoption dry-run mode (`--adoption-dry-run`) is used only when preflight sees a
 `workflow_dispatch` with `dry_run: true`. It evaluates the record without the
-ratification, is never promotable, and stage 2 admits only `push` builds.
+ratifications, is never promotable, and stage 2 admits only `push` builds.
 Pushes and non-dry-run dispatches always use the ratified path.
 
 ## Preconditions
@@ -243,7 +247,9 @@ Read-only, from a checkout of `main` at `C` (the trusted copies):
 uv run python scripts/sdlc_version.py --head "$C" --main "$C" \
   --branch release/new \
   --adoption-ratified "$(uv run python -c 'from scripts.adoption_ratification import RATIFIED; print(RATIFIED)')" \
-  --standard-file docs/releases/std-u-821-amendment-1.3.md
+  --standard-file docs/releases/std-u-821-amendment-1.3.md \
+  --extension-ratified "$(uv run python -c 'from scripts.adoption_ratification import EXTENSION_RATIFIED; print(EXTENSION_RATIFIED)')" \
+  --extension-standard-file docs/releases/std-u-821-amendment-1.5.md
 ```
 
 Expected: `candidate` `0.11.1-rc.0`, `N` 0, `promotable` false, `adoption`
@@ -293,7 +299,9 @@ git fetch origin +refs/heads/main:refs/remotes/origin/main \
 uv run python scripts/sdlc_version.py --head refs/remotes/origin/release/new \
   --main refs/remotes/origin/main --branch release/new \
   --adoption-ratified "$(uv run python -c 'from scripts.adoption_ratification import RATIFIED; print(RATIFIED)')" \
-  --standard-file docs/releases/std-u-821-amendment-1.3.md
+  --standard-file docs/releases/std-u-821-amendment-1.3.md \
+  --extension-ratified "$(uv run python -c 'from scripts.adoption_ratification import EXTENSION_RATIFIED; print(EXTENSION_RATIFIED)')" \
+  --extension-standard-file docs/releases/std-u-821-amendment-1.5.md
 ```
 
 Expected: `N` equal to the number of commits on `release/new` (2 with only the
@@ -440,49 +448,113 @@ redeploys recorded digests and never retags.
 
 ## Reusing the record route after a release
 
-Amendment 1.3 covers "a product that has already released" and reaches its cut
-with `main` ahead of its last stable tag. Its validity rules name no version:
-`v<base>` must be the highest stable tag by SemVer precedence and an ancestor
-of `B`. The engine follows that text and takes the base from the record, so the
-route is not limited to the first adoption. It applies whenever a release
-leaves `main` ahead of its tag, as after `0.11.1`, when the promotion fixes and
-docs (#358 to #361) had to land on `main` after the squash because stage 2 and
-promotion always run `main`'s definitions. Without a record that cycle cannot
-be cut: at the untagged `main` head the engine fails with
-`missing_tags_in_released_product`, and at the tag with `recut_required`.
+Amendment 1.3 grants the record route for one case, the adoption of a product
+whose `main` is ahead of its last stable tag because commits landed under the
+previous process, and calls the record single use. It does not cover a later
+cycle. That reuse is authorized by STD-U-821 amendment 1.5, ratified on
+2026-10-10 (company-knowledge #236, squash `2441459`,
+[vendored copy](std-u-821-amendment-1.5.md)). The trigger is structural: stage
+2 and promotion always run `main`'s definitions, so a release tooling defect
+that only a real release reveals can be repaired only on `main` after the
+stable tag exists, as with the release tooling repairs #358 to #361 and #364
+after `0.11.1`. Amendment 1.5 limits
+such commits to release tooling repairs, each a reviewed pull request. Without a
+record the next cycle cannot be cut: at the untagged `main` head the engine
+fails with `missing_tags_in_released_product`, and at the tag with
+`recut_required`.
 
-The procedure is steps 2 to 9 above with one change: `base` is the highest
-stable tag of the product, not `0.11.0`. The engine refuses any other value,
-including a lower tag that is still an ancestor, a version with no tag, a tag
-off the history of `B`, and anything that is not a strict `X.Y.Z` (no `v`
-prefix, prerelease, build metadata or whitespace). The ratification inputs in
-`scripts/adoption_ratification.py` and the vendored amendment do not change.
-In step 3, find the base and write the record (inside the worktree) with:
+The engine enforces the amendment as follows, and refuses the record otherwise:
+
+- `base` is a strict `X.Y.Z` whose `vX.Y.Z` exists and is the highest stable
+  tag by SemVer precedence. A lower tag that is still an ancestor, a version
+  with no tag, and anything that is not a strict `X.Y.Z` (a `v` prefix, a
+  prerelease, build metadata or whitespace) are refused.
+- `v<base>` is an ancestor of `B` and a strict ancestor of the anchor
+  (`git rev-list --count v<base>..<anchor>` is at least 1), so the route cannot
+  be used when `main` is not ahead of the tag.
+- No tag in the repository that starts with `v` followed by a digit may be
+  anything other than a strict stable version or a strict prerelease (for
+  example `v0.11.01` is refused with `invalid_stable_tag`), so a malformed tag
+  cannot hide a higher release. Tags without the `v` prefix, such as the
+  candidate tags `0.11.1-rc.5`, are not version tags here.
+- Both ratification lines are required: `Ratification: <date>` under
+  `## Amendment 1.3` in `STANDARD_FILE`, matching `RATIFIED`, and
+  `Ratification: <date>` under `## Amendment 1.5` in `EXTENSION_STANDARD_FILE`,
+  matching `EXTENSION_RATIFIED`. A missing file, a line outside its section, a
+  date mismatch, a future date or a value that is not `<date>:<ref>` is refused
+  with `adoption_unratified`. If amendment 1.5 is revoked (its ratification line
+  removed from the vendored copy, or the constant changed), the engine refuses
+  every record again.
+- Every other rule of amendment 1.3 stays: the record commit adds only
+  `release/ADOPTION.json`, the anchor is its sole parent and has no record,
+  `B` carries no stable tag, the record is deleted by the first commit on
+  `release/new`, and no hotfix is cut during that cycle.
+
+The record is single use per record, and only while its base is the highest
+stable tag: once the next stable tag exists, `v<base>` is no longer the highest
+and the same record is refused. A later need requires a new record and a new
+adoption issue entry under amendment 1.5.
+
+The procedure is steps 2 to 9 above with these changes. The adoption issue (one
+issue or one issue update per use) records the anchor, the base tag and the
+repairs that put `main` ahead of it, and cites amendment 1.5. `base` is the
+highest stable tag of the product, not `0.11.0`. In step 3, find the base and
+write the record (inside the worktree) with:
 
 ```bash
 git fetch --tags origin +refs/heads/main:refs/remotes/origin/main
 BASE_TAG="$(git tag --list 'v[0-9]*' | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
   | sort -V | tail -n 1)"
 git merge-base --is-ancestor "$BASE_TAG" refs/remotes/origin/main   # must succeed
-git log --format='%h %s' "$BASE_TAG..refs/remotes/origin/main"      # the reason, for the issue
+test "$(git rev-list --count "$BASE_TAG..refs/remotes/origin/main")" -ge 1
+git log --format='%h %s' "$BASE_TAG..refs/remotes/origin/main"      # the repairs, for the issue
 A="$(git rev-parse refs/remotes/origin/main)"
 printf '{\n  "anchor": "%s",\n  "base": "%s"\n}\n' "$A" "${BASE_TAG#v}" > release/ADOPTION.json
 ```
 
-The adoption issue records the anchor, the base tag and the commits that put
-`main` ahead of it. Expected engine output at `C` (step 4): `base` `v<base>`,
-`candidate` `<base with patch + 1>-rc.0` for a pre-1.0 product, `N` 0,
-`promotable` false. Impact and the release notes then cover `v<base>..H`, so
-the post-release commits on `main` appear in the next release's notes; `N`
-still counts `B..H`. The first commit on `release/new` retires the record; the
-placeholder is already on `main` after a new-model release, so no placeholder
-commit is needed. The record stays single use: once the next stable tag
-exists, `v<base>` is no longer the highest and the record is refused.
+Before opening the record pull request, check that the commits between the tag
+and the anchor stay within amendment 1.5 (release tooling repairs only). The
+engine does not inspect this range, so the check is part of the procedure:
 
-A simulation of the cycle after `0.11.1` on a clone of the real history
-(anchor `956baa0`, base `0.11.1`) gave `0.11.2-rc.0` at `C`, and `0.11.2-rc.2`
-promotable after the retirement and one feature commit. The same shape is
-covered end to end in `tests/test_adoption_reuse.py`.
+```bash
+git diff --name-only "$BASE_TAG..$A" -- src/ pyproject.toml
+```
+
+Expected output: empty. Any listed path is a product or build change that the
+amendment does not cover. Either revert it on `main` and re-land it through
+`release/new` before recording the cut, or record an explicit exception, with
+the decision and who made it, in the adoption issue. Do not record the cut
+with an unexplained path in that list.
+
+Expected engine output at `C` (step 4, with both ratifications as shown
+there): `base` `v<base>`, `candidate` `<base with patch + 1>-rc.0` for a
+pre-1.0 product, `N` 0, `promotable` false. Impact and the release notes then
+cover `v<base>..H`, so the repairs on `main` appear in the next release's
+notes; `N` still counts `B..H`. The first commit on `release/new` retires the
+record; the placeholder is already on `main` after a new-model release, so no
+placeholder commit is needed.
+
+### Known open items
+
+The commits on `main` after `v0.11.1` (`git log --oneline v0.11.1..origin/main`
+on 2026-10-10) are #358, #359, #360, #361 and #364 (release tooling repairs),
+#362 (build backend pin) and #363 and #365 (onboarding product fixes). For
+them, the check above lists `pyproject.toml`,
+`src/data_olympus/onboarding_inflight.py` and
+`src/data_olympus/tools_onboarding.py`.
+
+Known out-of-scope commits on `main` after `v0.11.1`: #363 and #365
+(onboarding product fixes, outside amendment 1.5 scope: product changes must
+use `release/new`), and #362 (build backend pin, borderline: build
+configuration). The next adoption issue records the handling decided by the
+operator or lead at cut time: (a) revert them on `main` and re-land through
+`release/new`, or (b) a recorded exception in the issue. Nothing is blocked now
+because there is no release to cut.
+
+`tests/test_adoption_reuse.py` covers the cycle after `0.11.1` end to end
+(base `0.11.1`, an anchor four commits past the tag, the record, then one fix
+commit that also retires it): `0.11.2-rc.1`, promotable only when both
+ratifications are given, and refused or unratified otherwise.
 
 ## Lessons from the first live cut (2026-10-09)
 

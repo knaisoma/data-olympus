@@ -1,9 +1,11 @@
 """The adoption record route reused after a release, across every engine caller.
 
-After 0.11.1 was promoted, main carried four more commits (#358 to #361), so
-the next cycle could not be cut at a stable tag. STD-U-821 amendment 1.3
-covers a released product whose main is ahead of its last stable tag: the
-record names the highest stable tag as its base. The fixture runs the first
+After 0.11.1 was promoted, main carried more commits (#358 to #365; the
+fixture models the first four release tooling repairs), so
+the next cycle could not be cut at a stable tag. STD-U-821 amendment 1.5
+(company-knowledge #236, ratified 2026-10-10) reuses the amendment 1.3 record
+route for that case: the record names the highest stable tag as its base, and
+the engine requires both ratifications. The fixture runs the first
 adoption cycle to its squash S tagged v0.11.1, advances main past S, records
 the second cut with base 0.11.1 and drives stage one, stage two and the
 promotion proof, including its recheck once the new stable tag exists.
@@ -141,4 +143,65 @@ def test_promotion_proves_and_rechecks_after_its_own_tag(second, tmp_path):
 def test_stage_one_refuses_a_second_cut_without_the_highest_base(tmp_path, base):
     cut = released(tmp_path / "repo", base=base)
     with pytest.raises(VersionError, match="bad_adoption"):
+        cut.preflight()
+
+
+def retire_with_a_fix(cut: Cut) -> str:
+    """The single commit on release/new: a fix that also retires the record."""
+    cut.git("rm", "-q", "release/ADOPTION.json")
+    cut.write("src/next.py", "FIXED = True\n")
+    return cut.commit("fix(server): next cycle fix")
+
+
+def test_next_cycle_is_promotable_only_with_both_ratifications(second, tmp_path):
+    """Base 0.11.1, anchor four commits past the tag, record, one fix: 0.11.2-rc.1."""
+    head = retire_with_a_fix(second)
+    admission = second.preflight()
+    version = second.engine(admission)
+    assert version == second.trusted()
+    assert {key: version[key] for key in ("base", "B", "M", "H", "N", "candidate",
+                                          "pypi_version", "promotable", "adoption")} == {
+        "base": "v0.11.1", "B": second.c, "M": second.c, "H": head, "N": 1,
+        "candidate": "0.11.2-rc.1", "pypi_version": "0.11.2rc1", "promotable": True,
+        "adoption": "ratified",
+    }
+    assert rc_decide.decide(version, dry_run=False)["promotable"] is True
+    kwargs = ratification.engine_kwargs(ROOT)
+
+    def compute(**changes):
+        return compute_version(cwd=second.path, head="HEAD", main="refs/heads/main",
+                               branch="release/new", **(kwargs | changes))
+
+    for missing in ({"extension_ratified": None}, {"adoption_ratified": None},
+                    {"extension_ratified": None, "adoption_ratified": None}):
+        with pytest.raises(VersionError, match="adoption_unratified"):
+            compute(**missing)
+        dry = compute(adoption_dry_run=True, **missing)
+        assert (dry["candidate"], dry["adoption"], dry["promotable"]) == (
+            "0.11.2-rc.1", "unratified", False)
+    for forged in ({"extension_ratified": "PENDING-RATIFICATION"},
+                   {"extension_ratified": "2026-10-09:knaisoma/company-knowledge@2441459"},
+                   {"extension_standard_file": ROOT / ratification.STANDARD_FILE}):
+        with pytest.raises(VersionError, match="amendment 1.5"):
+            compute(**forged)
+    verified = stage_two(second, tmp_path)
+    assert (verified.version, verified.base) == ("0.11.2-rc.1", second.c)
+    assert promote(second, version)["tag"] == "v0.11.2"
+
+
+def test_next_cycle_without_main_ahead_of_the_tag_is_refused(tmp_path):
+    """A record whose anchor is the tagged squash itself (main not ahead) is refused."""
+    cut = Cut(tmp_path / "repo")
+    cut.placeholder()
+    cut.retire()
+    promote(cut, cut.engine(cut.preflight()))
+    squash = cut.git("rev-parse", "refs/heads/main")
+    cut.git("tag", "-a", "v0.11.1", "-m", "Release 0.11.1", squash)
+    cut.git("checkout", "-q", "-B", "main", squash)
+    cut.git("branch", "-q", "-D", "release/new")
+    cut.write("release/ADOPTION.json",
+              json.dumps({"anchor": squash, "base": "0.11.1"}, indent=2) + "\n")
+    cut.c = cut.commit("chore(release): record adoption cut")
+    cut.git("checkout", "-q", "-b", "release/new")
+    with pytest.raises(VersionError, match="strict ancestor of the anchor"):
         cut.preflight()

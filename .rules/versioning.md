@@ -122,13 +122,18 @@ also requires no stable tag on `B` and `v0.11.0` to be the highest stable tag
 and an ancestor of `B`. If `B` has a stable tag, ignore the adoption record
 and apply the normal stable-base checks.
 
-The engine does not fix the base at `0.11.0`. It takes `base` from the record
-as a strict `X.Y.Z` and requires `v<base>` to exist, to be the highest stable
-tag by SemVer precedence and to be an ancestor of `B`, which is the
-amendment's own validity rule for a released product. A later cycle whose
-`main` advanced past its last stable tag (as after `0.11.1`) uses the same
-route with that tag as `base`; see "Reusing the record route after a release"
-in `docs/releases/adoption-cut-runbook.md`.
+Amendment 1.3 grants the record for the adoption case only and calls it single
+use. Its reuse in a later cycle whose `main` advanced past its last stable tag
+through release tooling repairs (as after `0.11.1`, #358 to #361 and #364) is authorized
+by STD-U-821 amendment 1.5, ratified on 2026-10-10 (company-knowledge #236,
+vendored at `docs/releases/std-u-821-amendment-1.5.md`). The engine therefore
+takes `base` from the record as a strict `X.Y.Z` and requires `v<base>` to
+exist, to be the highest stable tag by SemVer precedence, to be an ancestor of
+`B` and to be a strict ancestor of the anchor (so `main` is ahead of the tag).
+It refuses the record when any tag starting with `v` and a digit is neither a
+strict stable version nor a strict prerelease. The record is single use per
+record, only while its base is the highest stable tag. See "Reusing the record
+route after a release" in `docs/releases/adoption-cut-runbook.md`.
 
 For this adoption cycle, compute impact and release notes over `v<base>..H`,
 but count `N` over `B..H`. The first commit on `release/new` sets the placeholder;
@@ -137,10 +142,13 @@ Promotion refuses if the record remains at `H`. Do not create `hotfix/new`
 during the adoption cycle.
 
 The operator ratified the adoption amendment on 2026-10-07 (STD-U-821
-amendment 1.3, vendored at `docs/releases/std-u-821-amendment-1.3.md`). Tooling
-accepts the record only with the ratification pinned on `main` in
-`scripts/adoption_ratification.py` and the vendored amendment, never from
-workflow inputs or `H`. Stage 2 imports them from its `main` checkout; stage 1
+amendment 1.3, vendored at `docs/releases/std-u-821-amendment-1.3.md`), and
+amendment 1.5 was ratified on 2026-10-10. Tooling accepts any record only with
+both ratifications pinned on `main` in `scripts/adoption_ratification.py`
+(`RATIFIED` and `EXTENSION_RATIFIED`) and both vendored amendments, each
+carrying its exact `Ratification: <date>` line inside its own amendment
+section, never from workflow inputs or `H`; otherwise it refuses with
+`adoption_unratified`. Stage 2 imports them from its `main` checkout; stage 1
 and promotion read them as blobs of `main` (promotion: the RC's recorded `M`),
 because their checkouts are `H` and the squash `S`, whose tree equals `H`.
 Adoption dry-run mode is limited to dispatched dry-run builds and is never

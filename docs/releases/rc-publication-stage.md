@@ -318,11 +318,13 @@ never deploys.
 
 ## Adoption cycle
 
-Both stages pass the same pinned ratification, so they compute the same
-identity for an adoption cut. This stage imports `RATIFIED` and `STANDARD_FILE`
-from `scripts/adoption_ratification.py` in its own `main` checkout and resolves
-the vendored amendment relative to it; stage 1 reads the same two files as
-blobs of `origin/main`, and promotion as blobs of the recorded `M`. Nothing comes from `H`, the artifacts or workflow
+Both stages pass the same pinned ratifications, so they compute the same
+identity for an adoption cut. This stage imports `RATIFIED`, `STANDARD_FILE`,
+`EXTENSION_RATIFIED` and `EXTENSION_STANDARD_FILE` from
+`scripts/adoption_ratification.py` in its own `main` checkout and resolves both
+vendored amendments (1.3 and 1.5) relative to it; stage 1 reads the module and
+both amendments as blobs of `origin/main`, and promotion as blobs of the
+recorded `M`. Nothing comes from `H`, the artifacts or workflow
 inputs, and this stage has no adoption dry-run mode. The cut build (`N=0`) and
 the head after the R4 placeholder (record still at `H`, not promotable) are
 refused here; the first candidate this stage can publish is the head after the

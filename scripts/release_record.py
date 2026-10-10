@@ -287,8 +287,9 @@ def _compute(git: Git, *, cwd: str | Path, head: str, main: str, branch: str,
     """Recompute, taking adoption ratification only from main's blobs.
 
     This checkout is the squash S, whose tree equals the reviewed H, so its own
-    scripts/adoption_ratification.py and vendored amendment are candidate data.
-    For an adoption cut the pinned values are read from the RC's recorded main
+    scripts/adoption_ratification.py and vendored amendments are candidate data.
+    For an adoption cut both pinned ratifications (amendments 1.3 and 1.5) and
+    their vendored standards are read from the RC's recorded main
     M (the main stage 2 ran from), never from S or H; the engine validates them.
     """
     with tempfile.TemporaryDirectory(prefix="adoption-ratification-") as trusted:
