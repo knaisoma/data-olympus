@@ -95,6 +95,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* The release record `notes` command requires `--output` and no longer prints the rendered notes to standard output, which removes the log sink that code scanning flagged (a false positive carried through the ratification inputs).
+
 * Release an onboarding bootstrap in-flight marker only for the claim that
   wrote it. `release` removed the marker unconditionally, so a bootstrap whose
   claim outlived its TTL, and whose slot another bootstrap then reclaimed,

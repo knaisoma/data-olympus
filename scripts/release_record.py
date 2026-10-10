@@ -1016,7 +1016,7 @@ def main(argv: list[str] | None = None) -> int:
     notes.add_argument("--head", required=True)
     notes.add_argument("--main", default="origin/main")
     notes.add_argument("--branch", choices=("release/new", "hotfix/new"), default="release/new")
-    notes.add_argument("--output", type=Path)
+    notes.add_argument("--output", type=Path, required=True)
     published = commands.add_parser("release")
     published.add_argument("--tag", required=True)
     for arg in ("record", "stable-provenance", "notes"):
@@ -1072,9 +1072,10 @@ def main(argv: list[str] | None = None) -> int:
             version = _compute(Git(Path.cwd()), cwd=Path.cwd(), head=args.head,
                                main=args.main, branch=args.branch)
             rendered = generate_notes(cwd=Path.cwd(), version=version)
-            if args.output:
-                args.output.write_text(rendered, encoding="utf-8")
-            print(rendered, end="")
+            # The notes go to a file only; echoing the rendered body on stdout
+            # adds a log sink for data derived from the ratification inputs.
+            args.output.write_text(rendered, encoding="utf-8")
+            print(f"wrote {len(rendered.encode('utf-8'))} bytes to {args.output}")
         elif args.command == "release":
             complete_release(
                 tag=args.tag, notes=args.notes.read_text(encoding="utf-8"),

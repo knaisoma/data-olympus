@@ -734,3 +734,20 @@ def test_a_success_conclusion_on_an_unfinished_run_does_not_pass(role, status):
     next(r for r in pages[0]["check_runs"] if r["name"] == "test")["status"] = status
     with pytest.raises(ValueError, match="did not succeed: test"):
         release.check_gate(pages, sha=sha, role=role, analyses=ANALYSES)
+
+
+def test_notes_command_writes_a_file_and_does_not_echo_the_body(promotion):
+    p = promotion
+    script = Path(release.__file__).resolve()
+    base = [sys.executable, str(script), "notes", "--head", p.h, "--main", p.b,
+            "--branch", "release/new"]
+    refused = subprocess.run(base, cwd=p.path, capture_output=True, text=True)
+    assert refused.returncode != 0
+    assert "--output" in refused.stderr
+    done = subprocess.run([*base, "--output", "notes.md"], cwd=p.path,
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    written = (p.path / "notes.md").read_text()
+    assert "feat: add export" in written
+    assert "feat: add export" not in done.stdout
+    assert done.stdout.strip() == f"wrote {len(written.encode())} bytes to notes.md"
