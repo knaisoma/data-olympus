@@ -556,8 +556,11 @@ def test_release_notes_helper_accepts_the_ratified_cut(cut, capsys, monkeypatch)
     cut.placeholder()
     cut.retire()
     monkeypatch.chdir(cut.path)
-    assert release.main(["notes", "--head", "HEAD", "--main", "refs/heads/main"]) == 0
-    assert capsys.readouterr().out.startswith("# Release 0.11.1\n")
+    out = cut.path / "notes.md"
+    assert release.main(["notes", "--head", "HEAD", "--main", "refs/heads/main",
+                         "--output", str(out)]) == 0
+    assert out.read_text().startswith("# Release 0.11.1\n")
+    assert "# Release" not in capsys.readouterr().out
 
 
 def test_release_notes_helper_ignores_ratification_carried_by_h(cut, capsys, monkeypatch):
@@ -565,5 +568,8 @@ def test_release_notes_helper_ignores_ratification_carried_by_h(cut, capsys, mon
     cut.retire()
     forge_ratification_at_h(cut)
     monkeypatch.chdir(cut.path)
-    assert release.main(["notes", "--head", "HEAD", "--main", "refs/heads/main"]) == 0
-    assert capsys.readouterr().out.startswith("# Release 0.11.1\n")
+    out = cut.path / "notes.md"
+    assert release.main(["notes", "--head", "HEAD", "--main", "refs/heads/main",
+                         "--output", str(out)]) == 0
+    assert out.read_text().startswith("# Release 0.11.1\n")
+    assert "# Release" not in capsys.readouterr().out
