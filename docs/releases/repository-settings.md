@@ -34,6 +34,12 @@ ORG=knaisoma
   [Release ordering under immutable releases](rc-publication-stage.md#release-ordering-under-immutable-releases).
   Disabling the setting would hide ordering mistakes that the pipeline is built
   to make impossible.
+- Why `pypi` has no `v*` tag policy: the environment's deployment policy is
+  `main` (type branch) and nothing else. It briefly also admitted `v*` tags;
+  that policy was removed on 2026-10-10. Without a required reviewer, a `v*`
+  tag policy would let any repository writer run a workflow from a tag ref,
+  read `SDLC_APP_PRIVATE_KEY` and mint PyPI OIDC. A `pypi` job dispatched
+  from a tag ref is refused by the environment, which is intended.
 - Status: observed 2026-10-09 by the release lane (enabled).
 - Read-back command:
 
@@ -97,7 +103,7 @@ branch.
 
 | Environment | Branch policy | Required reviewers | Variables | Secrets |
 |---|---|---|---|---|
-| `pypi` | `main` and `v*` tags | none (operator decision of 2026-10-09) | `SDLC_APP_ID` (own copy) | `SDLC_APP_PRIVATE_KEY` (own copy) |
+| `pypi` | `main` only | none (operator decision of 2026-10-09) | `SDLC_APP_ID` (own copy) | `SDLC_APP_PRIVATE_KEY` (own copy) |
 | `pypi-rc` | `main` only | none | none | none |
 | `sdlc-bot` | `main` only | none | `SDLC_APP_ID` | `SDLC_APP_PRIVATE_KEY` |
 
@@ -112,7 +118,7 @@ branch.
   The gate is now the pipeline's own proofs (reviewed head and squash proof,
   exact-source checks, attestations, zero open alerts, byte comparison of the
   stable payload with the candidate) plus the deployment branch and tag policy
-  of the environment (`main` and `v*`). Consequence: a promotion dispatch runs
+  of the environment (`main` only). Consequence: a promotion dispatch runs
   straight through to the irreversible PyPI upload, the stable tag and the
   channel moves, so a dispatch must only follow a green main and a reviewed
   workflow. Re-adding a required reviewer to `pypi` is a one-line environment

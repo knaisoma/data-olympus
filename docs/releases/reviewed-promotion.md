@@ -27,8 +27,9 @@ no fallback to a human token:
   variable `SDLC_APP_ID` hold the App credentials. The `prove` and
   `create-tag` jobs bind this environment, which has no required reviewers
   (the real approval is the `pypi` environment's).
-- The protected `pypi` environment, also restricted to `main`, with required
-  reviewers. Add a PyPI Trusted Publisher for `promote-release.yml` and
+- The `pypi` environment, also restricted to `main` (deployment policy
+  `main`, type branch; no `v*` tag policy), with no required reviewers
+  (see [repository settings](repository-settings.md#3-environments)). Add a PyPI Trusted Publisher for `promote-release.yml` and
   environment `pypi`, and keep the existing publishers registered until
   adoption completes, because the R9 old path (`publish-pypi.yml`,
   `rc-publish.yml`, `tag-release.yml`) still publishes through them. A job binds only one
