@@ -423,9 +423,9 @@ def test_expired_inflight_marker_allows_reclaim(tmp_path) -> None:
     cannot wedge a workspace forever (item 2)."""
     from data_olympus.onboarding_inflight import BootstrapInFlight
     guard = BootstrapInFlight(str(tmp_path / "inflight"), ttl_seconds=-1.0)
-    assert guard.claim("p", None) is True
+    assert guard.claim("p", None) is not None
     # ttl -1 means the marker is already expired; a second claim reclaims it.
-    assert guard.claim("p", None) is True
+    assert guard.claim("p", None) is not None
 
 
 def test_exception_before_commit_releases_claim(tmp_path) -> None:
@@ -456,7 +456,7 @@ def test_exception_before_commit_releases_claim(tmp_path) -> None:
             in_flight=guard,
         )
     # The claim was released by the finally block; the slot is free for a retry.
-    assert guard.claim("p", None) is True
+    assert guard.claim("p", None) is not None
 
 
 def test_expired_marker_reclaim_is_single_winner(tmp_path) -> None:
@@ -465,11 +465,11 @@ def test_expired_marker_reclaim_is_single_winner(tmp_path) -> None:
     from data_olympus.onboarding_inflight import BootstrapInFlight
     # ttl 0: the marker written by the first claim is immediately expired.
     guard = BootstrapInFlight(str(tmp_path / "inflight"), ttl_seconds=0.0)
-    assert guard.claim("p", None) is True  # writes an already-expired marker
+    assert guard.claim("p", None) is not None  # writes an already-expired marker
     # A long-TTL guard on the SAME dir reclaims once and then locks out.
     live = BootstrapInFlight(str(tmp_path / "inflight"), ttl_seconds=900.0)
-    assert live.claim("p", None) is True   # reclaims the expired slot
-    assert live.claim("p", None) is False  # now live -> second caller rejected
+    assert live.claim("p", None) is not None   # reclaims the expired slot
+    assert live.claim("p", None) is None  # now live -> second caller rejected
 
 
 def _race_claims(root: str, contenders: int) -> tuple[int, list[BaseException]]:
@@ -478,7 +478,7 @@ def _race_claims(root: str, contenders: int) -> tuple[int, list[BaseException]]:
     import threading
 
     from data_olympus.onboarding_inflight import BootstrapInFlight
-    results: list[bool] = []
+    results: list[str | None] = []
     errors: list[BaseException] = []
     lock = threading.Lock()
     start = threading.Barrier(contenders)
@@ -500,7 +500,7 @@ def _race_claims(root: str, contenders: int) -> tuple[int, list[BaseException]]:
         t.start()
     for t in threads:
         t.join()
-    return sum(results), errors
+    return sum(token is not None for token in results), errors
 
 
 def test_concurrent_reclaim_grants_exactly_one_winner(tmp_path) -> None:
@@ -512,7 +512,7 @@ def test_concurrent_reclaim_grants_exactly_one_winner(tmp_path) -> None:
     for round_no in range(50):
         root = str(tmp_path / f"inflight-{round_no}")
         # Seed an already-expired marker.
-        assert BootstrapInFlight(root, ttl_seconds=0.0).claim("p", None) is True
+        assert BootstrapInFlight(root, ttl_seconds=0.0).claim("p", None) is not None
         winners, errors = _race_claims(root, 16)
         assert errors == [], f"round {round_no}: {errors!r}"
         assert winners == 1, f"round {round_no}: {winners} reclaimers won"
@@ -560,7 +560,8 @@ def test_claim_mid_write_does_not_let_a_second_claimer_win(tmp_path, monkeypatch
     results: dict[str, bool] = {}
 
     def _claim(label: str) -> None:
-        results[label] = BootstrapInFlight(root, ttl_seconds=900.0).claim("p", None)
+        token = BootstrapInFlight(root, ttl_seconds=900.0).claim("p", None)
+        results[label] = token is not None
 
     first = threading.Thread(target=_claim, args=("first",), name=first_name)
     first.start()
@@ -587,8 +588,8 @@ def test_crashed_claimer_does_not_wedge_the_slot(tmp_path) -> None:
     (root / (marker.name + ".lock")).write_text("")
     marker.write_text('{"expires_at": ')  # truncated write
     guard = BootstrapInFlight(str(root))
-    assert guard.claim("p", None) is True
-    assert guard.claim("p", None) is False
+    assert guard.claim("p", None) is not None
+    assert guard.claim("p", None) is None
 
 
 def test_non_committed_bootstrap_releases_claim(tmp_path) -> None:
@@ -604,7 +605,7 @@ def test_non_committed_bootstrap_releases_claim(tmp_path) -> None:
     resp, _ = _bootstrap_low_conf(idx, files, tmp_path, in_flight=guard, max_files=2)
     assert resp.status == "rejected_too_many_files"
     # The slot is free again immediately.
-    assert guard.claim("p", None) is True
+    assert guard.claim("p", None) is not None
 
 
 # --------------------------------------------------------------------------

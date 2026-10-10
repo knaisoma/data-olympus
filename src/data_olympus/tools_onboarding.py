@@ -214,7 +214,8 @@ def kb_bootstrap_project_fn(
     # Claim the slot for this workspace/component. A live claim (a bootstrap
     # already in the convergence window) rejects this one as in-progress and
     # closes the double-bootstrap race the absent-recheck cannot (item 2).
-    if not in_flight.claim(workspace, component):
+    claim_token = in_flight.claim(workspace, component)
+    if claim_token is None:
         return _audited(BootstrapResponse(
             status="rejected_already_in_progress",
             rejected_paths=[f["target_path"] for f in files],
@@ -225,7 +226,9 @@ def kb_bootstrap_project_fn(
     # write / commit / push-queue enqueue failure) must also release, otherwise a
     # crash mid-bootstrap would wedge the workspace as `already_in_progress` until
     # the TTL even though nothing committed (codex Concern). The try/finally guards
-    # both the raised and the returned non-committed paths.
+    # both the raised and the returned non-committed paths. The release carries
+    # this claim's token, so if the claim outlived its TTL and another bootstrap
+    # reclaimed the slot, this late release leaves that holder's marker alone.
     committed = False
     try:
         resp = _bootstrap_admitted(
@@ -248,7 +251,7 @@ def kb_bootstrap_project_fn(
         return _audited(resp)
     finally:
         if not committed:
-            in_flight.release(workspace, component)
+            in_flight.release(workspace, component, claim_token)
 
 
 def _bootstrap_admitted(
