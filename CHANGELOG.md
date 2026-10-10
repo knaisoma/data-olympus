@@ -91,6 +91,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* Release an onboarding bootstrap in-flight marker only for the claim that
+  wrote it. `release` removed the marker unconditionally, so a bootstrap whose
+  claim outlived its TTL, and whose slot another bootstrap then reclaimed,
+  deleted the new holder's live marker when it finally failed and released,
+  admitting a third bootstrap into the convergence window. Each claim now
+  stores a random token in its marker and returns it, and `release` removes
+  the marker only when the token matches, reading, comparing and unlinking
+  under the same per-key lock as the claim. A mismatched, missing or repeated
+  release returns `False` and does not raise. A marker written by an earlier
+  version has no token and is never released; it holds the slot until its
+  recorded expiry and is then reclaimed, the same bound a crashed claimer has.
 * Make the onboarding bootstrap in-flight claim single-winner. The claim took
   a lock-free `O_CREAT|O_EXCL` fast path and locked only the reclaim of a stale
   marker, and the two paths did not exclude each other. A marker created but
