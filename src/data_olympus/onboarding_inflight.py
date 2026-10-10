@@ -22,7 +22,18 @@ import contextlib
 import hashlib
 import json
 import os
+import tempfile
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+try:  # POSIX: advisory lock released by the kernel when the holder dies.
+    import fcntl
+except ImportError:  # pragma: no cover - Windows only
+    fcntl = None  # type: ignore[assignment]
+    import msvcrt
 
 _DEFAULT_TTL_SECONDS = 900.0  # convergence window: commit -> push -> pull -> reindex
 
@@ -32,9 +43,35 @@ def _marker_filename(workspace: str, component: str | None) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest() + ".inflight"
 
 
+@contextlib.contextmanager
+def _exclusive(lock_path: str) -> Iterator[None]:
+    """Hold an exclusive OS-level lock on ``lock_path`` for the duration.
+
+    The lock file itself is never unlinked: unlinking a lock file while another
+    process waits on the old inode would let two holders coexist. Each call
+    opens its own file description, so threads of one process contend exactly
+    like separate processes do. The kernel drops the lock if the holder dies, so
+    a crash cannot wedge the slot (unlike an O_EXCL lock file).
+    """
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:  # pragma: no cover - Windows only
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    continue
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the lock
+
+
 class BootstrapInFlight:
     """Filesystem-backed set of workspaces with a bootstrap in the convergence
-    window. Claims are atomic (O_CREAT|O_EXCL) and self-expiring."""
+    window. Claims are serialized by a per-key OS lock and self-expiring."""
 
     def __init__(self, root: str, *, ttl_seconds: float = _DEFAULT_TTL_SECONDS) -> None:
         self._root = root
@@ -62,76 +99,55 @@ class BootstrapInFlight:
             return True
         return time.time() >= expires_at
 
+    def _lock_path(self, workspace: str, component: str | None) -> str:
+        return self._path(workspace, component) + ".lock"
+
     def claim(self, workspace: str, component: str | None) -> bool:
         """Atomically claim the bootstrap slot for (workspace, component).
 
         Returns True if this caller now holds the slot (proceed with bootstrap),
         False if another live claim already holds it (reject as in-progress).
         A claim whose recorded expiry has passed is reclaimed transparently.
+
+        The whole check-then-write runs under one per-key exclusive lock, so it
+        is single-winner for both a fresh slot and the reclaim of a stale one.
+        Do not reintroduce a lock-free O_CREAT|O_EXCL fast path beside a locked
+        reclaim: the two do not exclude each other, and that combination granted
+        two concurrent winners (a fast-path marker created but not yet written
+        reads as expired and was reclaimed under its writer).
         """
         os.makedirs(self._root, exist_ok=True)
         path = self._path(workspace, component)
-
-        def _payload() -> str:
+        with _exclusive(self._lock_path(workspace, component)):
+            if not self._is_expired(path):
+                return False
             now = time.time()
-            return json.dumps({
+            payload = json.dumps({
                 "workspace": workspace,
                 "component": component,
                 "claimed_at": now,
                 "expires_at": now + self._ttl,
             })
-
-        # Fast path: create the marker exclusively. If it does not yet exist, this
-        # single O_CREAT|O_EXCL is the whole claim and is inherently single-winner.
-        try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            pass
-        else:
-            with os.fdopen(fd, "w") as f:
-                f.write(_payload())
+            # Write a temp file and rename it over the marker, so the marker is
+            # never observed half-written, even by a reader outside the lock.
+            fd, tmp = tempfile.mkstemp(dir=self._root, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    f.write(payload)
+                os.replace(tmp, path)
+            except BaseException:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(tmp)
+                raise
             return True
-
-        # A marker exists. A still-live claim means a bootstrap for this key is
-        # genuinely in flight; reject without touching it.
-        if not self._is_expired(path):
-            return False
-
-        # The marker is expired and must be reclaimed. Reclaim must be a
-        # single-winner operation, otherwise two callers that both observe the
-        # stale marker could each unlink+recreate and both return True, reopening
-        # the double-bootstrap race the guard exists to close (codex Concern). A
-        # blind unlink is itself racy: a slow contender could delete the fresh
-        # marker a fast contender just wrote. So we gate the whole reclaim critical
-        # section behind an exclusive reclaim-lock: only the caller that creates
-        # the lock re-checks expiry, unlinks the stale marker, writes a fresh one,
-        # and drops the lock. Contenders that cannot take the lock reject.
-        reclaim_lock = path + ".reclaim"
-        try:
-            lock_fd = os.open(reclaim_lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            # Another caller is already reclaiming this slot; treat as in-progress.
-            return False
-        try:
-            os.close(lock_fd)
-            # Re-check under the lock: a winner may have already reclaimed and
-            # written a fresh, live marker between our expiry check and the lock.
-            if not self._is_expired(path):
-                return False
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(path)
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            with os.fdopen(fd, "w") as f:
-                f.write(_payload())
-            return True
-        finally:
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(reclaim_lock)
 
     def release(self, workspace: str, component: str | None) -> None:
         """Drop the in-flight marker (best effort). Called on the failure paths
         where a claim was taken but the bootstrap never actually committed, so a
         retry is not blocked for the full TTL."""
         path = self._path(workspace, component)
-        with contextlib.suppress(FileNotFoundError):
+        if not os.path.isdir(self._root):
+            return  # never claimed: nothing to release, and no mkdir side effect
+        with _exclusive(self._lock_path(workspace, component)), \
+                contextlib.suppress(FileNotFoundError):
             os.unlink(path)

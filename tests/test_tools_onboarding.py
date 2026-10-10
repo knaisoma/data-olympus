@@ -472,33 +472,123 @@ def test_expired_marker_reclaim_is_single_winner(tmp_path) -> None:
     assert live.claim("p", None) is False  # now live -> second caller rejected
 
 
-def test_concurrent_reclaim_grants_exactly_one_winner(tmp_path) -> None:
-    """Many threads racing to reclaim the SAME expired marker must yield exactly
-    one successful claim; the reclaim critical section is single-winner even under
-    contention (codex Concern)."""
+def _race_claims(root: str, contenders: int) -> tuple[int, list[BaseException]]:
+    """Start ``contenders`` threads on a barrier, each claiming ("p", None) on a
+    long-TTL guard over ``root``. Returns (winners, exceptions raised)."""
     import threading
 
     from data_olympus.onboarding_inflight import BootstrapInFlight
-    # Seed an already-expired marker.
-    BootstrapInFlight(str(tmp_path / "inflight"), ttl_seconds=0.0).claim("p", None)
-
     results: list[bool] = []
+    errors: list[BaseException] = []
     lock = threading.Lock()
-    start = threading.Barrier(8)
+    start = threading.Barrier(contenders)
 
     def _contend() -> None:
-        guard = BootstrapInFlight(str(tmp_path / "inflight"), ttl_seconds=900.0)
+        guard = BootstrapInFlight(root, ttl_seconds=900.0)
         start.wait()
-        won = guard.claim("p", None)
+        try:
+            won = guard.claim("p", None)
+        except BaseException as exc:  # surfaced to the assertion, not swallowed
+            with lock:
+                errors.append(exc)
+            return
         with lock:
             results.append(won)
 
-    threads = [threading.Thread(target=_contend) for _ in range(8)]
+    threads = [threading.Thread(target=_contend) for _ in range(contenders)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    assert sum(results) == 1  # exactly one reclaimer won
+    return sum(results), errors
+
+
+def test_concurrent_reclaim_grants_exactly_one_winner(tmp_path) -> None:
+    """Many threads racing to reclaim the SAME expired marker must yield exactly
+    one successful claim and no errors; the reclaim is single-winner even under
+    contention (codex Concern). Repeated rounds, because the original race was
+    intermittent (about 1% of rounds at 16 threads granted two winners)."""
+    from data_olympus.onboarding_inflight import BootstrapInFlight
+    for round_no in range(50):
+        root = str(tmp_path / f"inflight-{round_no}")
+        # Seed an already-expired marker.
+        assert BootstrapInFlight(root, ttl_seconds=0.0).claim("p", None) is True
+        winners, errors = _race_claims(root, 16)
+        assert errors == [], f"round {round_no}: {errors!r}"
+        assert winners == 1, f"round {round_no}: {winners} reclaimers won"
+
+
+def test_concurrent_fresh_claim_grants_exactly_one_winner(tmp_path) -> None:
+    """With no marker at all, concurrent first claims are also single-winner."""
+    for round_no in range(50):
+        winners, errors = _race_claims(str(tmp_path / f"inflight-{round_no}"), 16)
+        assert errors == [], f"round {round_no}: {errors!r}"
+        assert winners == 1, f"round {round_no}: {winners} claimers won"
+
+
+def test_claim_mid_write_does_not_let_a_second_claimer_win(tmp_path, monkeypatch) -> None:
+    """Deterministic regression for the double-winner interleaving: a contender
+    must not reclaim a slot whose first claimer is still between deciding to
+    claim and writing its marker. The first claimer is parked inside the payload
+    timestamp (after the decision, before the marker is complete); a second
+    claimer then runs. It must not win, whether it blocks until the first
+    claimer finishes or rejects outright."""
+    import threading
+    import time as real_time
+
+    import data_olympus.onboarding_inflight as mod
+    from data_olympus.onboarding_inflight import BootstrapInFlight
+
+    root = str(tmp_path / "inflight")
+    parked = threading.Event()
+    resume = threading.Event()
+    first_name = "first-claimer"
+
+    class _ParkingClock:
+        """time shim: the first claimer's first clock read parks it."""
+        def __init__(self) -> None:
+            self.parked_once = False
+
+        def time(self) -> float:
+            if threading.current_thread().name == first_name and not self.parked_once:
+                self.parked_once = True
+                parked.set()
+                assert resume.wait(10), "test harness never resumed the first claimer"
+            return real_time.time()
+
+    monkeypatch.setattr(mod, "time", _ParkingClock())
+    results: dict[str, bool] = {}
+
+    def _claim(label: str) -> None:
+        results[label] = BootstrapInFlight(root, ttl_seconds=900.0).claim("p", None)
+
+    first = threading.Thread(target=_claim, args=("first",), name=first_name)
+    first.start()
+    assert parked.wait(10), "first claimer never reached the payload timestamp"
+    second = threading.Thread(target=_claim, args=("second",))
+    second.start()
+    # Give the second claimer ample time to (wrongly) finish and win. A correct
+    # implementation keeps it blocked on the lock, or rejects it.
+    second.join(0.5)
+    resume.set()
+    first.join(10)
+    second.join(10)
+    assert not first.is_alive() and not second.is_alive()
+    assert results == {"first": True, "second": False}
+
+
+def test_crashed_claimer_does_not_wedge_the_slot(tmp_path) -> None:
+    """A leftover lock file from a dead process (the lock itself is released by
+    the kernel) and a half-written marker must not block a later claim."""
+    from data_olympus.onboarding_inflight import BootstrapInFlight, _marker_filename
+    root = tmp_path / "inflight"
+    root.mkdir()
+    marker = root / _marker_filename("p", None)
+    (root / (marker.name + ".lock")).write_text("")
+    marker.write_text('{"expires_at": ')  # truncated write
+    guard = BootstrapInFlight(str(root))
+    assert guard.claim("p", None) is True
+    assert guard.claim("p", None) is False
 
 
 def test_non_committed_bootstrap_releases_claim(tmp_path) -> None:
