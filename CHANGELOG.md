@@ -55,6 +55,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+* Pin the build backend to `hatchling==1.32.4` in `[build-system] requires`, the exact version recorded in the published 0.11.1 wheel (`Generator: hatchling 1.32.4`), so release artifacts are rebuilt reproducibly. A test fails if the requirement floats again.
 * Record that the `pypi` and `pypi-rc` environments have no required reviewers by operator decision of 2026-10-09, with the consequence for promotion dispatches and the read-back commands.
 
 * Record the lessons of the first adoption cut in the adoption cut runbook, including the main-first ordering, the burned candidates and the minimum commit count on `release/new`.

@@ -85,7 +85,7 @@ data-olympus-mcp = "data_olympus.server:main"
 data-olympus = "data_olympus.cli.main:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
