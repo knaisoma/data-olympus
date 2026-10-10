@@ -28,12 +28,26 @@ from tests.test_rc_verify_and_publish import write_artifacts
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_SOURCE = (ROOT / ratification.MODULE).read_text(encoding="utf-8")
 STANDARD_TEXT = (ROOT / ratification.STANDARD_FILE).read_text(encoding="utf-8")
+EXTENSION_TEXT = (ROOT / ratification.EXTENSION_STANDARD_FILE).read_text(encoding="utf-8")
 
 
-def module_with(ratified: str) -> str:
-    """The trusted module with a different RATIFIED literal."""
-    source, count = re.subn(r'^RATIFIED = ".*"$', f"RATIFIED = {ratified!r}",
+def module_with(ratified: str, *, name: str = "RATIFIED") -> str:
+    """The trusted module with a different RATIFIED (or EXTENSION_RATIFIED) literal."""
+    source, count = re.subn(rf'^{name} = ".*"$', f"{name} = {ratified!r}",
                             MODULE_SOURCE, flags=re.MULTILINE)
+    assert count == 1
+    return source
+
+
+def extension_with(ratified: str) -> str:
+    """The trusted module with a different EXTENSION_RATIFIED literal."""
+    return module_with(ratified, name="EXTENSION_RATIFIED")
+
+
+def forged_module() -> str:
+    """The trusted module with both ratification literals forged."""
+    source, count = re.subn(r'^RATIFIED = ".*"$', 'RATIFIED = "2026-10-06:forged"',
+                            extension_with("2026-10-06:forged"), flags=re.MULTILINE)
     assert count == 1
     return source
 
@@ -42,7 +56,8 @@ class Cut:
     """Git fixture for the adoption cut, built with plain commits."""
 
     def __init__(self, path: Path, *, module: str = MODULE_SOURCE,
-                 standard: str | None = STANDARD_TEXT):
+                 standard: str | None = STANDARD_TEXT,
+                 extension: str | None = EXTENSION_TEXT):
         self.path = path
         path.mkdir(parents=True, exist_ok=True)
         self.git("init", "-q", "-b", "main")
@@ -54,6 +69,8 @@ class Cut:
         self.write(ratification.MODULE, module)
         if standard is not None:
             self.write(ratification.STANDARD_FILE, standard)
+        if extension is not None:
+            self.write(ratification.EXTENSION_STANDARD_FILE, extension)
         self.commit("chore(release): 0.11.0")
         self.git("tag", "-a", "v0.11.0", "-m", "Release 0.11.0")
         self.write("src/hooks.py", "SANITIZED = True\n")
@@ -152,9 +169,15 @@ def test_stage_one_admits_the_cut_with_main_ratification(cut, tmp_path):
     assert admission.ratified == ratification.RATIFIED
     assert admission.standard_file == (tmp_path / "trusted").resolve() / "adoption-standard.md"
     assert admission.standard_file.read_text(encoding="utf-8") == STANDARD_TEXT
+    assert admission.extension_ratified == ratification.EXTENSION_RATIFIED
+    assert admission.extension_standard_file == (
+        (tmp_path / "trusted").resolve() / "extension-standard.md")
+    assert admission.extension_standard_file.read_text(encoding="utf-8") == EXTENSION_TEXT
     assert admission.engine_args() == [
         "--adoption-ratified", ratification.RATIFIED,
         "--standard-file", str(admission.standard_file),
+        "--extension-ratified", ratification.EXTENSION_RATIFIED,
+        "--extension-standard-file", str(admission.extension_standard_file),
     ]
     version = cut.engine(admission)
     assert (version["candidate"], version["N"], version["adoption"]) == ("0.11.1-rc.0", 0,
@@ -171,20 +194,39 @@ def test_stage_one_env_contract(cut, tmp_path):
         "ENGINE_BRANCH=release/new", "ADOPTION_MODE=ratified",
         f"ADOPTION_RATIFIED={ratification.RATIFIED}",
         f"ADOPTION_STANDARD_FILE={(tmp_path / 't').resolve() / 'adoption-standard.md'}",
+        f"ADOPTION_EXTENSION_RATIFIED={ratification.EXTENSION_RATIFIED}",
+        "ADOPTION_EXTENSION_STANDARD_FILE="
+        f"{(tmp_path / 't').resolve() / 'extension-standard.md'}",
     ]
 
 
-@pytest.mark.parametrize("module,standard", [
-    (module_with("2026-10-06:knaisoma/company-knowledge@785bb77"), STANDARD_TEXT),
-    (module_with("2099-01-01:knaisoma/company-knowledge@785bb77"), STANDARD_TEXT),
-    (module_with("2026-10-07:"), STANDARD_TEXT),
-    (module_with("knaisoma/company-knowledge@785bb77"), STANDARD_TEXT),
-    (MODULE_SOURCE, None),
-    (MODULE_SOURCE, STANDARD_TEXT.replace("Ratification: 2026-10-07", "Ratification: TBD")),
+@pytest.mark.parametrize("module,standard,extension", [
+    (module_with("2026-10-06:knaisoma/company-knowledge@785bb77"), STANDARD_TEXT,
+     EXTENSION_TEXT),
+    (module_with("2099-01-01:knaisoma/company-knowledge@785bb77"), STANDARD_TEXT,
+     EXTENSION_TEXT),
+    (module_with("2026-10-07:"), STANDARD_TEXT, EXTENSION_TEXT),
+    (module_with("knaisoma/company-knowledge@785bb77"), STANDARD_TEXT, EXTENSION_TEXT),
+    (MODULE_SOURCE, None, EXTENSION_TEXT),
+    (MODULE_SOURCE, STANDARD_TEXT.replace("Ratification: 2026-10-07", "Ratification: TBD"),
+     EXTENSION_TEXT),
+    (extension_with("2026-10-09:knaisoma/company-knowledge@2441459"), STANDARD_TEXT,
+     EXTENSION_TEXT),
+    (extension_with("2099-01-01:knaisoma/company-knowledge@2441459"), STANDARD_TEXT,
+     EXTENSION_TEXT),
+    (extension_with("NOT-YET-RATIFIED"), STANDARD_TEXT, EXTENSION_TEXT),
+    (MODULE_SOURCE, STANDARD_TEXT, None),
+    (MODULE_SOURCE, STANDARD_TEXT,
+     EXTENSION_TEXT.replace("Ratification: 2026-10-10", "Ratification: TBD")),
+    # The 1.3 text in the 1.5 slot: a ratification line, but under 1.3.
+    (extension_with("2026-10-07:knaisoma/company-knowledge@785bb77"), STANDARD_TEXT,
+     STANDARD_TEXT),
 ], ids=["wrong-date", "future-date", "empty-ref", "missing-date", "missing-standard",
-        "unratified-standard"])
-def test_stage_one_refuses_bad_main_ratification(tmp_path, module, standard):
-    cut = Cut(tmp_path / "repo", module=module, standard=standard)
+        "unratified-standard", "extension-wrong-date", "extension-future-date",
+        "extension-placeholder", "extension-missing-standard",
+        "extension-unratified-standard", "extension-wrong-amendment"])
+def test_stage_one_refuses_bad_main_ratification(tmp_path, module, standard, extension):
+    cut = Cut(tmp_path / "repo", module=module, standard=standard, extension=extension)
     with pytest.raises(VersionError, match="adoption_unratified"):
         cut.preflight()
 
@@ -194,10 +236,16 @@ def test_stage_one_refuses_a_stale_standard_copy(cut, tmp_path):
     trusted = tmp_path / "trusted"
     cut.preflight(trusted=trusted)
     assert (trusted / "adoption-standard.md").exists()
+    assert (trusted / "extension-standard.md").exists()
     missing = Cut(tmp_path / "missing", standard=None)
     with pytest.raises(VersionError, match="adoption_unratified"):
         missing.preflight(trusted=trusted)
     assert not (trusted / "adoption-standard.md").exists()
+    cut.preflight(trusted=trusted)
+    missing = Cut(tmp_path / "missing-extension", extension=None)
+    with pytest.raises(VersionError, match="adoption_unratified"):
+        missing.preflight(trusted=trusted)
+    assert not (trusted / "extension-standard.md").exists()
 
 
 @pytest.mark.parametrize("source", [
@@ -225,14 +273,27 @@ def test_stage_one_refuses_a_stale_standard_copy(cut, tmp_path):
     MODULE_SOURCE + '\ngetattr(Path, "__di" + "ct__").update(RATIFIED="x")\n',
     MODULE_SOURCE + '\nOTHER = "x"\n',
     MODULE_SOURCE + "\nimport os\n",
-    MODULE_SOURCE.replace('"--standard-file", STANDARD_FILE]', '"--standard-file", "x"]', 1),
+    MODULE_SOURCE.replace('"--standard-file", STANDARD_FILE,', '"--standard-file", "x",', 1),
     MODULE_SOURCE.replace('MODULE = "scripts/adoption_ratification.py"\n', "", 1),
+    MODULE_SOURCE + '\nEXTENSION_RATIFIED = "2026-10-10:other"\n',
+    MODULE_SOURCE.replace('EXTENSION_RATIFIED = "', 'EXTENSION_RATIFIED = "x" + "', 1),
+    MODULE_SOURCE.replace('EXTENSION_STANDARD_FILE = "', 'EXTENSION_STANDARD_FILE = "../', 1),
+    MODULE_SOURCE.replace('EXTENSION_STANDARD_FILE = "', 'EXTENSION_STANDARD_FILE = "/', 1),
+    MODULE_SOURCE.replace('EXTENSION_RATIFIED = "', 'EXTENSION_RATIFIED = "2026-10-10:a b', 1),
+    re.sub(r'^EXTENSION_RATIFIED = .*\n', "", MODULE_SOURCE, flags=re.MULTILINE),
+    MODULE_SOURCE.replace('"--extension-standard-file", EXTENSION_STANDARD_FILE]',
+                          '"--extension-standard-file", "x"]', 1),
+    MODULE_SOURCE + '\nglobals()["EXTENSION_RATIFIED"] = "2026-10-10:other"\n',
 ], ids=["computed", "rebound", "path-escape", "newline", "syntax", "tuple-unpack",
         "for-target", "import-as", "from-import-as", "nested-if", "globals", "module-attr",
         "walrus", "argument", "delete", "augmented", "annotated", "exec", "vars",
         "star-import", "sys-modules", "getattr-dict", "extra-assignment", "extra-import",
-        "changed-function-body", "missing-literal"])
+        "changed-function-body", "missing-literal", "extension-rebound",
+        "extension-computed", "extension-path-escape", "extension-absolute-path",
+        "extension-space", "extension-missing-literal", "extension-changed-function-body",
+        "extension-globals"])
 def test_stage_one_refuses_untrusted_module_shapes(tmp_path, source):
+    assert source != MODULE_SOURCE
     cut = Cut(tmp_path / "repo", module=source)
     with pytest.raises(ValueError, match="trusted adoption ratification"):
         cut.preflight()
@@ -272,22 +333,38 @@ def test_real_module_parses_like_its_import():
     tree = ast.parse(MODULE_SOURCE)
     assert rc_decide._literal(tree, "RATIFIED") == ratification.RATIFIED
     assert rc_decide._literal(tree, "STANDARD_FILE") == ratification.STANDARD_FILE
+    assert rc_decide._literal(tree, "EXTENSION_RATIFIED") == ratification.EXTENSION_RATIFIED
+    assert (rc_decide._literal(tree, "EXTENSION_STANDARD_FILE")
+            == ratification.EXTENSION_STANDARD_FILE)
 
 
 def test_stage_one_ignores_ratification_carried_by_h(cut):
     """H is data: a release/new commit cannot change the ratification used."""
-    cut.write(ratification.MODULE, module_with("2026-10-06:forged"))
+    cut.write(ratification.MODULE, forged_module())
     cut.write(ratification.STANDARD_FILE, "forged\n")
+    cut.write(ratification.EXTENSION_STANDARD_FILE, "forged\n")
     cut.commit("chore(release): forge ratification")
     admission = cut.preflight()
     assert admission.ratified == ratification.RATIFIED
     assert admission.standard_file.read_text(encoding="utf-8") == STANDARD_TEXT
+    assert admission.extension_ratified == ratification.EXTENSION_RATIFIED
+    assert admission.extension_standard_file is not None
+    assert admission.extension_standard_file.read_text(encoding="utf-8") == EXTENSION_TEXT
 
 
 def test_stage_one_uses_main_even_when_h_is_correct(tmp_path):
     cut = Cut(tmp_path / "repo", module=module_with("2026-10-06:wrong"))
     cut.write(ratification.MODULE, MODULE_SOURCE)
     cut.commit("chore(release): restore ratification on the branch only")
+    with pytest.raises(VersionError, match="adoption_unratified"):
+        cut.preflight()
+
+
+def test_stage_one_takes_the_extension_from_main_even_when_h_has_it(tmp_path):
+    """Main lacks the vendored 1.5 text: adding it on release/new does not help."""
+    cut = Cut(tmp_path / "repo", extension=None)
+    cut.write(ratification.EXTENSION_STANDARD_FILE, EXTENSION_TEXT)
+    cut.commit("chore(release): vendor the amendment on the branch only")
     with pytest.raises(VersionError, match="adoption_unratified"):
         cut.preflight()
 
@@ -367,6 +444,25 @@ def test_stage_two_takes_ratification_from_its_trusted_checkout(cut, tmp_path, m
         stage_two(cut, tmp_path)
 
 
+@pytest.mark.parametrize("name,value", [
+    ("EXTENSION_RATIFIED", "2026-10-09:knaisoma/company-knowledge@2441459"),
+    ("EXTENSION_RATIFIED", "NOT-YET-RATIFIED"),
+    ("EXTENSION_STANDARD_FILE", "docs/releases/missing.md"),
+])
+def test_stage_two_takes_the_extension_from_its_trusted_checkout(
+        cut, tmp_path, monkeypatch, name, value):
+    cut.placeholder()
+    cut.retire()
+    version = cut.engine(cut.preflight())
+    provenance, event = write_artifacts(tmp_path / "artifacts", version)
+    provenance["promotable"] = version["promotable"]
+    (tmp_path / "artifacts" / stage.PROVENANCE).write_text(json.dumps(provenance))
+    monkeypatch.setattr(ratification, name, value)
+    with pytest.raises(VersionError, match="adoption_unratified"):
+        stage.verify(tmp_path / "artifacts", cut.path, event, main="refs/heads/main",
+                     branch_ref="refs/heads/release/new")
+
+
 def promote(cut: Cut, version: dict) -> dict:
     """Squash H onto B = C, as the release PR does, and prove it."""
     h = version["H"]
@@ -412,8 +508,9 @@ def test_promotion_fails_while_the_record_exists_at_h(cut):
 
 def forge_ratification_at_h(cut: Cut) -> None:
     """A release/new commit replacing the pinned values in H (and so in S)."""
-    cut.write(ratification.MODULE, module_with("2026-10-06:forged"))
+    cut.write(ratification.MODULE, forged_module())
     cut.write(ratification.STANDARD_FILE, "forged\n")
+    cut.write(ratification.EXTENSION_STANDARD_FILE, "forged\n")
     cut.commit("chore(release): forge ratification")
 
 
@@ -433,15 +530,21 @@ def test_promotion_ignores_its_own_checkout_constants(cut, monkeypatch):
     version = cut.engine(cut.preflight())
     monkeypatch.setattr(ratification, "RATIFIED", "2026-10-06:forged")
     monkeypatch.setattr(ratification, "STANDARD_FILE", "docs/releases/missing.md")
+    monkeypatch.setattr(ratification, "EXTENSION_RATIFIED", "2026-10-06:forged")
+    monkeypatch.setattr(ratification, "EXTENSION_STANDARD_FILE", "docs/releases/missing.md")
     assert promote(cut, version)["candidate_tag"] == "0.11.1-rc.2"
 
 
-@pytest.mark.parametrize("module,standard", [
-    (module_with("2026-10-06:knaisoma/company-knowledge@785bb77"), STANDARD_TEXT),
-    (MODULE_SOURCE, None),
-], ids=["wrong-date", "missing-standard"])
-def test_promotion_refuses_bad_ratification_on_m(tmp_path, module, standard):
-    cut = Cut(tmp_path / "repo", module=module, standard=standard)
+@pytest.mark.parametrize("module,standard,extension", [
+    (module_with("2026-10-06:knaisoma/company-knowledge@785bb77"), STANDARD_TEXT,
+     EXTENSION_TEXT),
+    (MODULE_SOURCE, None, EXTENSION_TEXT),
+    (extension_with("2026-10-09:knaisoma/company-knowledge@2441459"), STANDARD_TEXT,
+     EXTENSION_TEXT),
+    (MODULE_SOURCE, STANDARD_TEXT, None),
+], ids=["wrong-date", "missing-standard", "extension-wrong-date", "extension-missing"])
+def test_promotion_refuses_bad_ratification_on_m(tmp_path, module, standard, extension):
+    cut = Cut(tmp_path / "repo", module=module, standard=standard, extension=extension)
     cut.placeholder()
     cut.retire()
     version = cut.trusted()  # what a correct stage 2 would have recorded
@@ -453,8 +556,11 @@ def test_release_notes_helper_accepts_the_ratified_cut(cut, capsys, monkeypatch)
     cut.placeholder()
     cut.retire()
     monkeypatch.chdir(cut.path)
-    assert release.main(["notes", "--head", "HEAD", "--main", "refs/heads/main"]) == 0
-    assert capsys.readouterr().out.startswith("# Release 0.11.1\n")
+    out = cut.path / "notes.md"
+    assert release.main(["notes", "--head", "HEAD", "--main", "refs/heads/main",
+                         "--output", str(out)]) == 0
+    assert out.read_text().startswith("# Release 0.11.1\n")
+    assert "# Release" not in capsys.readouterr().out
 
 
 def test_release_notes_helper_ignores_ratification_carried_by_h(cut, capsys, monkeypatch):
@@ -462,5 +568,8 @@ def test_release_notes_helper_ignores_ratification_carried_by_h(cut, capsys, mon
     cut.retire()
     forge_ratification_at_h(cut)
     monkeypatch.chdir(cut.path)
-    assert release.main(["notes", "--head", "HEAD", "--main", "refs/heads/main"]) == 0
-    assert capsys.readouterr().out.startswith("# Release 0.11.1\n")
+    out = cut.path / "notes.md"
+    assert release.main(["notes", "--head", "HEAD", "--main", "refs/heads/main",
+                         "--output", str(out)]) == 0
+    assert out.read_text().startswith("# Release 0.11.1\n")
+    assert "# Release" not in capsys.readouterr().out

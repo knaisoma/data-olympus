@@ -2,8 +2,9 @@
 """Read-only stage-one admission and publication decisions.
 
 Stage one runs the code at H, which is data, not trusted configuration. When
-the cut B carries release/ADOPTION.json, the adoption ratification and the
-vendored standard are therefore read from main's Git blobs (the frozen M),
+the cut B carries release/ADOPTION.json, both adoption ratifications (STD-U-821
+amendments 1.3 and 1.5) and their vendored standards are therefore read from
+main's Git blobs (the frozen M),
 never from H's tree, workflow inputs or the environment. The engine stays the
 only authority on whether the record and the ratification are valid: preflight
 runs it once with exactly the arguments the build step will pass, and stage two
@@ -18,6 +19,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
 ROOT = str(Path(__file__).resolve().parents[1])
 if ROOT not in sys.path:
@@ -28,6 +30,7 @@ from scripts.sdlc_version import Git, VersionError, compute_version  # noqa: E40
 
 RECORD = "release/ADOPTION.json"
 TRUSTED_STANDARD = "adoption-standard.md"
+TRUSTED_EXTENSION_STANDARD = "extension-standard.md"
 _RATIFIED = re.compile(r"[\x21-\x7e]+")  # single line, no spaces: safe for GITHUB_ENV
 _PATH = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*")
 
@@ -40,12 +43,18 @@ class Admission:
     adoption: str = "none"  # none, ratified or dry-run
     ratified: str | None = None
     standard_file: Path | None = None
+    extension_ratified: str | None = None
+    extension_standard_file: Path | None = None
 
     def engine_args(self) -> list[str]:
         if self.adoption == "ratified":
             assert self.ratified is not None and self.standard_file is not None
+            assert self.extension_ratified is not None
+            assert self.extension_standard_file is not None
             return ["--adoption-ratified", self.ratified,
-                    "--standard-file", str(self.standard_file)]
+                    "--standard-file", str(self.standard_file),
+                    "--extension-ratified", self.extension_ratified,
+                    "--extension-standard-file", str(self.extension_standard_file)]
         if self.adoption == "dry-run":
             return ["--adoption-dry-run"]
         return []
@@ -53,7 +62,9 @@ class Admission:
     def env(self) -> str:
         return (f"ENGINE_BRANCH={self.engine_branch}\nADOPTION_MODE={self.adoption}\n"
                 f"ADOPTION_RATIFIED={self.ratified or ''}\n"
-                f"ADOPTION_STANDARD_FILE={self.standard_file or ''}\n")
+                f"ADOPTION_STANDARD_FILE={self.standard_file or ''}\n"
+                f"ADOPTION_EXTENSION_RATIFIED={self.extension_ratified or ''}\n"
+                f"ADOPTION_EXTENSION_STANDARD_FILE={self.extension_standard_file or ''}\n")
 
 
 # Names whose use could rebind module globals without a visible assignment.
@@ -63,20 +74,27 @@ _DYNAMIC = frozenset({"globals", "locals", "vars", "setattr", "delattr", "exec",
 # level refuses, so a change to that module must be mirrored here (fail closed).
 _IMPORTS = frozenset({("__future__", "annotations"), ("pathlib", "Path"),
                       ("typing", "TypedDict")})
-_LITERALS = ("RATIFIED", "STANDARD_FILE", "MODULE")
+_LITERALS = ("RATIFIED", "STANDARD_FILE", "EXTENSION_RATIFIED", "EXTENSION_STANDARD_FILE",
+             "MODULE")
 _CALLS = frozenset({"Path"})
 _DEFINITIONS = '''
 def engine_args() -> list[str]:
-    return ["--adoption-ratified", RATIFIED, "--standard-file", STANDARD_FILE]
+    return ["--adoption-ratified", RATIFIED, "--standard-file", STANDARD_FILE,
+            "--extension-ratified", EXTENSION_RATIFIED,
+            "--extension-standard-file", EXTENSION_STANDARD_FILE]
 
 
 class EngineKwargs(TypedDict):
     adoption_ratified: str
     standard_file: Path
+    extension_ratified: str
+    extension_standard_file: Path
 
 
 def engine_kwargs(root: Path) -> EngineKwargs:
-    return {"adoption_ratified": RATIFIED, "standard_file": Path(root) / STANDARD_FILE}
+    return {"adoption_ratified": RATIFIED, "standard_file": Path(root) / STANDARD_FILE,
+            "extension_ratified": EXTENSION_RATIFIED,
+            "extension_standard_file": Path(root) / EXTENSION_STANDARD_FILE}
 '''
 
 
@@ -182,12 +200,31 @@ def _literal(tree: ast.Module, name: str) -> str:
     return top[0].value.value
 
 
-def trusted_ratification(git: Git, main: str, trusted_dir: Path) -> tuple[str, Path]:
-    """Read RATIFIED and the vendored standard from main's blobs, never from H.
+class Trusted(TypedDict):
+    """compute_version ratification keyword arguments read from main's blobs."""
 
-    The module is parsed, not imported or executed. The standard blob is
-    copied to a fresh file under trusted_dir; when main lacks it the file is
-    absent, so the engine refuses the ratification.
+    adoption_ratified: str
+    standard_file: Path
+    extension_ratified: str
+    extension_standard_file: Path
+
+
+def _trusted_standard(git: Git, main: str, path: str, target: Path, name: str) -> None:
+    """Copy main's blob at path to target, or leave target absent (the engine refuses)."""
+    if not _PATH.fullmatch(path) or ".." in path.split("/"):
+        raise ValueError(f"trusted adoption ratification: {name} must be a relative path")
+    target.unlink(missing_ok=True)
+    text = git.file(main, path)
+    if text is not None:
+        target.write_text(text, encoding="utf-8")
+
+
+def trusted_ratification(git: Git, main: str, trusted_dir: Path) -> Trusted:
+    """Read both ratifications and vendored standards from main's blobs, never from H.
+
+    The module is parsed, not imported or executed. Each standard blob is
+    copied to a fresh file under trusted_dir; when main lacks one the file is
+    absent, so the engine refuses that ratification.
     """
     source = git.file(main, ratification.MODULE)
     try:
@@ -197,19 +234,19 @@ def trusted_ratification(git: Git, main: str, trusted_dir: Path) -> tuple[str, P
             from error
     _check_shape(tree)
     _refuse_dynamic(tree)
-    ratified = _literal(tree, "RATIFIED")
-    standard = _literal(tree, "STANDARD_FILE")
-    if not _RATIFIED.fullmatch(ratified):
-        raise ValueError("trusted adoption ratification: RATIFIED must be one token")
-    if not _PATH.fullmatch(standard) or ".." in standard.split("/"):
-        raise ValueError("trusted adoption ratification: STANDARD_FILE must be a relative path")
+    values = {name: _literal(tree, name) for name in _LITERALS}
+    for name in ("RATIFIED", "EXTENSION_RATIFIED"):
+        if not _RATIFIED.fullmatch(values[name]):
+            raise ValueError(f"trusted adoption ratification: {name} must be one token")
     trusted_dir.mkdir(parents=True, exist_ok=True)
-    target = trusted_dir.resolve() / TRUSTED_STANDARD
-    target.unlink(missing_ok=True)
-    text = git.file(main, standard)
-    if text is not None:
-        target.write_text(text, encoding="utf-8")
-    return ratified, target
+    standard = trusted_dir.resolve() / TRUSTED_STANDARD
+    extension = trusted_dir.resolve() / TRUSTED_EXTENSION_STANDARD
+    _trusted_standard(git, main, values["STANDARD_FILE"], standard, "STANDARD_FILE")
+    _trusted_standard(git, main, values["EXTENSION_STANDARD_FILE"], extension,
+                      "EXTENSION_STANDARD_FILE")
+    return {"adoption_ratified": values["RATIFIED"], "standard_file": standard,
+            "extension_ratified": values["EXTENSION_RATIFIED"],
+            "extension_standard_file": extension}
 
 
 def main_ratification_kwargs(git: Git, *, head: str, main: str, trusted_dir: Path) -> dict:
@@ -223,8 +260,7 @@ def main_ratification_kwargs(git: Git, *, head: str, main: str, trusted_dir: Pat
     bases = git.run("merge-base", "--all", m, h, allow_one=True).splitlines()
     if len(bases) != 1 or git.file(bases[0], RECORD) is None:
         return {}
-    ratified, standard = trusted_ratification(git, m, trusted_dir)
-    return {"adoption_ratified": ratified, "standard_file": standard}
+    return dict(trusted_ratification(git, m, trusted_dir))
 
 
 def preflight(
@@ -257,11 +293,12 @@ def preflight(
         admission = Admission(engine_branch, "dry-run")
         compute_version(cwd=cwd, head=h, main=m, branch=engine_branch, adoption_dry_run=True)
         return admission
-    ratified, standard = trusted_ratification(git, m, trusted_dir)
+    trusted = trusted_ratification(git, m, trusted_dir)
     # The engine is the authority; this fails the run before any build.
-    compute_version(cwd=cwd, head=h, main=m, branch=engine_branch,
-                    adoption_ratified=ratified, standard_file=standard)
-    return Admission(engine_branch, "ratified", ratified, standard)
+    compute_version(cwd=cwd, head=h, main=m, branch=engine_branch, **trusted)
+    return Admission(engine_branch, "ratified", trusted["adoption_ratified"],
+                     trusted["standard_file"], trusted["extension_ratified"],
+                     trusted["extension_standard_file"])
 
 
 def decide(version: dict, *, dry_run: bool) -> dict:

@@ -95,6 +95,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* The release record `notes` command requires `--output` and no longer prints the rendered notes to standard output, which removes the log sink that code scanning flagged (a false positive carried through the ratification inputs).
+
 * Release an onboarding bootstrap in-flight marker only for the claim that
   wrote it. `release` removed the marker unconditionally, so a bootstrap whose
   claim outlived its TTL, and whose slot another bootstrap then reclaimed,
@@ -119,6 +121,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   if the holder dies, so a crash no longer leaves a `.reclaim` lock file that
   blocks reclaim forever. The marker is written to a temporary file and renamed
   into place.
+* Let the STD-U-821 adoption record name the highest stable tag as its base,
+  as authorized by STD-U-821 amendment 1.5 (ratified 2026-10-10,
+  company-knowledge #236, vendored at
+  `docs/releases/std-u-821-amendment-1.5.md`). The version engine accepted the
+  record only with base `0.11.0`, so once `v0.11.1` existed and `main` had
+  advanced past it (#358 to #365) the next cycle could be cut neither at
+  `main` (`missing_tags_in_released_product`) nor at the tag
+  (`recut_required`). The engine now takes the base from the record: a strict
+  `X.Y.Z` whose `vX.Y.Z` exists, is the highest stable tag by SemVer
+  precedence, is an ancestor of the cut and is a strict ancestor of the anchor.
+  It refuses the record when any `v`-digit tag in the repository is not a
+  strict stable or prerelease version, and it requires both ratification lines
+  (amendment 1.3 and amendment 1.5, pinned as `RATIFIED` and
+  `EXTENSION_RATIFIED` in `scripts/adoption_ratification.py` and read from
+  `main` by every stage); without either it refuses with `adoption_unratified`.
+  Every other record rule is unchanged. The record is single use per record,
+  only while its base is the highest stable tag. The runbook gains "Reusing
+  the record route after a release", with a check that `src/` and
+  `pyproject.toml` are unchanged between the tag and the anchor. Known
+  out-of-scope commits on `main` after `v0.11.1`: #363 and #365 (onboarding
+  product fixes, outside amendment 1.5 scope: product changes must use
+  `release/new`), and #362 (build backend pin, borderline: build
+  configuration). The next adoption issue records the handling decided by the
+  operator or lead at cut time: (a) revert them on `main` and re-land through
+  `release/new`, or (b) a recorded exception in the issue. Nothing is blocked
+  now because there is no release to cut.
 * Continue a `promote-release.yml` promotion after its stable tag exists. The
   engine counted the new `vX.Y.Z` on `S` as a released version, so the
   recheck after tagging recomputed the release against a stable tag above its

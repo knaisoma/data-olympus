@@ -287,8 +287,9 @@ def _compute(git: Git, *, cwd: str | Path, head: str, main: str, branch: str,
     """Recompute, taking adoption ratification only from main's blobs.
 
     This checkout is the squash S, whose tree equals the reviewed H, so its own
-    scripts/adoption_ratification.py and vendored amendment are candidate data.
-    For an adoption cut the pinned values are read from the RC's recorded main
+    scripts/adoption_ratification.py and vendored amendments are candidate data.
+    For an adoption cut both pinned ratifications (amendments 1.3 and 1.5) and
+    their vendored standards are read from the RC's recorded main
     M (the main stage 2 ran from), never from S or H; the engine validates them.
     """
     with tempfile.TemporaryDirectory(prefix="adoption-ratification-") as trusted:
@@ -1015,7 +1016,7 @@ def main(argv: list[str] | None = None) -> int:
     notes.add_argument("--head", required=True)
     notes.add_argument("--main", default="origin/main")
     notes.add_argument("--branch", choices=("release/new", "hotfix/new"), default="release/new")
-    notes.add_argument("--output", type=Path)
+    notes.add_argument("--output", type=Path, required=True)
     published = commands.add_parser("release")
     published.add_argument("--tag", required=True)
     for arg in ("record", "stable-provenance", "notes"):
@@ -1071,9 +1072,10 @@ def main(argv: list[str] | None = None) -> int:
             version = _compute(Git(Path.cwd()), cwd=Path.cwd(), head=args.head,
                                main=args.main, branch=args.branch)
             rendered = generate_notes(cwd=Path.cwd(), version=version)
-            if args.output:
-                args.output.write_text(rendered, encoding="utf-8")
-            print(rendered, end="")
+            # The notes go to a file only; echoing the rendered body on stdout
+            # adds a log sink for data derived from the ratification inputs.
+            args.output.write_text(rendered, encoding="utf-8")
+            print(f"wrote {len(rendered.encode('utf-8'))} bytes to {args.output}")
         elif args.command == "release":
             complete_release(
                 tag=args.tag, notes=args.notes.read_text(encoding="utf-8"),

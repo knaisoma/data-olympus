@@ -41,8 +41,8 @@ jobs:
             +refs/heads/main:refs/remotes/origin/main \
             "+refs/heads/$GITHUB_REF_NAME:refs/remotes/origin/build-head"
           mkdir -p to-delete/rc-build
-          # For an adoption cut, preflight reads the pinned ratification and the
-          # vendored standard from origin/main's blobs (never from this H
+          # For an adoption cut, preflight reads both pinned ratifications and
+          # vendored standards from origin/main's blobs (never from this H
           # checkout) into to-delete/rc-trusted, outside the uploaded artifact,
           # and runs the engine once with them. Stage 2 recomputes with main's
           # own checkout, so this stage is not trusted for the result.
@@ -58,7 +58,9 @@ jobs:
           adoption=()
           case "$ADOPTION_MODE" in
             none) ;;
-            ratified) adoption=(--adoption-ratified "$ADOPTION_RATIFIED" --standard-file "$ADOPTION_STANDARD_FILE") ;;
+            ratified) adoption=(--adoption-ratified "$ADOPTION_RATIFIED" --standard-file "$ADOPTION_STANDARD_FILE"
+                                --extension-ratified "$ADOPTION_EXTENSION_RATIFIED"
+                                --extension-standard-file "$ADOPTION_EXTENSION_STANDARD_FILE") ;;
             dry-run) adoption=(--adoption-dry-run) ;;
             *) echo "unknown adoption mode" >&2; exit 1 ;;
           esac
