@@ -159,6 +159,24 @@ def test_documents_failing_fixed_rules_are_refused(damage):
     sbom.validate_document(good, kind=kind, subject_digest=manifest, version="1.0rc1")
 
 
+def test_real_syft_output_passes_the_fixed_rules():
+    """Trimmed syft 1.52.0 output: the image from the published 0.11.1 OCI index
+    (linux/amd64 manifest), the wheel from an extracted tree with --source-name
+    data-olympus --source-version 0.12.0rc1."""
+    from pathlib import Path
+    fixtures = Path("tests/fixtures/sbom")
+    image = (fixtures / "syft-1.52.0-image-linux-amd64.spdx.json").read_bytes()
+    sbom.validate_document(
+        image, kind="image", version="unused",
+        subject_digest="sha256:971dff14971745c5aca1aac98fe5f98fb29272f5e1419e41a3240a8acee04276")
+    with pytest.raises(ValueError):
+        sbom.validate_document(image, kind="image", version="unused",
+                               subject_digest="sha256:" + "4" * 64)
+    wheel = (fixtures / "syft-1.52.0-wheel.spdx.json").read_bytes()
+    sbom.validate_document(wheel, kind="wheel", version="0.12.0rc1",
+                           subject_digest="sha256:" + "0" * 64)
+
+
 def test_index_must_hold_exactly_the_release_platforms(tmp_path):
     _, _, index = index_archive(tmp_path / "a.tar")
     data = json.loads(index)
@@ -321,7 +339,9 @@ def test_release_record_carries_sbom_references_additively(tmp_path):
                 "generator": f"syft {sbom.SYFT_VERSION}"} for s in subjects]
     promotion.provenance["sboms"] = entries
     record = promotion.prove()
-    assert record.pop("sboms") == entries
+    assert record.pop("sboms") == [
+        e | {"describes": "candidate file" if e["subject"] != "image" else "promoted image"}
+        for e in entries]
     # Same schema version and every other field unchanged: older readers keep working.
     assert record == without and record["schema_version"] == 1
 

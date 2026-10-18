@@ -51,7 +51,8 @@ IMAGE = "ghcr.io/knaisoma/data-olympus"
 PROJECT = "data-olympus"
 PLATFORMS = ("linux/amd64", "linux/arm64")
 SBOM_DIR = "sbom"
-# actions/attest refuses an SBOM above 16 MiB; nothing larger can be signed.
+# actions/attest refuses an SBOM above 16 MiB (MAX_SBOM_SIZE_BYTES in its
+# src/sbom.ts at the pinned v4.2.2); nothing larger can be signed.
 SBOM_LIMIT = 16 * 1024 * 1024
 INDEX_LIMIT = 4 * 1024 * 1024
 ATTESTATION_LIMIT = 64 * 1024 * 1024

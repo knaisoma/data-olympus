@@ -296,7 +296,9 @@ def validate_proof(
         # SPDX attestation signs. The image entries are the promoted platform
         # manifests; the wheel and sdist entries are the candidate files, which
         # the stable build of S is compared with (phase B step 10 removes it).
-        record["sboms"] = [dict(entry) for entry in provenance["sboms"]]
+        # "describes" says which bytes each entry is about, for machine readers.
+        record["sboms"] = [entry | {"describes": "promoted image" if entry["subject"] == "image"
+                                    else "candidate file"} for entry in provenance["sboms"]]
     return record
 
 

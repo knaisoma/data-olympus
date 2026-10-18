@@ -34,8 +34,15 @@ its own dependency versions within the declared ranges.
   subject name, subject digest, document file name and SHA-256, predicate type
   and generator.
 
-Stage one runs candidate code, so these documents are untrusted input until
-stage two binds them.
+Stage one runs candidate code, so these documents are untrusted input. Stage
+two checks their structure and binds them to the verified artifacts, but it
+cannot prove that the listed components are complete or accurate: a candidate
+branch could submit a hand-written document that passes the fixed rules. An
+SBOM attestation therefore proves where the document came from (the
+candidate's build, published by stage two on `main`) and which artifact it is
+bound to, at the same trust level as the artifact bytes themselves, not that
+trusted tooling produced its contents. Generating the documents in a trusted
+stage-two job from the verified artifacts is a tracked follow-up.
 
 ## Binding and attestation (rc-publish-stage.yml, stage two)
 
@@ -84,8 +91,9 @@ Any failure stops the promotion.
 ## Release record
 
 `release-record.json` gains an optional `sboms` list, a copy of the candidate
-receipt entries. The key is additive, so `schema_version` stays `1`. Each
-`file` is an asset of the release named by the record's `candidate_tag`.
+receipt entries with a `describes` field (`promoted image` or `candidate
+file`). The key is additive, so `schema_version` stays `1`. Each `file` is an
+asset of the release named by the record's `candidate_tag`.
 
 The image entries describe the promoted image exactly, since the image is
 promoted by digest. The wheel and sdist entries describe the candidate files.
@@ -97,4 +105,7 @@ files, which makes these entries describe the published bytes too.
 ## Rollback
 
 Revert the pull request. Candidates published while it was active keep their
-extra assets and attestations, which nothing else reads.
+extra assets and attestations. A candidate reserved with SBOM assets cannot be
+re-run by stage two after the revert (its assets no longer match the verified
+set, so it is refused or burned); it needs a new rc number, which the next
+push to the branch yields.
