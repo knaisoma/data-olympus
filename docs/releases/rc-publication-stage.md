@@ -83,10 +83,10 @@ verification, so a moved branch head or a moved `main` fails closed.
 
 | Job | Permissions | Action |
 |---|---|---|
-| `reserve` | `actions: read`, `contents: write`, `packages: read` | Creates an annotated tag at `H` and a draft prerelease, uploads the wheel, sdist and `release-provenance.json` and reads every asset back byte for byte; the release stays a draft |
+| `reserve` | `actions: read`, `contents: write`, `packages: read` | Creates an annotated tag at `H` and a draft prerelease, uploads the wheel, sdist, `release-provenance.json` and the per-artifact SBOMs and reads every asset back byte for byte; the release stays a draft |
 | `pypi` | `actions: read`, `contents: read`, `packages: read`, `id-token: write`, environment `pypi-rc` | Stages only the files missing from PyPI and uploads them with Trusted Publishing |
 | `publish` | `actions: read`, `contents: read`, `packages: write` | Waits for the PyPI readback, copies the OCI archive with `skopeo copy --all --preserve-digests`, reads the remote digest back, moves `rc` by digest for `release/new` only when `SDLC_RC_CHANNEL` is `enabled`, writes the staging selection, and outputs the validated image digest and the wheel and sdist names and SHA256 |
-| `attest` | `actions: read`, `attestations: write`, `id-token: write`, `packages: write` | Runs no repository code and parses no archive; re-checks the wheel and sdist with `sha256sum --check` against the `publish` outputs, then attests those copies and the image digest |
+| `attest` | `actions: read`, `attestations: write`, `id-token: write`, `packages: write` | Runs no repository code and parses no archive; re-checks the wheel, sdist and SBOM documents with `sha256sum --check` against the `publish` outputs, then attests those copies and the image digest, and signs one SPDX SBOM attestation per wheel, sdist and image platform manifest ([per-artifact SBOMs](sbom.md)) |
 | `finalize` | `actions: read`, `contents: write`, `packages: read` | Runs last (after `publish` and `attest`); repeats the full draft-aware verification, requires every release asset, every PyPI file and the image digest, then publishes the draft as a prerelease and reads it back as published |
 
 Before any write, every surface is read. A Git tag at another `H`, different
@@ -145,7 +145,8 @@ H: <H>
 sha256 <64 lowercase hex>  <asset name>
 ```
 
-with one `sha256` line per asset (wheel, sdist, `release-provenance.json`),
+with one `sha256` line per asset (wheel, sdist, `release-provenance.json` and,
+for a candidate built with SBOMs, the four SBOM documents),
 sorted by name. Every phase requires an existing tag to carry exactly the
 message computed from this run's verified files, so the bytes that PyPI and
 GHCR receive are bound to the reservation even when the draft is invisible.
@@ -186,8 +187,8 @@ selection, if consumers treat it as completion) into a job that runs after
 
 ## Action pins
 
-`actions/checkout`, `astral-sh/setup-uv`, `actions/attest-build-provenance`
-and `pypa/gh-action-pypi-publish` (including the moving `release/v1` branch)
+`actions/checkout`, `astral-sh/setup-uv`, `actions/attest-build-provenance`,
+`actions/attest` and `pypa/gh-action-pypi-publish` (including the moving `release/v1` branch)
 are pinned by full commit SHA with the tag in a trailing comment, and a test
 enforces those exact SHAs. `actions/download-artifact` and
 `actions/upload-artifact` keep tag pins.

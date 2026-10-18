@@ -18,7 +18,7 @@ name: rc-publish-stage
 # the very last job, after PyPI, the image and the attestations, so a
 # published candidate release always means a complete publication.
 #
-# Action pins: checkout, setup-uv, attest-build-provenance and
+# Action pins: checkout, setup-uv, attest-build-provenance, attest and
 # gh-action-pypi-publish use full commit SHAs with the tag in a trailing
 # comment (enforced by tests/test_rc_verify_and_publish.py). The artifact
 # actions keep tag pins.
@@ -157,6 +157,17 @@ jobs:
       wheel_sha256: ${{ steps.publish.outputs.wheel_sha256 }}
       sdist: ${{ steps.publish.outputs.sdist }}
       sdist_sha256: ${{ steps.publish.outputs.sdist_sha256 }}
+      sbom: ${{ steps.publish.outputs.sbom }}
+      sbom_wheel: ${{ steps.publish.outputs.sbom_wheel }}
+      sbom_wheel_sha256: ${{ steps.publish.outputs.sbom_wheel_sha256 }}
+      sbom_sdist: ${{ steps.publish.outputs.sbom_sdist }}
+      sbom_sdist_sha256: ${{ steps.publish.outputs.sbom_sdist_sha256 }}
+      sbom_image_amd64: ${{ steps.publish.outputs.sbom_image_amd64 }}
+      sbom_image_amd64_sha256: ${{ steps.publish.outputs.sbom_image_amd64_sha256 }}
+      image_amd64_digest: ${{ steps.publish.outputs.image_amd64_digest }}
+      sbom_image_arm64: ${{ steps.publish.outputs.sbom_image_arm64 }}
+      sbom_image_arm64_sha256: ${{ steps.publish.outputs.sbom_image_arm64_sha256 }}
+      image_arm64_digest: ${{ steps.publish.outputs.image_arm64_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
@@ -224,6 +235,17 @@ jobs:
           WHEEL_SHA256: ${{ needs.publish.outputs.wheel_sha256 }}
           SDIST: ${{ needs.publish.outputs.sdist }}
           SDIST_SHA256: ${{ needs.publish.outputs.sdist_sha256 }}
+          SBOM: ${{ needs.publish.outputs.sbom }}
+          SBOM_WHEEL: ${{ needs.publish.outputs.sbom_wheel }}
+          SBOM_WHEEL_SHA256: ${{ needs.publish.outputs.sbom_wheel_sha256 }}
+          SBOM_SDIST: ${{ needs.publish.outputs.sbom_sdist }}
+          SBOM_SDIST_SHA256: ${{ needs.publish.outputs.sbom_sdist_sha256 }}
+          SBOM_IMAGE_AMD64: ${{ needs.publish.outputs.sbom_image_amd64 }}
+          SBOM_IMAGE_AMD64_SHA256: ${{ needs.publish.outputs.sbom_image_amd64_sha256 }}
+          IMAGE_AMD64_DIGEST: ${{ needs.publish.outputs.image_amd64_digest }}
+          SBOM_IMAGE_ARM64: ${{ needs.publish.outputs.sbom_image_arm64 }}
+          SBOM_IMAGE_ARM64_SHA256: ${{ needs.publish.outputs.sbom_image_arm64_sha256 }}
+          IMAGE_ARM64_DIGEST: ${{ needs.publish.outputs.image_arm64_digest }}
         run: |
           set -euo pipefail
           fail() { echo "attestation input refused: $1" >&2; exit 1; }
@@ -238,9 +260,38 @@ jobs:
             [[ -f "$source" && ! -L "$source" ]] || fail "not a regular file"
             cp -- "$source" "to-delete/rc-attest/$name"
           done
-          cd to-delete/rc-attest
-          printf '%s  %s\n' "$WHEEL_SHA256" "$WHEEL" "$SDIST_SHA256" "$SDIST" \
-            | sha256sum --check --strict - || fail "hash mismatch"
+          (cd to-delete/rc-attest
+           printf '%s  %s\n' "$WHEEL_SHA256" "$WHEEL" "$SDIST_SHA256" "$SDIST" \
+             | sha256sum --check --strict -) || fail "hash mismatch"
+          # Per-artifact SBOMs: absent only for a candidate built before them,
+          # which promotion refuses. Same checks: fixed names, regular files,
+          # hashes the publish job verified, subjects the verified digests.
+          case "$SBOM" in
+            false) exit 0 ;;
+            true) ;;
+            *) fail "sbom flag" ;;
+          esac
+          [[ "$SBOM_WHEEL" == "$WHEEL.spdx.json" ]] || fail "wheel SBOM name"
+          [[ "$SBOM_SDIST" == "$SDIST.spdx.json" ]] || fail "sdist SBOM name"
+          [[ "$SBOM_IMAGE_AMD64" == image-linux-amd64.spdx.json ]] || fail "amd64 SBOM name"
+          [[ "$SBOM_IMAGE_ARM64" == image-linux-arm64.spdx.json ]] || fail "arm64 SBOM name"
+          [[ "$IMAGE_AMD64_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "amd64 digest"
+          [[ "$IMAGE_ARM64_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "arm64 digest"
+          for value in "$SBOM_WHEEL_SHA256" "$SBOM_SDIST_SHA256" \
+              "$SBOM_IMAGE_AMD64_SHA256" "$SBOM_IMAGE_ARM64_SHA256"; do
+            [[ "$value" =~ ^[0-9a-f]{64}$ ]] || fail "SBOM hash"
+          done
+          mkdir to-delete/rc-attest-sbom
+          for name in "$SBOM_WHEEL" "$SBOM_SDIST" "$SBOM_IMAGE_AMD64" "$SBOM_IMAGE_ARM64"; do
+            source="to-delete/rc-input/sbom/$name"
+            [[ -f "$source" && ! -L "$source" ]] || fail "not a regular file"
+            cp -- "$source" "to-delete/rc-attest-sbom/$name"
+          done
+          (cd to-delete/rc-attest-sbom
+           printf '%s  %s\n' "$SBOM_WHEEL_SHA256" "$SBOM_WHEEL" "$SBOM_SDIST_SHA256" "$SBOM_SDIST" \
+             "$SBOM_IMAGE_AMD64_SHA256" "$SBOM_IMAGE_AMD64" \
+             "$SBOM_IMAGE_ARM64_SHA256" "$SBOM_IMAGE_ARM64" \
+             | sha256sum --check --strict -) || fail "SBOM hash mismatch"
       - name: Log in to GHCR for the registry attestation
         env:
           GH_TOKEN: ${{ github.token }}
@@ -262,6 +313,37 @@ jobs:
           subject-path: |
             to-delete/rc-attest/*.whl
             to-delete/rc-attest/*.tar.gz
+      # SBOM attestations (predicate https://spdx.dev/Document/v2.3), one per
+      # artifact: the wheel, the sdist and each platform manifest of the image.
+      # promote-release verifies them with the same signer contract.
+      - name: Attest the wheel SBOM
+        if: needs.publish.outputs.sbom == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-path: to-delete/rc-attest/${{ needs.publish.outputs.wheel }}
+          sbom-path: to-delete/rc-attest-sbom/${{ needs.publish.outputs.sbom_wheel }}
+      - name: Attest the sdist SBOM
+        if: needs.publish.outputs.sbom == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-path: to-delete/rc-attest/${{ needs.publish.outputs.sdist }}
+          sbom-path: to-delete/rc-attest-sbom/${{ needs.publish.outputs.sbom_sdist }}
+      - name: Attest the linux/amd64 image SBOM
+        if: needs.publish.outputs.sbom == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: ghcr.io/knaisoma/data-olympus
+          subject-digest: ${{ needs.publish.outputs.image_amd64_digest }}
+          sbom-path: to-delete/rc-attest-sbom/${{ needs.publish.outputs.sbom_image_amd64 }}
+          push-to-registry: true
+      - name: Attest the linux/arm64 image SBOM
+        if: needs.publish.outputs.sbom == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: ghcr.io/knaisoma/data-olympus
+          subject-digest: ${{ needs.publish.outputs.image_arm64_digest }}
+          sbom-path: to-delete/rc-attest-sbom/${{ needs.publish.outputs.sbom_image_arm64 }}
+          push-to-registry: true
 
   finalize:
     needs: [publish, attest]

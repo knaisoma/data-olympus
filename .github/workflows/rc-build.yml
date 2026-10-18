@@ -100,6 +100,50 @@ jobs:
             --tag "ghcr.io/knaisoma/data-olympus:$RC_VERSION" \
             --output type=oci,dest=to-delete/rc-build/image.oci.tar \
             --metadata-file to-delete/rc-build/image-metadata.json
+      # Per-artifact SBOMs (docs/releases/rc-build.md). The pinned release
+      # archive is checked against its published SHA-256 before it runs.
+      - name: Install the pinned syft
+        env:
+          SYFT_VERSION: 1.52.0
+          SYFT_SHA256: caeedb81fb0491615f1ebd1761e4145d41ee86dd2cc7bf80669f9f5ad9d6133d
+        run: |
+          set -euo pipefail
+          mkdir -p to-delete/tools
+          curl -fsSL -o to-delete/tools/syft.tar.gz \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  to-delete/tools/syft.tar.gz" | sha256sum --check --strict -
+          tar -xzf to-delete/tools/syft.tar.gz -C to-delete/tools syft
+          test "$(to-delete/tools/syft version -o json | jq -er .version)" = "$SYFT_VERSION"
+      - name: Generate per-artifact SBOMs
+        env:
+          SYFT_CHECK_FOR_APP_UPDATE: 'false'
+        run: |
+          set -euo pipefail
+          SYFT=to-delete/tools/syft
+          OUT=to-delete/rc-build/sbom
+          mkdir -p "$OUT" to-delete/sbom-src
+          # The runtime closure the candidate was validated with: uv.lock
+          # without the dev group. Each package SBOM lists it with the package.
+          uv export --frozen --no-dev --no-emit-project --no-header \
+            --format requirements-txt -o to-delete/sbom-src/requirements.txt
+          for artifact in to-delete/rc-build/dist/*.whl to-delete/rc-build/dist/*.tar.gz; do
+            name="$(basename "$artifact")"
+            tree="to-delete/sbom-src/$name"
+            mkdir -p "$tree/.sbom-lock"
+            case "$name" in
+              *.whl) python3 -m zipfile -e "$artifact" "$tree" ;;
+              *.tar.gz) tar -xzf "$artifact" -C "$tree" ;;
+            esac
+            cp to-delete/sbom-src/requirements.txt "$tree/.sbom-lock/requirements.txt"
+            "$SYFT" scan "dir:$tree" --source-name data-olympus --source-version "$PYPI_VERSION" \
+              -q -o "spdx-json=$OUT/$name.spdx.json"
+          done
+          # One document per platform manifest; its root checksum is that digest.
+          for platform in linux/amd64 linux/arm64; do
+            "$SYFT" scan oci-archive:to-delete/rc-build/image.oci.tar --platform "$platform" \
+              --source-name ghcr.io/knaisoma/data-olympus --source-version "$RC_VERSION" \
+              -q -o "spdx-json=$OUT/image-${platform//\//-}.spdx.json"
+          done
       - name: Record archive provenance
         run: |
           set -euo pipefail
@@ -112,6 +156,10 @@ jobs:
             --base-sha "$CUT_SHA" --main-sha "$MAIN_SHA" --number "$N" \
             --image-digest "$IMAGE_DIGEST" --oci-archive to-delete/rc-build/image.oci.tar \
             --promotable "$PROMOTABLE" --dry-run "$DRY_RUN"
+          # Per-artifact SBOM receipt ("sboms"), checked against this provenance.
+          uv run python scripts/sbom_evidence.py embed \
+            --provenance to-delete/rc-build/release-provenance.json \
+            --sbom-dir to-delete/rc-build/sbom --oci-archive to-delete/rc-build/image.oci.tar
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: rc-build-${{ github.sha }}-${{ github.run_attempt }}
