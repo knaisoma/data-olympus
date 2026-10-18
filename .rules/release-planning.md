@@ -10,11 +10,10 @@ Explain progress under fixes, new capabilities, and improvements; these are
 categories, not quotas. New ideas become issues before implementation.
 Record acceptance criteria, dependencies, and validation for every selected issue.
 Start feature branches from `release/new` and integrate reviewed PRs there.
-The target flow will build each integration RC from content using
-`scripts/sdlc_version.py` and the `release_artifacts.py` version overlay, both
-delivered separately, not yet in the repository. After the cut, the first
-commit on `release/new` will set `pyproject.toml` to `0.0.0+unreleased`;
-builds will inject the computed version. Do not commit the target version.
+Each integration RC is built from content using `scripts/sdlc_version.py` and
+the version overlay in `scripts/release_artifacts.py`. After the cut, the first
+commit on `release/new` sets `pyproject.toml` to `0.0.0+unreleased`; builds
+inject the computed version. Do not commit the target version.
 CI accepts the placeholder as defined in
 [docs/releases/placeholder-version.md](../docs/releases/placeholder-version.md).
 Collect functional changes under `[Unreleased]`.
@@ -27,5 +26,6 @@ take priority in staging. Both paths share the promotion lock and review gates.
 The agent holding operator authorization merges; reserved cases such as
 migrations or destructive changes require explicit operator authorization.
 A no-value cycle may end with No action. Never override failed gates to meet
-the calendar. Until the first new-model release, the transitional preparation
-and publication path in `.rules/release-routine.md` remains available.
+the calendar. The first new-model release (0.11.1) has shipped; the
+transitional preparation and publication path in `.rules/release-routine.md`
+remains available until its workflows are retired.
