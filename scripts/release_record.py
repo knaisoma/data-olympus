@@ -71,6 +71,7 @@ ROOT = str(Path(__file__).resolve().parents[1])
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from scripts import sbom_evidence  # noqa: E402
 from scripts.rc_decide import main_ratification_kwargs  # noqa: E402
 from scripts.release_artifacts import CandidateVersion  # noqa: E402
 from scripts.sdlc_version import Git, VersionError, _impact, compute_version  # noqa: E402
@@ -131,6 +132,15 @@ def validate_candidate(provenance: dict, *, head: str, candidate_tag: str) -> Ca
         _match(HASH, receipt.get(name), name)
     for name in ("wheel", "sdist"):
         _match(re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*"), receipt.get(name), name)
+    if "sboms" in provenance:
+        # Optional for older candidates (backward compatible record); the
+        # promotion workflow requires it and verifies the attestations.
+        entries = sbom_evidence.validate_entries(provenance["sboms"])
+        for entry in entries[:2]:
+            kind = entry["subject"]
+            if (entry["subject_name"] != receipt[kind]
+                    or entry["subject_digest"] != "sha256:" + receipt[f"{kind}_sha256"]):
+                raise ValueError(f"sboms {kind} subject differs from the candidate receipt")
     return identity
 
 
@@ -274,12 +284,22 @@ def validate_proof(
             raise ValueError("stable tag already exists")
         validate_tag_object(tag_object, squash=squash, tag=identity.stable_tag,
                             notes=notes, tagger=tagger)
-    return {
+    record = {
         "schema_version": 1, "H": head, "S": squash, "B": provenance["B"],
         "M": provenance["M"], "tag": identity.stable_tag, "target": identity.base,
         "candidate_tag": candidate_tag, "candidate_version": identity.pypi_version,
         "image_digest": provenance["image_digest"], "notes": notes,
     }
+    if "sboms" in provenance:
+        # Additive and optional, so schema_version stays 1. Each entry names a
+        # release asset of candidate_tag ("file", "sha256") and the subject its
+        # SPDX attestation signs. The image entries are the promoted platform
+        # manifests; the wheel and sdist entries are the candidate files, which
+        # the stable build of S is compared with (phase B step 10 removes it).
+        # "describes" says which bytes each entry is about, for machine readers.
+        record["sboms"] = [entry | {"describes": "promoted image" if entry["subject"] == "image"
+                                    else "candidate file"} for entry in provenance["sboms"]]
+    return record
 
 
 def _compute(git: Git, *, cwd: str | Path, head: str, main: str, branch: str,

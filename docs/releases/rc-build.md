@@ -18,6 +18,9 @@ Each workflow artifact contains:
 - Version-engine output and the build decision.
 - Provenance recording the candidate identity, Python mapping, cut `B`, source
   `H`, main `M`, commit count `N`, distribution hashes, archive hash, and image digest.
+- One SPDX 2.3 SBOM per wheel, sdist and image platform under `sbom/`, generated
+  by the pinned syft and listed in the provenance under `sboms`
+  (see [per-artifact SBOMs](sbom.md)).
 
 At `N=0`, the build still verifies all artifacts but records `promotable: false`.
 A manual dispatch defaults to `dry_run: true` and also records that it cannot

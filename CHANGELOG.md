@@ -18,6 +18,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+* Per-artifact SBOMs for release candidates (SDLC section 9). `rc-build.yml` generates one SPDX 2.3 document per wheel, sdist and image platform with syft `1.52.0` (download checked against its published SHA-256); stage two binds each document to the artifact it verified, stores it as a candidate release asset and signs it with `actions/attest` (predicate `https://spdx.dev/Document/v2.3`) on the wheel or sdist hash or the platform manifest digest; `promote-release.yml` refuses a candidate unless every SBOM attestation verifies with the stage-two signer and carries the stored document. `release-record.json` gains an optional `sboms` list (schema version unchanged). See `docs/releases/sbom.md`.
 * Add `docs/releases/repository-settings.md`, a checklist of the GitHub repository and organization settings the release pipeline requires (immutable releases, variables, environments, Trusted Publishers, rulesets, code scanning, Dependabot, the GitHub App and the Actions policy), each with a read-only `gh api` read-back.
 * This is the first release cut under the STD-U-821 branch model (`release/new`, content-derived versions, reviewed promotion). Candidates are built unprivileged and published by a separate trusted stage; releases are drafted, filled with assets and published last, which GitHub immutable releases require. Candidate `0.11.1-rc.2` of the first live run is burned.
 * Add a disabled-by-default trusted RC publication stage (`rc-publish-stage.yml`)

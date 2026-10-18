@@ -205,6 +205,14 @@ the trusted stage-two workflow on `main`. The candidate's
 published, immutable candidate release and by the candidate tag message,
 which records its SHA-256 (promotion does not compare that hash today).
 
+The next step verifies the per-artifact SBOMs: it requires the `sboms`
+receipt, the stored documents with their recorded hashes, the exact index
+bytes of the recorded digest, and for every wheel, sdist and image platform an
+SPDX attestation (`--predicate-type https://spdx.dev/Document/v2.3`, same
+signer flags) whose predicate is the stored document. A candidate built
+without SBOMs cannot be promoted. See [per-artifact SBOMs](sbom.md). The
+release record copies the receipt entries into an optional `sboms` list.
+
 ## Stable Python artifacts
 
 A read-only job runs `release_artifacts.py stable-promotion`, which builds the
