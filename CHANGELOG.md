@@ -12,6 +12,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+* Container image: rebuild on the current `python:3.13-slim` index digest (`sha256:70729b46...`, Python 3.13.16 on Debian trixie with current security updates), raise the pinned uv from `0.5.4` to `0.12.23`, and stop installing `curl`, which nothing in the image uses (probes are `httpGet`/`tcpSocket`; the `bin/kb` client scripts that call curl run on operator machines). On the release candidate assessment this takes the blocking vulnerability-gate matches from 358 to 106 per platform; the rest are findings without a fix or with a fix only on Python 3.15. git still pulls in `libcurl3t64-gnutls` for its http helpers. Anyone who ran `curl` inside the container by hand needs another tool, such as `python -c` with `urllib.request`.
+
 ### Changed
 
 * The old-path `set-channel.yml` and `tag-release.yml` workflows now take the shared `data-olympus-promotion` concurrency group (unconditional, `cancel-in-progress: false`), so they cannot run at the same time as `promote-release.yml`, `rc-publish-stage.yml`, `recut-release-branch.yml` or `hotfix-cut.yml`. `tag-release.yml` enters the lock only when dispatched from `main` and drops its per-candidate group, so two different candidates now serialise. Recorded as an R9 deviation (operator follow-up decision of 2026-10-10). GitHub keeps one pending run per group and a newer pending run cancels an older pending one: dispatch again if that happens.
