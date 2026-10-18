@@ -57,6 +57,7 @@ def test_fix_only_on_a_listed_line_not_yet_eligible_is_no_fix(severity, blocked)
     assert evidence["fix_not_yet_adoptable"] == [
         {"id": "CVE-2026-0002", "package": "python", "version": "3.13.14", "platform": p,
          "severity": severity, "eligible_from": "2026-12-08T00:00:00+00:00",
+         "label": "not-yet-eligible",
          "deferred_fixes": [{"version": "3.15.0rc3", "line": "3.15",
                              "eligible_from": "2026-12-08T00:00:00+00:00"}]}
         for p in gate.PLATFORMS]
@@ -90,10 +91,48 @@ def test_a_fix_on_an_unlisted_newer_line_blocks():
     assert run([python_match("CVE-2026-0003", "Low", ["3.15.0rc3"])], lines=())["blocked"]
 
 
-def test_a_fix_only_on_older_lines_is_not_available():
-    evidence = run([python_match("CVE-2026-0004", "Medium", ["3.12.15"])])
+@pytest.mark.parametrize(("severity", "blocked"), [("Medium", False), ("High", True)])
+def test_a_fix_only_on_older_lines_is_no_fix_labelled_older_line_only(severity, blocked,
+                                                                      capsys, tmp_path):
+    finding = python_match("CVE-2026-0004", severity, ["3.10.22", "3.12.15"])
+    evidence = run([finding])
+    assert evidence["blocked"] is blocked
+    downgraded = evidence["fix_not_yet_adoptable"][0]
+    assert downgraded["label"] == "older-line-only"
+    assert downgraded["older_line_fixes"] == [{"version": "3.10.22", "line": "3.10"},
+                                              {"version": "3.12.15", "line": "3.12"}]
+    assert "eligible_from" not in downgraded
+    text = gate.summary(evidence)
+    assert "older-line-only" in text and "3.12.15 (3.12, older)" in text
+    # Next to deferred fixes the older ones are listed too, under the other label.
+    mixed = run([python_match("CVE-2026-0004", "Medium", ["3.12.15", "3.15.0rc3"])])
+    item = mixed["fix_not_yet_adoptable"][0]
+    assert item["label"] == "not-yet-eligible"
+    assert item["older_line_fixes"] == [{"version": "3.12.15", "line": "3.12"}]
+
+
+@pytest.mark.parametrize("value", [
+    "3.15.0rc3|3.13.16", "3.13.16|3.15.0rc3", "3.15.0rc3, 3.13.16", "3.13.16, 3.15.0rc3",
+    "3.15.0rc3,3.13.16", "3.15.0rc3 3.13.16"])
+def test_combined_fix_strings_cannot_hide_the_installed_line_fix(value):
+    evidence = run([python_match("CVE-2026-0007", "Medium", [value])])
+    assert evidence["blocked"] and evidence["fix_not_yet_adoptable"] == []
+
+
+def test_combined_fix_strings_on_deferred_lines_only_stay_deferred():
+    evidence = run([python_match("CVE-2026-0008", "Medium", ["3.15.0rc3| 3.15.0rc2"])])
     assert not evidence["blocked"]
-    assert evidence["fix_not_yet_adoptable"][0]["older_line_fixes"] == ["3.12.15"]
+    assert [d["version"] for d in evidence["fix_not_yet_adoptable"][0]["deferred_fixes"]] == [
+        "3.15.0rc3", "3.15.0rc2"]
+
+
+@pytest.mark.parametrize("value", [
+    "3.15.0rc3|garbage", "garbage|3.15.0rc3", "3.15.0rc3|", "|3.15.0rc3", "3.15.0rc3,,",
+    "", " ", "3.15.0-rc3", "3.15.0rc", "v3.15.0", "3.15.0rc3.post", "3.15.0rc3x"])
+def test_unparseable_or_empty_tokens_fail_closed(value):
+    evidence = run([python_match("CVE-2026-0009", "Low", ["3.15.0rc3", value])])
+    assert evidence["blocked"]
+    assert {f["reason"] for f in evidence["blocking"]} == {"fix available"}
 
 
 @pytest.mark.parametrize("versions", [[], ["unparsable"], ["3"]])
