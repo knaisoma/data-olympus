@@ -188,10 +188,10 @@ def test_cli_refuses_a_malformed_adoption_lines_file(tmp_path):
     bad = tmp_path / "adoption-lines.json"
     bad.write_text(json.dumps({"schema_version": 1, "lines": [PY315 | {"policy_wait_days": 1}]}))
     assert gate.main(["validate", "--exceptions", "release/exceptions.json",
-                      "--adoption-lines", str(bad)]) == 1
+                      "--line-eligibility", str(bad)]) == 1
     bad.write_text("{not json")
     assert gate.main(["validate", "--exceptions", "release/exceptions.json",
-                      "--adoption-lines", str(bad)]) == 1
+                      "--line-eligibility", str(bad)]) == 1
 
 
 def test_committed_adoption_lines_file_is_valid_and_lists_python_3_15():

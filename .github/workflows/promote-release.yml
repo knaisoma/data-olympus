@@ -359,7 +359,7 @@ jobs:
           status=0
           python scripts/vulnerability_gate.py gate \
             --exceptions to-delete/vulnerability/exceptions.json \
-            --adoption-lines to-delete/vulnerability/adoption-lines.json \
+            --line-eligibility to-delete/vulnerability/adoption-lines.json \
             --report linux/amd64=to-delete/vulnerability/grype-linux-amd64.json \
             --report linux/arm64=to-delete/vulnerability/grype-linux-arm64.json \
             --db-status to-delete/vulnerability/db-status.json --image-digest "$IMAGE_DIGEST" \
