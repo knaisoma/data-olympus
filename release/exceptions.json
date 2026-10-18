@@ -1,4 +1,2189 @@
 {
   "schema_version": 1,
-  "exceptions": []
+  "exceptions": [
+    {
+      "finding": "CVE-2026-76642",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "bsdutils",
+        "package_version": "1:2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for bsdutils 1:2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78408",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "bsdutils",
+        "package_version": "1:2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for bsdutils 1:2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78409",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "bsdutils",
+        "package_version": "1:2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for bsdutils 1:2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78410",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "bsdutils",
+        "package_version": "1:2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for bsdutils 1:2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-102010",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "gcc-14-base",
+        "package_version": "14.2.0-19",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for gcc-14-base 14.2.0-19 (gcc-14 source package, Debian trixie). The package is part of the Debian trixie base image (libgcc and libstdc++ runtime). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): only apt binaries link libstdc++ (ldd sweep of the candidate image); no Python extension or server binary does.",
+      "mitigation": "None needed; apt is not invoked at runtime.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-95619",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "gcc-14-base",
+        "package_version": "14.2.0-19",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for gcc-14-base 14.2.0-19 (gcc-14 source package, Debian trixie). The package is part of the Debian trixie base image (libgcc and libstdc++ runtime). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): only apt binaries link libstdc++ (ldd sweep of the candidate image); no Python extension or server binary does.",
+      "mitigation": "None needed; apt is not invoked at runtime.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-54369",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libacl1",
+        "package_version": "2.3.2-2+b1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libacl1 2.3.2-2+b1 (acl source package, Debian trixie). The package is an Essential package of the Debian trixie base image (via coreutils). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): needs a privileged process calling acl_*_file on attacker-controlled paths. No Python, venv or git binary links libacl (ldd), and no privileged process runs in the pod.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-54370",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libacl1",
+        "package_version": "2.3.2-2+b1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libacl1 2.3.2-2+b1 (acl source package, Debian trixie). The package is an Essential package of the Debian trixie base image (via coreutils). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): needs a privileged process calling acl_*_file on attacker-controlled paths. No Python, venv or git binary links libacl (ldd), and no privileged process runs in the pod.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-76642",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libblkid1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libblkid1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78408",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libblkid1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libblkid1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78409",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libblkid1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libblkid1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78410",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libblkid1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libblkid1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-19499",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libc-bin",
+        "package_version": "2.41-12+deb13u4",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libc-bin 2.41-12+deb13u4 (glibc source package, Debian trixie). The package is an Essential package of the Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): strfmon, ns_printrr and fp_nquery are not referenced by python, libpython, lib-dynload, venv extensions, git or ssh (string search with deflateInit as positive control).",
+      "mitigation": "None needed; runtime hardening applies: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-5435",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libc-bin",
+        "package_version": "2.41-12+deb13u4",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libc-bin 2.41-12+deb13u4 (glibc source package, Debian trixie). The package is an Essential package of the Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): strfmon, ns_printrr and fp_nquery are not referenced by python, libpython, lib-dynload, venv extensions, git or ssh (string search with deflateInit as positive control).",
+      "mitigation": "None needed; runtime hardening applies: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-19499",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libc6",
+        "package_version": "2.41-12+deb13u4",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libc6 2.41-12+deb13u4 (glibc source package, Debian trixie). The package is an Essential package of the Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): strfmon, ns_printrr and fp_nquery are not referenced by python, libpython, lib-dynload, venv extensions, git or ssh (string search with deflateInit as positive control).",
+      "mitigation": "None needed; runtime hardening applies: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-5435",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libc6",
+        "package_version": "2.41-12+deb13u4",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libc6 2.41-12+deb13u4 (glibc source package, Debian trixie). The package is an Essential package of the Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): strfmon, ns_printrr and fp_nquery are not referenced by python, libpython, lib-dynload, venv extensions, git or ssh (string search with deflateInit as positive control).",
+      "mitigation": "None needed; runtime hardening applies: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-10536",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Critical severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-107928",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-107929",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-11856",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Critical severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-12064",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-13608",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-18924",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Critical severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-19931",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Critical severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-80229",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-80230",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-80255",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-82209",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-86409",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-86410",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-86414",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-87862",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-87863",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-87864",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-87865",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-8926",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Critical severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-8932",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-9079",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Critical severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-9080",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-92386",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-92387",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-92388",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-92389",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-92390",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-92391",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-94266",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). Unknown severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-9545",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcurl3t64-gnutls",
+        "package_version": "8.14.1-2+deb13u7",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libcurl3t64-gnutls 8.14.1-2+deb13u7 (curl source package, Debian trixie). The package is a required runtime dependency of git (installed by the Dockerfile apt step). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Reachable only through git's http, https, ftp and imap helpers (git-remote-http(s), git-http-fetch/push, git-imap-send, git-remote-ftp(s)); /usr/bin/git and ssh do not link libcurl. The deployed KB remote is SSH (verified in the live pod, scheme only), git network operations only target the configured origin, and request-supplied remote URLs are compared with index metadata, never fetched (WS3d class B).",
+      "mitigation": "Deployed KB remote uses SSH; git network calls only target origin. Recommended hardening: protocol.http/https/ftp/ftps.allow=never in /etc/gitconfig, or an egress NetworkPolicy limited to github.com:22 and DNS.",
+      "residual_risk": "Medium for public image users who configure an https remote; low for the kn-dev deployment, which uses SSH.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-102010",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libgcc-s1",
+        "package_version": "14.2.0-19",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libgcc-s1 14.2.0-19 (gcc-14 source package, Debian trixie). The package is part of the Debian trixie base image (libgcc and libstdc++ runtime). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): only apt binaries link libstdc++ (ldd sweep of the candidate image); no Python extension or server binary does.",
+      "mitigation": "None needed; apt is not invoked at runtime.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-95619",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libgcc-s1",
+        "package_version": "14.2.0-19",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libgcc-s1 14.2.0-19 (gcc-14 source package, Debian trixie). The package is part of the Debian trixie base image (libgcc and libstdc++ runtime). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): only apt binaries link libstdc++ (ldd sweep of the candidate image); no Python extension or server binary does.",
+      "mitigation": "None needed; apt is not invoked at runtime.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-107778",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libgssapi-krb5-2",
+        "package_version": "1.21.3-5+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libgssapi-krb5-2 1.21.3-5+deb13u1 (krb5 source package, Debian trixie). The package is a dependency of openssh-client and libcurl (GSSAPI). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw is in services receiving KRB-CRED (rd_cred). The pod runs no Kerberos service; ssh is a client to github.com only.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-107778",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libk5crypto3",
+        "package_version": "1.21.3-5+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libk5crypto3 1.21.3-5+deb13u1 (krb5 source package, Debian trixie). The package is a dependency of openssh-client and libcurl (GSSAPI). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw is in services receiving KRB-CRED (rd_cred). The pod runs no Kerberos service; ssh is a client to github.com only.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-107778",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libkrb5-3",
+        "package_version": "1.21.3-5+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libkrb5-3 1.21.3-5+deb13u1 (krb5 source package, Debian trixie). The package is a dependency of openssh-client and libcurl (GSSAPI). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw is in services receiving KRB-CRED (rd_cred). The pod runs no Kerberos service; ssh is a client to github.com only.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-107778",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libkrb5support0",
+        "package_version": "1.21.3-5+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libkrb5support0 1.21.3-5+deb13u1 (krb5 source package, Debian trixie). The package is a dependency of openssh-client and libcurl (GSSAPI). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw is in services receiving KRB-CRED (rd_cred). The pod runs no Kerberos service; ssh is a client to github.com only.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-76642",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "liblastlog2-2",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for liblastlog2-2 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78408",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "liblastlog2-2",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for liblastlog2-2 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78409",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "liblastlog2-2",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for liblastlog2-2 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78410",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "liblastlog2-2",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for liblastlog2-2 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-76642",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libmount1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libmount1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78408",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libmount1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libmount1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78409",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libmount1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libmount1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78410",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libmount1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libmount1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2025-69720",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libncursesw6",
+        "package_version": "6.5+20250216-2",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libncursesw6 6.5+20250216-2 (ncurses source package, Debian trixie). The package is an Essential package of the Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the overflow is in the infocmp CLI tool, which the server and entrypoint never invoke.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-82560",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libperl5.40",
+        "package_version": "5.40.1-6+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libperl5.40 5.40.1-6+deb13u1 (perl source package, Debian trixie). The package is a dependency of git (perl-base is Essential). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): Pod::Text and Archive::Tar are never loaded. The git subcommands the server runs (log, diff, show, worktree, push, fetch, rev-parse, diff-tree, rev-list, branch, interpret-trailers) are C builtins; the only perl script in git-core is git-instaweb.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-9538",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libperl5.40",
+        "package_version": "5.40.1-6+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libperl5.40 5.40.1-6+deb13u1 (perl source package, Debian trixie). The package is a dependency of git (perl-base is Essential). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): Pod::Text and Archive::Tar are never loaded. The git subcommands the server runs (log, diff, show, worktree, push, fetch, rev-parse, diff-tree, rev-list, branch, interpret-trailers) are C builtins; the only perl script in git-core is git-instaweb.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-107161",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libsasl2-2",
+        "package_version": "2.1.28+dfsg1-9",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libsasl2-2 2.1.28+dfsg1-9 (cyrus-sasl2 source package, Debian trixie). The package is a dependency pulled by libcurl through libldap. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the overflow is in the DIGEST-MD5 plugin, which is not installed (only libsasldb in /usr/lib/*/sasl2).",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-107161",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libsasl2-modules-db",
+        "package_version": "2.1.28+dfsg1-9",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libsasl2-modules-db 2.1.28+dfsg1-9 (cyrus-sasl2 source package, Debian trixie). The package is a dependency pulled by libcurl through libldap. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the overflow is in the DIGEST-MD5 plugin, which is not installed (only libsasldb in /usr/lib/*/sasl2).",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-76642",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libsmartcols1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libsmartcols1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78408",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libsmartcols1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libsmartcols1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78409",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libsmartcols1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libsmartcols1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78410",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libsmartcols1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libsmartcols1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-102010",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libstdc++6",
+        "package_version": "14.2.0-19",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libstdc++6 14.2.0-19 (gcc-14 source package, Debian trixie). The package is part of the Debian trixie base image (libgcc and libstdc++ runtime). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): only apt binaries link libstdc++ (ldd sweep of the candidate image); no Python extension or server binary does.",
+      "mitigation": "None needed; apt is not invoked at runtime.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-95619",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libstdc++6",
+        "package_version": "14.2.0-19",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libstdc++6 14.2.0-19 (gcc-14 source package, Debian trixie). The package is part of the Debian trixie base image (libgcc and libstdc++ runtime). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): only apt binaries link libstdc++ (ldd sweep of the candidate image); no Python extension or server binary does.",
+      "mitigation": "None needed; apt is not invoked at runtime.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2025-69720",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libtinfo6",
+        "package_version": "6.5+20250216-2",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libtinfo6 6.5+20250216-2 (ncurses source package, Debian trixie). The package is an Essential package of the Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the overflow is in the infocmp CLI tool, which the server and entrypoint never invoke.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-76642",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libuuid1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libuuid1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78408",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libuuid1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libuuid1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78409",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libuuid1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libuuid1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78410",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libuuid1",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libuuid1 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-76642",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "login",
+        "package_version": "1:4.16.0-2+really2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for login 1:4.16.0-2+really2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78408",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "login",
+        "package_version": "1:4.16.0-2+really2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for login 1:4.16.0-2+really2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78409",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "login",
+        "package_version": "1:4.16.0-2+really2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for login 1:4.16.0-2+really2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78410",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "login",
+        "package_version": "1:4.16.0-2+really2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for login 1:4.16.0-2+really2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-76642",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "mount",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for mount 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78408",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "mount",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for mount 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78409",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "mount",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for mount 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78410",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "mount",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for mount 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2025-69720",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "ncurses-base",
+        "package_version": "6.5+20250216-2",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for ncurses-base 6.5+20250216-2 (ncurses source package, Debian trixie). The package is an Essential package of the Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the overflow is in the infocmp CLI tool, which the server and entrypoint never invoke.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2025-69720",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "ncurses-bin",
+        "package_version": "6.5+20250216-2",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for ncurses-bin 6.5+20250216-2 (ncurses source package, Debian trixie). The package is an Essential package of the Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the overflow is in the infocmp CLI tool, which the server and entrypoint never invoke.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-106553",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "openssh-client",
+        "package_version": "1:10.0p1-7+deb13u4",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for openssh-client 1:10.0p1-7+deb13u4 (openssh source package, Debian trixie). The package is a required runtime dependency for the SSH push and fetch of the KB remote. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw is in sshd, and the image contains no sshd (verified).",
+      "mitigation": "None needed; no sshd is installed in the image.",
+      "residual_risk": "None in this image.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-106555",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "openssh-client",
+        "package_version": "1:10.0p1-7+deb13u4",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for openssh-client 1:10.0p1-7+deb13u4 (openssh source package, Debian trixie). The package is a required runtime dependency for the SSH push and fetch of the KB remote. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw is in sshd, and the image contains no sshd (verified).",
+      "mitigation": "None needed; no sshd is installed in the image.",
+      "residual_risk": "None in this image.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-106583",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "openssh-client",
+        "package_version": "1:10.0p1-7+deb13u4",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for openssh-client 1:10.0p1-7+deb13u4 (openssh source package, Debian trixie). The package is a required runtime dependency for the SSH push and fetch of the KB remote. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Client-side flaw reachable only by the authenticated SSH server or through the remote username, which comes from the operator-set Secret, not from request input (WS3d class B).",
+      "mitigation": "known_hosts pinned at build, StrictHostKeyChecking=yes, single remote github.com; the remote URL is operator configuration.",
+      "residual_risk": "Low: requires a compromised or impersonated github.com host key.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-59999",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "openssh-client",
+        "package_version": "1:10.0p1-7+deb13u4",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for openssh-client 1:10.0p1-7+deb13u4 (openssh source package, Debian trixie). The package is a required runtime dependency for the SSH push and fetch of the KB remote. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw is in sshd, and the image contains no sshd (verified).",
+      "mitigation": "None needed; no sshd is installed in the image.",
+      "residual_risk": "None in this image.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-60000",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "openssh-client",
+        "package_version": "1:10.0p1-7+deb13u4",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for openssh-client 1:10.0p1-7+deb13u4 (openssh source package, Debian trixie). The package is a required runtime dependency for the SSH push and fetch of the KB remote. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw is in sshd, and the image contains no sshd (verified).",
+      "mitigation": "None needed; no sshd is installed in the image.",
+      "residual_risk": "None in this image.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-60002",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "openssh-client",
+        "package_version": "1:10.0p1-7+deb13u4",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for openssh-client 1:10.0p1-7+deb13u4 (openssh source package, Debian trixie). The package is a required runtime dependency for the SSH push and fetch of the KB remote. Critical severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Client-side flaw reachable only by the authenticated SSH server or through the remote username, which comes from the operator-set Secret, not from request input (WS3d class B).",
+      "mitigation": "known_hosts pinned at build, StrictHostKeyChecking=yes, single remote github.com; the remote URL is operator configuration.",
+      "residual_risk": "Low: requires a compromised or impersonated github.com host key.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-82560",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "perl",
+        "package_version": "5.40.1-6+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for perl 5.40.1-6+deb13u1 (perl source package, Debian trixie). The package is a dependency of git (perl-base is Essential). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): Pod::Text and Archive::Tar are never loaded. The git subcommands the server runs (log, diff, show, worktree, push, fetch, rev-parse, diff-tree, rev-list, branch, interpret-trailers) are C builtins; the only perl script in git-core is git-instaweb.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-9538",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "perl",
+        "package_version": "5.40.1-6+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for perl 5.40.1-6+deb13u1 (perl source package, Debian trixie). The package is a dependency of git (perl-base is Essential). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): Pod::Text and Archive::Tar are never loaded. The git subcommands the server runs (log, diff, show, worktree, push, fetch, rev-parse, diff-tree, rev-list, branch, interpret-trailers) are C builtins; the only perl script in git-core is git-instaweb.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-82560",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "perl-base",
+        "package_version": "5.40.1-6+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for perl-base 5.40.1-6+deb13u1 (perl source package, Debian trixie). The package is a dependency of git (perl-base is Essential). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): Pod::Text and Archive::Tar are never loaded. The git subcommands the server runs (log, diff, show, worktree, push, fetch, rev-parse, diff-tree, rev-list, branch, interpret-trailers) are C builtins; the only perl script in git-core is git-instaweb.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-9538",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "perl-base",
+        "package_version": "5.40.1-6+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for perl-base 5.40.1-6+deb13u1 (perl source package, Debian trixie). The package is a dependency of git (perl-base is Essential). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): Pod::Text and Archive::Tar are never loaded. The git subcommands the server runs (log, diff, show, worktree, push, fetch, rev-parse, diff-tree, rev-list, branch, interpret-trailers) are C builtins; the only perl script in git-core is git-instaweb.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-82560",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "perl-modules-5.40",
+        "package_version": "5.40.1-6+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for perl-modules-5.40 5.40.1-6+deb13u1 (perl source package, Debian trixie). The package is a dependency of git (perl-base is Essential). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): Pod::Text and Archive::Tar are never loaded. The git subcommands the server runs (log, diff, show, worktree, push, fetch, rev-parse, diff-tree, rev-list, branch, interpret-trailers) are C builtins; the only perl script in git-core is git-instaweb.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-9538",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "perl-modules-5.40",
+        "package_version": "5.40.1-6+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for perl-modules-5.40 5.40.1-6+deb13u1 (perl source package, Debian trixie). The package is a dependency of git (perl-base is Essential). High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): Pod::Text and Archive::Tar are never loaded. The git subcommands the server runs (log, diff, show, worktree, push, fetch, rev-parse, diff-tree, rev-list, branch, interpret-trailers) are C builtins; the only perl script in git-core is git-instaweb.",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-76642",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "util-linux",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for util-linux 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78408",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "util-linux",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for util-linux 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78409",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "util-linux",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for util-linux 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-78410",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "util-linux",
+        "package_version": "2.41.5-0+deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for util-linux 2.41.5-0+deb13u1 (util-linux source package, Debian trixie). The package is an Essential package of the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): the flaw needs a privileged mount, nsenter or post-mount helper. data-olympus never invokes mount or nsenter (no reference in src, bin or deploy); setuid mount and umount cannot elevate under no_new_privs.",
+      "mitigation": "Non-root and no_new_privs runtime: live pod on kn-dev runs as uid 65534 with allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp and NoNewPrivs=1 (verified by WS3d).",
+      "residual_risk": "Low: exploitation requires code execution in the pod plus a privilege path that no_new_privs blocks.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-85091",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "zlib1g",
+        "package_version": "1:1.3.dfsg+really1.3.1-1+b1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state not-fixed for zlib1g 1:1.3.dfsg+really1.3.1-1+b1 (zlib source package, Debian trixie). The package is an Essential package of the Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable (WS3d class C): gz_vacate is on the non-blocking gzwrite path; no runtime binary references gzwrite or gzopen (Python's gzip module is pure Python over deflate).",
+      "mitigation": "None needed.",
+      "residual_risk": "Very low.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-18",
+      "expiry": "2026-11-17",
+      "review_date": "2026-11-01"
+    }
+  ]
 }
