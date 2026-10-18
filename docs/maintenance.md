@@ -28,7 +28,8 @@ blockers.
 `.github/dependabot.yml` proposes version updates weekly for GitHub Actions,
 `uv` and the Docker base image in `deploy/docker/Dockerfile`.
 
-- `uv` uses per-SemVer cooldown: majors 60 days, minors 14 days, patches 0.
+- `uv` uses per-SemVer cooldown: majors 60 days, minors 14 days; no patch
+  cooldown is set.
 - GitHub Actions and Docker accept only one `default-days` value, with a
   minimum of 1. Actions use 14 days; a major proposed after 14 days is not
   merged before its assessment issue is Eligible. Docker uses 1 day, the
@@ -79,7 +80,10 @@ release of that major as published by its source.
 
 Each issue carries a hidden marker
 `<!-- maintenance-key: data-olympus/<ecosystem>/<name>/<current>-to-<next> -->`.
-A step whose key appears in any issue, open or closed, is never opened again.
+A step whose key appears in an issue opened by the workflow itself
+(`github-actions[bot]`), open or closed, is never opened again. Markers in
+issues by any other author are ignored, so nobody can suppress an assessment
+by pasting a marker into an issue on this public repository.
 A newer release within the same next major is the same step. Closing an issue
 therefore records the decision for that step; the following step gets its own
 issue.

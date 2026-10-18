@@ -44,6 +44,8 @@ if TYPE_CHECKING:
 
 APPLICATION = "data-olympus"
 KEY_MARKER = "maintenance-key"
+# Author of issues created with the workflow GITHUB_TOKEN.
+BOT_LOGIN = "github-actions[bot]"
 _KEY_RE = re.compile(r"<!-- maintenance-key: ([A-Za-z0-9._/:+-]+) -->")
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _RELEASE_RE = re.compile(r"v?(\d+)(?:\.(\d+))?(?:\.(\d+))?")
@@ -95,13 +97,18 @@ class Inventory:
 
 
 def existing_keys(issues: Iterable[dict[str, Any]]) -> set[str]:
-    """Keys already recorded in any issue body, open or closed.
+    """Keys recorded in issues this workflow opened, open or closed.
 
-    Pull requests are ignored: the issues API lists them too.
+    Only issues authored by the workflow's own identity count. On a public
+    repository anyone can open an issue, so a marker copied into an issue by
+    another author must not suppress a real assessment. Pull requests are
+    ignored: the issues API lists them too.
     """
     keys: set[str] = set()
     for issue in issues:
         if issue.get("pull_request"):
+            continue
+        if (issue.get("user") or {}).get("login") != BOT_LOGIN:
             continue
         keys.update(_KEY_RE.findall(issue.get("body") or ""))
     return keys

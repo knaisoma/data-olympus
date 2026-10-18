@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 
 from scripts.maintenance_inventory import (
+    BOT_LOGIN,
     Finding,
     direct_dependencies,
     existing_keys,
@@ -29,7 +30,10 @@ def _finding(name: str = "fastmcp", step: str = "3-to-4", target: str = "4.1.0")
 
 
 def _issue(finding: Finding, state: str = "open", **extra: object) -> dict:
-    return {"state": state, "body": render_body(finding, TODAY), **extra}
+    issue: dict = {"state": state, "body": render_body(finding, TODAY),
+                   "user": {"login": BOT_LOGIN}}
+    issue.update(extra)
+    return issue
 
 
 def test_first_run_plans_one_issue_per_step() -> None:
@@ -64,7 +68,7 @@ def test_the_next_step_after_a_recorded_one_is_new() -> None:
 def test_pull_requests_and_other_applications_do_not_count() -> None:
     finding = _finding()
     pr = _issue(finding, pull_request={"url": "x"})
-    foreign = {"state": "open",
+    foreign = {"state": "open", "user": {"login": BOT_LOGIN},
                "body": "<!-- maintenance-key: other-app/pypi/fastmcp/3-to-4 -->"}
     assert plan_issues([finding], [pr, foreign, {"state": "open", "body": None}]) == [finding]
     assert existing_keys([foreign]) == {"other-app/pypi/fastmcp/3-to-4"}
@@ -124,3 +128,12 @@ def test_direct_dependencies_cover_all_extras_and_only_direct_ones() -> None:
         {"name": "anyio", "version": "4.9.0"},
     ]}
     assert direct_dependencies(lock) == {"mcp": "1.30.0", "ruff": "0.17.0"}
+
+
+def test_a_marker_in_an_issue_by_another_author_does_not_suppress() -> None:
+    """On a public repository anyone can paste the marker into an issue."""
+    finding = _finding()
+    outsider = _issue(finding, user={"login": "someone-else"})
+    no_author = _issue(finding, user=None)
+    assert plan_issues([finding], [outsider, no_author]) == [finding]
+    assert existing_keys([outsider, no_author]) == set()
