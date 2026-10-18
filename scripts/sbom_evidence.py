@@ -58,7 +58,8 @@ INDEX_LIMIT = 4 * 1024 * 1024
 ATTESTATION_LIMIT = 64 * 1024 * 1024
 HEX = re.compile(r"[0-9a-f]{64}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-NAME = re.compile(r"[A-Za-z0-9_.-]+")
+# Like release_record.ASSET: a leading letter or digit rules out "..", ".hidden".
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 OCI_INDEX = ("application/vnd.oci.image.index.v1+json",
              "application/vnd.docker.distribution.manifest.list.v2+json")
 KINDS = ("wheel", "sdist", "image")

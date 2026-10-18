@@ -426,3 +426,12 @@ def test_promotion_verifies_sbom_attestations_before_any_publication():
     upload = next(i for i, s in enumerate(steps) if "upload-artifact@" in s.get("uses", ""))
     assert (names.index("Verify stage-two attestations of the candidate files and image")
             < steps.index(step) < upload)
+
+
+@pytest.mark.parametrize("name", ["..", "../x", ".hidden", ".", "-x.whl", ""])
+def test_unsafe_subject_names_are_refused(name):
+    with pytest.raises(ValueError):
+        sbom.document_name("wheel", name)
+    with pytest.raises(ValueError):
+        sbom.expected_subjects(wheel=(name, "a" * 64), sdist=("ok.tar.gz", "b" * 64),
+                               manifests={p: "sha256:" + "c" * 64 for p in sbom.PLATFORMS})
