@@ -1,5 +1,6 @@
 # Version updates. Waiting periods follow docs/maintenance.md: patches as soon
-# as possible, minors after 14 days, majors after 60 days. Dependabot supports
+# as possible (no patch cooldown is set), minors after 14 days, majors after
+# 60 days. Dependabot supports
 # per-SemVer cooldown only for uv; Docker and GitHub Actions accept a single
 # default-days value of at least 1. Security updates ignore cooldown and always
 # target the default branch. Version updates target main for now; see
@@ -25,7 +26,6 @@ updates:
     cooldown:
       semver-major-days: 60
       semver-minor-days: 14
-      semver-patch-days: 0
     ignore:
       - dependency-name: "fastmcp"
         update-types:
