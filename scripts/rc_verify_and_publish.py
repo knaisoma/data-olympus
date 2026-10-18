@@ -9,8 +9,8 @@ never built, installed, extracted to disk or executed.
 Each phase runs in its own job, holds the shared promotion lock, and repeats
 the full verification (branch head, main, version recompute, hashes, digest):
 
-  reserve       annotated tag at H and a DRAFT prerelease whose wheel, sdist
-                and provenance assets are uploaded and read back byte for
+  reserve       annotated tag at H and a DRAFT prerelease whose wheel, sdist,
+                provenance and SBOM assets are uploaded and read back byte for
                 byte, binding the identity to H before PyPI (contents: write)
   stage-upload  copy the Python files still missing from PyPI for the OIDC
                 upload action; id-token: write exists only in that job
@@ -61,6 +61,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from scripts import adoption_ratification as ratification  # noqa: E402
+from scripts import sbom_evidence  # noqa: E402
 from scripts.sdlc_version import Git, VersionError, compute_version  # noqa: E402
 
 REPOSITORY = "knaisoma/data-olympus"
@@ -259,6 +260,9 @@ class Verified:
     main: str
     build_run_id: int
     build_run_attempt: int
+    # Receipt entries of the per-artifact SBOMs; empty for a candidate whose
+    # rc-build.yml predates them (promotion refuses such a candidate).
+    sboms: tuple[dict[str, str], ...] = ()
 
 
 def verify(artifacts: Path, history: Path, event: dict[str, Any], *,
@@ -301,22 +305,30 @@ def verify(artifacts: Path, history: Path, event: dict[str, Any], *,
     require(not dist.is_symlink() and dist.is_dir(), "missing distribution directory")
     files: dict[str, Path] = {}
     hashes: dict[str, str] = {}
+    subjects: dict[str, tuple[str, str]] = {}
     for kind in ("wheel", "sdist"):
         path = safe_file(dist, candidate.get(kind))
         actual = sha256(path)
         require(actual == candidate.get(f"{kind}_sha256"), f"{kind} hash mismatch")
         verify_distribution(path, computed["pypi_version"], kind)
         files[path.name], hashes[path.name] = path, actual
+        subjects[kind] = (path.name, actual)
     require({p.name for p in dist.iterdir()} == set(files), "unexpected distribution files")
     archive = safe_file(artifacts, "image.oci.tar")
     require(sha256(archive) == payload.get("oci_archive_sha256"), "OCI archive hash mismatch")
     image = archive_digest(archive)
     require(image == payload.get("image_digest"), "OCI manifest digest mismatch")
+    sbom_files, sboms = sbom_evidence.verify_candidate(
+        artifacts, payload, wheel=subjects["wheel"], sdist=subjects["sdist"],
+        archive=archive, image_digest=image, version=computed["pypi_version"])
+    require(not set(sbom_files) & set(files), "SBOM name collides with an artifact")
+    files.update(sbom_files)
     files[provenance_path.name] = provenance_path
     run = event["workflow_run"]
     return Verified(head, branch, computed["candidate"], computed["pypi_version"], image,
                     archive, files, {name: p.read_bytes() for name, p in files.items()},
-                    hashes, computed["B"], computed["M"], run["id"], run["run_attempt"])
+                    hashes, computed["B"], computed["M"], run["id"], run["run_attempt"],
+                    tuple(sboms))
 
 
 @dataclass(frozen=True)
@@ -755,6 +767,20 @@ def attestation_outputs(verified: Verified) -> str:
                 and re.fullmatch(r"[0-9a-f]{64}", value) is not None,
                 "invalid distribution output")
         lines += [f"{kind}={name}", f"{kind}_sha256={value}"]
+    # SBOM subjects for the attest job: one document per wheel, sdist and image
+    # platform, in the fixed order validated by sbom_evidence.
+    lines.append(f"sbom={'true' if verified.sboms else 'false'}")
+    keys = {("wheel", None): "wheel", ("sdist", None): "sdist"}
+    keys |= {("image", p): "image_" + p.split("/")[1] for p in sbom_evidence.PLATFORMS}
+    for entry in verified.sboms:
+        key = keys[(entry["subject"], entry.get("platform"))]
+        require(re.fullmatch(r"[A-Za-z0-9_.-]+\.spdx\.json", entry["file"]) is not None
+                and re.fullmatch(r"[0-9a-f]{64}", entry["sha256"]) is not None
+                and DIGEST.fullmatch(entry["subject_digest"]) is not None,
+                "invalid SBOM output")
+        lines += [f"sbom_{key}={entry['file']}", f"sbom_{key}_sha256={entry['sha256']}"]
+        if entry["subject"] == "image":
+            lines.append(f"{key}_digest={entry['subject_digest']}")
     return "".join(line + "\n" for line in lines)
 
 

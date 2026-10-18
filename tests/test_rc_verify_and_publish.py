@@ -907,6 +907,7 @@ SHA_PINNED = {
     "astral-sh/setup-uv": ("37802adc94f370d6bfd71619e3f0bf239e1f3b78", "v7"),
     "actions/create-github-app-token": ("fee1f7d63c2ff003460e3d139729b119787bc349", "v2"),
     "actions/attest-build-provenance": ("977bb373ede98d70efdf65b84cb5f73e068dcc2a", "v3"),
+    "actions/attest": ("1e69f48acb82d1966a394da916b4c1698aa569d6", "v4.2.2"),
     "pypa/gh-action-pypi-publish": ("dc37677b2e1c63e2034f94d8a5b11f265b73ba33", "release/v1"),
 }
 
@@ -932,19 +933,20 @@ def test_privileged_actions_are_pinned_by_full_sha():
     assert "tag-pin" not in WORKFLOW.read_text()
 
 
+ATTEST_OUTPUTS = ("image_digest", "wheel", "wheel_sha256", "sdist", "sdist_sha256",
+                  "sbom", "sbom_wheel", "sbom_wheel_sha256", "sbom_sdist", "sbom_sdist_sha256",
+                  "sbom_image_amd64", "sbom_image_amd64_sha256", "image_amd64_digest",
+                  "sbom_image_arm64", "sbom_image_arm64_sha256", "image_arm64_digest")
+
+
 def test_attestations_follow_verified_publication():
     jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
     assert jobs["publish"]["outputs"] == {
-        key: "${{ steps.publish.outputs." + key + " }}"
-        for key in ("image_digest", "wheel", "wheel_sha256", "sdist", "sdist_sha256")}
+        key: "${{ steps.publish.outputs." + key + " }}" for key in ATTEST_OUTPUTS}
     steps = jobs["attest"]["steps"]
     check = next(i for i, s in enumerate(steps) if "sha256sum --check" in s.get("run", ""))
     assert steps[check]["env"] == {
-        "IMAGE_DIGEST": "${{ needs.publish.outputs.image_digest }}",
-        "WHEEL": "${{ needs.publish.outputs.wheel }}",
-        "WHEEL_SHA256": "${{ needs.publish.outputs.wheel_sha256 }}",
-        "SDIST": "${{ needs.publish.outputs.sdist }}",
-        "SDIST_SHA256": "${{ needs.publish.outputs.sdist_sha256 }}"}
+        key.upper(): "${{ needs.publish.outputs." + key + " }}" for key in ATTEST_OUTPUTS}
     attest = [i for i, s in enumerate(steps)
               if s.get("uses", "").startswith("actions/attest-build-provenance@")]
     assert len(attest) == 2 and min(attest) > check
@@ -955,6 +957,21 @@ def test_attestations_follow_verified_publication():
     # Only the copies that passed sha256sum are subjects, never the raw artifact.
     assert files == {"subject-path": "to-delete/rc-attest/*.whl\n"
                                      "to-delete/rc-attest/*.tar.gz\n"}
+    sboms = [s for s in steps if s.get("uses", "").startswith("actions/attest@")]
+    assert [steps.index(s) for s in sboms] == sorted(steps.index(s) for s in sboms)
+    assert len(sboms) == 4 and min(steps.index(s) for s in sboms) > check
+    assert all(s["if"] == "needs.publish.outputs.sbom == 'true'" for s in sboms)
+    out = "${{ needs.publish.outputs."
+    # Subjects are the verified copies or digests; documents the checked copies.
+    assert [s["with"] for s in sboms] == [
+        {"subject-path": "to-delete/rc-attest/" + out + "wheel }}",
+         "sbom-path": "to-delete/rc-attest-sbom/" + out + "sbom_wheel }}"},
+        {"subject-path": "to-delete/rc-attest/" + out + "sdist }}",
+         "sbom-path": "to-delete/rc-attest-sbom/" + out + "sbom_sdist }}"},
+        *({"subject-name": stage.IMAGE,
+           "subject-digest": out + f"image_{arch}_digest }}}}",
+           "sbom-path": "to-delete/rc-attest-sbom/" + out + f"sbom_image_{arch} }}}}",
+           "push-to-registry": True} for arch in ("amd64", "arm64"))]
 
 
 def test_attest_hash_check_rejects_tampered_files(tmp_path):
@@ -972,7 +989,8 @@ def test_attest_hash_check_rejects_tampered_files(tmp_path):
     (dist / sdist).write_bytes(b"sdist")
     env = {"PATH": os.environ["PATH"],
            "IMAGE_DIGEST": "sha256:" + "a" * 64, "WHEEL": wheel, "SDIST": sdist,
-           "WHEEL_SHA256": digest(b"wheel"), "SDIST_SHA256": digest(b"sdist")}
+           "WHEEL_SHA256": digest(b"wheel"), "SDIST_SHA256": digest(b"sdist"),
+           "SBOM": "false"}
 
     def run(**overrides):
         target = tmp_path / "to-delete" / "rc-attest"
@@ -1062,7 +1080,8 @@ def test_publish_cli_emits_validated_digest(build, tmp_path, monkeypatch):
     assert output.read_text() == (
         f"image_digest={verified.image_digest}\n"
         f"wheel={wheel}\nwheel_sha256={verified.python_hashes[wheel]}\n"
-        f"sdist={sdist}\nsdist_sha256={verified.python_hashes[sdist]}\n")
+        f"sdist={sdist}\nsdist_sha256={verified.python_hashes[sdist]}\n"
+        "sbom=false\n")
     assert calls == [{"move_rc": True}]
     assert json.loads(selection.read_text())["selected"] is True
     assert verified.head in summary.read_text()
