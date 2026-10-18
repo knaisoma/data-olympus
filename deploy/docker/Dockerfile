@@ -11,7 +11,7 @@
 #     -H "Accept: application/vnd.oci.image.index.v1+json" \
 #     https://registry-1.docker.io/v2/library/python/manifests/3.13-slim \
 #     | grep -i docker-content-digest
-FROM python:3.13-slim@sha256:eb43ff125d8d58d7449dcba7d336c23bcac412f526d861db493b9994d8010280 AS runtime
+FROM python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f AS runtime
 
 # SSH host to trust for git over SSH. Defaults to github.com; override at build
 # time (--build-arg KB_SSH_KEYSCAN_HOST=git.example.com) for a non-GitHub remote.
@@ -25,12 +25,17 @@ ARG KB_SSH_KEYSCAN_HOST=github.com
 # first-boot /kb-main clone that the old root entrypoint did are now handled by a
 # non-root k8s initContainer (see deploy/k8s/statefulset.yaml) writing to shared
 # volumes with an fsGroup, so the runtime container never needs root or gosu.
+# curl is intentionally NOT installed either: nothing in the image calls it (the
+# probes are httpGet/tcpSocket and the entrypoint and initContainer do not use
+# it), and each copy of libcurl adds its own scanner findings. The bin/kb client
+# scripts that use curl run on operator machines, not inside this container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git openssh-client ca-certificates curl \
+        git openssh-client ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv (same version as before)
-RUN pip install --no-cache-dir uv==0.5.4
+# Install uv, pinned. Roll forward deliberately; 0.11.15 is the minimum that
+# carries the fixes for the uv scanner findings.
+RUN pip install --no-cache-dir uv==0.12.23
 
 WORKDIR /app
 
