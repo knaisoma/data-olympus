@@ -20,10 +20,11 @@ Recheck expected head `H` and unchanged base before authorized merge.
 
 ## New-model delivery and activation
 
-The workflow names below describe the target pipeline, delivered separately
-from these rules, not yet in the repository. New publication and branch-management
-workflows remain disabled behind `SDLC_PIPELINE=enabled` until the bot or GitHub
-App is provisioned with protected-branch deletion/recut permissions, the `release/new` ruleset
+The workflows below are in the repository. They run only while the repository
+variable `SDLC_PIPELINE` is `enabled`, which it has been since the 0.11.1 cycle
+(first new-model release, 2026-10-09). Steps that act as the bot additionally
+require the bot or GitHub App to be provisioned with protected-branch
+deletion/recut permissions; they also rely on the `release/new` ruleset
 (PR required, code-owner review for `scripts/`, `.github/`, `release/` and
 `docs/releases/std-u-821-amendment-1.3.md`), and the
 `pypi-rc` environment with its own PyPI Trusted Publisher. Missing prerequisites
@@ -34,7 +35,7 @@ The adoption cut and the public-product preview exception were ratified on
 opened; it records the anchor, base and reason and grants nothing beyond the
 amendment. CI runs tests and
 wheel/sdist smoke checks per PR. There is no hosted preview and no per-PR image.
-The RC image and wheel will come from `rc-build.yml` once it is enabled.
+The RC image and wheel come from `rc-build.yml`.
 
 1. `rc-build.yml` builds wheel, sdist, OCI archive and provenance at exact `H`
    on `release/new` or `hotfix/new`, with `contents: read`, no secrets and no
@@ -147,8 +148,9 @@ The version engine's `M` remains the captured pre-merge main SHA.
 ## Transitional path until the first new-model release
 
 The existing `rc-publish.yml`, `tag-release.yml` and `set-channel.yml` retain
-their behavior until the first new-model release, including 0.11.x hotfix and
-rollback capability. This section applies only to that old path. Prepare a
+their behavior, including 0.11.x hotfix and rollback capability. The first
+new-model release (0.11.1) has shipped; these workflows stay in the repository
+until their retirement lands as separate reviewed work. This section applies only to that old path. Prepare a
 short-lived branch such as `codex/release-YYYY-MM-DD` with the completed batch,
 computed version, lockfile, changelog and release notes. Use
 `scripts/compute_release.py` here, not the new engine. The planned safeguard

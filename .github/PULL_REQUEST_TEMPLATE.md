@@ -5,8 +5,8 @@
 Use a Conventional Commit title that preserves the highest source-commit
 impact and breaking details. Do not commit a target package version.
 CI runs tests and wheel/sdist smoke checks per PR; no hosted preview or per-PR image.
-The RC wheel and image will come from rc-build.yml once enabled;
-that pipeline is delivered separately, not yet in the repository.
+After merge into release/new, rc-build.yml builds the RC wheel, sdist and
+image, and rc-publish-stage.yml publishes them from trusted main.
 Maintainer release batches target main with release: X.Y.Z and generated notes. -->
 
 ## Type of change

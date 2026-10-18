@@ -1,8 +1,9 @@
 # Official MCP Registry notes
 
-Data Olympus is not published in the official registry at
-<https://registry.modelcontextprotocol.io> yet. A search of its v0 API,
-`?search=data-olympus`, returned zero servers on 2026-10-01.
+Data Olympus is published in the official registry at
+<https://registry.modelcontextprotocol.io> as `io.github.knaisoma/data-olympus`. A
+search of its v0 API, `?search=data-olympus`, listed versions 0.11.0 and 0.11.1 on
+2026-10-18.
 
 From the release after 0.10.0, the stable promotion workflow publishes the entry
 itself (see "Automated publication" below). This file records what publication
@@ -26,8 +27,14 @@ a list of servers to browse the registry rather than that repository.
 - The transport is `streamable-http` at `http://localhost:8080/mcp`, which is what
   `data-olympus-mcp` actually serves and what [`adoption.md`](./adoption.md) documents.
   This server is not stdio.
-- `version` tracks the released version the entry describes, so it moves with a release
-  rather than with every commit.
+- Both version fields in the committed file are a placeholder, not the latest release.
+  They hold one concrete stable `X.Y.Z` (currently `0.11.0`, while `0.11.1` is the
+  latest release) because the release squash must be tree-equal to the reviewed head
+  and cannot carry a version edit. The promotion job writes the released version into
+  its own workspace copy just before publication, so the registry entry always names
+  the actual release. A lagging value in the committed file is expected and is not a
+  defect; the rule is in
+  [`docs/releases/placeholder-version.md`](./releases/placeholder-version.md).
 
 `README.md` carries `<!-- mcp-name: io.github.knaisoma/data-olympus -->` below the
 badges. That string is how the registry verifies package ownership: it looks for
@@ -65,8 +72,12 @@ the workflow does not depend on anyone's membership visibility.
 
 ## Automated publication
 
-The `publish-mcp-registry` job in `.github/workflows/tag-release.yml` (issue #303) runs
-after the GitHub release, from the released source revision. It:
+On the new release path, the `publish-mcp-registry` job in
+`.github/workflows/promote-release.yml` runs after the GitHub release, from the released
+source revision. It first writes the released version into both `server.json` version
+fields of its workspace copy (the committed file is not changed). The old-path job of
+the same name in `.github/workflows/tag-release.yml` (issue #303) remains until that
+workflow is retired and checks the committed file without rewriting it. Each job:
 
 1. refuses unless both `server.json` versions equal the released version;
 2. reads that version's PyPI description and refuses unless it carries the exact
@@ -88,8 +99,9 @@ together, taking the digest from the registry release's published asset.
 2. Set **both** version fields in `server.json` to that release: the top-level `version`
    and `packages[0].version`. Leaving the package pinned to 0.7.3 or earlier points the
    entry at a description that does not carry the marker. Then re-validate the file
-   against the published schema. Both fields are pinned to `0.11.0`, so this step is
-   already done for that release and is only owed again on the next one.
+   against the published schema. Make this edit in a local working copy used only for
+   the manual publish. It does not need to be committed, because the committed fields
+   are a placeholder (see "What is in this repository" above).
 3. Confirm that the pinned release's own description carries the exact marker. Run from
    the repository root:
 
