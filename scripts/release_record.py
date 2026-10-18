@@ -367,6 +367,7 @@ def prove_release(
 
 
 EXCEPTIONS_PATH = "release/exceptions.json"
+ADOPTION_LINES_PATH = "release/adoption-lines.json"
 
 
 def vulnerability_gate_reference(git: Git, squash: str) -> dict | None:
@@ -383,13 +384,19 @@ def vulnerability_gate_reference(git: Git, squash: str) -> dict | None:
         return None
     blob = git.run("rev-parse", "--verify", f"{squash}:{EXCEPTIONS_PATH}").strip()
     _match(SHA, blob, "exceptions blob")
-    return {
+    reference = {
         "policy": "docs/releases/vulnerability-gate.md",
         "scanner": f"grype {vulnerability_gate.GRYPE_VERSION}",
         "max_database_age_days": vulnerability_gate.MAX_DB_AGE.days,
         "exceptions": EXCEPTIONS_PATH, "exceptions_blob": blob,
         "evidence_artifact": "vulnerability-evidence",
     }
+    # The adoption lines decide which fixes count as available (additive).
+    if git.file(squash, ADOPTION_LINES_PATH) is not None:
+        lines = git.run("rev-parse", "--verify", f"{squash}:{ADOPTION_LINES_PATH}").strip()
+        reference |= {"adoption_lines": ADOPTION_LINES_PATH,
+                      "adoption_lines_blob": _match(SHA, lines, "adoption lines blob")}
+    return reference
 
 
 def env_lines(record: dict) -> str:

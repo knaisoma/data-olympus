@@ -236,8 +236,10 @@ output to the module at commit c341940.
 ## Vulnerability gate
 
 After `prove`, the `vulnerability-gate` job scans the candidate image by digest
-on both platforms with the pinned grype and applies `release/exceptions.json`.
-It blocks on any finding with a fix available, on Critical, High or Unknown
+on both platforms with the pinned grype and applies `release/exceptions.json`
+and `release/adoption-lines.json` as they are at S. It blocks on any finding
+with a fix available on the installed line or on a newer line eligible for
+adoption, on Critical, High or Unknown
 severity findings without a fix that no unexpired exception covers, and on any
 expired exception. `publish-pypi` needs it, so nothing is published when it blocks.
 See [vulnerability gate](vulnerability-gate.md).

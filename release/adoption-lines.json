@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "lines": [
+    {
+      "ecosystem": "python",
+      "package": "python",
+      "line": "3.15",
+      "ga_date": "2026-10-09T00:00:00+00:00",
+      "ga_source": [
+        "https://devguide.python.org/versions/",
+        "https://www.python.org/downloads/release/python-3150/"
+      ],
+      "policy_wait_days": 60,
+      "eligible_from": "2026-12-08T00:00:00+00:00"
+    }
+  ]
+}
