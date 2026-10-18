@@ -92,8 +92,7 @@ def test_a_fix_on_an_unlisted_newer_line_blocks():
 
 
 @pytest.mark.parametrize(("severity", "blocked"), [("Medium", False), ("High", True)])
-def test_a_fix_only_on_older_lines_is_no_fix_labelled_older_line_only(severity, blocked,
-                                                                      capsys, tmp_path):
+def test_a_fix_only_on_older_lines_is_no_fix_labelled_older_line_only(severity, blocked):
     finding = python_match("CVE-2026-0004", severity, ["3.10.22", "3.12.15"])
     evidence = run([finding])
     assert evidence["blocked"] is blocked
