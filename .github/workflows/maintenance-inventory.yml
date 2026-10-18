@@ -1,0 +1,51 @@
+name: Maintenance inventory
+
+# Weekly read-only inventory of the Python lifecycle, the base image, majors of
+# direct dependencies in uv.lock and GitHub Actions majors. It opens one
+# assessment issue per application, dependency and upgrade step, never a
+# duplicate (open or closed). It never changes code, branches or dependencies.
+# See docs/maintenance.md. Dispatch defaults to a dry run that opens nothing.
+
+on:
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print the plan without opening issues
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: maintenance-inventory
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Inventory and open assessment issues
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          set -o pipefail
+          args=(--repo "$GITHUB_REPOSITORY")
+          if [[ "$DRY_RUN" == true ]]; then
+            args+=(--dry-run)
+          elif [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::issues are opened only from main; dispatch with dry_run elsewhere"
+            exit 1
+          fi
+          python -m scripts.maintenance_inventory "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

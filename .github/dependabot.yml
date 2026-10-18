@@ -1,3 +1,10 @@
+# Version updates. Waiting periods follow docs/maintenance.md: patches as soon
+# as possible (no patch cooldown is set), minors after 14 days, majors after
+# 60 days. Dependabot supports
+# per-SemVer cooldown only for uv; Docker and GitHub Actions accept a single
+# default-days value of at least 1. Security updates ignore cooldown and always
+# target the default branch. Version updates target main for now; see
+# "Dependabot target branch" in docs/maintenance.md.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -6,13 +13,36 @@ updates:
       interval: "weekly"
     commit-message:
       prefix: "ci"
+    # One value for every update type. A major arriving after 14 days is not
+    # merged before its assessment issue reaches Eligible (60 days).
+    cooldown:
+      default-days: 14
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
     commit-message:
       prefix: "build"
+    cooldown:
+      semver-major-days: 60
+      semver-minor-days: 14
     ignore:
       - dependency-name: "fastmcp"
         update-types:
           - "version-update:semver-major"
+  - package-ecosystem: "docker"
+    directory: "/deploy/docker"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "build"
+    # Digest refreshes of the pinned tag are patches: 1 day is the minimum.
+    cooldown:
+      default-days: 1
+    # A new Python feature line is a runtime upgrade with a 60 day wait and an
+    # assessment issue from the maintenance inventory, not a Dependabot bump.
+    ignore:
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
