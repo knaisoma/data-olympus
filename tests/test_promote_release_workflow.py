@@ -154,6 +154,7 @@ PERMISSIONS = {
     "promote-image": {"contents": "read", "packages": "write"},
     "release": {"contents": "write"},
     "publish-mcp-registry": {"contents": "read", "id-token": "write"},
+    "vulnerability-gate": {"contents": "read", "packages": "read"},
 }
 
 
