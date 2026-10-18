@@ -265,6 +265,9 @@ jobs:
       IMAGE_DIGEST: ${{ needs.prove.outputs.image_digest }}
       GRYPE_CHECK_FOR_APP_UPDATE: 'false'
       GRYPE_DB_CACHE_DIR: to-delete/grype-db
+      # One explicit update below; the scans must not switch databases, and the
+      # gate checks that every report names the recorded database.
+      GRYPE_DB_AUTO_UPDATE: 'false'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -291,8 +294,8 @@ jobs:
           tar -xzf to-delete/tools/grype.tar.gz -C to-delete/tools grype
           test "$(to-delete/tools/grype version -o json | jq -er .version)" = "$GRYPE_VERSION"
       # A fresh database at decision time; its schema, build time and source
-      # are recorded in the evidence. grype refuses a database older than its
-      # default maximum age (five days).
+      # are recorded in the evidence. The gate refuses a database built more
+      # than five days before the run (grype's own default maximum age).
       - name: Scan the candidate image by digest on every platform
         run: |
           set -euo pipefail
