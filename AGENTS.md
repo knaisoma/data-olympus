@@ -95,7 +95,7 @@ Run the linter before the tests. It runs first in CI, so a lint failure hides ev
 
 The authority is `.rules/release-routine.md`. The target STD-U-821 flow computes versions with `scripts/sdlc_version.py` on `release/new`, without a committed target version. The agent holding operator authorization squash-merges reviewed content as `release: X.Y.Z`; reserved cases need explicit operator authorization. Promotion proves reviewed-tree equality and creates annotated `vX.Y.Z`. Production remains digest-pinned, and verified releases are followed by a recut.
 
-`.rules/versioning.md` defines normal and hotfix identities, PEP 440 mappings and the new pre-1.0 patch mapping for features. Until the first new-model release, `compute_release.py` and committed versions remain authoritative only for the transitional path. New automation stays disabled pending its documented machine-identity and activation prerequisites.
+`.rules/versioning.md` defines normal and hotfix identities, PEP 440 mappings and the new pre-1.0 patch mapping for features. The new pipeline is enabled and shipped the first new-model release, 0.11.1. Until the old-path workflows are retired, `compute_release.py` remains authoritative only for that path. The pre-1.0 `feat` mapping is under operator review (see `.rules/versioning.md`).
 
 ## Key Rules
 

@@ -5,10 +5,12 @@ Governing standard: STD-U-821 v1.2
 
 ## Adoption and transition
 
-This is the target release contract. The new pipeline stays disabled until its
-bot identity, protections, environments and adoption approvals exist. Until the
-first new-model release, `rc-publish.yml`, `tag-release.yml` and `set-channel.yml`
-retain their transitional behavior. See [release-routine.md](release-routine.md).
+This is the active release contract. The new pipeline is enabled
+(`SDLC_PIPELINE=enabled`) and produced the first new-model release, 0.11.1,
+on 2026-10-09. The old-path workflows `rc-publish.yml`, `tag-release.yml` and
+`set-channel.yml` are still in the repository with their transitional
+behavior; retiring them is separate tracked work, and new releases use the
+new path. See [release-routine.md](release-routine.md).
 
 ## Branches and version authority
 
@@ -17,11 +19,11 @@ Feature branches start there and their PRs target it. Integrations use squash
 messages carrying their full Conventional Commit impact. Release PRs must be
 squash merged, preserving linear history. Only release records advance `main`.
 
-The engine `scripts/sdlc_version.py` and the `release_artifacts.py` version
-overlay are delivered separately, not yet in the repository. The engine will
-be the new-model authority. No target version will be committed on
-`release/new`: its first commit after the cut will set `pyproject.toml` to
-`0.0.0+unreleased`, and the overlay will inject computed versions into build metadata.
+The engine `scripts/sdlc_version.py` and the version overlay in
+`scripts/release_artifacts.py` are in the repository. The engine is the
+new-model authority. No target version is committed on `release/new`: its
+first commit after the cut sets `pyproject.toml` to `0.0.0+unreleased`, and
+the overlay injects computed versions into build metadata.
 The placeholder is never published or used to decide a version. Its change
 lands on `release/new`, not on transitional `main`; `main` then receives it
 through each tree-equal release squash. Where CI accepts the placeholder is
@@ -51,6 +53,13 @@ Choose the highest contribution in the parsed set:
 | `feat` | Patch | Minor, reset patch |
 | `fix` | Patch | Patch |
 | Other valid types | No contribution | No contribution |
+
+The two engines disagree below 1.0.0: this table, applied by
+`scripts/sdlc_version.py`, maps `feat` to patch, while the old-path
+`scripts/compute_release.py` maps it to minor (see "Transitional authority and
+immutability" below). The pre-1.0 `feat` mapping is under operator review
+against the organization SDLC target, which does not keep a feature-to-patch
+rule silently. Until that ruling lands here, the engine behavior is unchanged.
 
 A nonempty set without a contribution floors to patch, including `perf`, docs
 and dependency changes. Reverts do not subtract prior impact; rewrite their
@@ -106,10 +115,11 @@ the old branch must not continue its counter. Serialize staging validation,
 merge, tag, delivery verification and recut under the per-product promotion
 lock. Recheck head and base after acquiring it and reconcile uncertain state.
 
-## Initial adoption remains conditional
+## Adoption record
 
-The proposed cut is ahead of `v0.11.0` and has no stable tag. The proposed
-adoption record is `release/ADOPTION.json` with fields `{anchor, base}`:
+The adoption cut for the first new-model release was made ahead of `v0.11.0`
+without a stable tag (#351) and was released as 0.11.1. The adoption record is
+`release/ADOPTION.json` with fields `{anchor, base}`:
 
 - `anchor` is the main head `A` before adding the record.
 - `base` is `"0.11.0"`.
@@ -161,8 +171,9 @@ transitional path and cut at its stable tag.
 
 ## Transitional authority and immutability
 
-Until the first new-model release, `scripts/compute_release.py` and committed
-`pyproject.toml` remain the old path's authorities. Its pre-1.0 mapping advances
+The first new-model release (0.11.1) has shipped. Until the old-path workflows
+are retired, `scripts/compute_release.py` remains the authority for that path
+only, and is never used for new-model candidates. Its pre-1.0 mapping advances
 minor for features or breaking changes, patch for fixes or performance, and
 at least patch for functional paths in `scripts/check_changelog.py`. Trust
 its `next_version` for that path only. Prepare version, lockfile, changelog and

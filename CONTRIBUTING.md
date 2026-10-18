@@ -51,10 +51,10 @@ STD-U-821 states:
 > Start feature branches from release/new and open pull requests against release/new. Use Conventional Commits. Each pull request gets a preview; integration builds an RC for staging. The release process squash-merges the batch to main and deploys production from its stable version tag.
 
 Today, this repository's CI runs tests and wheel/sdist smoke checks per pull
-request. There is no hosted preview and no per-PR image. The RC image and wheel
-will come from `rc-build.yml` once it is enabled; that pipeline is delivered
-separately, not yet in the repository. The target production flow pins artifacts
-by digest through reviewed gitops changes.
+request. There is no hosted preview and no per-PR image. After a merge into
+`release/new`, `rc-build.yml` builds the RC wheel, sdist and image, and
+`rc-publish-stage.yml` publishes them from trusted `main`. The target
+production flow pins artifacts by digest through reviewed gitops changes.
 
 For a fork, fetch the upstream `release/new`, create your feature branch from
 that revision, push to your fork, and select upstream `release/new` as the PR
@@ -69,12 +69,11 @@ feature branch: those branches declare the `0.0.0+unreleased` placeholder, and
 CI refuses it on any other base, as described in
 [docs/releases/placeholder-version.md](docs/releases/placeholder-version.md).
 
-The RC pipeline is being introduced alongside the transitional release path.
-Data Olympus is a public product,
-so STD-U-821's internal-tool preview exception does not apply; a separate
-preview exception request is pending operator ratification. New publication
-and recut automation remain disabled until the required machine identity,
-protections and publishing environments exist.
+The RC pipeline is enabled and produced the first new-model release, 0.11.1.
+The old-path release workflows remain in the repository until they are
+retired. Data Olympus is a public product, so STD-U-821's internal-tool
+preview exception does not apply; its public-product preview exception was
+ratified on 2026-10-07 as STD-U-821 amendment 1.3.
 
 Every pull request must satisfy all of the following before it will be reviewed:
 
@@ -122,12 +121,11 @@ By contributing you agree to abide by the project's [Code of Conduct](CODE_OF_CO
 ## Releases
 
 The target flow follows STD-U-821 v1.2 and [`.rules/versioning.md`](.rules/versioning.md).
-The engine `scripts/sdlc_version.py` and the `release_artifacts.py` version
-overlay are delivered separately, not yet in the repository. The engine will
-derive `X.Y.Z-rc.N` from content and commit count, mapped to `X.Y.ZrcN` in Python
-metadata. After the cut, the first commit on `release/new` will set the
-`pyproject.toml` version to `0.0.0+unreleased`; builds will inject the computed
-version through the overlay.
+The engine `scripts/sdlc_version.py` and the version overlay in
+`scripts/release_artifacts.py` derive `X.Y.Z-rc.N` from content and commit
+count, mapped to `X.Y.ZrcN` in Python metadata. After the cut, the first
+commit on `release/new` sets the `pyproject.toml` version to
+`0.0.0+unreleased`; builds inject the computed version through the overlay.
 
 After review and gates, the agent holding operator authorization squash-merges
 the batch to `main` with `release: X.Y.Z` and generated notes. Reserved cases
