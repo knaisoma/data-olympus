@@ -1,0 +1,23 @@
+# Release scope labels for this repository.
+#
+# This file documents the label set used by the release scope issue form
+# (.github/ISSUE_TEMPLATE/release-scope.yml) and docs/releases/release-scope.md.
+# It is not synced automatically: a maintainer creates or updates these labels
+# in the repository settings, for example with
+#   gh label create <name> --color <color> --description "<description>"
+# and keeps this file and the repository labels in step.
+- name: mandatory
+  color: b60205
+  description: In the approved release scope; an incomplete mandatory item blocks the release.
+- name: optional
+  color: fbca04
+  description: In the approved release scope; may be deferred under the documented rule.
+- name: deferred
+  color: c5def5
+  description: Taken out of a release scope with a recorded reason; stays open and tracked.
+- name: migration-cleanup
+  color: 5319e7
+  description: Removes a temporary migration path, compatibility shim or old workflow.
+- name: release-required
+  color: d93f0b
+  description: Must ship in the next release because of a security, maintenance or support deadline.

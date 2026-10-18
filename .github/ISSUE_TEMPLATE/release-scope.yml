@@ -1,0 +1,148 @@
+name: Release scope
+description: Maintainers only. Record the enumerated scope the operator approves for one release cycle.
+title: "release scope: data-olympus <cycle>"
+labels: [release]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One issue per release cycle. It is the repository record of the approved scope
+        described in `docs/releases/release-scope.md`. Every work item must already be an
+        issue in this repository. Classify each item with the labels listed in
+        `.github/labels.yml` (`mandatory`, `optional`, `deferred`, `migration-cleanup`,
+        `release-required`).
+
+        The scope is approved only when the operator fills in "Approving operator" and
+        "Approved scope revision". Silence is not authorization. Incomplete mandatory items
+        block the release. Every change to the scope after approval is recorded under
+        "Later scope decisions" and increments the scope revision.
+
+  - type: input
+    id: application
+    attributes:
+      label: Application
+      description: The application this scope covers.
+      value: data-olympus
+    validations:
+      required: true
+
+  - type: input
+    id: cycle
+    attributes:
+      label: Release cycle
+      description: The cycle identifier, for example the ISO week of the planned release (2026-W43).
+      placeholder: 2026-W43
+    validations:
+      required: true
+
+  - type: input
+    id: baseline_version
+    attributes:
+      label: Released baseline version
+      description: The stable version currently released, which this cycle builds on (strict X.Y.Z).
+      placeholder: 0.11.1
+    validations:
+      required: true
+
+  - type: input
+    id: baseline_revision
+    attributes:
+      label: Released baseline revision
+      description: The full 40-character commit SHA that the baseline stable tag points to.
+      placeholder: 0123456789abcdef0123456789abcdef01234567
+    validations:
+      required: true
+
+  - type: textarea
+    id: work_items
+    attributes:
+      label: Work items
+      description: |
+        Numbered list. One line per item: number, linked issue, classification
+        (mandatory or optional), and kind (feature, improvement, bug, maintenance,
+        migration cleanup). Features, improvements, bugs, maintenance upgrades and
+        migration cleanup tasks must all appear here.
+      value: |
+        | # | Issue | Classification | Kind |
+        |---|-------|----------------|------|
+        | 1 | #     | mandatory      |      |
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance criteria
+      description: |
+        Per item number. Acceptance uses the published or deployed result and its required
+        verification; merged code alone does not prove delivery.
+      value: |
+        1. (criteria for item 1)
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies between items
+      description: Which item depends on which, by item number. Write "None" when there are none.
+      value: |
+        None
+    validations:
+      required: true
+
+  - type: textarea
+    id: intended_effects
+    attributes:
+      label: Intended effects
+      description: |
+        What the release is meant to change for users, operators, data, configuration,
+        runtime and integrations, including any database migration or framework major
+        upgrade that this approval covers.
+    validations:
+      required: true
+
+  - type: textarea
+    id: risk_boundaries
+    attributes:
+      label: Authorized risk boundaries
+      description: |
+        The risks the operator authorizes for this cycle, and what stays outside them.
+        Material new scope or risk, unplanned destructive actions and new policy
+        exceptions need the operator again.
+    validations:
+      required: true
+
+  - type: input
+    id: approving_operator
+    attributes:
+      label: Approving operator
+      description: Filled in by the operator when approving. Left blank, the scope is not approved.
+    validations:
+      required: false
+
+  - type: input
+    id: scope_revision
+    attributes:
+      label: Approved scope revision
+      description: |
+        Filled in by the operator when approving: a revision number (r1, r2, ...) and the
+        approval date. Any later scope change increments it.
+      placeholder: r1, 2026-10-19
+    validations:
+      required: false
+
+  - type: textarea
+    id: later_decisions
+    attributes:
+      label: Later scope decisions
+      description: |
+        Append one row per decision after approval: inclusion, exclusion or deferral,
+        with its reason. Automation may defer an optional item only when that does not
+        invalidate mandatory acceptance criteria, included dependencies, security or
+        maintenance deadlines, or the risk boundaries; deferred issues stay open.
+      value: |
+        | Date | Revision | Item | Decision | Reason | Decided by |
+        |------|----------|------|----------|--------|------------|
+    validations:
+      required: false
