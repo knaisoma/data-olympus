@@ -287,8 +287,9 @@ jobs:
   # docs/releases/vulnerability-gate.md). Its own job on purpose: it runs a
   # downloaded scanner, so it holds no App key, no OIDC token and no write
   # grant. publish-pypi needs it, and every later publication needs
-  # publish-pypi, so a blocked gate publishes nothing. The exceptions come from
-  # this run's main checkout, so each one passed review on main.
+  # publish-pypi, so a blocked gate publishes nothing. The exceptions are the
+  # file at S (reviewed with the release), whose Git blob the release record
+  # names; the scripts come from this run's main checkout.
   vulnerability-gate:
     if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
     needs: prove
@@ -298,6 +299,7 @@ jobs:
       packages: read
     env:
       IMAGE_DIGEST: ${{ needs.prove.outputs.image_digest }}
+      SQUASH: ${{ needs.prove.outputs.source_sha }}
       GRYPE_CHECK_FOR_APP_UPDATE: 'false'
       GRYPE_DB_CACHE_DIR: to-delete/grype-db
       # One explicit update below; the scans must not switch databases, and the
@@ -307,6 +309,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -335,7 +338,9 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$SQUASH" =~ ^[0-9a-f]{40}$ ]]
           mkdir -p to-delete/vulnerability
+          git cat-file blob "$SQUASH:release/exceptions.json" > to-delete/vulnerability/exceptions.json
           to-delete/tools/grype db update
           to-delete/tools/grype db status -o json > to-delete/vulnerability/db-status.json
           for platform in linux/amd64 linux/arm64; do
@@ -349,7 +354,8 @@ jobs:
         run: |
           set -euo pipefail
           status=0
-          python scripts/vulnerability_gate.py gate --exceptions release/exceptions.json \
+          python scripts/vulnerability_gate.py gate \
+            --exceptions to-delete/vulnerability/exceptions.json \
             --report linux/amd64=to-delete/vulnerability/grype-linux-amd64.json \
             --report linux/arm64=to-delete/vulnerability/grype-linux-arm64.json \
             --db-status to-delete/vulnerability/db-status.json --image-digest "$IMAGE_DIGEST" \
