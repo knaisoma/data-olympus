@@ -283,6 +283,96 @@ jobs:
           path: to-delete/promotion/
           if-no-files-found: error
 
+  # Vulnerability gate (SDLC section 12, rulings of 2026-10-18; see
+  # docs/releases/vulnerability-gate.md). Its own job on purpose: it runs a
+  # downloaded scanner, so it holds no App key, no OIDC token and no write
+  # grant. publish-pypi needs it, and every later publication needs
+  # publish-pypi, so a blocked gate publishes nothing. The exceptions are the
+  # file at S (reviewed with the release), whose Git blob the release record
+  # names; the scripts come from this run's main checkout.
+  vulnerability-gate:
+    if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
+    needs: prove
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE_DIGEST: ${{ needs.prove.outputs.image_digest }}
+      SQUASH: ${{ needs.prove.outputs.source_sha }}
+      GRYPE_CHECK_FOR_APP_UPDATE: 'false'
+      GRYPE_DB_CACHE_DIR: to-delete/grype-db
+      # One explicit update below; the scans must not switch databases, and the
+      # gate checks that every report names the recorded database.
+      GRYPE_DB_AUTO_UPDATE: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Install the pinned grype
+        env:
+          GRYPE_VERSION: 0.119.0
+          GRYPE_SHA256: 3fa2dc4b924621ab65404cf08d0b8438d896d80ab949c9d5a4ca283c36004c9b
+        run: |
+          set -euo pipefail
+          mkdir -p to-delete/tools
+          curl -fsSL -o to-delete/tools/grype.tar.gz \
+            "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          echo "${GRYPE_SHA256}  to-delete/tools/grype.tar.gz" | sha256sum --check --strict -
+          tar -xzf to-delete/tools/grype.tar.gz -C to-delete/tools grype
+          test "$(to-delete/tools/grype version -o json | jq -er .version)" = "$GRYPE_VERSION"
+      # A fresh database at decision time; its schema, build time and source
+      # are recorded in the evidence. The gate refuses a database built more
+      # than five days before the run (grype's own default maximum age).
+      - name: Scan the candidate image by digest on every platform
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$SQUASH" =~ ^[0-9a-f]{40}$ ]]
+          mkdir -p to-delete/vulnerability
+          git cat-file blob "$SQUASH:release/exceptions.json" > to-delete/vulnerability/exceptions.json
+          to-delete/tools/grype db update
+          to-delete/tools/grype db status -o json > to-delete/vulnerability/db-status.json
+          for platform in linux/amd64 linux/arm64; do
+            to-delete/tools/grype "registry:ghcr.io/knaisoma/data-olympus@$IMAGE_DIGEST" \
+              --platform "$platform" -q -o json \
+              > "to-delete/vulnerability/grype-${platform//\//-}.json"
+          done
+      # The decision is recorded first and enforced after the upload, so the
+      # evidence of a blocked promotion is kept too.
+      - name: Apply the vulnerability gate
+        run: |
+          set -euo pipefail
+          status=0
+          python scripts/vulnerability_gate.py gate \
+            --exceptions to-delete/vulnerability/exceptions.json \
+            --report linux/amd64=to-delete/vulnerability/grype-linux-amd64.json \
+            --report linux/arm64=to-delete/vulnerability/grype-linux-arm64.json \
+            --db-status to-delete/vulnerability/db-status.json --image-digest "$IMAGE_DIGEST" \
+            --output to-delete/vulnerability/evidence.json --summary "$GITHUB_STEP_SUMMARY" \
+            || status=$?
+          echo "$status" > to-delete/vulnerability/gate-exit-code
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: vulnerability-evidence
+          path: to-delete/vulnerability/
+          if-no-files-found: error
+      - name: Require a passing vulnerability gate
+        run: |
+          set -euo pipefail
+          test "$(cat to-delete/vulnerability/gate-exit-code)" = 0
+          test "$(jq -r .blocked to-delete/vulnerability/evidence.json)" = false
+
   build-stable:
     if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
     needs: prove
@@ -328,7 +418,7 @@ jobs:
 
   publish-pypi:
     if: vars.SDLC_PIPELINE == 'enabled' && github.ref == 'refs/heads/main'
-    needs: [prove, build-stable]
+    needs: [prove, build-stable, vulnerability-gate]
     runs-on: ubuntu-latest
     environment:
       name: pypi

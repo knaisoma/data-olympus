@@ -233,6 +233,15 @@ are smoke tested before the protected OIDC job publishes them. The existing
 `candidate` and `stable` modes are unchanged; a golden-value test pins their
 output to the module at commit c341940.
 
+## Vulnerability gate
+
+After `prove`, the `vulnerability-gate` job scans the candidate image by digest
+on both platforms with the pinned grype and applies `release/exceptions.json`.
+It blocks on any finding with a fix available, on Critical, High or Unknown
+severity findings without a fix that no unexpired exception covers, and on any
+expired exception. `publish-pypi` needs it, so nothing is published when it blocks.
+See [vulnerability gate](vulnerability-gate.md).
+
 ## Publication order
 
 1. PyPI through Trusted Publishing in the `pypi` environment. A re-run skips

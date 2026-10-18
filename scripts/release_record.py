@@ -71,7 +71,7 @@ ROOT = str(Path(__file__).resolve().parents[1])
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from scripts import sbom_evidence  # noqa: E402
+from scripts import sbom_evidence, vulnerability_gate  # noqa: E402
 from scripts.rc_decide import main_ratification_kwargs  # noqa: E402
 from scripts.release_artifacts import CandidateVersion  # noqa: E402
 from scripts.sdlc_version import Git, VersionError, _impact, compute_version  # noqa: E402
@@ -347,7 +347,7 @@ def prove_release(
                        ignore_tags=ignored)
     notes = generate_notes(cwd=cwd, version=version)
     main_head = git.resolve(main)
-    return validate_proof(
+    record = validate_proof(
         version=version, provenance=provenance, squash=squash, head=head,
         candidate_tag=candidate_tag,
         parents=git.run("rev-list", "--parents", "-n", "1", squash).split()[1:],
@@ -360,6 +360,36 @@ def prove_release(
         tag_target=tag_target, tag_annotated=tag_annotated,
         tag_object=tag_object, tagger=tagger, ignored_tags=ignored,
     )
+    gate = vulnerability_gate_reference(git, squash)
+    if gate is not None:
+        record["vulnerability_gate"] = gate
+    return record
+
+
+EXCEPTIONS_PATH = "release/exceptions.json"
+
+
+def vulnerability_gate_reference(git: Git, squash: str) -> dict | None:
+    """Deterministic reference to the promotion's vulnerability gate.
+
+    The scan itself is fresh on every run, so its evidence lives in the
+    workflow artifact named here, not in this record: the record must be byte
+    for byte the same across the jobs and runs of one promotion (the resume
+    proofs rely on it). What is fixed is recorded: the scanner, the database
+    age limit and the exception file at S (its Git blob), which is exactly the
+    file the gate applies. Additive key, only when S carries the file.
+    """
+    if git.file(squash, EXCEPTIONS_PATH) is None:
+        return None
+    blob = git.run("rev-parse", "--verify", f"{squash}:{EXCEPTIONS_PATH}").strip()
+    _match(SHA, blob, "exceptions blob")
+    return {
+        "policy": "docs/releases/vulnerability-gate.md",
+        "scanner": f"grype {vulnerability_gate.GRYPE_VERSION}",
+        "max_database_age_days": vulnerability_gate.MAX_DB_AGE.days,
+        "exceptions": EXCEPTIONS_PATH, "exceptions_blob": blob,
+        "evidence_artifact": "vulnerability-evidence",
+    }
 
 
 def env_lines(record: dict) -> str:
