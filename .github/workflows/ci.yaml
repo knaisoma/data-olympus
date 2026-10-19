@@ -15,7 +15,7 @@ jobs:
           # The benchmark receipt binds artifacts to the execution commit,
           # which is intentionally the parent of the receipt commit.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - run: uv venv --python 3.13
       - run: uv pip install -e '.[dev]'
       - name: Read pinned OKF revision
@@ -76,7 +76,7 @@ jobs:
         with:
           # Receipt provenance tests read git history.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - run: uv venv --python 3.14
       - run: uv pip install -e '.[dev]'
       - run: uv run mypy src
@@ -163,7 +163,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - run: uv venv --python 3.13
       - run: uv pip install -e '.[dev]'
       - name: Check SPEC.md / docs/adoption.md enums match format/validate.py
