@@ -33,9 +33,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git openssh-client ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv, pinned. Roll forward deliberately; 0.11.15 is the minimum that
-# carries the fixes for the uv scanner findings.
-RUN pip install --no-cache-dir uv==0.12.23
+# Install uv, pinned by content: the static uv and uvx binaries from astral's
+# official image, by its multi-arch OCI index digest, into /usr/local/bin
+# (where the former pip install put them). Roll forward deliberately; 0.11.15
+# is the minimum that carries the fixes for the uv scanner findings. To move
+# the pin, replace BOTH the tag and the digest, after checking that the index
+# digest carries astral's build provenance:
+#   docker buildx imagetools inspect ghcr.io/astral-sh/uv:<version>
+#   gh attestation verify oci://ghcr.io/astral-sh/uv@<index digest> --owner astral-sh
+# (signer: astral-sh/uv .github/workflows/publish-docker-image.yml).
+COPY --from=ghcr.io/astral-sh/uv:0.12.23@sha256:61d393e44e249f2e4b526b6c7ddcecce245946826e608e11c93ad4f5bba55b21 /uv /uvx /usr/local/bin/
 
 WORKDIR /app
 
