@@ -12,8 +12,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Removed
+
+* The old release path is retired now that the new-model pipeline has shipped 0.11.1 and 0.11.2. Removed workflows: `rc-publish.yml`, `tag-release.yml`, `set-channel.yml`, `release-image.yml`, `release-image-reusable.yml`, `publish-pypi.yml` and `publish-pypi-reusable.yml`. Removed old-path scripts: `rc_tag.py`, `release_upload.py` and `workflow_validation.py`. Candidates are built by `rc-build.yml`, published by `rc-publish-stage.yml` and promoted by `promote-release.yml`; hotfixes start with `hotfix-cut.yml`. The pull request packaging dry run moves unchanged to `package-dry-run.yml`. `hotfix-cut.yml` and `recut-release-branch.yml` no longer list old-path runs and no longer hold `actions: read`. The `rc` image channel is no longer moved by any workflow while `SDLC_RC_CHANNEL` is unset.
+
 ### Security
 
+* Container image: git refuses the `http`, `https`, `ftp` and `ftps` transports. The image's system gitconfig sets `protocol.<name>.allow=never` for each, so git stops with "transport 'https' not allowed" before it starts a libcurl remote helper. SSH and local remotes are unchanged; the server's KB clone, fetch and push run over SSH. Breaking for image users whose `KB_REMOTE_URL` or `KB_GIT_REMOTE_URL` is an HTTPS URL: switch to an SSH remote. A server installed from PyPI keeps the host's git configuration. The `libcurl3t64-gnutls` package stays installed as a git dependency, so its scanner findings remain. A new CI job builds the image and runs `tests/image/git_protocol_policy.sh` inside it.
+* Container image: uv is pinned by content. The image copies the static `uv` and `uvx` 0.12.23 binaries from astral's official `ghcr.io/astral-sh/uv:0.12.23` image by its multi-arch index digest (`sha256:61d393e4...`, which carries astral's signed build provenance from `astral-sh/uv`'s `publish-docker-image.yml`) into `/usr/local/bin`, instead of `pip install uv==0.12.23`, which checked the version but not the bytes. The uv version is unchanged; the binary is now the musl build, and uv is no longer a Python package in the image's system site-packages.
 * Container image: rebuild on the current `python:3.13-slim` index digest (`sha256:70729b46...`, Python 3.13.16 on Debian trixie with current security updates), raise the pinned uv from `0.5.4` to `0.12.23`, and stop installing `curl`, which nothing in the image uses (probes are `httpGet`/`tcpSocket`; the `bin/kb` client scripts that call curl run on operator machines). On the release candidate assessment this takes the blocking vulnerability-gate matches from 358 to 106 per platform; the rest are findings without a fix or with a fix only on Python 3.15. git still pulls in `libcurl3t64-gnutls` for its http helpers. Anyone who ran `curl` inside the container by hand needs another tool, such as `python -c` with `urllib.request`.
 
 ### Changed

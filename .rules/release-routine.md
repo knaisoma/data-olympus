@@ -37,7 +37,8 @@ amendment. CI runs tests and
 wheel/sdist smoke checks per PR. There is no hosted preview and no per-PR image.
 The RC image and wheel come from `rc-build.yml`.
 
-1. `rc-build.yml` builds wheel, sdist, OCI archive and provenance at exact `H`
+1. `rc-build.yml` builds wheel, sdist, OCI archive and
+   `release-provenance.json` at the exact source SHA `H`
    on `release/new` or `hotfix/new`, with `contents: read`, no secrets and no
    OIDC token. Upload workflow artifacts; `N=0` stops without publication.
 2. `rc-publish-stage.yml` runs from trusted `main` via `workflow_run`, after a
@@ -45,22 +46,30 @@ The RC image and wheel come from `rc-build.yml`.
    run its code with publish credentials. Recompute the version and verify
    provenance, wheel/sdist hashes and OCI archive digest before publishing
    through `pypi-rc`, GHCR and a GitHub prerelease. Move `rc` only for normal
-   release heads. Select staging by current `H` and digest, prioritizing
+   release heads and only while `SDLC_RC_CHANNEL` is `enabled`; it is unset,
+   so no workflow moves `rc` today. Select staging by current `H` and digest, prioritizing
    `hotfix/new` while it exists, never by version order.
 3. Under the exclusive `data-olympus-promotion` lock, recheck head, base,
    staging and STD-U-822 gates. Squash to main with `release: X.Y.Z` and
    generated notes. Prove sole parent `B`, tree equality with reviewed `H`,
    and absence of `release/ADOPTION.json` at `H`.
-4. `promote-release.yml` creates annotated `vX.Y.Z` on that squash, builds
+4. `promote-release.yml`, an explicit `workflow_dispatch` from `main` with
+   `squash`, `reviewed_head` and `candidate_tag`, creates annotated `vX.Y.Z`
+   on that squash, builds
    stable Python metadata from it and checks payload equivalence to the RC.
    Keep the protected `pypi` environment and MCP registry publication gate.
    Reuse the tested OCI digest, retaining its RC label. Provenance maps `H`,
    squash SHA, stable tag and digest. Move `stable`, `vX.Y.Z` and `latest`
-   only after verification, as on the transitional promotion path.
+   only after verification.
 5. Deploy stable-tag-authorized artifacts through reviewed digest-pinned
    gitops changes; the publication workflow itself does not deploy. Record
    the prior digest and verify delivery before recutting `release/new`.
    Move open PRs and preserve pending work with fresh checks and review.
+
+Delivery is a direct continuation after authorized merge, through explicit
+`workflow_dispatch`, never push-triggered tagging. Dispatch or upload alone is
+not completion. Record source, reviews, authorized merge, artifact identities,
+deployment, and verification outcomes.
 
 Stage 2, promotion, hotfix and recut share the lock with cancellation disabled.
 It covers staging validation, merge, tag, delivery verification and recut;
@@ -145,96 +154,25 @@ Changed base or content requires new review. Candidate fields remain `H`;
 provenance maps `H` to `R`. Rerun checks and security clearance on `R`.
 The version engine's `M` remains the captured pre-merge main SHA.
 
-## Transitional path until the first new-model release
+## Retired old path
 
-The existing `rc-publish.yml`, `tag-release.yml` and `set-channel.yml` retain
-their behavior, including 0.11.x hotfix and rollback capability. The first
-new-model release (0.11.1) has shipped; these workflows stay in the repository
-until their retirement lands as separate reviewed work. This section applies only to that old path. Prepare a
-short-lived branch such as `codex/release-YYYY-MM-DD` with the completed batch,
-computed version, lockfile, changelog and release notes. Use
-`scripts/compute_release.py` here, not the new engine. The planned safeguard
-for legacy workflows removes tag-push triggers from `release-image.yml` and `publish-pypi.yml` and
-adds duplicate-identity refusal to their dispatches, so bot-created stable
-tags cannot rebuild published artifacts or move `latest` inadvertently.
-In this transitional section only, `M` denotes the fetched main SHA after merge.
-
-### When transitional main has advanced past the reviewed revision
-
-The rule above assumes the release merge is still the tip of `main`. It is not
-always: another pull request can merge between review and publication. Unless
-that pull request itself carried a qualifying release review and authorized merge,
-no revision then satisfies the rule as written, because the reviewed revision
-is no longer `main` and `main`'s tree has not been reviewed as a unit. That is
-a real gap, not a technicality to argue past, and it must be closed
-deliberately rather than by publishing anyway.
-
-The preferred resolution is to make the reviewed revision the tip again, by
-preparing the next reviewed change on top and publishing from that. Coordinate
-a short pause on other merges around final validation and dispatch, because
-each new merge restarts this. If merges keep landing, the release is delayed;
-that is the correct outcome. Never weaken an identity check to guarantee
-progress.
-
-Publication from a revision that is not `main` is a fallback. It relaxes only
-the requirement to publish from the tip: the squash-parent and reviewed-tree
-proofs, and every other requirement in this contract, still apply in full. It
-is permitted only when every one of the following holds and is recorded:
-
-* The chosen source `S` is the exact revision whose tree was reviewed and
-  approved as a unit, and its digest is stated in the release record.
-* `S` is an ancestor of `main`.
-* Every commit between `S` and `main` was independently reviewed and merged by
-  an authorized merger through the normal pull-request path. An unreviewed commit in that
-  range blocks publication outright.
-* Those commits change no input to a published artifact, directly or
-  transitively. Absence from the wheel and sdist manifests and from the image
-  build is necessary but never sufficient on its own. Inputs include, and are
-  not limited to: packaged files, and note that `CHANGELOG.md` is in the sdist
-  manifest; build helpers and anything they read; generated metadata and
-  provenance; release notes, which the publication workflows consume; and the
-  publication and release workflows themselves, which control how artifacts
-  are produced and therefore always block this fallback. A change that alters
-  release authorization or validation blocks it too, even when no artifact
-  byte would differ.
-* The release record names `S` explicitly and notes that `main` is ahead of it,
-  listing the intervening commits. Provenance and the OCI
-  `org.opencontainers.image.revision` label name `S`, so the published image
-  identity is `S` and not `main`. Never describe the release as built from
-  `main` when it was not.
-* Gates and security clearance are rerun on `S`, not inherited from `main` or
-  from the pre-merge candidate.
-
-If any condition fails, prepare a fresh reviewed pull request and obtain a
-fresh authorized merge instead. Never resolve this by relabelling a failed
-identity check as passing.
-
-Delivery is a direct continuation after authorized merge. Workflows use explicit
-`workflow_dispatch`, not push-triggered tagging:
-
-1. Dispatch `rc-publish.yml` with the exact source SHA, which is `M`
-   normally and `S` under the fallback above, and a positive candidate
-   number. Publish wheel, sdist, OCI image, `release-provenance.json`, PyPI
-   version, and GitHub prerelease.
-2. Verify hashes, provenance, and digest. Record a rollback digest, deploy the
-   candidate to the validation environment, and verify rollout, health,
-   readiness, MCP search, and enforcement.
-3. Dispatch `tag-release.yml` with `candidate_tag` naming the highest complete
-   candidate. Respect the protected `pypi` environment. Environment approval
-   must be limited to the exact authorized workflow run and source revision.
-4. Verify stable PyPI artifacts, GitHub release/tag, and GHCR digest. Stable OCI
-   promotion reuses the candidate digest without rebuilding.
-5. Verify deployment at that digest and provide a benefit-led announcement draft
-   with a verified release link for human publication.
-
-Dispatch or upload alone is not completion. Record source, reviews, authorized merge,
-artifact identities, deployment, and verification outcomes.
+The old release path was retired in 2026-10, after the new model shipped
+0.11.1 and 0.11.2. Its workflows (`rc-publish.yml`, `tag-release.yml`,
+`set-channel.yml`, `release-image.yml`, `publish-pypi.yml` and their reusable
+companions) and its scripts (`rc_tag.py`, `release_upload.py`,
+`workflow_validation.py`) were removed. Releases up to 0.11.0 were published
+by that path; their records stay as history. Hotfixes use `hotfix-cut.yml`,
+which cuts `hotfix/new` from the current stable tag, and then follow the
+new-model delivery above. A rollback re-deploys the recorded prior digest (see
+`.rules/release-rollback.md`).
 
 ## Immutability and recovery
 
 Published versions, tags, and assets are immutable. Same-content retries verify
 existing bytes and upload missing assets; different bytes block. GitHub uploads
-use `scripts/release_upload.py`. Never replace assets or move version tags.
+use `scripts/rc_verify_and_publish.py` for candidates and
+`scripts/release_record.py` for stable releases. Never replace assets or move
+version tags.
 Prepared but unpublished versions require a fresh reviewed PR and authorized merge.
 Validate documents against the computed change set and inventory PyPI, GHCR,
 Git tags, and GitHub releases. Collisions or ambiguous partial publication need

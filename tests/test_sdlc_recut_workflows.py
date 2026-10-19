@@ -11,10 +11,9 @@ WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
 
 PERMISSIONS = {
-    "recut-release-branch.yml": {"actions": "read", "contents": "read", "pull-requests": "read"},
-    "hotfix-cut.yml": {"actions": "read", "contents": "read"},
+    "recut-release-branch.yml": {"contents": "read", "pull-requests": "read"},
+    "hotfix-cut.yml": {"contents": "read"},
 }
-OLD_PATH = ("tag-release.yml", "rc-publish.yml", "set-channel.yml")
 BLOCKED = "blocked: requires W9 bot identity"
 
 
@@ -191,20 +190,8 @@ def test_inputs_never_interpolate_shell_and_plan_never_applies(workflow):
             assert "git config" not in commands
             if "sdlc_recut.py" in body:
                 for flag in ("--expected-main", "--expected-head", "--expected-base",
-                             "--expected-hotfix", "--old-path-runs-json"):
+                             "--expected-hotfix"):
                     assert flag in body
-
-
-def test_old_path_runs_are_listed_read_only_in_both_jobs(workflow):
-    plan = _step(workflow["jobs"]["plan"], "Plan ")
-    snapshot = _step(workflow["jobs"]["apply"], "Snapshot ")
-    for step in (plan, snapshot):
-        assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
-        assert "--method GET" in step["run"]
-        for name in OLD_PATH:
-            assert name in step["run"]
-        for status in ("queued", "in_progress", "waiting", "requested", "pending"):
-            assert status in step["run"]
 
 
 def test_recut_lists_every_open_pr_read_only(workflow):
@@ -222,8 +209,8 @@ def test_recut_lists_every_open_pr_read_only(workflow):
 
 PINNED = {
     "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "v7"),
-    "astral-sh/setup-uv": ("37802adc94f370d6bfd71619e3f0bf239e1f3b78", "v7"),
-    "actions/create-github-app-token": ("fee1f7d63c2ff003460e3d139729b119787bc349", "v2"),
+    "astral-sh/setup-uv": ("11f9893b081a58869d3b5fccaea48c9e9e46f990", "v8.3.2"),
+    "actions/create-github-app-token": ("bcd2ba49218906704ab6c1aa796996da409d3eb1", "v3.2.0"),
 }
 
 

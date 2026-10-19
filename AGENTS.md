@@ -34,7 +34,7 @@ There is no web framework and no database server. Keep it that way unless a deci
 
 **Git backing**: the corpus is a git repository. `git_ops.py`, `push_queue.py`, and `pending.py` handle refresh and the proposed-write pipeline.
 
-**Deployment** is `deploy/docker` and `deploy/k8s`. The STD-U-821 target pipeline separates unprivileged RC builds from trusted publication and stable promotion. Existing explicit candidate/stable dispatches remain transitional until the first new-model release. Deploy verified immutable digests and follow `.rules/release-rollback.md`.
+**Deployment** is `deploy/docker` and `deploy/k8s`. The STD-U-821 target pipeline separates unprivileged RC builds from trusted publication and stable promotion. The old candidate and stable dispatch workflows were retired in 2026-10. Deploy verified immutable digests and follow `.rules/release-rollback.md`.
 
 ## Development Workflow
 
@@ -95,7 +95,7 @@ Run the linter before the tests. It runs first in CI, so a lint failure hides ev
 
 The authority is `.rules/release-routine.md`. The target STD-U-821 flow computes versions with `scripts/sdlc_version.py` on `release/new`, without a committed target version. The agent holding operator authorization squash-merges reviewed content as `release: X.Y.Z`; reserved cases need explicit operator authorization. Promotion proves reviewed-tree equality and creates annotated `vX.Y.Z`. Production remains digest-pinned, and verified releases are followed by a recut.
 
-`.rules/versioning.md` defines normal and hotfix identities, PEP 440 mappings and the new pre-1.0 patch mapping for features. The new pipeline is enabled and shipped the first new-model release, 0.11.1. Until the old-path workflows are retired, `compute_release.py` remains authoritative only for that path. The pre-1.0 `feat` mapping is under operator review (see `.rules/versioning.md`).
+`.rules/versioning.md` defines normal and hotfix identities, PEP 440 mappings and the new pre-1.0 patch mapping for features. The new pipeline is enabled and shipped the first new-model release, 0.11.1. The old-path workflows are retired, and `compute_release.py` is no longer a version authority. The pre-1.0 `feat` mapping is under operator review (see `.rules/versioning.md`).
 
 ## Key Rules
 

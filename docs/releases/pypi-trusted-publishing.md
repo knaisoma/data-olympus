@@ -10,94 +10,53 @@ verification fails.
 
 ## Publisher identities
 
-Create a pending GitHub publisher on PyPI for each top level workflow that can
-upload. Every other field is identical.
+Each top level workflow that uploads has its own pending GitHub publisher on
+PyPI, pinned to its own environment. Both use PyPI project `data-olympus`,
+GitHub owner `knaisoma` and repository `data-olympus`.
 
-* PyPI project name: `data-olympus`
-* GitHub owner: `knaisoma`
-* GitHub repository: `data-olympus`
-* Environment: `pypi`
-* Candidate workflow: `rc-publish.yml`
-* Stable workflow: `tag-release.yml`
-* Manual fallback workflow: `publish-pypi.yml`
+| Workflow | Environment | Uploads |
+|---|---|---|
+| `rc-publish-stage.yml` | `pypi-rc` | Release candidates (stage 2) |
+| `promote-release.yml` | `pypi` | Stable releases (reviewed promotion) |
 
-The reusable workflow is not a publisher identity. PyPI evaluates the top level
-workflow that started the run.
+The reusable workflow `publish-python-build.yml` is not a publisher identity.
+PyPI evaluates the top level workflow that started the run. The publishers of
+the retired old path (`rc-publish.yml`, `tag-release.yml`, `publish-pypi.yml`)
+are removed on pypi.org by the owner, see
+[repository settings](repository-settings.md).
 
 ## PyPI setup
 
 1. Sign in to <https://pypi.org> with two factor authentication enabled.
 2. Open <https://pypi.org/manage/account/publishing/>.
-3. Add a pending GitHub publisher for `rc-publish.yml` using the values above.
-4. Repeat for `tag-release.yml`.
-5. Repeat for `publish-pypi.yml` only when the manual tag fallback is retained.
+3. Add a pending GitHub publisher for each row of the table above, with its
+   environment.
 
-## GitHub environment
+## GitHub environments
 
-Create an environment named `pypi` in the repository settings.
+Create the environments `pypi-rc` and `pypi` in the repository settings.
 
-1. Require an operator reviewer for deployments.
-2. Allow deployment only from `main` and approved protected release branches.
-3. Dispatch `rc-publish.yml` itself from `main`, even when its `ref` input names
-   another exact source SHA.
-4. Do not add a PyPI password or API token secret.
+1. Allow deployment only from `main`.
+2. Do not add a PyPI password or API token secret.
 
-For an operations-runner release, the operator's exact SHA bound standing
-approval is recorded before delivery. If the protected workflow then waits,
-the runner verifies that workflow and source, requires exactly this single
-`pypi` environment with an allowed operator reviewer and zero wait timer, and
-submits only that deployment approval. Interactive releases still require the
-operator reviewer directly. Do not remove the environment protection.
-
-The candidate and stable jobs scope `id-token: write` to this environment. Other
-jobs use read only repository permissions unless they must publish a Git tag,
-GitHub release, or GHCR tag.
+See [repository settings](repository-settings.md#3-environments) for the
+recorded state and read-back commands. Only the uploading jobs scope
+`id-token: write` to these environments. Other jobs use read only repository
+permissions unless they must publish a Git tag, GitHub release, or GHCR tag.
 
 ## Candidate publication
 
-Run `rc-publish.yml` with these inputs:
-
-* `ref`: the exact reviewed source SHA or a ref that resolves to it
-* `number`: the positive candidate number, such as `3`
-
-The resolved source must be an ancestor of `main`, and the workflow itself must
-be dispatched from `main`; otherwise it stops before building anything.
-
-The workflow builds `0.6.0rc3` for PyPI and `0.6.0-rc.3` for GHCR and GitHub.
-It publishes an immutable image, wheel, source distribution, and provenance
-receipt. It verifies PyPI file hashes and the image digest before moving `:rc`
-or creating the GitHub prerelease. Before upload, clean environments install
-both Python distribution formats, verify the exact candidate version, and
-exercise the packaged command and MCP runtime surfaces.
-
-A rerun with the same number reuses an existing image only when its embedded
-source revision equals the requested SHA. PyPI upload uses `skip-existing`, then
-reads the registry back and compares SHA256 values. A source mismatch fails.
+A push to `release/new` or `hotfix/new` runs `rc-build.yml`, and
+`rc-publish-stage.yml` publishes the verified candidate from `main` through
+`pypi-rc`. See [RC publication](rc-publication-stage.md).
 
 ## Stable promotion
 
-After the release change reaches `main`, an operator explicitly dispatches
-`tag-release.yml` from `main` with the highest complete prerelease in the
-`candidate_tag` input. The workflow rejects any requested candidate that is not
-the highest complete prerelease for the declared project version. A complete
-candidate must have all of these assets:
-
-* `release-provenance.json`
-* candidate wheel
-* candidate source distribution
-* verified image digest
-
-The candidate source SHA must be an ancestor of `main`, and a dispatch from any
-other branch stops immediately. The resolve step prints the candidate tag,
-source SHA and image digest it will promote, so they can be checked against the
-verified candidate before the protected environment is approved. The stable Git tag is
-created at that candidate SHA only after the protected PyPI environment is
-approved and the stable Python files are published and verified. The workflow
-rebuilds only the stable Python version overlay, compares the wheel payload with
-the candidate, and retags the verified image digest as the stable version,
-`stable`, and `latest`. It never rebuilds the image during promotion.
-The rebuilt wheel and source distribution receive the same clean installation,
-exact version, and runtime checks before stable PyPI publication.
+An operator dispatches `promote-release.yml` from `main` with `squash`,
+`reviewed_head` and `candidate_tag`. It rebuilds the stable Python files from
+the release squash, compares their payload with the candidate, and uploads them
+through `pypi` only after its proofs and gates pass. It never rebuilds the
+image. See [reviewed promotion](reviewed-promotion.md).
 
 ## Verification
 
@@ -119,20 +78,16 @@ docker buildx imagetools inspect ghcr.io/knaisoma/data-olympus:stable
 
 ## Recovery and rollback
 
-For a failed upload, rerun the same workflow with the same source and candidate
-number. The jobs reconcile existing artifacts and verify their hashes.
+For a failed upload, re-run the failed jobs of the same run. The jobs reconcile
+existing artifacts and verify their hashes. For a promotion that stopped after
+the PyPI upload, see
+[resuming after the PyPI upload](reviewed-promotion.md#resuming-after-the-pypi-upload).
 
 For an unsuitable candidate on PyPI, yank that candidate from its PyPI release
 page and publish a higher candidate number. Do not delete or overwrite it.
 
-To restore a moving GHCR channel, retag a previously verified digest:
-
-```bash
-docker buildx imagetools create \
-  --tag ghcr.io/knaisoma/data-olympus:rc \
-  ghcr.io/knaisoma/data-olympus@sha256:<verified-digest>
-```
-
-Use the same pattern for `stable` and `latest`. Immutable version tags and PyPI
+No workflow restores a moving GHCR channel. After a rollback, which
+re-deploys the recorded prior digest, the next patch promotion moves `stable`
+and `latest`. Immutable version tags and PyPI
 versions are never overwritten. A faulty stable PyPI release should be yanked,
 followed by a new patch release.

@@ -424,7 +424,7 @@ def test_oci_unexpected_entry_refused(build):
 
 
 def test_rc_channel_is_not_moved_by_default(build):
-    """W6 invariant: rc stays with set-channel.yml until SDLC_RC_CHANNEL is enabled."""
+    """W6 invariant: rc is not moved unless SDLC_RC_CHANNEL is enabled."""
     verified, registry = verify(build), Registry()
     stage.reserve(verified, registry)
     registry.python = verified.python_hashes.copy()
@@ -904,9 +904,9 @@ def test_rc_channel_gate_reaches_only_the_publish_script():
 
 SHA_PINNED = {
     "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "v7"),
-    "astral-sh/setup-uv": ("37802adc94f370d6bfd71619e3f0bf239e1f3b78", "v7"),
-    "actions/create-github-app-token": ("fee1f7d63c2ff003460e3d139729b119787bc349", "v2"),
-    "actions/attest-build-provenance": ("977bb373ede98d70efdf65b84cb5f73e068dcc2a", "v3"),
+    "astral-sh/setup-uv": ("11f9893b081a58869d3b5fccaea48c9e9e46f990", "v8.3.2"),
+    "actions/create-github-app-token": ("bcd2ba49218906704ab6c1aa796996da409d3eb1", "v3.2.0"),
+    "actions/attest-build-provenance": ("4d101475d8b20a2381f78447822ac1eab6504dd8", "v4.2.2"),
     "actions/attest": ("1e69f48acb82d1966a394da916b4c1698aa569d6", "v4.2.2"),
     "pypa/gh-action-pypi-publish": ("dc37677b2e1c63e2034f94d8a5b11f265b73ba33", "release/v1"),
 }
@@ -953,7 +953,9 @@ def test_attestations_follow_verified_publication():
     image, files = (steps[i]["with"] for i in attest)
     assert image == {"subject-name": stage.IMAGE,
                      "subject-digest": "${{ needs.publish.outputs.image_digest }}",
-                     "push-to-registry": True}
+                     "push-to-registry": True,
+                     # v4 would otherwise attempt an org storage record write.
+                     "create-storage-record": False}
     # Only the copies that passed sha256sum are subjects, never the raw artifact.
     assert files == {"subject-path": "to-delete/rc-attest/*.whl\n"
                                      "to-delete/rc-attest/*.tar.gz\n"}

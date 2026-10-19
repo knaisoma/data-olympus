@@ -15,7 +15,7 @@ jobs:
           # The benchmark receipt binds artifacts to the execution commit,
           # which is intentionally the parent of the receipt commit.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - run: uv venv --python 3.13
       - run: uv pip install -e '.[dev]'
       - name: Read pinned OKF revision
@@ -76,7 +76,7 @@ jobs:
         with:
           # Receipt provenance tests read git history.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - run: uv venv --python 3.14
       - run: uv pip install -e '.[dev]'
       - run: uv run mypy src
@@ -98,7 +98,7 @@ jobs:
   version-free-guard:
     # Catch a duplicate DECLARED version before merge: if the PR bumps
     # [project].version to something already published on PyPI, ghcr, or as a
-    # GitHub release/tag, fail here rather than at tag-release time (where a
+    # GitHub release/tag, fail here rather than at publication time (where a
     # failed guard would still be after the merge). A registry outage fails
     # closed. KB_BYPASS_VERSION_CHECK=1 is for explicit operator diagnostics only;
     # release automation must never use it to bypass version clearance.
@@ -163,8 +163,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
       - run: uv venv --python 3.13
       - run: uv pip install -e '.[dev]'
       - name: Check SPEC.md / docs/adoption.md enums match format/validate.py
         run: uv run python3 scripts/check_doc_consistency.py
+  # Builds the container image locally (linux/amd64, no push, no registry
+  # login) and runs tests/image/git_protocol_policy.sh inside it, with the
+  # network off: file:// and the SSH transport must work, and http, https, ftp
+  # and ftps must be refused by git's protocol policy (deploy/docker/Dockerfile).
+  # Not a required check; release candidates are built separately by rc-build.
+  image-git-protocols:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build the image
+        run: docker build --file deploy/docker/Dockerfile --tag data-olympus:git-protocols .
+      - name: Check the git transport policy inside the image
+        run: |
+          docker run --rm -i --network none --entrypoint /bin/sh \
+            data-olympus:git-protocols -s < tests/image/git_protocol_policy.sh

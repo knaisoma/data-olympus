@@ -75,9 +75,7 @@ the workflow does not depend on anyone's membership visibility.
 On the new release path, the `publish-mcp-registry` job in
 `.github/workflows/promote-release.yml` runs after the GitHub release, from the released
 source revision. It first writes the released version into both `server.json` version
-fields of its workspace copy (the committed file is not changed). The old-path job of
-the same name in `.github/workflows/tag-release.yml` (issue #303) remains until that
-workflow is retired and checks the committed file without rewriting it. Each job:
+fields of its workspace copy (the committed file is not changed). The job:
 
 1. refuses unless both `server.json` versions equal the released version;
 2. reads that version's PyPI description and refuses unless it carries the exact

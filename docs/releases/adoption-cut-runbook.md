@@ -1,5 +1,9 @@
 # Adoption cut runbook (W6 Task 9)
 
+Note: the adoption cut was executed and released as 0.11.1. The old-path
+workflows it mentions (`rc-publish.yml`, `tag-release.yml`, `set-channel.yml`)
+were retired in 2026-10; references to them below are historical.
+
 Status: prepared, not executed. This runbook is the exact sequence the operator
 or the controller follows to cut `release/new` for the first time under
 STD-U-821, using the adoption record ratified in amendment 1.3
@@ -417,8 +421,8 @@ them in this order:
    promotable head publishes a candidate, so enable it only after steps 1 to 9
    are verified.
 5. `SDLC_RC_CHANNEL=enabled`, only after the first new-model release is
-   published and verified. Until then `set-channel.yml` stays the only writer
-   of `rc`. Enabling it also requires moving the stage 2 `rc` move into a job
+   published and verified. The retired `set-channel.yml` was the only writer
+   of `rc`, so the channel is frozen until this decision. Enabling it also requires moving the stage 2 `rc` move into a job
    after `finalize` (or enabling it only together with that change), because
    today `publish` moves `rc` before the draft release is published; see
    [the `rc` channel](rc-publication-stage.md#the-rc-channel).

@@ -155,9 +155,10 @@ Owner `knaisoma`, repository `data-olympus` for both. PyPI matches repository
 and workflow file name, not the ref, which is why each publisher pins an
 environment and each environment is limited to `main`.
 
-The publishers of the R9 old path (`publish-pypi.yml`, `rc-publish.yml`,
-`tag-release.yml`, environment `pypi`) stay registered until adoption
-completes, see [reviewed promotion](reviewed-promotion.md#prerequisites-blocked-until-w9).
+The publishers of the retired old path (`publish-pypi.yml`, `rc-publish.yml`,
+`tag-release.yml`, environment `pypi`) are no longer used. The owner removes
+them on pypi.org after the retirement merges. The environments `pypi`,
+`pypi-rc` and `sdlc-bot` all remain in use.
 
 - Status: not readable from GitHub.
 - Read-back command: none from GitHub. The GitHub side of the pin is the
@@ -219,10 +220,11 @@ Targets the tag patterns `v*`, `identity-v*`, `*-rc.*` and `*-hotfix.rc.*`.
   those names cannot be moved or removed once it exists, see
   [the adoption cut runbook](adoption-cut-runbook.md#immutable-tags-and-the-point-of-no-return).
 - Creation is NOT restricted. A creation rule cannot exempt
-  `github-actions[bot]`, which creates the candidate tags and the `v*` tags of
-  the old `tag-release.yml`.
+  `github-actions[bot]`, which creates the candidate tags (and created the `v*`
+  tags of the retired `tag-release.yml`).
 - Tracked follow-up: restrict creation for stable tags only, with the `sdlc-bot`
-  App as bypass actor, once the old path is retired. Until then the tagger check
+  App as bypass actor. Its precondition, retiring the old path, is met; adding
+  the rule is an owner step. Until then the tagger check
   in promotion is an audit check and not an access control, see
   [tracked prerequisites](reviewed-promotion.md#tracked-prerequisites).
 - Read-back command (tag rulesets are not returned by `rules/branches`):
@@ -292,8 +294,9 @@ gh api repos/$REPO/actions/permissions/workflow   # default_workflow_permissions
   repository settings change.
 - Add immutable releases to the organisation's desired state (section 1).
 - Restrict creation of stable tags with the `sdlc-bot` App as bypass actor
-  (section 5.3), after the old `tag-release.yml` path is retired.
+  (section 5.3). The old `tag-release.yml` path is retired, so this owner step
+  is unblocked.
 - Set `SDLC_RC_CHANNEL=enabled` only after the first new-model release and the
   `rc` move has been placed after `finalize` (section 2).
-- Remove the old-path Trusted Publishers on pypi.org only after adoption
-  completes (section 4).
+- Remove the old-path Trusted Publishers (`publish-pypi.yml`, `rc-publish.yml`,
+  `tag-release.yml`) on pypi.org (section 4); the workflows are retired.

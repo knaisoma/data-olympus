@@ -67,7 +67,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
         with:
           python-version: '3.13'
       - name: Require Skopeo
@@ -106,7 +106,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
         with:
           python-version: '3.13'
       - name: Require Skopeo
@@ -173,7 +173,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
         with:
           python-version: '3.13'
       - name: Require Skopeo
@@ -191,8 +191,8 @@ jobs:
         id: publish
         env:
           SDLC_PIPELINE: ${{ vars.SDLC_PIPELINE }}
-          # rc stays with set-channel.yml until the first new-model release
-          # (W6 invariant); Task 9 sets SDLC_RC_CHANNEL=enabled after it.
+          # The rc channel moves only when SDLC_RC_CHANNEL is enabled (unset:
+          # rc is not moved by any workflow, see docs/releases/rc-publication-stage.md).
           SDLC_RC_CHANNEL: ${{ vars.SDLC_RC_CHANNEL }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -301,14 +301,19 @@ jobs:
       # Contract for promote-release: gh attestation verify --signer-workflow
       # knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml. Subjects
       # are only the objects verified and published by the publish job.
+      # From v4 the action wraps actions/attest, which by default also creates
+      # an organization artifact metadata storage record for a provenance
+      # attestation pushed to the registry. That needs `artifact-metadata:
+      # write`, which this job does not hold; keep the job's writes unchanged.
       - name: Attest the published image digest
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-name: ghcr.io/knaisoma/data-olympus
           subject-digest: ${{ needs.publish.outputs.image_digest }}
           push-to-registry: true
+          create-storage-record: false
       - name: Attest the verified wheel and sdist
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-path: |
             to-delete/rc-attest/*.whl
@@ -362,7 +367,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
         with:
           python-version: '3.13'
       - name: Require Skopeo

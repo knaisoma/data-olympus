@@ -458,9 +458,9 @@ def publish(verified: Verified, client: Client, *,
             attempts: int = PYPI_ATTEMPTS, delay: float = PYPI_DELAY_SECONDS) -> dict[str, Any]:
     """Wait for PyPI, push the image by digest, optionally move rc for release/new.
 
-    The rc channel stays with set-channel.yml until the first release under the
-    new model (W6 spec invariant); move_rc is off unless SDLC_RC_CHANNEL is
-    exactly "enabled", and even then a hotfix head never moves it.
+    No other workflow moves the rc channel; move_rc is off unless
+    SDLC_RC_CHANNEL is exactly "enabled", and even then a hotfix head never
+    moves it.
     """
     _, image = reservation_bound(verified, client)
     # The PyPI JSON API is eventually consistent after an upload.

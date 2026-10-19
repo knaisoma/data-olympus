@@ -33,9 +33,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git openssh-client ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv, pinned. Roll forward deliberately; 0.11.15 is the minimum that
-# carries the fixes for the uv scanner findings.
-RUN pip install --no-cache-dir uv==0.12.23
+# Install uv, pinned by content: the static uv and uvx binaries from astral's
+# official image, by its multi-arch OCI index digest, into /usr/local/bin
+# (where the former pip install put them). Roll forward deliberately; 0.11.15
+# is the minimum that carries the fixes for the uv scanner findings. To move
+# the pin, replace BOTH the tag and the digest, after checking that the index
+# digest carries astral's build provenance:
+#   docker buildx imagetools inspect ghcr.io/astral-sh/uv:<version>
+#   gh attestation verify oci://ghcr.io/astral-sh/uv@<index digest> --owner astral-sh
+# (signer: astral-sh/uv .github/workflows/publish-docker-image.yml).
+COPY --from=ghcr.io/astral-sh/uv:0.12.23@sha256:61d393e44e249f2e4b526b6c7ddcecce245946826e608e11c93ad4f5bba55b21 /uv /uvx /usr/local/bin/
 
 WORKDIR /app
 
@@ -79,6 +86,20 @@ RUN mkdir -p /kb-main /kb-worktrees /state/pending /state/pending/locks \
 # extend it without needing to write /etc/ssh.
 RUN ssh-keyscan -t ed25519,rsa "${KB_SSH_KEYSCAN_HOST}" > /etc/ssh/known_hosts \
     && chmod 0644 /etc/ssh/known_hosts
+
+# Close git's libcurl transports. The server reaches its KB remote over SSH
+# (and local paths in tests); it never needs git over http, https, ftp or ftps.
+# The Debian git package still installs libcurl and the git-remote-http(s)/ftp(s)
+# helpers, so refuse those protocols in the system gitconfig (/etc/gitconfig):
+# git then stops with "transport '<name>' not allowed" before it starts a
+# libcurl helper. ssh and file keep their defaults. This is a default, not a
+# sandbox: GIT_ALLOW_PROTOCOL, a user or repository config, or `git -c` can
+# re-enable a protocol. Placed after every build step that might run git.
+# tests/image/git_protocol_policy.sh checks the behaviour inside the image.
+RUN git config --system protocol.http.allow never \
+    && git config --system protocol.https.allow never \
+    && git config --system protocol.ftp.allow never \
+    && git config --system protocol.ftps.allow never
 
 # Entrypoint runs as the non-root runtime user (no privilege drop). It prepares a
 # user-writable known_hosts and the git identity, then execs the server.

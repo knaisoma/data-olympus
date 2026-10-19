@@ -36,34 +36,11 @@ the record in adoption dry-run mode, which is never promotable. The cut build
 itself (`N=0`) builds and verifies but is not promotable. The reasoning and the
 cut sequence are in [the adoption cut runbook](adoption-cut-runbook.md).
 
-The transitional candidate and stable publication workflows remain available.
-Pushing a `v*` tag no longer launches a rebuild publication.
-
-R9 compatibility notes: the manual PyPI fallback preserves `skip-existing: true`
-and the post-upload SHA256 verification. After building, it compares every
-existing PyPI file with the local filename and SHA256 before upload. Matching
-files allow a retry, including a partially uploaded release; conflicting files
-or an unreadable registry fail closed. A version's existence alone is not a
-refusal. Pre-upload validation and post-upload readback run in separate read-only
-jobs. The OIDC upload job only downloads the validated artifacts and publishes.
-Nonrelease refs remain build-only: resolution tries the fetched
-`refs/remotes/origin/<ref>`, then a full 40-hex commit SHA, then the local name.
-Every build receives the resolved immutable SHA. Branches such as `vendor-bump`
-are allowed; malformed `v`-prefixed tags and names beginning with `v` followed
-by a digit are refused. Release tags must exist exactly and match the package
-metadata version before upload is allowed.
-
-Manual image builds require a source branch of `main`, `release/new`, or
-`hotfix/new` and build the dispatch's exact `github.sha`. Candidate identities
-(`X.Y.Z-rc.N` and `X.Y.Z-hotfix.rc.N`, also with a legacy `v` prefix) are reserved
-for the candidate pipeline. Every stable identity (`X.Y.Z` or `vX.Y.Z`) is
-reserved for promotion, including identities absent from Git and the registry.
-Existence checks supply diagnostics only. Channel tags remain reserved.
-
-Refusing `v<digit>`-prefixed refs that are not release tags (for example a
-branch named `v2-packaging`) on manual PyPI dispatch is intentional: it keeps
-the release-tag namespace unambiguous and only removes build-only runs, never
-enabling an upload. To build such a ref, dispatch by its full commit SHA.
+The old candidate, stable, manual PyPI and manual image workflows
+(`rc-publish.yml`, `tag-release.yml`, `publish-pypi.yml`, `release-image.yml`)
+were retired in 2026-10. The pull request packaging dry run they hosted now
+runs in `package-dry-run.yml`, which builds and checks the wheel and sdist
+through `publish-python-build.yml` and never uploads.
 
 ## Live verification still pending
 
@@ -76,8 +53,5 @@ the first runs are the push builds and the dry-run dispatch of the
 - The `containerimage.digest` metadata key and its recorded digest.
 - Artifact size and successful upload within the runner's artifact limits.
 - Successful installed-package smoke tests for the wheel and source distribution.
-- The `set-channel` digest lookup: run `docker buildx imagetools inspect
-  --format '{{.Manifest.Digest}}'` against a real published tag (for example
-  `v0.11.0`) and retain the output, since only mocks exercise it today.
 
 This runner verification remains deferred until the cut is executed.
