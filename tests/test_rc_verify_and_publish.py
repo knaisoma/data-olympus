@@ -905,7 +905,7 @@ def test_rc_channel_gate_reaches_only_the_publish_script():
 SHA_PINNED = {
     "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "v7"),
     "astral-sh/setup-uv": ("11f9893b081a58869d3b5fccaea48c9e9e46f990", "v8.3.2"),
-    "actions/create-github-app-token": ("fee1f7d63c2ff003460e3d139729b119787bc349", "v2"),
+    "actions/create-github-app-token": ("bcd2ba49218906704ab6c1aa796996da409d3eb1", "v3.2.0"),
     "actions/attest-build-provenance": ("4d101475d8b20a2381f78447822ac1eab6504dd8", "v4.2.2"),
     "actions/attest": ("1e69f48acb82d1966a394da916b4c1698aa569d6", "v4.2.2"),
     "pypa/gh-action-pypi-publish": ("dc37677b2e1c63e2034f94d8a5b11f265b73ba33", "release/v1"),
