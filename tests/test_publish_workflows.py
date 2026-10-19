@@ -107,3 +107,12 @@ def test_rc_build_concurrency_and_permissions() -> None:
         "group": "rc-build-${{ github.ref }}", "cancel-in-progress": True,
     }
     assert build["permissions"] == {"contents": "read"}
+
+
+def test_retired_old_path_workflows_stay_absent() -> None:
+    """The old release path is retired; its publishers must not come back."""
+    for name in (
+        "rc-publish.yml", "tag-release.yml", "set-channel.yml", "release-image.yml",
+        "release-image-reusable.yml", "publish-pypi.yml", "publish-pypi-reusable.yml",
+    ):
+        assert not (_WF / name).exists(), name
