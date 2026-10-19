@@ -30,8 +30,6 @@ PRESERVE = "refs/heads/sdlc-preserve/"
 # The last release tagged before the squash model, on an ordinary commit. This
 # is a fixed historical fact, not the adoption base, which each record names.
 LAST_PRE_SQUASH_RELEASE = "v0.11.0"
-# Old-path privileged workflows outside the data-olympus-promotion lock group.
-OLD_PATH_WORKFLOWS = ("tag-release.yml", "rc-publish.yml", "set-channel.yml")
 
 
 class RecutError(Exception):
@@ -57,24 +55,6 @@ def _tag_commit(git, ref):
         return git.resolve(ref)
     except engine.VersionError as error:
         raise RecutError(f"bad_ref: {ref} does not resolve to a commit") from error
-
-
-def refuse_old_path_activity(runs):
-    """Refuse while an old-path privileged run is queued or in progress.
-
-    The caller passes the workflow runs it listed; this is a point-in-time
-    check, not a lock. An old-path run that starts afterwards is not blocked.
-    """
-    if not isinstance(runs, list) or any(not isinstance(run, dict) for run in runs):
-        raise RecutError("old-path runs must be a JSON list of objects")
-    for run in runs:
-        path = run.get("path")
-        if not isinstance(path, str):
-            raise RecutError("old-path run without a workflow path; state uncertain")
-        if run.get("status") == "completed":
-            continue
-        if path.split("@", 1)[0].rsplit("/", 1)[-1] in OLD_PATH_WORKFLOWS:
-            raise RecutError(f"old-path workflow run active: {path} ({run.get('status')})")
 
 
 def validate_acknowledge(acknowledge):
@@ -235,9 +215,8 @@ def _replay_check(cwd, onto, steps):
 
 def prepare_plan(*, cwd, remote, mode, expected_main, expected_head, expected_base,
                  expected_hotfix="absent", tag=None, evidence=None, acknowledge=(),
-                 pull_requests=None, old_path_runs=None):
+                 pull_requests=None):
     """Capture remote state after the caller acquires the promotion lock."""
-    refuse_old_path_activity([] if old_path_runs is None else old_path_runs)
     validate_acknowledge(acknowledge)
     refs = remote_snapshot(cwd, remote)
     for ref, expected in ((MAIN, expected_main), (RELEASE, expected_head),
@@ -562,8 +541,6 @@ def main(argv=None):
     parser.add_argument("--evidence-json", default="null")
     parser.add_argument("--pull-requests-json", default="[]")
     parser.add_argument("--acknowledge", default="[]", help="JSON array of exact pending SHAs")
-    parser.add_argument("--old-path-runs-json", default="[]",
-                        help="JSON list of queued or in-progress old-path workflow runs")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -572,8 +549,7 @@ def main(argv=None):
                             expected_base=args.expected_base, expected_hotfix=args.expected_hotfix,
                             tag=args.tag, evidence=json.loads(args.evidence_json),
                             acknowledge=json.loads(args.acknowledge),
-                            pull_requests=json.loads(args.pull_requests_json),
-                            old_path_runs=json.loads(args.old_path_runs_json))
+                            pull_requests=json.loads(args.pull_requests_json))
         print(json.dumps(plan, indent=2), flush=True)
         if not plan["ready"]:
             return 2

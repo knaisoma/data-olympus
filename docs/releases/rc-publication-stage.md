@@ -8,9 +8,9 @@ personal token. The W9 machine identity is not a stage-2 credential. It is
 needed for what surrounds this workflow: the R6 `release/new` ruleset with
 code-owner review of `.github/`, `scripts/`, `release/` and the vendored
 amendment `docs/releases/std-u-821-amendment-1.3.md` (or owner action to create it),
-and the unattended merges, recuts and pushes of the pipeline. The existing
-`rc-publish.yml`, `tag-release.yml` and `set-channel.yml` keep their behaviour
-(R9); the last two only join the shared promotion lock.
+and the unattended merges, recuts and pushes of the pipeline. The old-path
+workflows `rc-publish.yml`, `tag-release.yml` and `set-channel.yml` were
+retired in 2026-10.
 
 ## Activation prerequisites (MUST)
 
@@ -164,15 +164,12 @@ the signing identity that promotion trusts.
 
 ## The `rc` channel
 
-Stage 2 owns the GHCR `rc` channel for `release/new` heads, but the W6 spec
-invariant keeps the `rc` digest and `set-channel.yml` semantics unchanged until
-the first release under the new model. Until then the repository variable
-`SDLC_RC_CHANNEL` is unset (default off), stage 2 never moves `rc`, and the old
-`set-channel.yml` (now in the shared `data-olympus-promotion` lock, see the R9
-deviation in [reviewed promotion](reviewed-promotion.md)) is the only writer of
-`rc`. Task 9 sets `SDLC_RC_CHANNEL=enabled` only after the first
-new-model release is published. From then on `set-channel.yml` MUST NOT be used
-for `rc`. A hotfix head never moves `rc`. The staging selection record carries
+Stage 2 owns the GHCR `rc` channel for `release/new` heads, but only while the
+repository variable `SDLC_RC_CHANNEL` is `enabled`. It is unset (default off),
+so stage 2 never moves `rc`. The old `set-channel.yml`, formerly the only writer
+of `rc`, was retired in 2026-10, so the channel is frozen on an old candidate
+and is not a supported channel. Whether to enable `SDLC_RC_CHANNEL` or remove
+the `rc` tag is an open operator decision. A hotfix head never moves `rc`. The staging selection record carries
 `rc_channel_moved`.
 
 The `rc` move and the staging selection run in `publish`, before `attest` and

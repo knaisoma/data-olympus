@@ -424,7 +424,7 @@ def test_oci_unexpected_entry_refused(build):
 
 
 def test_rc_channel_is_not_moved_by_default(build):
-    """W6 invariant: rc stays with set-channel.yml until SDLC_RC_CHANNEL is enabled."""
+    """W6 invariant: rc is not moved unless SDLC_RC_CHANNEL is enabled."""
     verified, registry = verify(build), Registry()
     stage.reserve(verified, registry)
     registry.python = verified.python_hashes.copy()

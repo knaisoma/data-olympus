@@ -1109,54 +1109,6 @@ def test_fetched_ref_must_match_snapshot(repo, monkeypatch):
         recut.prepare_plan(**repo.options(evidence))
 
 
-# --- Old-path workflows outside the promotion lock. --------------------------
-
-@pytest.mark.parametrize("status", ["queued", "in_progress", "waiting", "requested", "pending"])
-@pytest.mark.parametrize("workflow", ["tag-release.yml", "rc-publish.yml", "set-channel.yml"])
-def test_active_old_path_run_is_refused(repo, workflow, status):
-    evidence = repo.release()
-    repo.publish_fixture()
-    runs = [{"id": 1, "path": f".github/workflows/{workflow}", "status": status}]
-    with pytest.raises(recut.RecutError, match="old-path workflow run active"):
-        recut.prepare_plan(**repo.options(evidence), old_path_runs=runs)
-
-
-def test_completed_or_unrelated_runs_do_not_block(repo):
-    evidence = repo.release()
-    repo.publish_fixture()
-    runs = [{"id": 1, "path": ".github/workflows/tag-release.yml", "status": "completed"},
-            {"id": 2, "path": ".github/workflows/ci.yaml", "status": "in_progress"}]
-    assert recut.prepare_plan(**repo.options(evidence), old_path_runs=runs)["ready"] is True
-
-
-@pytest.mark.parametrize("runs", [{"path": "x"}, [1], "[]"])
-def test_old_path_runs_must_be_a_list_of_objects(runs):
-    with pytest.raises(recut.RecutError, match="list of objects"):
-        recut.refuse_old_path_activity(runs)
-
-
-def test_old_path_run_without_path_is_uncertain():
-    with pytest.raises(recut.RecutError, match="state uncertain"):
-        recut.refuse_old_path_activity([{"id": 3, "status": "queued"}])
-
-
-def test_cli_refuses_active_old_path_run(repo):
-    evidence = repo.release()
-    repo.publish_fixture()
-    runs = [{"id": 7, "path": ".github/workflows/rc-publish.yml", "status": "queued"}]
-    result = subprocess.run(
-        [sys.executable, str(Path(recut.__file__).resolve()), "recut",
-         "--remote", str(repo.remote), "--expected-main", evidence["squash"],
-         "--expected-head", evidence["H"], "--expected-base", repo.base,
-         "--tag", evidence["tag"], "--evidence-json", json.dumps(evidence),
-         "--old-path-runs-json", json.dumps(runs)],
-        cwd=repo.path, capture_output=True, text=True, check=False,
-    )
-    assert result.returncode == 1
-    assert "old-path workflow run active" in result.stderr
-    assert result.stdout == ""
-
-
 # --- The newest stable tag must be a reconciled release in both modes. -------
 
 def test_hotfix_refuses_lightweight_latest_stable_tag(repo):

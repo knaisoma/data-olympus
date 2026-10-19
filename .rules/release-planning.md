@@ -26,6 +26,4 @@ take priority in staging. Both paths share the promotion lock and review gates.
 The agent holding operator authorization merges; reserved cases such as
 migrations or destructive changes require explicit operator authorization.
 A no-value cycle may end with No action. Never override failed gates to meet
-the calendar. The first new-model release (0.11.1) has shipped; the
-transitional preparation and publication path in `.rules/release-routine.md`
-remains available until its workflows are retired.
+the calendar.

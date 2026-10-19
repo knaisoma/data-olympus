@@ -46,7 +46,6 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     permissions:
-      actions: read
       contents: read
       pull-requests: read
     env:
@@ -92,22 +91,13 @@ jobs:
             "repos/$GITHUB_REPOSITORY/pulls" -f base=release/new -f state=open \
             -f per_page=100 | jq -c '[.[][] | {number, url: .html_url,
             headRefName: .head.ref, headRefOid: .head.sha, baseRefName: .base.ref}]')"
-          OLD_PATH_RUNS_JSON="$(for workflow in tag-release.yml rc-publish.yml set-channel.yml; do
-            for status in queued in_progress waiting requested pending; do
-              gh api --method GET --paginate \
-                "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
-                -f status="$status" -f per_page=100 \
-                --jq '.workflow_runs[] | {id, path, status}'
-            done
-          done | jq -cs .)"
           unset GH_TOKEN
           uv run --no-project --python 3.13 python scripts/sdlc_recut.py recut \
             --repo . --remote origin --expected-main "$MAIN_SHA" \
             --expected-head "$HEAD_SHA" --expected-base "$BASE_SHA" \
             --expected-hotfix "$HOTFIX_SHA" --tag "$TAG" \
             --evidence-json "$EVIDENCE_JSON" --acknowledge "$ACKNOWLEDGE" \
-            --pull-requests-json "$PULL_REQUESTS_JSON" \
-            --old-path-runs-json "$OLD_PATH_RUNS_JSON"
+            --pull-requests-json "$PULL_REQUESTS_JSON"
 
   # The sdlc-bot environment is restricted to main by its deployment branch
   # policy. It holds the App id (environment variable) and the private key
@@ -117,7 +107,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: sdlc-bot
     permissions:
-      actions: read
       contents: read
       pull-requests: read
     env:
@@ -168,16 +157,7 @@ jobs:
             "repos/$GITHUB_REPOSITORY/pulls" -f base=release/new -f state=open \
             -f per_page=100 | jq -c '[.[][] | {number, url: .html_url,
             headRefName: .head.ref, headRefOid: .head.sha, baseRefName: .base.ref}]')"
-          OLD_PATH_RUNS_JSON="$(for workflow in tag-release.yml rc-publish.yml set-channel.yml; do
-            for status in queued in_progress waiting requested pending; do
-              gh api --method GET --paginate \
-                "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
-                -f status="$status" -f per_page=100 \
-                --jq '.workflow_runs[] | {id, path, status}'
-            done
-          done | jq -cs .)"
           printf '%s\n' "$PULL_REQUESTS_JSON" > "$RUNNER_TEMP/sdlc-pull-requests.json"
-          printf '%s\n' "$OLD_PATH_RUNS_JSON" > "$RUNNER_TEMP/sdlc-old-path-runs.json"
           uv python find 3.13 > "$RUNNER_TEMP/sdlc-python"
       # Minted last, so no earlier action can read it; revoked by the
       # action's post step. Only contents: write on this repository.
@@ -206,7 +186,6 @@ jobs:
           fi
           unset ACTIONS_TOKEN
           PULL_REQUESTS_JSON="$(< "$RUNNER_TEMP/sdlc-pull-requests.json")"
-          OLD_PATH_RUNS_JSON="$(< "$RUNNER_TEMP/sdlc-old-path-runs.json")"
           PYTHON="$(< "$RUNNER_TEMP/sdlc-python")"
           # Authentication is process-scoped; never persist a token in git config.
           export GIT_CONFIG_COUNT=2
@@ -222,5 +201,4 @@ jobs:
             --expected-head "$HEAD_SHA" --expected-base "$BASE_SHA" \
             --expected-hotfix "$HOTFIX_SHA" --tag "$TAG" \
             --evidence-json "$EVIDENCE_JSON" --acknowledge "$ACKNOWLEDGE" \
-            --pull-requests-json "$PULL_REQUESTS_JSON" \
-            --old-path-runs-json "$OLD_PATH_RUNS_JSON" --apply
+            --pull-requests-json "$PULL_REQUESTS_JSON" --apply

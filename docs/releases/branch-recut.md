@@ -3,7 +3,6 @@
 `scripts/sdlc_recut.py` plans a new `release/new` after a verified release,
 or cuts `hotfix/new` from current stable main. Planning fetches Git history and
 checks replay conflicts without checking out or executing candidate code.
-The existing publication workflows retain their transitional behavior.
 
 ## Activation and bot identity
 
@@ -12,7 +11,7 @@ dispatches on `main` only. Each has two jobs:
 
 * `plan` holds no secret and no environment. It refuses a ref other than
   `refs/heads/main` and refuses unless `SDLC_PIPELINE=enabled`, then lists open
-  pull requests (recut) and active old-path runs and prints the plan. It never
+  pull requests (recut only) and prints the plan. It never
   applies.
 * `apply` runs after `plan` succeeds, in the `sdlc-bot` GitHub environment. It
   repeats the main and pipeline checks, then requires the environment
@@ -218,27 +217,13 @@ The guarantee is narrower than "every privileged workflow holds the lock":
 * Only the deletions carry a lease, on the deleted branch. `main`, tags and
   the preservation refs are checked by the reads before and after each push,
   which only narrow the window in which they can move.
-* `tag-release.yml` and `set-channel.yml` are in the `data-olympus-promotion`
-  group, so they cannot run beside a recut or hotfix cut. The old-path
-  `rc-publish.yml` is not. While it can run, a main or tag move can race a
-  recut or hotfix cut. Both jobs list
-  their queued, in-progress, waiting, requested and pending runs and refuse
-  with `old-path workflow run active` when one exists. That is a point-in-time
-  check, not a lock for `rc-publish.yml`: a run of it started after the
-  listing is not blocked. Keep `rc-publish.yml` disabled until the old path is
-  retired, or dispatch only when no such run can start. The listing still
-  covers all three old-path workflows.
 * GitHub keeps at most one pending run per concurrency group. A new run that
   enters `data-olympus-promotion` cancels the run already waiting, even with
   `cancel-in-progress: false`; that cancelled run may be a stage 2 publication
   or a promotion. Admitted runs claim the lock and refused runs do not: a recut
   or hotfix dispatch from a ref other than `main`, or while `SDLC_PIPELINE` is
-  not `enabled`, gets a private `sdlc-branch-noop-<run id>` group, and a
-  `tag-release.yml` dispatch from a ref other than `main` gets a private
-  `tag-release-noop-<run id>` group, so neither can cancel anything. An admitted
-  but stale dispatch still can. Two cases always enter the lock:
-  `set-channel.yml` (it acts from any ref) and a `tag-release.yml` dispatch from
-  `main` with a malformed `candidate_tag`.
+  not `enabled`, gets a private `sdlc-branch-noop-<run id>` group, so it cannot
+  cancel anything. An admitted but stale dispatch still can.
   Before dispatching, check that no run in the group is pending. If one was cancelled, re-dispatch it after the current run
   finishes; publication is reconciled by `H` and digest, so a retry of the same
   `H` verifies and reuses what was published, and a recut is re-planned from
@@ -267,5 +252,3 @@ each is met, the workflows stay disabled:
   for the tag, the GHCR tag resolves to `digest`, and the PyPI version exists.
   Until then `publication`, `delivery_verified` and `unpromoted_heads` remain
   operator-supplied and only their shape and Git consistency are checked.
-* The old path is retired, or the operator accepts the race described under
-  the lock limits.
