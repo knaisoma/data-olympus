@@ -347,7 +347,12 @@ for higher read throughput.
 To enable the write pipeline (agent-proposed edits committed and pushed to a
 remote), set two environment variables before starting the server:
 
-- `KB_REMOTE_URL`: the git remote URL the server should push to (SSH or HTTPS).
+- `KB_REMOTE_URL`: the git remote URL the server should push to. With the
+  published container image this must be an SSH URL (for example
+  `git@github.com:org/kb.git`): from 0.11.3 the image's system gitconfig refuses
+  git over `http`, `https`, `ftp` and `ftps`, so an HTTPS remote fails with
+  "transport 'https' not allowed". A server installed from PyPI uses the host's
+  git configuration and is not affected.
 - The deploy key or credential must be available to the server process (SSH
   key on disk, or a credential helper).
 

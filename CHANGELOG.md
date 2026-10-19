@@ -18,6 +18,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+* Container image: git refuses the `http`, `https`, `ftp` and `ftps` transports. The image's system gitconfig sets `protocol.<name>.allow=never` for each, so git stops with "transport 'https' not allowed" before it starts a libcurl remote helper. SSH and local remotes are unchanged; the server's KB clone, fetch and push run over SSH. Breaking for image users whose `KB_REMOTE_URL` or `KB_GIT_REMOTE_URL` is an HTTPS URL: switch to an SSH remote. A server installed from PyPI keeps the host's git configuration. The `libcurl3t64-gnutls` package stays installed as a git dependency, so its scanner findings remain. A new CI job builds the image and runs `tests/image/git_protocol_policy.sh` inside it.
 * Container image: rebuild on the current `python:3.13-slim` index digest (`sha256:70729b46...`, Python 3.13.16 on Debian trixie with current security updates), raise the pinned uv from `0.5.4` to `0.12.23`, and stop installing `curl`, which nothing in the image uses (probes are `httpGet`/`tcpSocket`; the `bin/kb` client scripts that call curl run on operator machines). On the release candidate assessment this takes the blocking vulnerability-gate matches from 358 to 106 per platform; the rest are findings without a fix or with a fix only on Python 3.15. git still pulls in `libcurl3t64-gnutls` for its http helpers. Anyone who ran `curl` inside the container by hand needs another tool, such as `python -c` with `urllib.request`.
 
 ### Changed
