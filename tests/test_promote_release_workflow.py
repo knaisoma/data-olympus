@@ -238,7 +238,7 @@ PINNED = {
     "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
     "astral-sh/setup-uv": "11f9893b081a58869d3b5fccaea48c9e9e46f990",
     "actions/create-github-app-token": "fee1f7d63c2ff003460e3d139729b119787bc349",
-    "actions/attest-build-provenance": "977bb373ede98d70efdf65b84cb5f73e068dcc2a",
+    "actions/attest-build-provenance": "4d101475d8b20a2381f78447822ac1eab6504dd8",
     "pypa/gh-action-pypi-publish": "dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
 }
 
