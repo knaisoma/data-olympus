@@ -259,10 +259,10 @@ def test_bootstrap_is_a_no_op_with_no_remote_configured(tmp_path: Path) -> None:
 @requires_sh
 @pytest.mark.parametrize("variable", ["KB_REMOTE_URL", "KB_GIT_REMOTE_URL"])
 def test_bootstrap_log_does_not_leak_a_credential(tmp_path: Path, variable: str) -> None:
-    """KB_REMOTE_URL is documented as an "SSH or HTTPS" push target and the
-    compose path mounts no SSH key, so a writable remote there is most likely an
-    HTTPS URL carrying a token. The pre-clone log line must not put it in the
-    container log, where no application-level redaction can reach it.
+    """The image refuses git over http(s), but an operator can still set an
+    HTTPS URL carrying a token (it was documented as allowed before 0.11.3, and
+    the compose path mounts no SSH key). The pre-clone log line must not put it
+    in the container log, where no application-level redaction can reach it.
 
     Both variables carry the case. Either can hold the token, and a log line
     naming whichever one this case leaves unset would still leak: with only the
