@@ -70,8 +70,8 @@ spec:
                 real=$(find /kb-main -mindepth 1 -maxdepth 1 ! -name 'lost+found' -print -quit 2>/dev/null || true)
                 if [ -z "$real" ]; then
                   # The URL is deliberately absent from this message, matching
-                  # deploy/docker/entrypoint.sh. docs/adoption.md documents the
-                  # remote as "SSH or HTTPS", and an HTTPS remote may carry a
+                  # deploy/docker/entrypoint.sh. The image refuses git over
+                  # http(s), but a misconfigured HTTPS remote may still carry a
                   # credential in the URL, so expanding it here would write that
                   # token to the pod log on every first boot -- before the clone
                   # runs, and where no application-level redaction reaches it.

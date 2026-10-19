@@ -87,12 +87,12 @@ if [ -n "$clone_url" ] && [ -d /kb-main ]; then
     found_real_files=$(find /kb-main -mindepth 1 -maxdepth 1 \
         ! -name 'lost+found' -print -quit 2>/dev/null || true)
     if [ -z "$found_real_files" ]; then
-        # The URL is deliberately absent from this message. KB_REMOTE_URL is
-        # documented as an "SSH or HTTPS" push target and this path mounts no SSH
-        # key by default, so the realistic way to reach a writable remote here is
-        # an HTTPS URL with an embedded token. Echoing it would put that token in
-        # the container log before the clone even runs, where nothing downstream
-        # can redact it. The operator already has the value in the environment.
+        # The URL is deliberately absent from this message. The image refuses
+        # git over http(s) (see the Dockerfile), so a working remote here is SSH,
+        # but a misconfigured HTTPS URL with an embedded token can still be set,
+        # and echoing it would put that token in the container log before the
+        # clone even runs (and fails), where nothing downstream can redact it.
+        # The operator already has the value in the environment.
         echo "[entrypoint] /kb-main is empty; cloning configured remote"
         if git clone "$clone_url" /kb-main; then
             echo "[entrypoint] bootstrap complete"

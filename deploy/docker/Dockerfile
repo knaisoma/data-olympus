@@ -80,6 +80,20 @@ RUN mkdir -p /kb-main /kb-worktrees /state/pending /state/pending/locks \
 RUN ssh-keyscan -t ed25519,rsa "${KB_SSH_KEYSCAN_HOST}" > /etc/ssh/known_hosts \
     && chmod 0644 /etc/ssh/known_hosts
 
+# Close git's libcurl transports. The server reaches its KB remote over SSH
+# (and local paths in tests); it never needs git over http, https, ftp or ftps.
+# The Debian git package still installs libcurl and the git-remote-http(s)/ftp(s)
+# helpers, so refuse those protocols in the system gitconfig (/etc/gitconfig):
+# git then stops with "transport '<name>' not allowed" before it starts a
+# libcurl helper. ssh and file keep their defaults. This is a default, not a
+# sandbox: GIT_ALLOW_PROTOCOL, a user or repository config, or `git -c` can
+# re-enable a protocol. Placed after every build step that might run git.
+# tests/image/git_protocol_policy.sh checks the behaviour inside the image.
+RUN git config --system protocol.http.allow never \
+    && git config --system protocol.https.allow never \
+    && git config --system protocol.ftp.allow never \
+    && git config --system protocol.ftps.allow never
+
 # Entrypoint runs as the non-root runtime user (no privilege drop). It prepares a
 # user-writable known_hosts and the git identity, then execs the server.
 COPY deploy/docker/entrypoint.sh /entrypoint.sh
