@@ -214,7 +214,12 @@ the verified SHA256 values, logs in to GHCR with `GITHUB_TOKEN` for the
 registry push, and runs `actions/attest-build-provenance` twice:
 
 - The image: subject `ghcr.io/knaisoma/data-olympus` at the verified and
-  published digest, with the attestation also pushed to the registry.
+  published digest, with the attestation also pushed to the registry. Since
+  v4 the action is a wrapper on `actions/attest`, which would also create an
+  organization artifact metadata storage record for this attestation; the step
+  sets `create-storage-record: false` because the job does not hold
+  `artifact-metadata: write`. The predicate (SLSA provenance) and the signer
+  workflow are unchanged.
 - The wheel and sdist: subjects are the checked copies, byte-identical to the
   files that were hash-verified against provenance and uploaded to PyPI.
 
