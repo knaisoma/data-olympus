@@ -11,10 +11,9 @@ WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
 
 PERMISSIONS = {
-    "recut-release-branch.yml": {"actions": "read", "contents": "read", "pull-requests": "read"},
-    "hotfix-cut.yml": {"actions": "read", "contents": "read"},
+    "recut-release-branch.yml": {"contents": "read", "pull-requests": "read"},
+    "hotfix-cut.yml": {"contents": "read"},
 }
-OLD_PATH = ("tag-release.yml", "rc-publish.yml", "set-channel.yml")
 BLOCKED = "blocked: requires W9 bot identity"
 
 
@@ -191,20 +190,8 @@ def test_inputs_never_interpolate_shell_and_plan_never_applies(workflow):
             assert "git config" not in commands
             if "sdlc_recut.py" in body:
                 for flag in ("--expected-main", "--expected-head", "--expected-base",
-                             "--expected-hotfix", "--old-path-runs-json"):
+                             "--expected-hotfix"):
                     assert flag in body
-
-
-def test_old_path_runs_are_listed_read_only_in_both_jobs(workflow):
-    plan = _step(workflow["jobs"]["plan"], "Plan ")
-    snapshot = _step(workflow["jobs"]["apply"], "Snapshot ")
-    for step in (plan, snapshot):
-        assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
-        assert "--method GET" in step["run"]
-        for name in OLD_PATH:
-            assert name in step["run"]
-        for status in ("queued", "in_progress", "waiting", "requested", "pending"):
-            assert status in step["run"]
 
 
 def test_recut_lists_every_open_pr_read_only(workflow):

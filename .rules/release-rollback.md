@@ -5,8 +5,9 @@ Since: 2026-09-05
 
 The STD-U-821 model uses this same recovery procedure: re-deploy the recorded
 prior digest, never retag a version. Branch recutting does not change the
-rollback identity. The transitional `set-channel.yml` path remains available
-until the first new-model release.
+rollback identity. There is no channel-moving workflow: after a rollback,
+`stable` and `latest` are corrected by releasing forward, because the next
+patch promotion moves both.
 
 Before deployment record previous digest, source provenance, container names,
 workload generation, rollout, health, and readiness. All init and main containers
@@ -19,8 +20,8 @@ must use the same immutable digest. Record update policy and prevent races.
 5. Restore intended update policy only after verification.
 6. Record failed and restored digests, verification, and outcome.
 
-Channel movement is not deployment verification. Restore changed channels after
-service recovery. `set-channel.yml` changes registry tags only.
+Channel movement is not deployment verification, and registry tags never
+change what is deployed.
 Published files and version tags are never replaced. Leave unsuitable GitHub
 prereleases immutable; yank unsafe PyPI candidates and use a higher candidate
 number. For stable failures restore service, yank unsafe versions when required,

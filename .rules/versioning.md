@@ -7,10 +7,8 @@ Governing standard: STD-U-821 v1.2
 
 This is the active release contract. The new pipeline is enabled
 (`SDLC_PIPELINE=enabled`) and produced the first new-model release, 0.11.1,
-on 2026-10-09. The old-path workflows `rc-publish.yml`, `tag-release.yml` and
-`set-channel.yml` are still in the repository with their transitional
-behavior; retiring them is separate tracked work, and new releases use the
-new path. See [release-routine.md](release-routine.md).
+on 2026-10-09. The old-path workflows were retired in 2026-10, and every
+release uses the new path. See [release-routine.md](release-routine.md).
 
 ## Branches and version authority
 
@@ -25,7 +23,7 @@ new-model authority. No target version is committed on `release/new`: its
 first commit after the cut sets `pyproject.toml` to `0.0.0+unreleased`, and
 the overlay injects computed versions into build metadata.
 The placeholder is never published or used to decide a version. Its change
-lands on `release/new`, not on transitional `main`; `main` then receives it
+lands on `release/new`, not on `main`; `main` then receives it
 through each tree-equal release squash. Where CI accepts the placeholder is
 defined in
 [docs/releases/placeholder-version.md](../docs/releases/placeholder-version.md).
@@ -54,10 +52,8 @@ Choose the highest contribution in the parsed set:
 | `fix` | Patch | Patch |
 | Other valid types | No contribution | No contribution |
 
-The two engines disagree below 1.0.0: this table, applied by
-`scripts/sdlc_version.py`, maps `feat` to patch, while the old-path
-`scripts/compute_release.py` maps it to minor (see "Transitional authority and
-immutability" below). The pre-1.0 `feat` mapping is under operator review
+Below 1.0.0 this table, applied by `scripts/sdlc_version.py`, maps `feat` to
+patch, while the retired old path mapped it to minor. The pre-1.0 `feat` mapping is under operator review
 against the organization SDLC target, which does not keep a feature-to-patch
 rule silently. Until that ruling lands here, the engine behavior is unchanged.
 
@@ -166,20 +162,13 @@ promotable.
 An adoption issue is still to be opened to record the anchor, base and reason;
 neither this document nor that issue grants anything beyond the amendment.
 The cut sequence is `docs/releases/adoption-cut-runbook.md`.
-The cut is reversible until publication. Alternatively, release 0.11.1 on the
-transitional path and cut at its stable tag.
+The cut is reversible until publication.
 
-## Transitional authority and immutability
+## Immutability
 
-The first new-model release (0.11.1) has shipped. Until the old-path workflows
-are retired, `scripts/compute_release.py` remains the authority for that path
-only, and is never used for new-model candidates. Its pre-1.0 mapping advances
-minor for features or breaking changes, patch for fixes or performance, and
-at least patch for functional paths in `scripts/check_changelog.py`. Trust
-its `next_version` for that path only. Prepare version, lockfile, changelog and
-notes together on a branch such as `codex/release-YYYY-MM-DD`, with a squash
-title representing the full batch impact. Retire old helpers through the first
-cycle without breaking transitional main's 0.11.x hotfix capability.
+`scripts/compute_release.py` is no longer a version authority for any release
+path. Only its commit classifier remains in use, imported by
+`scripts/sdlc_version.py` and `scripts/lint_pr_title.py`.
 
 Published versions, Git tags, GitHub releases and OCI version tags remain
 immutable, including every existing release. Refuse collisions on every

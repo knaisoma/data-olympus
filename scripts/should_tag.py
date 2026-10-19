@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Decide the release tag for tag-release.yml.
+"""Decide the release tag from the declared version, and print that version.
+
+CI's version-free-guard uses `--print-version`. The tag decision below was
+written for the retired tag-release.yml; stable tags are now created only by
+promote-release.yml.
 
 After a release PR merges (bumping pyproject), the version has no matching tag,
 so this emits `vX.Y.Z` for CI to create, build, and release. Normal PRs never

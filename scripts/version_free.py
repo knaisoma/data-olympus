@@ -13,7 +13,7 @@ CLI: `python3 scripts/version_free.py --version X.Y.Z [--package data-olympus]
 Exit 0 = free (safe to publish), 1 = taken or unreachable.
 
 Intentionally separate from scripts/check_version_free.py. That script is the
-tag-release pipeline guard: it has idempotent-reconcile and operator-bypass
+CI version-free-guard: it has idempotent-reconcile and operator-bypass
 allowances (it can exit 0 to allow a reconcile even when the version is already
 taken), so its answer is 'is it safe for the pipeline to proceed', not 'is this
 version free'. This module is the Release Manager's typed-evidence adapter: a

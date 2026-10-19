@@ -39,9 +39,6 @@ mandate is satisfied continuously, not at the last minute:
 - Do not edit changelog or version files while squashing: the squash tree must
   equal reviewed `H`. Any later archival update to `CHANGELOG.md` goes through
   a reviewed PR on the recut branch, preserving that proof.
-- Until the first new-model release, transitional release preparation may
-  rename `[Unreleased]` to the computed version and date and open a fresh
-  `[Unreleased]` block. Do that before final review, never after it.
 
 ## Enforcement
 

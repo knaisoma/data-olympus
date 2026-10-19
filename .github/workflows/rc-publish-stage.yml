@@ -191,8 +191,8 @@ jobs:
         id: publish
         env:
           SDLC_PIPELINE: ${{ vars.SDLC_PIPELINE }}
-          # rc stays with set-channel.yml until the first new-model release
-          # (W6 invariant); Task 9 sets SDLC_RC_CHANNEL=enabled after it.
+          # The rc channel moves only when SDLC_RC_CHANNEL is enabled (unset:
+          # rc is not moved by any workflow, see docs/releases/rc-publication-stage.md).
           SDLC_RC_CHANNEL: ${{ vars.SDLC_RC_CHANNEL }}
           GH_TOKEN: ${{ github.token }}
         run: |

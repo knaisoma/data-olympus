@@ -1,7 +1,6 @@
 # Reviewed release promotion
 
-`promote-release.yml` implements STD-U-821 stable promotion beside the
-transitional `tag-release.yml`, which shares its promotion lock. Every job is skipped unless the
+`promote-release.yml` implements STD-U-821 stable promotion. Every job is skipped unless the
 repository variable `SDLC_PIPELINE` is `enabled` and the dispatch ref is
 `main`. Dispatch it with these inputs:
 
@@ -30,9 +29,9 @@ no fallback to a human token:
 - The `pypi` environment, also restricted to `main` (deployment policy
   `main`, type branch; no `v*` tag policy), with no required reviewers
   (see [repository settings](repository-settings.md#3-environments)). Add a PyPI Trusted Publisher for `promote-release.yml` and
-  environment `pypi`, and keep the existing publishers registered until
-  adoption completes, because the R9 old path (`publish-pypi.yml`,
-  `rc-publish.yml`, `tag-release.yml`) still publishes through them. A job binds only one
+  environment `pypi`. The publishers of the retired old path are removed on
+  pypi.org by the owner (see
+  [repository settings](repository-settings.md)). A job binds only one
   environment, so `publish-pypi`
   (which rechecks the alerts and the tag after approval) needs its own copy of
   `SDLC_APP_PRIVATE_KEY` and `SDLC_APP_ID` as `pypi` environment secret and
@@ -42,12 +41,6 @@ no fallback to a human token:
   the main-only guard lives in a workflow file the writer controls, so any
   writer could mint the release identity. Environment secrets are released
   only to jobs that run on an allowed deployment branch.
-- Recorded R9 deviation (operator-delegated ruling 2026-10-08): `publish-pypi.yml`
-  has no branch guard and accepts a dispatch from any ref. Restricting the
-  `pypi` environment to `main` means manual recovery runs through
-  `publish-pypi.yml` must be dispatched from `main`; the release tag is still
-  selected by its `ref` input. `rc-publish.yml` and `tag-release.yml` already
-  require `main`.
 - A repository ruleset that limits who can create `v*` tags. It is not in
   place: the `w10-protected-tags` ruleset makes `v*` tags undeletable and
   unmovable but does not restrict their creation, because a creation rule
@@ -262,8 +255,8 @@ See [vulnerability gate](vulnerability-gate.md).
    would strip the Markdown headings). The checkout credential is the App
    token, never `GITHUB_TOKEN` or a human token. After the push the tag is
    fetched back without force and the resume proof runs again.
-3. Exactly `vX.Y.Z`, `stable` and `latest` move to the RC digest, as
-   `tag-release.yml` does today, without rebuilding. The image keeps its RC
+3. Exactly `vX.Y.Z`, `stable` and `latest` move to the RC digest, without
+   rebuilding. The image keeps its RC
    version and revision labels; the stable provenance records the alias.
 4. The GitHub release with the generated notes, stable files, stable
    provenance and release record. `release_record.py release` binds every
@@ -282,12 +275,13 @@ See [vulnerability gate](vulnerability-gate.md).
    asset cannot be completed, is refused as burned, and needs a new stable
    version.
 5. The MCP registry, last, with the pinned publisher, ownership marker, OIDC
-   login and read-back of `tag-release.yml`. Only the job's workspace copy of
+   login and read-back. Only the job's workspace copy of
    `server.json` receives the version.
 
 Recovery from a partial publication never replaces or re-tags a published
 item. The workflow never deploys: production stays digest-pinned in reviewed
-gitops, and rollback uses the recorded prior digest with `set-channel.yml`.
+gitops, and rollback re-deploys the recorded prior digest (see
+`.rules/release-rollback.md`).
 
 ## Resuming after the PyPI upload
 
@@ -313,12 +307,10 @@ Operator checklist:
   stopped run itself.
 - Approve the `pypi` environment once more when `publish-pypi` waits, if the
   environment has a required reviewer.
-- `set-channel.yml` and `tag-release.yml` take the `data-olympus-promotion`
-  lock, so they wait for the running promotion instead of moving `stable` or
-  `latest` or creating a `vX.Y.Z` release between `prove` and the later jobs.
-  Do not dispatch them while a resume is queued: GitHub keeps one pending run
-  per group, and the new dispatch would replace the queued resume. Dispatch the
-  resume again if that happens.
+- Do not dispatch another member of the `data-olympus-promotion` lock while
+  a resume is queued: GitHub keeps one pending run per group, and the new
+  dispatch would replace the queued resume. Dispatch the resume again if that
+  happens.
 - After the run, check that the new release is the latest one:
   `gh api repos/knaisoma/data-olympus/releases/latest --jq .tag_name` must
   print the promoted `vX.Y.Z` (`v0.11.1` for the first live promotion). The
@@ -360,7 +352,7 @@ attestations, the exact-source gate (`test` and aggregate `CodeQL` on `H`,
     candidate only if `vX.Y.Z` already does, because `promote-image` writes
     the version tag first; otherwise they keep whatever digest they had.
     There is no recorded previous digest to compare them with, and
-    `set-channel.yml` moves the two channels independently, so equality
+    the retired `set-channel.yml` could move the two channels independently, so equality
     between them cannot be required. `promote-image` sets and reads back all
     three. A GitHub release visible to the job's token (a published one, or
     a draft if the token can see drafts) is checked here, before
@@ -410,37 +402,18 @@ above. `tests/test_promotion_resume_after_tag.py` reproduces that live shape
 and runs the real step scripts of every remaining job against fake GHCR,
 GitHub, PyPI and registry services.
 
-## Old and new promotion paths during the R9 window
+## Promotion lock
 
-Until the first new-model release, `tag-release.yml` remains a supported
-promotion path beside `promote-release.yml`. Both paths move `stable` and
-`latest`, so running them at the same time could leave the channels on
-whichever finished last, which may be the lower version. The mutual exclusion
-is enforced by the shared concurrency group: `tag-release.yml` and
-`set-channel.yml` take the workflow-level group `data-olympus-promotion` with
-`cancel-in-progress: false`, the same lock that `promote-release.yml`,
-`rc-publish-stage.yml`, `recut-release-branch.yml` and `hotfix-cut.yml` take.
-`tag-release.yml` no longer has its own `tag-release-<candidate>` group, so two
-dispatches for different candidates now serialise as well, which is intended.
-
-- `tag-release.yml` enters the lock only when dispatched from `main` (its
-  `decide` job refuses any other ref); otherwise it gets a private
-  `tag-release-noop-<run id>` group and cannot replace a pending run. A `main`
-  dispatch with a malformed `candidate_tag` still enters the lock, because the
-  input format cannot be tested in a concurrency expression; it then fails in
-  `decide` and may replace a pending run (dispatch the replaced run again).
-- `set-channel.yml` is unconditional: it has no ref guard and acts from any
-  ref, so every run must hold the lock.
-
-Recorded R9 deviation (operator follow-up decision of 2026-10-10): R9 kept both
-files unchanged, and this change alters their concurrency group inside the R9
-window. It changes grouping only. Inputs, permissions, jobs, steps and
-published artifacts are byte-identical, and the R9 golden tests are unaffected.
+`promote-release.yml`, `rc-publish-stage.yml`, `recut-release-branch.yml` and
+`hotfix-cut.yml` take the workflow-level concurrency group
+`data-olympus-promotion` with `cancel-in-progress: false`. Admitted runs
+therefore serialise, so two promotions never move `stable` and `latest` at the
+same time.
 
 One limit remains: GitHub keeps only one pending run per concurrency group, and
 a newer pending run cancels an older pending one (never an in-progress one).
-The replaced run may be a promotion or a stage 2 publication, not only an
-old-path run. If a queued dispatch of any lock member disappears, check the run
+The replaced run may be a promotion, a stage 2 publication, a recut or a hotfix
+cut. If a queued dispatch of any lock member disappears, check the run
 list and dispatch it again once the current run completes. After a run completes, verify
 the channels with `docker buildx imagetools inspect
 ghcr.io/knaisoma/data-olympus:stable` and `:latest`.
@@ -450,11 +423,11 @@ ghcr.io/knaisoma/data-olympus:stable` and `:latest`.
 These are not implemented and block activation:
 
 - `v*` tag creation restriction. Candidate tags (`X.Y.Z-rc.N`) have no `v`
-  prefix, so the rule concerns stable tags only. The old `tag-release.yml`
-  pushes `v*` tags as `github-actions[bot]`, which a ruleset creation rule
-  cannot exempt, so the rule is infeasible while the old path is in use. On
-  the new path stable tags are created by the `sdlc-bot` App, which the rule
-  would need as a bypass actor. Until it exists, the tagger check above remains
+  prefix, so the rule concerns stable tags only. It was infeasible while the
+  retired `tag-release.yml` pushed `v*` tags as `github-actions[bot]`, which a
+  ruleset creation rule cannot exempt. That precondition is now met: stable
+  tags are created only by the `sdlc-bot` App, which the rule needs as a
+  bypass actor. Adding the rule is an owner step. Until it exists, the tagger check above remains
   an audit check and not an access control.
 - Pin the build backend (hatchling). The stable rebuild of `S` must equal the
   candidate payloads and, on a resumed promotion, the files already on PyPI

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Compute the next SemVer release from Conventional Commits since the last tag.
 
-Pure logic plus a thin git-driven CLI. Mapping is documented in
-`.rules/versioning.md` (STD-U-810 pre-1.0 semantics). This module is the single
-source of the bump rules; `should_tag.py` and `lint_pr_title.py` reuse its parser.
+Pure logic plus a thin git-driven CLI. Its Conventional Commit parser
+(`classify`) is reused by `sdlc_version.py` and `lint_pr_title.py`. The bump
+and candidate-number helpers served the retired old release path; no workflow
+uses them, and `scripts/sdlc_version.py` is the only version authority (see
+`.rules/versioning.md`).
 """
 from __future__ import annotations
 

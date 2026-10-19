@@ -597,8 +597,7 @@ Set `KB_ENDPOINT` / `KB_AUTH_TOKEN` in the hook's environment the same way
 
 ## 7. Release operations
 
-The procedures below describe the transitional publication path, retained
-until the first STD-U-821 release. The target flow uses `release/new`, separate
+The release flow uses `release/new`, separate
 unprivileged RC builds and trusted publication, a reviewed `release: X.Y.Z`
 squash record, and an annotated stable tag. Hotfix candidates use
 `X.Y.Z-hotfix.rc.N` (Python `X.Y.Z.devN`). See the authoritative
@@ -615,15 +614,13 @@ channels that are re-pointed as new releases appear.
 | Surface | Candidate | Stable |
 | --- | --- | --- |
 | Container image, immutable | `ghcr.io/knaisoma/data-olympus:X.Y.Z-rc.N` | `ghcr.io/knaisoma/data-olympus:vX.Y.Z` |
-| Container image, moving | `rc` | `stable` and `latest` |
+| Container image, moving | none (`rc` is frozen) | `stable` and `latest` |
 | Python package on PyPI | `data-olympus==X.Y.ZrcN` | `data-olympus==X.Y.Z` |
 | GitHub | prerelease `X.Y.Z-rc.N` | release `vX.Y.Z` |
 
-`rc` moves to a candidate once its image and Python packages are published and
-read back; the GitHub prerelease is created after that, so for a short time the
-channel can name a candidate whose prerelease page does not exist yet. Stable
-promotion moves `stable` and `latest` together. Maintainers can also re-point a
-single channel on its own, for example to roll it back. In production, pin an
+The `rc` channel is frozen: no workflow moves it, it still names an old
+candidate, and it is not a supported channel. Stable promotion moves `stable`
+and `latest` together. In production, pin an
 immutable version or an image digest; the moving channels are for trying things
 out.
 
@@ -656,9 +653,9 @@ Without a token, the enforcement check passes informationally when the routes
 are absent or require authentication. Pass `--token`, or set `KB_AUTH_TOKEN`,
 to exercise an authenticated round trip.
 
-**What promotion guarantees.** A stable release is promoted only from the
-highest complete candidate of that version, and only when the candidate's
-source commit is on `main`. The stable image IS the candidate image: promotion
+**What promotion guarantees.** A stable release is promoted only from a
+published candidate whose reviewed source has exactly the tree of the release
+squash on `main`. The stable image IS the candidate image: promotion
 re-tags the candidate digest as `vX.Y.Z`, `stable` and `latest` without
 rebuilding, so the image you verified is the image you get. The stable Python
 package must carry a different version, so it is rebuilt from the same source
@@ -675,64 +672,49 @@ candidate number rather than replaced.
 ### 7.2 Publishing and promotion (maintainers)
 
 Candidate publication is a complete transaction across PyPI, GHCR, and GitHub.
-Dispatch `rc-publish.yml` from `main` with the reviewed source in `ref` and an
-explicit positive `number`. The workflow stops unless it runs from `main` and
-`ref` resolves to an ancestor of `main`. Send that number as a decimal string in the GitHub
-workflow dispatch request because GitHub rejects a JSON number even though the
-workflow input type is numeric. The workflow does not move `:rc` or create a
-public prerelease until the candidate wheel, source distribution, image, and
-provenance receipt have passed registry read back verification.
+A push to `release/new` or `hotfix/new` runs `rc-build.yml`, which builds the
+wheel, sdist, image and provenance without secrets. `rc-publish-stage.yml` then
+runs from trusted `main` through `workflow_run`, verifies those artifacts, and
+publishes them through the `pypi-rc` environment, GHCR and a GitHub prerelease.
+See [RC build](releases/rc-build.md) and
+[RC publication](releases/rc-publication-stage.md).
 
-Stable promotion runs only through an explicit `tag-release.yml` dispatch from
-`main`. Supply the highest complete candidate in `candidate_tag`; any lower or
-incomplete candidate is rejected. The workflow requires its source SHA to be an
-ancestor of `main`, prints the candidate tag, source SHA and image digest it
-resolved, builds the stable Python overlay from that SHA, and verifies
-version only wheel equivalence. Protected environment approval and verified
-PyPI publication happen before the stable Git tag is created. The workflow then
-retags the candidate image digest as the version, `stable`, and `latest`; it does
-not build another image.
+Stable promotion runs only through an explicit `promote-release.yml` dispatch
+from `main` with `squash`, `reviewed_head` and `candidate_tag`. It proves that
+the release squash has the reviewed tree, rebuilds the stable Python files from
+the squash and compares them with the candidate payload, publishes through the
+protected `pypi` environment, has the `sdlc-bot` App create the stable tag, and
+moves `vX.Y.Z`, `stable` and `latest` to the candidate digest without building
+another image. See [reviewed promotion](releases/reviewed-promotion.md).
 
 The final PR is independently reviewed and merged by the agent holding the
 operator's authorization. Reserved cases, including migrations and destructive
 changes, need explicit operator authorization. Delivery requires
-matching reviewed and merged trees with fresh checks on merged source. Merge
-does not trigger these workflows: an authorized continuation dispatches them.
+matching reviewed and merged trees with fresh checks on merged source.
 Environment approval remains bound to the exact workflow run and source.
 
 Release image digest verification uses `docker buildx imagetools inspect` on
 the exact public GHCR tag. It does not require `read:packages` or enumerate the
 GitHub Packages API.
 
-Rerun a partial candidate with the same `ref` and `number`. An existing image is
-accepted only when its embedded revision matches the requested source. PyPI
-publishing uses `skip-existing`, followed by exact SHA256 verification. Never
-overwrite an immutable candidate or stable version.
+Same-content retries verify existing bytes; only missing assets are uploaded,
+and mismatches block without replacement. Immutable releases are enabled, so
+assets can be added only while a release is a draft: a published release that
+lacks an asset cannot be completed and its version must be skipped. Never
+overwrite an immutable candidate or stable version. Prepared but unpublished
+versions require a fresh reviewed PR and authorized merge. Inventory all public
+surfaces; uncertain or conflicting state needs reviewed recovery.
 
-GitHub retries use `scripts/release_upload.py`: existing bytes must match exactly;
-only missing assets are uploaded. Mismatches block without replacement. Immutable
-releases are enabled, so assets can be added only while a release is a draft: a
-published release that lacks an asset cannot be completed and its version must be
-skipped, and a draft left by an interrupted `gh release create` must be completed
-and then published by hand (`release_upload.py` does not publish it). Prepared
-but unpublished versions require a fresh reviewed PR and authorized merge. Inventory
-all public surfaces; uncertain or conflicting state needs reviewed recovery.
+The promotion, stage 2 publication, recut and hotfix cut workflows share the
+`data-olympus-promotion` concurrency group, so they never run beside each
+other. GitHub keeps one pending run per group; dispatch again if a queued run
+was replaced.
 
-The `set-channel.yml` workflow permits only `rc`, `stable`, or `latest`, defaulting
-to `stable`. It rejects version tags and arbitrary names before registry access,
-preventing channel dispatch from replacing a published version tag.
-
-Both `set-channel.yml` and `tag-release.yml` take the shared `data-olympus-promotion`
-concurrency group, so they never run beside a promotion, an RC publication or a
-branch cut. GitHub keeps one pending run per group; dispatch again if a queued
-run was replaced (the replaced run may be a promotion or a stage 2 publication,
-not only an old-path run). `tag-release.yml` enters the lock only from `main`.
-
-Yank an unsuitable PyPI candidate and publish a higher candidate number. Roll a
-moving GHCR channel back by applying the channel tag to a previously verified
-digest with `docker buildx imagetools create`. Keep the immutable version tag for
-forensic comparison. See `docs/releases/pypi-trusted-publishing.md` for the full
-publisher setup, verification commands, and rollback procedure.
+Yank an unsuitable PyPI candidate and publish a higher candidate number. There
+is no channel-moving workflow: after a rollback, the next patch promotion moves
+`stable` and `latest`. Keep the immutable version tag for forensic comparison.
+See `docs/releases/pypi-trusted-publishing.md` for the publisher setup and
+`.rules/release-rollback.md` for the rollback procedure.
 
 ## 8. Quick reference
 
@@ -750,6 +732,6 @@ publisher setup, verification commands, and rollback procedure.
 | Session write recap | `kb session-recap <source_session>` |
 | Disable governed-lane protection | set `KB_GOVERNED_LANE_PROTECTION=off` in the ConfigMap |
 | View maintenance-ledger state | `curl -s 'http://<host>/api/v1/health?verbose=true' \| jq .pending_actions` |
-| Publish candidate | dispatch `rc-publish.yml` with exact `ref` and `number` |
-| Promote stable | dispatch `tag-release.yml` from `main` with `candidate_tag` |
+| Publish candidate | merge into `release/new` (`rc-build.yml`, then `rc-publish-stage.yml`) |
+| Promote stable | dispatch `promote-release.yml` from `main` with `squash`, `reviewed_head` and `candidate_tag` |
 | Inspect candidate provenance | `gh release download X.Y.Z-rc.N --pattern release-provenance.json` |

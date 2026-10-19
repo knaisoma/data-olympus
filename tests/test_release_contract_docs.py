@@ -37,7 +37,6 @@ def test_local_agent_rules_require_explicit_stable_promotion() -> None:
 
     assert "workflow_dispatch" in text
     assert "candidate_tag" in text
-    assert "highest complete candidate" in text
     assert "protected `pypi` environment" in text
     assert "on merge (detected via" not in text
     assert "Merge the release PR -> `tag-release.yml`" not in text
@@ -63,8 +62,6 @@ def test_versioning_rule_uses_one_linear_release_change() -> None:
     versioning = _read(".rules/versioning.md")
     routine = _read(".rules/release-routine.md")
 
-    assert "`codex/release-YYYY-MM-DD`" in versioning
-    assert "`codex/release-YYYY-MM-DD`" in routine
     assert "linear history" in versioning
     assert "squash merged" in versioning
     assert "feature/<release-epic-id>" not in versioning

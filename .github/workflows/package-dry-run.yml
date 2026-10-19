@@ -1,0 +1,27 @@
+# Packaging dry run on pull requests that touch packaging inputs: build the
+# sdist and wheel, run twine check, and smoke-test the installed distributions.
+# It never uploads and holds no publication credentials. Release candidates are
+# built by rc-build.yml and published by rc-publish-stage.yml; stable files are
+# published only by promote-release.yml.
+name: Package dry run
+
+on:
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "src/**"
+      - "bin/**"
+      - "scripts/smoke_installed_wheel.py"
+      - "tests/test_installed_wheel_smoke.py"
+      - ".github/workflows/package-dry-run.yml"
+      - ".github/workflows/publish-python-build.yml"
+
+permissions: {}
+
+jobs:
+  dry-run:
+    uses: ./.github/workflows/publish-python-build.yml
+    with:
+      ref: ${{ github.sha }}
+    permissions:
+      contents: read

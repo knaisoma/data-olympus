@@ -98,7 +98,7 @@ jobs:
   version-free-guard:
     # Catch a duplicate DECLARED version before merge: if the PR bumps
     # [project].version to something already published on PyPI, ghcr, or as a
-    # GitHub release/tag, fail here rather than at tag-release time (where a
+    # GitHub release/tag, fail here rather than at publication time (where a
     # failed guard would still be after the merge). A registry outage fails
     # closed. KB_BYPASS_VERSION_CHECK=1 is for explicit operator diagnostics only;
     # release automation must never use it to bypass version clearance.

@@ -33,7 +33,6 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     permissions:
-      actions: read
       contents: read
     env:
       MAIN_SHA: ${{ inputs.main_sha }}
@@ -66,25 +65,13 @@ jobs:
       - name: Install Python
         run: uv python install 3.13
       - name: Plan stable hotfix cut
-        env:
-          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          OLD_PATH_RUNS_JSON="$(for workflow in tag-release.yml rc-publish.yml set-channel.yml; do
-            for status in queued in_progress waiting requested pending; do
-              gh api --method GET --paginate \
-                "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
-                -f status="$status" -f per_page=100 \
-                --jq '.workflow_runs[] | {id, path, status}'
-            done
-          done | jq -cs .)"
-          unset GH_TOKEN
           uv run --no-project --python 3.13 python scripts/sdlc_recut.py hotfix \
             --repo . --remote origin --expected-main "$MAIN_SHA" \
             --expected-head "$HEAD_SHA" --expected-base "$BASE_SHA" \
-            --expected-hotfix "$HOTFIX_SHA" \
-            --old-path-runs-json "$OLD_PATH_RUNS_JSON"
+            --expected-hotfix "$HOTFIX_SHA"
 
   # The sdlc-bot environment is restricted to main by its deployment branch
   # policy. It holds the App id (environment variable) and the private key
@@ -94,7 +81,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: sdlc-bot
     permissions:
-      actions: read
       contents: read
     env:
       MAIN_SHA: ${{ inputs.main_sha }}
@@ -129,23 +115,12 @@ jobs:
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
       - name: Install Python
         run: uv python install 3.13
-      # Read-only snapshots and interpreter lookup run before the bot token
-      # exists, so gh, jq and uv never execute with it in their environment.
-      - name: Snapshot read-only state before minting the bot token
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # The interpreter lookup runs before the bot token exists, so uv never
+      # executes with it in its environment.
+      - name: Locate the interpreter before minting the bot token
         shell: bash
         run: |
           set -euo pipefail
-          OLD_PATH_RUNS_JSON="$(for workflow in tag-release.yml rc-publish.yml set-channel.yml; do
-            for status in queued in_progress waiting requested pending; do
-              gh api --method GET --paginate \
-                "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
-                -f status="$status" -f per_page=100 \
-                --jq '.workflow_runs[] | {id, path, status}'
-            done
-          done | jq -cs .)"
-          printf '%s\n' "$OLD_PATH_RUNS_JSON" > "$RUNNER_TEMP/sdlc-old-path-runs.json"
           uv python find 3.13 > "$RUNNER_TEMP/sdlc-python"
       # Minted last, so no earlier action can read it; revoked by the
       # action's post step. Only contents: write on this repository.
@@ -173,7 +148,6 @@ jobs:
             exit 1
           fi
           unset ACTIONS_TOKEN
-          OLD_PATH_RUNS_JSON="$(< "$RUNNER_TEMP/sdlc-old-path-runs.json")"
           PYTHON="$(< "$RUNNER_TEMP/sdlc-python")"
           # Authentication is process-scoped; never persist a token in git config.
           export GIT_CONFIG_COUNT=2
@@ -187,5 +161,4 @@ jobs:
           "$PYTHON" scripts/sdlc_recut.py hotfix \
             --repo . --remote origin --expected-main "$MAIN_SHA" \
             --expected-head "$HEAD_SHA" --expected-base "$BASE_SHA" \
-            --expected-hotfix "$HOTFIX_SHA" \
-            --old-path-runs-json "$OLD_PATH_RUNS_JSON" --apply
+            --expected-hotfix "$HOTFIX_SHA" --apply

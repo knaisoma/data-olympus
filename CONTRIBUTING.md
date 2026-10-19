@@ -70,8 +70,7 @@ CI refuses it on any other base, as described in
 [docs/releases/placeholder-version.md](docs/releases/placeholder-version.md).
 
 The RC pipeline is enabled and produced the first new-model release, 0.11.1.
-The old-path release workflows remain in the repository until they are
-retired. Data Olympus is a public product, so STD-U-821's internal-tool
+The old-path release workflows were retired in 2026-10. Data Olympus is a public product, so STD-U-821's internal-tool
 preview exception does not apply; its public-product preview exception was
 ratified on 2026-10-07 as STD-U-821 amendment 1.3.
 
@@ -143,8 +142,5 @@ for external PRs. After a hotfix, preserve pending work and recut the normal
 branch. Staging selection uses the active branch head and digest, not version
 ordering. A cut-only candidate (`N=0`) is never published or promoted.
 
-Until the first new-model release, the existing explicit candidate/stable
-dispatch path remains available for 0.11.x maintenance and rollback. It uses
-`compute_release.py` and committed versions with its older pre-1.0 mapping;
-do not mix the two engines. See [the release routine](.rules/release-routine.md)
-for activation prerequisites, security gates and transitional delivery.
+See [the release routine](.rules/release-routine.md) for activation
+prerequisites, security gates and delivery.
