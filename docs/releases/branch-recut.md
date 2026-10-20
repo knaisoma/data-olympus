@@ -201,14 +201,15 @@ unknown, in which case run the printed command. If another writer recreated
 the branch in the meantime, no recovery push is made and the error names both
 heads. The backup ref stays in place in every case.
 
-### Rulesets toggled by the controller
+### Rulesets at recreation
 
-Rules that require linear history or passing checks can also refuse the
-creation of a ref whose history contains merge commits. When the recreation
-of `release/new`, or a recovery push of an old head that contains merges, can
-meet such a rule, the controller that dispatches the workflow toggles the
-ruleset around the apply. That toggle is outside this script, which never
-changes rulesets and holds no bypass.
+The `w10-release-branches` ruleset carries no linear history rule (operator
+ruling of 2026-10-20: only `main` requires linear history), so the recreation
+of `release/new`, or a recovery push of an old head that contains merges, is
+not refused for its merge commits and needs no ruleset toggle. Its required
+status checks are enforced on creation and can refuse a ref at a commit
+without passing results. Any ruleset change is outside this script, which
+never changes rulesets and holds no bypass.
 
 ## Limits of the lock
 
