@@ -197,14 +197,20 @@ Targets `release/new` and `hotfix/new`.
   count of 1. Code owner paths are `.github/`, `scripts/`, `release/` and
   `docs/releases/std-u-821-amendment-1.3.md`, listed in `.github/CODEOWNERS`.
 - Merge method: squash only.
-- Linear history required.
+- No linear history rule (operator ruling of 2026-10-20): only `main`
+  requires linear history. `release/new` and `hotfix/new` may be rebased onto
+  `main` or recreated at it, and their history rewritten, with no ruleset
+  change. `main` stays linear because `release/new` is squash-merged into it.
 - Required status checks: `test` and `version-free-guard`.
 - Bypass: a team, in `pull_request` mode only.
 - No deletion rule, on purpose: recut deletes and recreates the branch.
-- Creation is not restricted. Linear history does block creating the branch at
-  a history that contains merge commits, so the controller toggles the linear
-  history rule for that one push and restores it afterwards. After any recut,
-  read the ruleset back and confirm linear history is on again.
+- Creation is not restricted, and a creation at a history that contains merge
+  commits is not refused, so a recut needs no ruleset toggle. The required
+  status checks are enforced on creation (`do_not_enforce_on_create` is
+  false), so they can refuse a creation at a commit without passing results.
+- The pull request rule refuses a direct push that updates an existing branch,
+  so the recut deletes the branch with a leased push and creates it again,
+  see [branch recut](branch-recut.md).
 - Read-back commands:
 
 ```bash
