@@ -2184,6 +2184,48 @@
       "approved_on": "2026-10-18",
       "expiry": "2026-11-17",
       "review_date": "2026-11-01"
+    },
+    {
+      "finding": "CVE-2026-113351",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libexpat1",
+        "package_version": "2.9.0-1~deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libexpat1 2.9.0-1~deb13u1 (expat source package, Debian trixie). The package comes from the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable: in libexpat XML_ParserReset does not offset tracked heap allocations, so a large document makes later documents on the same reset parser fail with XML_ERROR_NO_MEMORY (denial of service). No XML parsing path was identified in the application (src and bin) or in the inspected runtime request handlers (FastMCP, MCP, Starlette, sse-starlette, python-multipart); reassess when dependencies or parsing features change.",
+      "mitigation": "No XML parsing path was identified: no module in src or bin imports xml, pyexpat, lxml or defusedxml, and its HTTP and MCP interfaces accept JSON only. On the live kn-dev pod (0.11.3 image, same libexpat1 2.9.0-1~deb13u1) the server process maps neither libexpat nor pyexpat (checked in /proc/<pid>/maps on 2026-10-25). Non-root and no_new_privs runtime as recorded for the other base image exceptions.",
+      "residual_risk": "Low: the flaw is a denial of service that needs attacker-supplied XML to reach an expat parser, and no runtime path parses XML. CPython's bundled expat (pyexpat reports expat_2.8.5) is also in the affected range, so a future XML parsing feature must reassess this exception.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-25",
+      "expiry": "2026-11-24",
+      "review_date": "2026-11-08"
+    },
+    {
+      "finding": "CVE-2026-115506",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libexpat1",
+        "package_version": "2.9.0-1~deb13u1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype reports fix state wont-fix for libexpat1 2.9.0-1~deb13u1 (expat source package, Debian trixie). The package comes from the python:3.13-slim Debian trixie base image. High severity, no fix, so the gate blocks it without an exception.",
+      "justification": "Not applicable: in libexpat billion laughs protection detects entity amplification too late, so a document with a large DTD and nested entity expansions consumes tens of seconds of CPU per parse (denial of service). No XML parsing path was identified in the application (src and bin) or in the inspected runtime request handlers (FastMCP, MCP, Starlette, sse-starlette, python-multipart); reassess when dependencies or parsing features change.",
+      "mitigation": "No XML parsing path was identified: no module in src or bin imports xml, pyexpat, lxml or defusedxml, and its HTTP and MCP interfaces accept JSON only. On the live kn-dev pod (0.11.3 image, same libexpat1 2.9.0-1~deb13u1) the server process maps neither libexpat nor pyexpat (checked in /proc/<pid>/maps on 2026-10-25). Non-root and no_new_privs runtime as recorded for the other base image exceptions.",
+      "residual_risk": "Low: the flaw is a denial of service that needs attacker-supplied XML to reach an expat parser, and no runtime path parses XML. CPython's bundled expat (pyexpat reports expat_2.8.5) is also in the affected range, so a future XML parsing feature must reassess this exception.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-10-25",
+      "expiry": "2026-11-24",
+      "review_date": "2026-11-08"
     }
   ]
 }
