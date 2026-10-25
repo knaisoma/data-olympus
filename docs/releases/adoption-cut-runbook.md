@@ -597,6 +597,8 @@ changed the procedure.
    contains a merge commit is blocked by the linear history rule. The
    controller disabled the ruleset only for the creation push and re-enabled it
    right after. Recut deletes and recreates the branch (no force, no lease).
+   Superseded on 2026-10-20: the release branch ruleset no longer carries
+   linear history (only `main` does), so this creation needs no toggle.
 7. KB consult hook. `pyproject.toml` and `uv.lock` are governed paths, so the
    commit needs an explicit consult whose workspace key is the basename of the
    main worktree (`data-olympus`), not the name of the linked worktree.
