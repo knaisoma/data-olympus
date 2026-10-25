@@ -47,7 +47,7 @@ Changelog = "https://github.com/knaisoma/data-olympus/blob/main/CHANGELOG.md"
 # quantised ONNX MiniLM-class model runner (onnxruntime), so there is NO torch
 # and no external API; the model is fetched once at enable time and cached.
 embeddings = [
-    "fastembed>=0.8,<0.9",
+    "fastembed>=0.9.1,<0.10",
 ]
 # Optional Prometheus /metrics endpoint (issue #69). NOT a core dependency: the
 # metrics registry is a no-op shim when prometheus-client is absent (its inc/
@@ -69,7 +69,7 @@ dev = [
     # Exercise the embeddings path in CI (the feature stays off by default at
     # runtime; the tests opt in via KB_EMBEDDINGS_MODE and skip if the model
     # cannot be fetched in the sandbox).
-    "fastembed>=0.8,<0.9",
+    "fastembed>=0.9.1,<0.10",
     # Exercise the Prometheus /metrics path in CI (the exposition-format test
     # skips when this is absent; the no-op-shim tests run regardless).
     "prometheus-client>=0.20",
