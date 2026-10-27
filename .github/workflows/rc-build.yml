@@ -165,3 +165,6 @@ jobs:
           name: rc-build-${{ github.sha }}-${{ github.run_attempt }}
           path: to-delete/rc-build/
           if-no-files-found: error
+          # Only rc-publish-stage of this run reads it; the published image lives in GHCR by digest. The 90 day
+          # default let these archives fill the organization's artifact quota on 2026-10-26.
+          retention-days: 7
