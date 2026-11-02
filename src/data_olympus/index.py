@@ -171,6 +171,13 @@ _RERANK_OVERFETCH_FACTOR = 5
 _RERANK_MIN_POOL = 50
 _RERANK_MAX_POOL = 200
 
+# Most distinct whitespace terms one search() turns into FTS5 MATCH phrases.
+# Every term is one OR'd phrase in a single bm25 MATCH, whose cost grows with
+# the term count (16k terms took 17.7 s and 308 MB) and cannot be cancelled
+# once started. A consult intent can be a whole review prompt, so the terms are
+# deduped (order-preserving) and capped before the MATCH is built.
+MAX_QUERY_TERMS = 64
+
 # Cap on the characters embedded per doc at build time (issue #42). The head of
 # a doc carries its topical signal; bounding it keeps a very long doc from
 # overrunning the model's context window and keeps build cost predictable.
@@ -1477,9 +1484,15 @@ class Index:
         # terms into the primary MATCH would let a doc matching only a derived
         # term outrank a doc matching the term the user typed. Splitting the
         # passes makes the "expansion is down-weighted" contract actually true.
-        primary_terms = query.split()
+        # Dedupe (order-preserving) then cap at MAX_QUERY_TERMS, so an oversized
+        # query (a whole prompt posted as a consult intent) cannot build an
+        # unbounded MATCH. ``capped_query`` feeds every later pass that splits
+        # the query again (the trigram fallback), so none of them sees the
+        # uncapped text either.
+        primary_terms = list(dict.fromkeys(query.split()))[:MAX_QUERY_TERMS]
         if not primary_terms:
             return []
+        capped_query = " ".join(primary_terms)
         expansion_terms: list[str] = []
         if self.query_expander is not None:
             expanded = list(self.query_expander(primary_terms))
@@ -1547,7 +1560,7 @@ class Index:
             ):
                 hits = self._trigram_backfill(
                     conn,
-                    query,
+                    capped_query,
                     primary_hits=hits,
                     base_where=base_where,
                     base_params=base_params,
