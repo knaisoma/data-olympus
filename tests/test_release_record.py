@@ -284,7 +284,7 @@ def test_notes_grouping_retains_details_and_engine_grammar():
         release.render_notes(target="2.0.0", messages=["Not conventional"])
 
 
-MARKER = "<!-- lane-develop repo=knaisoma/data-olympus cycle=2026-W45 item=2 -->"
+MARKER = "<!-- lane-develop repo=knaisoma/data-olympus cycle=2000-W01 item=1 -->"
 
 
 def test_the_exact_marker_line_is_removed_from_a_commit_body():
@@ -293,7 +293,7 @@ def test_the_exact_marker_line_is_removed_from_a_commit_body():
     assert release.strip_automation_markers(message) == expected
 
 
-@pytest.mark.parametrize(("cycle", "item"), [("2026-W45", 1), ("2027-W01", 12), ("2026-W52", 100)])
+@pytest.mark.parametrize(("cycle", "item"), [("2000-W01", 1), ("2001-W10", 12), ("2002-W52", 100)])
 def test_every_cycle_and_item_of_the_marker_form_is_removed(cycle, item):
     line = f"<!-- lane-develop repo=knaisoma/data-olympus cycle={cycle} item={item} -->"
     assert release.strip_automation_markers(f"fix: x\n\n{line}\nbody") == "fix: x\n\nbody"
@@ -307,9 +307,9 @@ def test_every_cycle_and_item_of_the_marker_form_is_removed(cycle, item):
     MARKER + " trailing text",
     MARKER.replace("lane-develop", "lane-review"),
     MARKER.replace("knaisoma/data-olympus", "knaisoma/kidumo"),
-    MARKER.replace("2026-W45", "2026-45"),
-    MARKER.replace("item=2", "item=0"),
-    MARKER.replace("item=2", "item=x"),
+    MARKER.replace("2000-W01", "2000-01"),
+    MARKER.replace("item=1", "item=0"),
+    MARKER.replace("item=1", "item=x"),
     MARKER.replace("-->", "- ->"),
     MARKER.replace("<!--", "<!---"),
     "<!-- lane-develop -->",
@@ -345,7 +345,7 @@ def test_notes_of_a_marked_commit_equal_notes_of_the_clean_commit():
 def test_raw_rendering_keeps_the_markers_the_published_0_11_4_notes_carry():
     # The published 0.11.4 notes contain four of these lines, so a parity check against published
     # notes must render raw; the normalized text differs from it by exactly the marker lines.
-    other = MARKER.replace("item=2", "item=6")
+    other = MARKER.replace("item=1", "item=6")
     messages = [
         f"fix: bump setuptools (#431)\n\n{MARKER}\nDeveloped from the scope.\n",
         f"fix: bump fastmcp (#430)\n\n{other}\nDeveloped from the scope.\n",
