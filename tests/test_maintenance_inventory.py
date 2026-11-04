@@ -7,12 +7,15 @@ recognise the issues it opened itself on every later run, open or closed.
 from __future__ import annotations
 
 import datetime as dt
+import urllib.error
 
 from scripts.maintenance_inventory import (
     BOT_LOGIN,
     Finding,
+    Inventory,
     direct_dependencies,
     existing_keys,
+    main,
     next_major_release,
     pinned_actions,
     plan_issues,
@@ -137,3 +140,61 @@ def test_a_marker_in_an_issue_by_another_author_does_not_suppress() -> None:
     no_author = _issue(finding, user=None)
     assert plan_issues([finding], [outsider, no_author]) == [finding]
     assert existing_keys([outsider, no_author]) == set()
+
+
+# ------------------------------------------------------------ main(): forks
+
+
+def _fake_inventory(monkeypatch, finding: Finding) -> None:
+    inv = Inventory(findings=[finding])
+    monkeypatch.setattr("scripts.maintenance_inventory.inventory",
+                        lambda _root, _token=None: inv)
+    monkeypatch.setattr("scripts.maintenance_inventory.list_issues",
+                        lambda _repo, _token: [])
+
+
+def test_main_logs_plan_when_issues_are_disabled(monkeypatch, capsys) -> None:
+    """A fork with Issues disabled must exit 0 and never POST (HTTP 410 loop)."""
+    finding = _finding()
+    _fake_inventory(monkeypatch, finding)
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setattr("scripts.maintenance_inventory.repo_has_issues",
+                        lambda _repo, _token: False)
+
+    def no_post(_repo, _token, _title, _body):  # pragma: no cover - must not run
+        raise AssertionError("create_issue must not be called when Issues are off")
+    monkeypatch.setattr("scripts.maintenance_inventory.create_issue", no_post)
+
+    assert main(["--repo", "owner/fork"]) == 0
+    out = capsys.readouterr().out
+    assert "::notice::issues are disabled" in out
+    assert "(logged only, nothing opened)" in out
+    assert finding.title in out  # the plan is preserved in the summary
+
+
+def test_main_opens_issues_when_enabled(monkeypatch, capsys) -> None:
+    finding = _finding()
+    _fake_inventory(monkeypatch, finding)
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setattr("scripts.maintenance_inventory.repo_has_issues",
+                        lambda _repo, _token: True)
+    monkeypatch.setattr("scripts.maintenance_inventory.create_issue",
+                        lambda _repo, _token, _title, _body: 42)
+    assert main(["--repo", "owner/repo"]) == 0
+    assert "- opened #42:" in capsys.readouterr().out
+
+
+def test_main_never_posts_when_the_check_itself_fails(monkeypatch, capsys) -> None:
+    """If has_issues cannot be read, log only and fail red — never POST blind."""
+    _fake_inventory(monkeypatch, _finding())
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setattr("scripts.maintenance_inventory.repo_has_issues",
+                        lambda _repo, _token: (_ for _ in ()).throw(
+                            urllib.error.URLError("boom")))
+
+    def no_post(_repo, _token, _title, _body):  # pragma: no cover - must not run
+        raise AssertionError("create_issue must not be called on an unknown state")
+    monkeypatch.setattr("scripts.maintenance_inventory.create_issue", no_post)
+
+    assert main(["--repo", "owner/repo"]) == 1
+    assert "::error::issues-enabled check" in capsys.readouterr().out

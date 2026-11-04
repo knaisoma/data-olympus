@@ -3,8 +3,10 @@ name: Maintenance inventory
 # Weekly read-only inventory of the Python lifecycle, the base image, majors of
 # direct dependencies in uv.lock and GitHub Actions majors. It opens one
 # assessment issue per application, dependency and upgrade step, never a
-# duplicate (open or closed). It never changes code, branches or dependencies.
-# See docs/maintenance.md. Dispatch defaults to a dry run that opens nothing.
+# duplicate (open or closed). On repositories with Issues disabled (forks) it
+# logs the plan to the summary instead. It never changes code, branches or
+# dependencies. See docs/maintenance.md. Dispatch defaults to a dry run that
+# opens nothing.
 
 on:
   schedule:

@@ -5,7 +5,9 @@ The inventory reads the repository and public metadata only. It never changes
 code, branches or dependencies. For each upgrade step that needs a human
 assessment it opens one issue carrying the assessment fields of the
 maintenance policy, and never opens a second issue for the same application,
-dependency and step, whether the first one is open or closed.
+dependency and upgrade step, whether the first one is open or closed. On a
+repository with Issues disabled (forks by default) it logs the same plan to
+the run summary and exits successfully instead of crashing on HTTP 410.
 
 Sources:
 
@@ -398,6 +400,18 @@ def create_issue(repo: str, token: str, title: str, body: str) -> int:
         return int(json.loads(response.read())["number"])
 
 
+def repo_has_issues(repo: str, token: str | None) -> bool:
+    """Whether the repository's Issues feature is enabled.
+
+    Forks ship with Issues disabled, where creating one is HTTP 410. The
+    weekly inventory must degrade to logging its plan instead of crashing:
+    a schedule that fails every run is eventually disabled by GitHub, which
+    mutes the inventory entirely.
+    """
+    data = _json(f"https://api.github.com/repos/{repo}", token)
+    return bool(data["has_issues"])
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=Path("."))
@@ -422,14 +436,28 @@ def main(argv: list[str] | None = None) -> int:
         print("::error::--repo and GITHUB_TOKEN are required unless --dry-run")
         return 2
 
+    # Only reachable with --repo and a token when not a dry run: both guards
+    # above return first. Check Issues are openable before the first POST.
+    log_only = args.dry_run
+    if not args.dry_run:
+        try:
+            log_only = not repo_has_issues(args.repo, token)
+        except (urllib.error.URLError, KeyError, ValueError) as exc:
+            inv.errors.append(f"issues-enabled check: {exc}")
+            log_only = True  # unknown state: never POST blind
+        if log_only:
+            print("::notice::issues are disabled on this repository; logging the "
+                  "plan to the summary instead of opening")
+
     planned = plan_issues(inv.findings, issues)
     print(f"## Maintenance inventory {today.isoformat()}\n")
     for note in inv.notes:
         print(f"- {note}")
     print(f"\nFindings: {len(inv.findings)}; new assessment issues: {len(planned)}"
-          + (" (dry run, nothing opened)" if args.dry_run else ""))
+          + (" (dry run, nothing opened)" if args.dry_run
+             else " (logged only, nothing opened)" if log_only else ""))
     for finding in planned:
-        if args.dry_run:
+        if log_only:
             print(f"\n### {finding.title}\n\n{render_body(finding, today)}")
         else:
             number = create_issue(args.repo, token or "", finding.title,

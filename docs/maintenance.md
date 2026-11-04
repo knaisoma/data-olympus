@@ -88,6 +88,17 @@ A newer release within the same next major is the same step. Closing an issue
 therefore records the decision for that step; the following step gets its own
 issue.
 
+### Repositories without Issues
+
+A fork has Issues disabled by default, and creating an issue there is
+HTTP 410. Before opening anything the workflow checks the repository's
+`has_issues` flag; when Issues are off it writes the same planned bodies to
+the run summary (like a dry run) and exits successfully. A weekly schedule
+that fails every run is eventually disabled by GitHub, which would mute the
+inventory entirely; logging is always better than silence. If the flag
+itself cannot be read, the run records the error and does not POST, so a
+transient API failure never becomes a blind write.
+
 ### Dry run
 
 Dispatching the workflow manually defaults to a dry run, which prints the
