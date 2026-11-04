@@ -919,6 +919,13 @@ disturb a connected client.
 
 ## Search ranking
 
+A query is split on whitespace, duplicate terms are dropped (the first
+occurrence keeps its place), and at most the first 64 distinct terms are
+matched; the trigram fallback uses the same 64 terms. Every term is one phrase
+of a single BM25 MATCH, whose cost grows with the term count, so a whole prompt
+or patch passed as a query would otherwise take seconds to minutes and hundreds
+of megabytes per request. Put the distinctive terms first in a long query.
+
 `kb_search` orders hits by BM25 relevance and then applies a **status-aware
 rerank on top of that score, enabled by default**. The rerank exists so a
 retired document does not outrank the live one that replaced it: for a query that
