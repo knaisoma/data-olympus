@@ -284,6 +284,131 @@ def test_notes_grouping_retains_details_and_engine_grammar():
         release.render_notes(target="2.0.0", messages=["Not conventional"])
 
 
+MARKER = "<!-- lane-develop repo=knaisoma/data-olympus cycle=2026-W45 item=2 -->"
+
+
+def test_the_exact_marker_line_is_removed_from_a_commit_body():
+    message = f"build: bump regex (#446)\n\n{MARKER}\nPart of the release.\n"
+    expected = "build: bump regex (#446)\n\nPart of the release.\n"
+    assert release.strip_automation_markers(message) == expected
+
+
+@pytest.mark.parametrize(("cycle", "item"), [("2026-W45", 1), ("2027-W01", 12), ("2026-W52", 100)])
+def test_every_cycle_and_item_of_the_marker_form_is_removed(cycle, item):
+    line = f"<!-- lane-develop repo=knaisoma/data-olympus cycle={cycle} item={item} -->"
+    assert release.strip_automation_markers(f"fix: x\n\n{line}\nbody") == "fix: x\n\nbody"
+
+
+@pytest.mark.parametrize("line", [
+    MARKER + " ",
+    " " + MARKER,
+    MARKER + "\r",
+    "see " + MARKER,
+    MARKER + " trailing text",
+    MARKER.replace("lane-develop", "lane-review"),
+    MARKER.replace("knaisoma/data-olympus", "knaisoma/kidumo"),
+    MARKER.replace("2026-W45", "2026-45"),
+    MARKER.replace("item=2", "item=0"),
+    MARKER.replace("item=2", "item=x"),
+    MARKER.replace("-->", "- ->"),
+    MARKER.replace("<!--", "<!---"),
+    "<!-- lane-develop -->",
+    "<!-- an ordinary comment -->",
+    MARKER.upper(),
+])
+def test_lookalikes_are_not_stripped(line):
+    message = f"fix: x\n\n{line}\nbody\n"
+    assert release.strip_automation_markers(message) == message
+
+
+def test_only_whole_lines_are_removed_and_never_the_subject():
+    assert release.strip_automation_markers(MARKER) == MARKER
+    two = f"fix: x\n\n{MARKER}\nmiddle\n{MARKER}\nend\n"
+    assert release.strip_automation_markers(two) == "fix: x\n\nmiddle\nend\n"
+
+
+@pytest.mark.parametrize(
+    "message", ["fix: x\n", "feat: y\n\nbody\n\n\nmore\n", "chore: z", "docs: a\n\n\n"]
+)
+def test_a_message_without_a_marker_is_returned_unchanged(message):
+    assert release.strip_automation_markers(message) is message
+
+
+def test_notes_of_a_marked_commit_equal_notes_of_the_clean_commit():
+    marked = f"build: bump regex (#446)\n\n{MARKER}\nPart of the release.\n"
+    clean = "build: bump regex (#446)\n\nPart of the release.\n"
+    notes = release.render_notes(target="0.11.5", messages=[marked])
+    assert notes == release.render_notes(target="0.11.5", messages=[clean])
+    assert "<!-- lane-" not in notes
+
+
+def test_raw_rendering_keeps_the_markers_the_published_0_11_4_notes_carry():
+    # The published 0.11.4 notes contain four of these lines, so a parity check against published
+    # notes must render raw; the normalized text differs from it by exactly the marker lines.
+    other = MARKER.replace("item=2", "item=6")
+    messages = [
+        f"fix: bump setuptools (#431)\n\n{MARKER}\nDeveloped from the scope.\n",
+        f"fix: bump fastmcp (#430)\n\n{other}\nDeveloped from the scope.\n",
+        "fix: plain change (#429)\n",
+    ]
+    raw = release.render_notes(target="0.11.4", messages=messages, normalize=False)
+    normalized = release.render_notes(target="0.11.4", messages=messages)
+    assert raw.count("<!-- lane-develop") == 2
+    assert normalized.split("\n") == [
+        line for line in raw.split("\n") if not release.AUTOMATION_MARKER.fullmatch(line.strip())
+    ]
+
+
+def test_the_squash_body_the_proof_expects_is_the_normalized_notes(promotion):
+    p = promotion
+    p.git("checkout", "release/new")
+    p.git("tag", "-d", p.tag)
+    p.h = p.commit(f"fix: handle empty input (#9)\n\n{MARKER}\nPart of the release.")
+    version = compute_version(cwd=p.path, head=p.h, main=p.b, branch="release/new")
+    p.version, p.tag = version, version["candidate"]
+    p.git("tag", p.tag, p.h)
+    p.provenance["H"] = p.provenance["source_sha"] = p.provenance["candidate"]["source_sha"] = p.h
+    number = int(p.tag.rsplit("rc.", 1)[1])
+    pypi = f"0.4.3rc{number}"
+    p.provenance.update(candidate_tag=p.tag, N=number, python_version=pypi)
+    p.provenance["candidate"]["version"] = pypi
+    p.notes = release.generate_notes(cwd=p.path, version=version)
+    assert "<!-- lane-" not in p.notes
+    assert "Part of the release." in p.notes
+    target = version["target"]
+    p.s = p.squash(message=f"release: {target}\n\n{p.notes}")
+    assert p.prove()["notes"] == p.notes
+    history = p.git("log", "--no-merges", "-z", "--format=%B", f"{p.b}..{p.h}")
+    raw = release.render_notes(
+        target=target, messages=[m for m in history.split("\0") if m.strip()], normalize=False
+    )
+    assert MARKER in raw
+    # The only difference from the expected notes is the marker line, so the rejection below is
+    # caused by the marker alone.
+    assert [ln for ln in raw.splitlines() if ln.strip() != MARKER] == p.notes.splitlines()
+    p.s = p.squash(message=f"release: {target}\n\n{raw}")
+    with pytest.raises(ValueError, match="squash release notes differ from generated notes"):
+        p.prove()
+
+
+def test_lane_marker_parity(promotion):
+    # Stable name: the release automation requires this test to have passed before it lets a release
+    # through whose commits carry marker lines; renaming it blocks that path on purpose.
+    p = promotion
+    p.git("checkout", "-b", "topic-parity", p.b)
+    p.commit(f"fix: marked change (#10)\n\n{MARKER}\nkept body line")
+    p.commit(f"fix: lookalike change (#11)\n\nsee {MARKER}\nkept lookalike")
+    head = p.git("rev-parse", "HEAD").strip()
+    notes = release.generate_notes(cwd=p.path, version={"B": p.b, "H": head, "target": "2.0.0"})
+    assert f"\n  {MARKER}\n" not in notes
+    assert "kept body line" in notes
+    assert f"  see {MARKER}" in notes
+    assert release.AUTOMATION_MARKER_PATTERN == (
+        "<!-- lane-develop repo=knaisoma/data-olympus "
+        "cycle=[0-9]{4}-W[0-9]{2} item=[1-9][0-9]* -->"
+    )
+
+
 def test_notes_use_engine_nonmerge_range(promotion):
     p = promotion
     p.git("checkout", "-b", "topic", p.b)
