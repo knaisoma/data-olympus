@@ -1158,7 +1158,7 @@ Documents are parsed as CommonMark. An instruction is a line of paragraph or
 list-item text of at least six words; code (fenced or indented, in any quote or
 list), HTML blocks and headings are never read. Lines are compared after normalising case,
 markdown markers, spacing and punctuation, and each document counts once however
-often it repeats a line; at most 2000 instructions are taken from one document. Only documents that currently govern are scanned (the
+often it repeats a line; at most 2000 instructions, and only the first 262144 characters, are taken from one document. Every call scans the in-force corpus again (there is no cache), so its cost grows with the corpus (issue #474). Only documents that currently govern are scanned (the
 same in-force set as `kb_search(in_force=True)`), so drafts, retired, expired and
 memory-inbox documents are never reported. `min_documents` (default 3, clamped
 to 2..100) sets how many distinct documents must repeat a line, and `limit`

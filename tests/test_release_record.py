@@ -306,7 +306,7 @@ def test_every_cycle_and_item_of_the_marker_form_is_removed(cycle, item):
     "see " + MARKER,
     MARKER + " trailing text",
     MARKER.replace("lane-develop", "lane-review"),
-    MARKER.replace("knaisoma/data-olympus", "knaisoma/kidumo"),
+    MARKER.replace("knaisoma/data-olympus", "example/other-repo"),
     MARKER.replace("2000-W01", "2000-01"),
     MARKER.replace("item=1", "item=0"),
     MARKER.replace("item=1", "item=x"),
