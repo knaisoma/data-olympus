@@ -209,7 +209,7 @@ def test_recut_lists_every_open_pr_read_only(workflow):
 
 PINNED = {
     "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "v7"),
-    "astral-sh/setup-uv": ("11f9893b081a58869d3b5fccaea48c9e9e46f990", "v8.3.2"),
+    "astral-sh/setup-uv": ("07a047e608db84b3d8c06cd9a7c7dcc9c355c18e", "v10.3.2"),
     "actions/create-github-app-token": ("64ab729a6294000f5aa4a4bc0b73d1f32bc45510", "v3.3.0"),
 }
 

@@ -236,7 +236,7 @@ def test_both_digest_checks_are_present():
 
 PINNED = {
     "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "astral-sh/setup-uv": "11f9893b081a58869d3b5fccaea48c9e9e46f990",
+    "astral-sh/setup-uv": "07a047e608db84b3d8c06cd9a7c7dcc9c355c18e",
     "actions/create-github-app-token": "64ab729a6294000f5aa4a4bc0b73d1f32bc45510",
     "actions/attest-build-provenance": "4d101475d8b20a2381f78447822ac1eab6504dd8",
     "pypa/gh-action-pypi-publish": "7245906fb61fa33a13554f9d5fb856fe61758086",
@@ -275,6 +275,37 @@ def test_every_setup_python_reference_is_pinned_to_the_v7_1_0_commit():
     assert {"maintenance-inventory.yml", "promote-release.yml"} <= set(found)
     for name, refs in found.items():
         assert set(refs) == {SETUP_PYTHON}, name
+
+
+SETUP_UV = "astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e"
+
+
+def test_every_setup_uv_reference_is_pinned_to_the_v10_3_2_commit():
+    found = {}
+    paths = sorted(Path(".github/workflows").glob("*.y*ml"))
+    assert paths
+    for path in paths:
+        data = yaml.safe_load(path.read_text())
+        refs = [
+            step["uses"]
+            for job in (data.get("jobs") or {}).values()
+            for step in job.get("steps", [])
+            if str(step.get("uses", "")).startswith("astral-sh/setup-uv")
+        ]
+        if refs:
+            found[path.name] = refs
+    assert {
+        "ci.yaml",
+        "hotfix-cut.yml",
+        "pr-title-lint.yml",
+        "promote-release.yml",
+        "publish-python-build.yml",
+        "rc-build.yml",
+        "rc-publish-stage.yml",
+        "recut-release-branch.yml",
+    } <= set(found)
+    for name, refs in found.items():
+        assert set(refs) == {SETUP_UV}, name
 
 
 SIGNER = "knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml"
