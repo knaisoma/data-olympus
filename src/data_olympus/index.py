@@ -2426,6 +2426,36 @@ class Index:
             conn.close()
         return [dict(r) for r in rows]
 
+    def suggest_candidates(self, *, today: str) -> builtins.list[dict[str, object]]:
+        """id/path/body for every IN-FORCE document (issue #34,
+        kb_suggest_skills' candidate set).
+
+        Uses the same single-sourced in-force predicate as
+        :meth:`curate_candidates`, so only documents that currently govern are
+        scanned: never a draft, retired, expired or memory-inbox document.
+        Returns ``[]`` when the index file or a needed table does not exist."""
+        if not self._db_path.exists():
+            return []
+        conn = self._connect()
+        try:
+            where, params = self._facet_filters(
+                tier=None, category=None, status=None, in_force=True,
+                doc_type=None, today=today,
+            )
+            sql = f"""
+                SELECT docs.id AS id, docs.path AS path, COALESCE(fts.body, '') AS body
+                FROM docs
+                JOIN fts ON fts.id = docs.id
+                WHERE {' AND '.join(where)}
+                ORDER BY docs.id ASC
+            """
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.Error:
+            return []
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
+
     def outline(self) -> builtins.list[dict[str, object]]:
         """Return list of {name, categories: [{name, count}]} for tiers present."""
         conn = self._connect()

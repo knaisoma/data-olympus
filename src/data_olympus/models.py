@@ -752,6 +752,31 @@ class CurateResponse(BaseModel):
         return self.model_dump()
 
 
+class SkillSuggestion(BaseModel):
+    """One instruction that repeats across in-force documents (issue #34)."""
+
+    instruction: str = Field(description="The repeated instruction, as first written.")
+    documents: int = Field(description="How many distinct in-force documents repeat it.")
+    paths: list[str] = Field(description="Paths of those documents, at most ten.")
+    suggestion: str = Field(
+        description="What to consider doing, as advice only; nothing is changed.",
+    )
+
+
+class SkillSuggestResponse(BaseModel):
+    """kb_suggest_skills response (issue #34): instructions repeated across
+    in-force documents, most repeated first. Advisory and read-only: this tool
+    recommends, it never proposes, edits, promotes or demotes anything."""
+
+    suggestions: list[SkillSuggestion] = []
+    total: int = Field(description="Number of suggestions actually returned (after limit).")
+
+    def compact_dump(self) -> dict[str, object]:
+        """Already lean; ``verbose=True`` returns the identical shape (see
+        CurateResponse.compact_dump)."""
+        return self.model_dump()
+
+
 class SessionRecapResponse(BaseModel):
     """kb_session_recap response (issue #112): a per-session write summary
     over the audit log -- N committed, M demoted-to-pending

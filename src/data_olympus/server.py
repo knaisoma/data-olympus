@@ -877,6 +877,40 @@ def build_app(
         )
         return shape_response(resp, verbose=verbose)
 
+    @app.tool(title="KB Suggest Skills", annotations=READ_ONLY_TOOL)
+    def kb_suggest_skills(
+        min_documents: int = 3, limit: LimitParam = 20, verbose: VerboseParam = False,
+    ) -> dict[str, object]:
+        """List instructions that repeat across in-force documents, most
+        repeated first, so a maintainer can consider capturing them once as a
+        reusable skill or workflow. Advisory only: this tool RECOMMENDS -- it
+        never proposes, edits, rewrites, promotes, or demotes anything. To act
+        on a suggestion, read the documents with `kb_get` and make the change
+        through `kb_propose_edit` as a separate, deliberate step.
+
+        An instruction is a list item or sentence-like line of at least six
+        words, outside code blocks and headings. Lines are compared after
+        normalising case, markdown markers, spacing and punctuation, and each
+        document counts once however often it repeats a line. Only documents
+        that currently GOVERN are scanned; drafts, retired, expired and
+        memory-inbox documents are never reported. The consultation telemetry
+        named in issue #34 is not used: repetition across the corpus is the
+        only signal.
+
+        Returns a valid empty list, never an error, when nothing repeats
+        enough. Each entry carries `instruction`, `documents` (how many
+        distinct documents repeat it), `paths` (at most ten) and `suggestion`.
+
+        min_documents: fewest distinct documents that must repeat a line,
+        clamped to 2..100 (default 3).
+        limit: maximum entries returned, clamped to 1..100 (default 20).
+        verbose: already lean, so compact and full modes return the same shape."""
+        from data_olympus.tools_suggest import kb_suggest_skills_fn
+        resp = kb_suggest_skills_fn(
+            idx=state.idx, min_documents=min_documents, limit=limit,
+        )
+        return shape_response(resp, verbose=verbose)
+
     @app.tool(title="KB Search", annotations=READ_ONLY_TOOL)
     def kb_search(
         query: QueryParam,
