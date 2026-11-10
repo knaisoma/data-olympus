@@ -255,6 +255,28 @@ def test_privileged_actions_are_pinned_by_full_commit_sha():
             "pypa/gh-action-pypi-publish"} <= seen
 
 
+SETUP_PYTHON = "actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0"
+
+
+def test_every_setup_python_reference_is_pinned_to_the_v7_1_0_commit():
+    found = {}
+    paths = sorted(Path(".github/workflows").glob("*.y*ml"))
+    assert paths
+    for path in paths:
+        data = yaml.safe_load(path.read_text())
+        refs = [
+            step["uses"]
+            for job in (data.get("jobs") or {}).values()
+            for step in job.get("steps", [])
+            if str(step.get("uses", "")).startswith("actions/setup-python")
+        ]
+        if refs:
+            found[path.name] = refs
+    assert {"maintenance-inventory.yml", "promote-release.yml"} <= set(found)
+    for name, refs in found.items():
+        assert set(refs) == {SETUP_PYTHON}, name
+
+
 SIGNER = "knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml"
 
 
