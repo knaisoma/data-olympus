@@ -61,7 +61,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Set up uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       - name: Install Python
         run: uv python install 3.13
       - name: Plan stable hotfix cut
@@ -112,7 +112,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Set up uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       - name: Install Python
         run: uv python install 3.13
       # The interpreter lookup runs before the bot token exists, so uv never

@@ -23,7 +23,7 @@ jobs:
         env:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: git fetch --no-tags origin "$PR_HEAD"
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       - run: uv venv --python 3.13
         working-directory: trusted
       - name: Validate source commits and proposed squash title
