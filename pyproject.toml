@@ -32,6 +32,9 @@ dependencies = [
     # then never hang the single-writer critical path (stdlib `re` has no
     # timeout and cannot be interrupted once matching).
     "regex>=2024.5",
+    # kb_suggest_skills (issue #34) reads documents with a CommonMark parser so
+    # that code blocks in any container are never taken for instructions.
+    "markdown-it-py>=4.0,<5",
 ]
 
 [project.urls]

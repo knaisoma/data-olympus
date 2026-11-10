@@ -644,6 +644,7 @@ version = "0.0.0+unreleased"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
+    { name = "markdown-it-py" },
     { name = "mcp" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -681,6 +682,7 @@ requires-dist = [
     { name = "fastembed", marker = "extra == 'embeddings'", specifier = ">=0.9.1,<0.10" },
     { name = "fastmcp", specifier = ">=3.4.4,<4" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
+    { name = "markdown-it-py", specifier = ">=4.0,<5" },
     { name = "mcp", specifier = ">=1.30.0,<2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
     { name = "numpy", marker = "extra == 'bench'", specifier = ">=1.26" },

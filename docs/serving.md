@@ -160,7 +160,7 @@ cannot make a write tool available when the replica did not register it.
 
 Set `KB_READ_ONLY=true` to run an instance as a read-only replica. In this mode
 the server registers only the read tools (`kb_search`, `kb_get`, `kb_list`,
-`kb_outline`, `kb_curate`, `kb_health`) and the read REST routes; the write and
+`kb_outline`, `kb_curate`, `kb_suggest_skills`, `kb_health`) and the read REST routes; the write and
 enforcement-write tools and routes (`propose`, `resolve`, `bootstrap`,
 `consult`, `gate`, `record-event`, and their observability mirrors) are not
 registered at all and return 404. The write pipeline (worktrees, push queue,
@@ -1144,6 +1144,30 @@ graph-excluded) doc, via its unconditional `in_force=true` retrieval (see the
 reusing the default search path's own expired-exclusion.
 The `data-olympus validity-report` CLI subcommand lists expired and
 soon-to-expire docs from a bundle directory.
+
+## `kb_suggest_skills`: instructions repeated across documents (issue #34)
+
+`kb_suggest_skills` (MCP tool, read-only) lists instructions that repeat across
+in-force documents, most repeated first, so a maintainer can consider capturing
+them once as a reusable skill or workflow. It is advisory only, with no
+write-pipeline dependency at all: it never proposes, edits, rewrites, promotes
+or demotes anything. To act on a suggestion, read the documents with `kb_get`
+and change them through `kb_propose_edit` as a separate, deliberate step.
+
+Documents are parsed as CommonMark. An instruction is a line of paragraph or
+list-item text of at least six words; code (fenced or indented, in any quote or
+list), HTML blocks and headings are never read. Lines are compared after normalising case,
+markdown markers, spacing and punctuation, and each document counts once however
+often it repeats a line; at most 2000 instructions are taken from one document. Only documents that currently govern are scanned (the
+same in-force set as `kb_search(in_force=True)`), so drafts, retired, expired and
+memory-inbox documents are never reported. `min_documents` (default 3, clamped
+to 2..100) sets how many distinct documents must repeat a line, and `limit`
+(default 20, clamped to 1..100) caps the list. Each entry carries `instruction`,
+`documents`, `paths` (at most ten) and `suggestion`.
+
+The consultation telemetry named in issue #34 (issue #32) is not implemented in
+this release and this tool does not use it: repetition across the corpus is the
+only signal.
 
 ## `kb_curate`: which in-force documents are review-due (issue #142)
 
