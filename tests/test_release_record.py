@@ -327,6 +327,11 @@ def test_only_whole_lines_are_removed_and_never_the_subject():
     assert release.strip_automation_markers(two) == "fix: x\n\nmiddle\nend\n"
 
 
+def test_a_final_marker_line_without_a_line_ending_leaves_no_trailing_newline():
+    assert release.strip_automation_markers(f"fix: x\n\nbody\n{MARKER}") == "fix: x\n\nbody"
+    assert release.strip_automation_markers(f"fix: x\n\nbody\n{MARKER}\n") == "fix: x\n\nbody\n"
+
+
 @pytest.mark.parametrize(
     "message", ["fix: x\n", "feat: y\n\nbody\n\n\nmore\n", "chore: z", "docs: a\n\n\n"]
 )
