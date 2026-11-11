@@ -1163,7 +1163,8 @@ same in-force set as `kb_search(in_force=True)`), so drafts, retired, expired an
 memory-inbox documents are never reported. `min_documents` (default 3, clamped
 to 2..100) sets how many distinct documents must repeat a line, and `limit`
 (default 20, clamped to 1..100) caps the list. Each entry carries `instruction`,
-`documents`, `paths` (at most ten) and `suggestion`.
+`documents`, `paths` (at most ten) and `suggestion`. An `instruction` is cut to its first
+300 characters.
 
 The consultation telemetry named in issue #34 (issue #32) is not implemented in
 this release and this tool does not use it: repetition across the corpus is the

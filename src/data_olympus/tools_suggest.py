@@ -73,7 +73,9 @@ def _instructions(body: str) -> dict[str, str]:
     found: dict[str, str] = {}
     tokens = _MARKDOWN.parse(body)
     for index, token in enumerate(tokens):
-        if token.type != "inline" or tokens[index - 1].type == "heading_open":
+        if token.type != "inline":
+            continue
+        if index > 0 and tokens[index - 1].type == "heading_open":
             continue
         for line in token.content.splitlines():
             text = line.strip()
