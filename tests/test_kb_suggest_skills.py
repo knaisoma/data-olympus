@@ -259,6 +259,25 @@ def test_one_huge_document_is_bounded(tmp_path, tmp_index_path) -> None:
     assert resp.total == 100
 
 
+def test_document_text_beyond_the_character_cap_is_not_read(tmp_path, tmp_index_path) -> None:
+    from data_olympus.index import SUGGEST_BODY_CHARS
+
+    padding = "x " * (SUGGEST_BODY_CHARS // 2)
+    LATE = "Never skip the review step when the change is large"
+
+    def builder(kb):
+        for name in ("a", "b", "c"):
+            body = f"- {RULE}\n\n```\n{padding}\n```\n\n- {LATE}"
+            _write(kb, f"{name}.md", id_=f"DOC-{name.upper()}", body=body)
+
+    idx = _idx(tmp_path, tmp_index_path, builder)
+    rows = idx.suggest_candidates(today=TODAY)
+    assert rows
+    assert all(len(str(r["body"])) <= SUGGEST_BODY_CHARS for r in rows)
+    resp = kb_suggest_skills_fn(idx=idx, today=TODAY)
+    assert [s.instruction for s in resp.suggestions] == [RULE]  # the later rule is past the cap
+
+
 def test_fn_signature_has_no_write_dependency() -> None:
     params = set(inspect.signature(kb_suggest_skills_fn).parameters)
     assert not (params & {"pending", "worktrees", "push_queue", "audit_log"})

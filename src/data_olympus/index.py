@@ -167,6 +167,9 @@ _DEFAULT_BM25_WEIGHTS: tuple[float, ...] = (0.0, 10.0, 5.0, 10.0, 4.0, 1.0)
 # asked for so the reranker can promote a relevant doc sitting just outside the
 # top-N window, then truncate back to the requested limit. Bounded so a small
 # limit still gets a useful pool and a large one cannot drag in the whole corpus.
+# kb_suggest_skills reads at most this many characters of one document body, so
+# a single very large document cannot cost unbounded memory or parsing time.
+SUGGEST_BODY_CHARS = 262144
 _RERANK_OVERFETCH_FACTOR = 5
 _RERANK_MIN_POOL = 50
 _RERANK_MAX_POOL = 200
@@ -2433,6 +2436,8 @@ class Index:
         Uses the same single-sourced in-force predicate as
         :meth:`curate_candidates`, so only documents that currently govern are
         scanned: never a draft, retired, expired or memory-inbox document.
+        Each body is cut to ``SUGGEST_BODY_CHARS`` characters in SQL, so one very
+        large document cannot cost an unbounded amount of memory or parsing time.
         Returns ``[]`` when the index file or a needed table does not exist."""
         if not self._db_path.exists():
             return []
@@ -2442,8 +2447,10 @@ class Index:
                 tier=None, category=None, status=None, in_force=True,
                 doc_type=None, today=today,
             )
+            params = [SUGGEST_BODY_CHARS, *params]
             sql = f"""
-                SELECT docs.id AS id, docs.path AS path, COALESCE(fts.body, '') AS body
+                SELECT docs.id AS id, docs.path AS path,
+                       substr(COALESCE(fts.body, ''), 1, ?) AS body
                 FROM docs
                 JOIN fts ON fts.id = docs.id
                 WHERE {' AND '.join(where)}
