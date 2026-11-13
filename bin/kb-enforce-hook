@@ -178,16 +178,15 @@ post_json() {
   # curl CONNECTION itself fails (DNS/connect/timeout); callers must additionally
   # check RESP_CODE for 2xx, since curl --silent exits 0 on 4xx/5xx.
   #
-  # When KB_AUTH_TOKEN is set, pass the Authorization header via a curl config on
-  # a process-substitution FD so the token is NOT exposed in process arguments
-  # (visible via `ps`). Mirrors bin/kb's do_curl_post.
+  # Pass the bearer header through stdin. Bash may close a process substitution
+  # before curl runs if its path was assigned to an array in an earlier command.
   local url="$1"
   local body="$2"
   local tmpfile
   tmpfile="$(mktemp)"
   local auth_k_arg=()
   if [[ -n "$KB_AUTH_TOKEN" ]]; then
-    auth_k_arg=(-K <(printf 'header = "Authorization: Bearer %s"\n' "$KB_AUTH_TOKEN"))
+    auth_k_arg=(-H @-)
   fi
   # Timeouts: the pre-tool gate is on the agent's critical path (it blocks every
   # governed edit), so it sets tight CURL_MAX_TIME/CURL_CONNECT_TIMEOUT to fail
@@ -200,7 +199,10 @@ post_json() {
   fi
   # Guard the array expansion: under `set -u`, "${arr[@]}" on an empty array is
   # an unbound-variable error on bash 3.2 (macOS default).
-  if RESP_CODE=$(curl --silent --max-time "$max_time" \
+  if RESP_CODE=$(
+    if [[ -n "$KB_AUTH_TOKEN" ]]; then
+      printf 'Authorization: Bearer %s\n' "$KB_AUTH_TOKEN"
+    fi | curl --silent --max-time "$max_time" \
       ${connect_arg[@]+"${connect_arg[@]}"} \
       -H "Content-Type: application/json" \
       ${auth_k_arg[@]+"${auth_k_arg[@]}"} \

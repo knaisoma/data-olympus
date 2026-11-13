@@ -82,6 +82,25 @@ teardown() {
   [[ "$output" == *"consult"* ]]
 }
 
+@test "pre-tool sends the bearer to an authenticated gate" {
+  export KB_ENFORCE_FAIL_MODE=closed
+  kill "$MOCK_PID" 2>/dev/null || true
+  wait "$MOCK_PID" 2>/dev/null || true
+  KB_MOCK_BEARER=fixture-bearer python3 "${FIXTURE_DIR}/enforce-mock-server.py" "$PORT" &
+  MOCK_PID=$!
+  for _ in $(seq 1 30); do
+    if curl --silent --max-time 0.2 "$KB_ENDPOINT/api/v1/compliance" >/dev/null 2>&1; then break; fi
+    sleep 0.1
+  done
+  local payload='{"session_id":"allowme","cwd":"/tmp/proj","tool_name":"Edit","tool_input":{"file_path":"/tmp/proj/pyproject.toml"}}'
+  run bash -c 'printf "%s" "$1" | KB_AUTH_TOKEN=fixture-bearer "$2" pre-tool' _ "$payload" "$HOOK"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run bash -c 'printf "%s" "$1" | KB_AUTH_TOKEN=invalid "$2" pre-tool' _ "$payload" "$HOOK"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"gate unavailable"* ]]
+}
+
 @test "pre-tool deny message is actionable: session id + workspace + copy-pasteable kb_consult" {
   # The deny must echo the session id (the one param the agent cannot guess) and
   # the workspace key inside a copy-pasteable kb_consult(...) call.

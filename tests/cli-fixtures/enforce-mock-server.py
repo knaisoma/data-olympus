@@ -30,6 +30,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"error": "not_found"}, 404)
 
     def do_POST(self):
+        bearer = os.getenv("KB_MOCK_BEARER")
+        if bearer and self.headers.get("Authorization") != f"Bearer {bearer}":
+            self._send({"error": "unauthorized"}, 401)
+            return
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length) or b"{}"
         body = json.loads(raw or b"{}")
