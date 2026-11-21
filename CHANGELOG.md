@@ -12,6 +12,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Upgrading
+
+* This release has breaking changes for image users and for environments that pin FastMCP or the MCP SDK: the image is based on `python:3.15-alpine`, the container command is `/app/.venv/bin/data-olympus-mcp` without `uv`, and the server requires FastMCP 4 and MCP SDK 2. Read [docs/releases/upgrade-0.12.md](docs/releases/upgrade-0.12.md) before you deploy.
+
 ### Removed
 
 * The old release path is retired now that the new-model pipeline has shipped 0.11.1 and 0.11.2. Removed workflows: `rc-publish.yml`, `tag-release.yml`, `set-channel.yml`, `release-image.yml`, `release-image-reusable.yml`, `publish-pypi.yml` and `publish-pypi-reusable.yml`. Removed old-path scripts: `rc_tag.py`, `release_upload.py` and `workflow_validation.py`. Candidates are built by `rc-build.yml`, published by `rc-publish-stage.yml` and promoted by `promote-release.yml`; hotfixes start with `hotfix-cut.yml`. The pull request packaging dry run moves unchanged to `package-dry-run.yml`. `hotfix-cut.yml` and `recut-release-branch.yml` no longer list old-path runs and no longer hold `actions: read`. The `rc` image channel is no longer moved by any workflow while `SDLC_RC_CHANNEL` is unset.
