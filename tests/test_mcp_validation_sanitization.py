@@ -207,24 +207,20 @@ async def test_tool_body_error_traceback_does_not_log_input(
 async def test_malformed_request_envelope_is_not_logged(
     tmp_git_kb: Path, tmp_path: Path, captured_logs: _Capture,
 ) -> None:
-    """The MCP SDK validates the request envelope before any tool runs and logs
-    the failure, and the raw message, through the root logger."""
+    """The MCP SDK validates the request envelope before any tool runs. MCP SDK 1
+    logged the failure, with the raw message, through the root logger; SDK 2 no
+    longer logs it, so the guarantee checked here is that nothing echoes input."""
     import mcp.types as mt
 
     app = _app(tmp_git_kb, tmp_path)
     params = mt.CallToolRequestParams.model_construct(name="kb_search", arguments=[FAKE])
-    request = mt.ClientRequest(
-        mt.CallToolRequest.model_construct(method="tools/call", params=params),
-    )
+    request = mt.CallToolRequest.model_construct(method="tools/call", params=params)
     async with Client(app) as client:
         with pytest.raises(Exception):  # noqa: B017, PT011 - any protocol error is fine
             await client.session.send_request(request, mt.CallToolResult)
     for fragment in FRAGMENTS:
         leaked = [m for m in captured_logs.messages if fragment in m]
         assert not leaked, f"log echoes input: {leaked!r}"
-    assert any("mcp/shared/session.py" in m for m in captured_logs.messages), (
-        "the diagnostic should still say where it came from"
-    )
 
 
 @pytest.mark.asyncio
@@ -247,13 +243,11 @@ async def test_malformed_notification_is_not_logged(
     import mcp.types as mt
 
     app = _app(tmp_git_kb, tmp_path)
-    params = mt.ProgressNotificationParams.model_construct(progressToken="t", progress=FAKE)
-    note = mt.ClientNotification(
-        mt.ProgressNotification.model_construct(method="notifications/progress", params=params),
-    )
+    params = mt.ProgressNotificationParams.model_construct(progress_token="t", progress=FAKE)
+    note = mt.ProgressNotification.model_construct(method="notifications/progress", params=params)
     async with Client(app) as client:
         await client.session.send_notification(note)
-        await client.ping()
+        await client.list_tools()
     for fragment in FRAGMENTS:
         leaked = [m for m in captured_logs.messages if fragment in m]
         assert not leaked, f"log echoes input: {leaked!r}"
