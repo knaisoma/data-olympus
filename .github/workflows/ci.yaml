@@ -194,6 +194,11 @@ jobs:
   # login) and runs tests/image/git_protocol_policy.sh inside it, with the
   # network off: file:// and the SSH transport must work, and http, https, ftp
   # and ftps must be refused by git's protocol policy (deploy/docker/Dockerfile).
+  # It then runs tests/image/runtime_smoke.sh against the same image: the image
+  # and application interpreters must be Python 3.15, the container must run as
+  # uid 65534, and with its default entrypoint and CMD on the bundled example
+  # bundle /readyz must answer 200 within a bounded wait (network off, all
+  # capabilities dropped, no-new-privileges).
   # Not a required check; release candidates are built separately by rc-build.
   image-git-protocols:
     runs-on: ubuntu-latest
@@ -207,3 +212,5 @@ jobs:
         run: |
           docker run --rm -i --network none --entrypoint /bin/sh \
             data-olympus:git-protocols -s < tests/image/git_protocol_policy.sh
+      - name: Check the image runtime (Python 3.15, non-root, ready on the example bundle)
+        run: sh tests/image/runtime_smoke.sh data-olympus:git-protocols

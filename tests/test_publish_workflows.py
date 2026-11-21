@@ -147,3 +147,16 @@ def test_ci_covers_python_3_15_and_keeps_the_required_3_13_gate() -> None:
         if uses:
             ref = uses.split("@", 1)[1].split()[0]
             assert len(ref) == 40 and all(c in "0123456789abcdef" for c in ref), uses
+
+
+def test_image_job_smoke_tests_the_runtime_of_the_built_image() -> None:
+    """The image job (check name `image-git-protocols`, kept) runs the runtime
+    smoke against the image it just built, after the git policy check."""
+    job = _load("ci.yaml")["jobs"]["image-git-protocols"]
+    commands = [str(step.get("run", "")) for step in job["steps"]]
+    joined = "\n".join(commands)
+    assert "--tag data-olympus:git-protocols" in joined
+    assert "sh tests/image/runtime_smoke.sh data-olympus:git-protocols" in commands
+    assert joined.index("git_protocol_policy.sh") < joined.index("runtime_smoke.sh")
+    assert "--privileged" not in joined
+    assert (_ROOT / "tests" / "image" / "runtime_smoke.sh").is_file()
