@@ -8,8 +8,9 @@
 
 # Documentation and tests carry no code owner: a change there runs only in
 # unprivileged CI and is merged on the regular review and required checks.
-# The release documents and the two test files that privileged workflows
-# read are owned again just below, and the security-sensitive paths after
+# The release documents and two protected test files (the vendored OKF
+# reference the pin workflow reads, and the release-verification test) are
+# owned again just below, and the security-sensitive paths after
 # that, because the last matching pattern wins.
 /docs/
 /tests/
