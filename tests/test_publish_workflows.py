@@ -116,3 +116,34 @@ def test_retired_old_path_workflows_stay_absent() -> None:
         "release-image-reusable.yml", "publish-pypi.yml", "publish-pypi-reusable.yml",
     ):
         assert not (_WF / name).exists(), name
+
+
+def test_ci_covers_python_3_15_and_keeps_the_required_3_13_gate() -> None:
+    """`test` stays the 3.13 authoritative job (its check name is required by
+    the branch rulesets, so it must keep that name and must not become a matrix),
+    and a separate `test-python-3-15` job runs ruff, mypy and the full pytest
+    suite, which includes the installed wheel and sdist smoke tests, on 3.15."""
+    jobs = _load("ci.yaml")["jobs"]
+
+    def runs(job: str) -> list[str]:
+        return [str(step.get("run", "")) for step in jobs[job]["steps"]]
+
+    assert "strategy" not in jobs["test"]
+    assert "uv venv --python 3.13" in runs("test")
+    assert "uv run pytest -v" in runs("test")
+    assert "uv pip install -e '.[dev]'" in runs("test")
+
+    assert "test-python-3-14" in jobs
+    new = runs("test-python-3-15")
+    assert "uv venv --python 3.15" in new
+    assert "uv pip install -e '.[dev]'" in new
+    for command in (
+        "uv run ruff check .", "uv run mypy src",
+        "uv run mypy --python-version 3.15 src", "uv run pytest -v",
+    ):
+        assert command in new, command
+    for step in jobs["test-python-3-15"]["steps"]:
+        uses = str(step.get("uses", ""))
+        if uses:
+            ref = uses.split("@", 1)[1].split()[0]
+            assert len(ref) == 40 and all(c in "0123456789abcdef" for c in ref), uses

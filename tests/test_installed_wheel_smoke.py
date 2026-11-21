@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -32,11 +33,15 @@ def test_clean_installed_wheel_smoke(tmp_path: Path) -> None:
     version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]["version"]
+    # Install on the interpreter running this suite, so each CI job (3.13,
+    # 3.14, 3.15) proves installation on its own Python, not only on 3.13.
+    interpreter = "{}.{}".format(*sys.version_info[:2])
     for artifact in (wheels[0], sdists[0]):
         smoke = subprocess.run(
             [
                 "uv", "run", "python", str(SCRIPT),
                 "--artifact", str(artifact), "--expected-version", version,
+                "--python", interpreter,
             ],
             cwd=ROOT,
             check=False,

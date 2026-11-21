@@ -64,11 +64,10 @@ jobs:
   # conformance, benchmark-docs, bats and bundle-lint steps; this one answers
   # one question: does the product work on the next interpreter.
   #
-  # Scope boundary worth knowing: this is pytest and mypy on 3.14, NOT a full
-  # parallel validation. scripts/smoke_installed_wheel.py hard-codes
-  # `uv venv --python 3.13`, so installed-wheel and sdist smoke tests still
-  # exercise 3.13 no matter which job invokes them. Parameterising that is the
-  # follow-up needed before claiming 3.14 installation coverage.
+  # Installation coverage: tests/test_installed_wheel_smoke.py passes the
+  # running interpreter to scripts/smoke_installed_wheel.py --python, so the
+  # installed wheel and sdist smoke tests in this job install on 3.14 and the
+  # smoke script checks that the isolated install really runs on that line.
   test-python-3-14:
     runs-on: ubuntu-latest
     steps:
@@ -80,6 +79,29 @@ jobs:
       - run: uv venv --python 3.14
       - run: uv pip install -e '.[dev]'
       - run: uv run mypy src
+      - run: uv run pytest -v
+  # 3.15 coverage, a separate job for the same reason as test-python-3-14 (a
+  # matrix would rename the required `test` check). It runs ruff, mypy, the
+  # unit suite and, through tests/test_installed_wheel_smoke.py, the installed
+  # wheel and sdist smoke tests on 3.15. mypy runs twice: once against the
+  # configured 3.13 floor target and once targeting 3.15 itself.
+  #
+  # The embeddings extra carries `python_version < "3.15"` until onnxruntime
+  # publishes cp315 wheels, so fastembed is absent here and the embeddings
+  # tests skip; the 3.13 `test` job still installs fastembed and runs them.
+  test-python-3-15:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Receipt provenance tests read git history.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - run: uv venv --python 3.15
+      - run: uv pip install -e '.[dev]'
+      - run: uv run ruff check .
+      - run: uv run mypy src
+      - run: uv run mypy --python-version 3.15 src
       - run: uv run pytest -v
   changelog-guard:
     runs-on: ubuntu-latest

@@ -58,6 +58,11 @@ back.
 See `docs/quickstart.md` for bundle initialization, server startup, readiness,
 agent registration, and the contributor source installation.
 
+The optional `embeddings` extra (local embedding ranking through `fastembed`)
+needs Python below 3.15 until `onnxruntime` publishes Python 3.15 wheels. On
+Python 3.15 the extra installs nothing, so leave `KB_EMBEDDINGS_MODE` unset
+there; everything else, including the container image, runs on 3.15.
+
 See `docs/adoption.md` for the full bundle authoring guide.
 
 ## Documentation

@@ -9,6 +9,7 @@ default apply, and the readiness probe pointed at /readyz.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -141,7 +142,8 @@ def test_image_tag_supports_readyz_and_rootless_flow() -> None:
 
 def test_dockerfile_is_digest_pinned_and_rootless() -> None:
     text = (DOCKER_DIR / "Dockerfile").read_text()
-    assert "python:3.13-slim@sha256:" in text  # digest-pinned base
+    # Digest-pinned base on the 3.15 runtime line (a full 64-hex index digest).
+    assert re.search(r"^FROM python:3\.15-slim@sha256:[0-9a-f]{64} ", text, re.M), text
     assert "USER 65534:65534" in text          # runs non-root
     assert "KB_SSH_KEYSCAN_HOST" in text       # keyscan host configurable
     # gosu must not be installed or exec'd (a comment may mention it by name to
