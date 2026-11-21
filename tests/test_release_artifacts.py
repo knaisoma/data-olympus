@@ -215,6 +215,13 @@ def _package_index_reachable() -> bool:
     not os.environ.get("CI") and not _package_index_reachable(),
     reason="needs the package index to fetch the pinned build backend (offline)",
 )
+@pytest.mark.skipif(
+    sys.version_info >= (3, 15),
+    reason=(
+        "the golden pins the sdist bytes of the 3.13 release toolchain; Python 3.15 "
+        "writes different gzip and tar bytes, and release artifacts are built on 3.13"
+    ),
+)
 def test_legacy_cli_artifacts_match_pre_stage_one_golden(tmp_path: Path) -> None:
     source = tmp_path / "source"
     env = _legacy_fixture(source)
