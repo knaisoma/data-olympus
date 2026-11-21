@@ -35,7 +35,12 @@ def test_license_and_metadata_declared():
     assert project["license"] == "Apache-2.0"
     assert project["readme"] == "README.md"
     assert "Repository" in project["urls"]
-    assert any("3.13" in c for c in project["classifiers"])
+    versions = {
+        c.rsplit(" :: ", 1)[-1] for c in project["classifiers"]
+        if c.startswith("Programming Language :: Python :: 3.")
+    }
+    assert versions == {"3.13", "3.14", "3.15"}, versions
+    assert project["requires-python"] == ">=3.13"
 
 
 def test_sdist_includes_bin():

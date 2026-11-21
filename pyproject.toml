@@ -15,6 +15,8 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Documentation",
     "Topic :: Software Development :: Libraries",
     "Typing :: Typed",
@@ -52,8 +54,11 @@ Changelog = "https://github.com/knaisoma/data-olympus/blob/main/CHANGELOG.md"
 # embedding stack and the lexical product is unchanged. fastembed bundles a
 # quantised ONNX MiniLM-class model runner (onnxruntime), so there is NO torch
 # and no external API; the model is fetched once at enable time and cached.
+# Marked for Python below 3.15: onnxruntime publishes no 3.15 wheels yet, so on
+# 3.15 the extra installs nothing and the feature stays unavailable. Drop the
+# marker once onnxruntime ships cp315 wheels.
 embeddings = [
-    "fastembed>=0.9.1,<0.10",
+    "fastembed>=0.9.1,<0.10; python_version < '3.15'",
 ]
 # Optional Prometheus /metrics endpoint (issue #69). NOT a core dependency: the
 # metrics registry is a no-op shim when prometheus-client is absent (its inc/
@@ -74,8 +79,9 @@ dev = [
     "types-regex>=2024.5",
     # Exercise the embeddings path in CI (the feature stays off by default at
     # runtime; the tests opt in via KB_EMBEDDINGS_MODE and skip if the model
-    # cannot be fetched in the sandbox).
-    "fastembed>=0.9.1,<0.10",
+    # cannot be fetched in the sandbox). Same Python marker as the embeddings
+    # extra: on 3.15 the embeddings tests skip because fastembed is absent.
+    "fastembed>=0.9.1,<0.10; python_version < '3.15'",
     # Exercise the Prometheus /metrics path in CI (the exposition-format test
     # skips when this is absent; the no-op-shim tests run regardless).
     "prometheus-client>=0.20",
@@ -143,6 +149,15 @@ python_version = "3.13"
 module = "data_olympus._vendor.*"
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
+
+# fastembed is absent on Python 3.15 (the embeddings extra is marked below 3.15
+# until onnxruntime publishes cp315 wheels), so its lazy import in
+# data_olympus.embeddings has nothing to resolve there. This only applies when
+# the module is missing: where fastembed is installed (3.13, 3.14) mypy still
+# reads its types. Drop it together with the marker.
+[[tool.mypy.overrides]]
+module = ["fastembed", "fastembed.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
