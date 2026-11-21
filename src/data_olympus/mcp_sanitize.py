@@ -322,7 +322,9 @@ class ArgumentSanitizingLogFilter(logging.Filter):
             detail = args[1]
             if isinstance(detail, dict) and isinstance(detail.get("error_types"), list):
                 # fastmcp 4 logs a pre-sanitized {error_count, error_types} summary.
-                types = [t for t in detail["error_types"] if isinstance(t, str) and t.isidentifier()]
+                types = [
+                    t for t in detail["error_types"] if isinstance(t, str) and t.isidentifier()
+                ]
                 record.args = (name, "; ".join(types) or "arguments are invalid")
             else:
                 record.args = (name, summarize_errors(detail, None))

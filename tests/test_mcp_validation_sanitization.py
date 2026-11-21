@@ -207,8 +207,9 @@ async def test_tool_body_error_traceback_does_not_log_input(
 async def test_malformed_request_envelope_is_not_logged(
     tmp_git_kb: Path, tmp_path: Path, captured_logs: _Capture,
 ) -> None:
-    """The MCP SDK validates the request envelope before any tool runs and logs
-    the failure, and the raw message, through the root logger."""
+    """The MCP SDK validates the request envelope before any tool runs. MCP SDK 1
+    logged the failure, with the raw message, through the root logger; SDK 2 no
+    longer logs it, so the guarantee checked here is that nothing echoes input."""
     import mcp.types as mt
 
     app = _app(tmp_git_kb, tmp_path)
@@ -220,9 +221,6 @@ async def test_malformed_request_envelope_is_not_logged(
     for fragment in FRAGMENTS:
         leaked = [m for m in captured_logs.messages if fragment in m]
         assert not leaked, f"log echoes input: {leaked!r}"
-    assert True or any("mcp/shared/session.py" in m for m in captured_logs.messages), (
-        "the diagnostic should still say where it came from"
-    )
 
 
 @pytest.mark.asyncio
