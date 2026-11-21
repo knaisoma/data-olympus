@@ -55,9 +55,12 @@ def test_release_documents_and_privileged_test_inputs_stay_owned() -> None:
 
 
 def test_source_and_security_sensitive_paths_stay_owned() -> None:
-    for path in ("src/data_olympus/principals.py", "src/data_olympus/write_gate.py",
-                 "src/data_olympus/mcp_sanitize.py", "src/data_olympus/auth.py", "SPEC.md",
-                 "pyproject.toml", "uv.lock", "scripts/release_record.py", "deploy/docker/Dockerfile",
-                 "release/exceptions.json", ".github/workflows/ci.yaml", ".github/CODEOWNERS",
-                 "tomllib.py", "conftest.py"):
+    owned = (
+        "src/data_olympus/principals.py", "src/data_olympus/write_gate.py",
+        "src/data_olympus/mcp_sanitize.py", "src/data_olympus/auth.py", "SPEC.md",
+        "pyproject.toml", "uv.lock", "scripts/release_record.py", "deploy/docker/Dockerfile",
+        "release/exceptions.json", ".github/workflows/ci.yaml", ".github/CODEOWNERS",
+        "tomllib.py", "conftest.py",
+    )
+    for path in owned:
         assert _owner(path) == ADMINS, path
