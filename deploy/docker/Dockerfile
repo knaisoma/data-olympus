@@ -1,17 +1,17 @@
 # syntax=docker/dockerfile:1.7
 
 # Digest-pinned base for reproducible, tamper-resistant builds. This is the
-# multi-arch (linux/amd64, arm64, ...) OCI index digest for python:3.13-slim.
+# multi-arch (linux/amd64, arm64, ...) OCI index digest for python:3.15-slim.
 # To roll the pin forward: resolve the current tag's index digest and replace
 # BOTH the tag comment and the @sha256 below, e.g.
-#   docker buildx imagetools inspect python:3.13-slim   # shows the index digest
+#   docker buildx imagetools inspect python:3.15-slim   # shows the index digest
 # or via the registry API (no docker needed):
 #   TOKEN=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/python:pull" | jq -r .token)
 #   curl -sI -H "Authorization: Bearer $TOKEN" \
 #     -H "Accept: application/vnd.oci.image.index.v1+json" \
-#     https://registry-1.docker.io/v2/library/python/manifests/3.13-slim \
+#     https://registry-1.docker.io/v2/library/python/manifests/3.15-slim \
 #     | grep -i docker-content-digest
-FROM python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f AS runtime
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS runtime
 
 # SSH host to trust for git over SSH. Defaults to github.com; override at build
 # time (--build-arg KB_SSH_KEYSCAN_HOST=git.example.com) for a non-GitHub remote.

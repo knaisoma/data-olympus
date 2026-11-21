@@ -75,6 +75,13 @@ actual = version("data-olympus")
 expected = sys.argv[1]
 if actual != expected:
     raise SystemExit(f"installed version mismatch: expected {expected}, got {actual}")
+
+# The isolated install must run on the requested interpreter line, so a job
+# that claims 3.15 installation coverage really exercised 3.15.
+running = "{}.{}".format(*sys.version_info[:2])
+wanted = sys.argv[2]
+if running != wanted and not running.startswith(wanted + "."):
+    raise SystemExit(f"interpreter mismatch: expected {wanted}, got {running}")
 """
 
 
@@ -252,7 +259,15 @@ def _probe_writing_rules(
             _stop(process)
 
 
-def run(artifact: Path, root: Path, expected_version: str) -> None:
+# The interpreter the isolated install uses unless --python says otherwise.
+# Release workflows build and smoke-test on this floor version; the CI test
+# jobs for newer interpreters pass their own version explicitly.
+DEFAULT_PYTHON = "3.13"
+
+
+def run(
+    artifact: Path, root: Path, expected_version: str, python: str = DEFAULT_PYTHON,
+) -> None:
     artifact = artifact.resolve()
     is_distribution = artifact.suffix == ".whl" or artifact.name.endswith(".tar.gz")
     if not artifact.is_file() or not is_distribution:
@@ -263,10 +278,10 @@ def run(artifact: Path, root: Path, expected_version: str) -> None:
     try:
         venv = scratch / "venv"
         base_env = dict(os.environ)
-        _run(["uv", "venv", "--python", "3.13", str(venv)], cwd=root, env=base_env)
-        python = venv / "bin" / "python"
+        _run(["uv", "venv", "--python", python, str(venv)], cwd=root, env=base_env)
+        interpreter = venv / "bin" / "python"
         _run(
-            ["uv", "pip", "install", "--python", str(python), str(artifact)],
+            ["uv", "pip", "install", "--python", str(interpreter), str(artifact)],
             cwd=root,
             env=base_env,
         )
@@ -277,19 +292,19 @@ def run(artifact: Path, root: Path, expected_version: str) -> None:
         isolated_env["PATH"] = str(bin_dir) + os.pathsep + base_env.get("PATH", "")
         isolated_env["HOME"] = str(scratch / "home")
         _run(
-            [str(python), "-c", _VERSION_PROBE, expected_version],
+            [str(interpreter), "-c", _VERSION_PROBE, expected_version, python],
             cwd=scratch,
             env=isolated_env,
         )
         _run([str(cli), "--help"], cwd=scratch, env=isolated_env)
         _run([str(server), "--help"], cwd=scratch, env=isolated_env)
-        _run([str(python), "-c", _PACKAGE_PROBE], cwd=scratch, env=isolated_env)
+        _run([str(interpreter), "-c", _PACKAGE_PROBE], cwd=scratch, env=isolated_env)
 
         bundle = scratch / "kb"
         shutil.copytree(root / "example-bundle", bundle)
         _git_init(bundle, isolated_env)
         _probe_server(
-            python=python,
+            python=interpreter,
             server=server,
             cli=cli,
             scratch=scratch,
@@ -298,7 +313,7 @@ def run(artifact: Path, root: Path, expected_version: str) -> None:
             mode="search",
         )
         _probe_server(
-            python=python,
+            python=interpreter,
             server=server,
             cli=cli,
             scratch=scratch,
@@ -318,8 +333,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--artifact", "--wheel", dest="artifact", required=True, type=Path)
     parser.add_argument("--expected-version", required=True)
     parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument(
+        "--python", default=DEFAULT_PYTHON,
+        help=f"interpreter version for the isolated install (default {DEFAULT_PYTHON})",
+    )
     args = parser.parse_args(argv)
-    run(args.artifact, args.root.resolve(), args.expected_version)
+    run(args.artifact, args.root.resolve(), args.expected_version, args.python)
     print("installed artifact smoke: ok")
     return 0
 

@@ -1367,7 +1367,10 @@ uv sync --extra embeddings   # or: pip install 'data-olympus[embeddings]'
 ```
 
 The extra pulls in `fastembed`, which bundles `onnxruntime` (there is no torch
-dependency). The default model ships as a ~33 MB quantised ONNX file that is
+dependency). The extra is marked for Python below 3.15 because
+`onnxruntime` publishes no Python 3.15 wheels yet; on 3.15 it installs nothing
+and enabling the feature fails startup as described below. The marker is
+dropped once those wheels exist. The default model ships as a ~33 MB quantised ONNX file that is
 fetched once when the feature is first enabled and cached locally; after that
 there is no network access. If `KB_EMBEDDINGS_MODE=on` but the extra or the model
 is unavailable, **startup fails loudly** with an actionable message rather than
