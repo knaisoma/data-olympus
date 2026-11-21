@@ -116,3 +116,33 @@ def test_retired_old_path_workflows_stay_absent() -> None:
         "release-image-reusable.yml", "publish-pypi.yml", "publish-pypi-reusable.yml",
     ):
         assert not (_WF / name).exists(), name
+
+
+RELEASE_PATH_WORKFLOWS = (
+    "hotfix-cut.yml",
+    "recut-release-branch.yml",
+    "promote-release.yml",
+    "rc-publish-stage.yml",
+    "publish-python-build.yml",
+    "rc-build.yml",
+)
+
+
+def test_release_path_workflows_never_restore_a_shared_cache() -> None:
+    """Caches written by workflows on main (CI runs the unowned tests there) are
+    shared with every workflow on the branch. A release-path job that restored one
+    could run code a test planted, so no setup-uv step there enables caching and no
+    other cache action is used."""
+    for name in RELEASE_PATH_WORKFLOWS:
+        path = Path(".github/workflows") / name
+        text = path.read_text()
+        assert "actions/cache" not in text, name
+        data = yaml.safe_load(text)
+        steps = [s for job in data["jobs"].values() for s in job.get("steps", [])]
+        uv_steps = [s for s in steps if str(s.get("uses", "")).startswith("astral-sh/setup-uv@")]
+        assert uv_steps, name
+        for step in uv_steps:
+            assert (step.get("with") or {}).get("enable-cache") is False, name
+        for step in steps:
+            cache = (step.get("with") or {}).get("cache")
+            assert cache in (None, False, "false", ""), name
