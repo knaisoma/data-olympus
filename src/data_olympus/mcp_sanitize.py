@@ -198,6 +198,12 @@ class ArgumentSanitizingMiddleware(Middleware):
             ) from None
         except NotFoundError:
             raise ToolError("Unknown tool") from None
+        except ToolError as exc:
+            # fastmcp 4: a NotFoundError raised inside the search-mode call_tool
+            # proxy is wrapped by the tool error boundary with the raw name.
+            if isinstance(exc.__cause__, NotFoundError):
+                raise ToolError("Unknown tool") from None
+            raise
 
 
 def _package_root(module: Any, subdir: str = "") -> str:
@@ -313,7 +319,13 @@ class ArgumentSanitizingLogFilter(logging.Filter):
             name = args[0] if isinstance(args[0], str) else REDACTED
             # The tool resolved before its arguments were validated, so the name
             # is a registered one; the locations are not trusted in the log.
-            record.args = (name, summarize_errors(args[1], None))
+            detail = args[1]
+            if isinstance(detail, dict) and isinstance(detail.get("error_types"), list):
+                # fastmcp 4 logs a pre-sanitized {error_count, error_types} summary.
+                types = [t for t in detail["error_types"] if isinstance(t, str) and t.isidentifier()]
+                record.args = (name, "; ".join(types) or "arguments are invalid")
+            else:
+                record.args = (name, summarize_errors(detail, None))
         elif msg in _SAFE_TYPE_NAME_TEMPLATES and isinstance(args, tuple) and all(
             isinstance(a, str) and a.isidentifier() for a in args
         ):
