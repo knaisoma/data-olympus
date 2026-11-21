@@ -1,4 +1,299 @@
 {
   "schema_version": 1,
-  "exceptions": []
+  "exceptions": [
+    {
+      "finding": "CVE-2026-84786",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcrypto3",
+        "package_version": "3.5.9-r1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype 0.119.0 reports fix state unknown for libcrypto3 3.5.9-r1 (OpenSSL, Alpine 3.24 stable, the current python:3.15-alpine base), and no stable Alpine line ships a fix. Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Not reachable: the flaw is in DANE-enabled TLS clients. CPython's ssl module never enables DANE, and data-olympus makes no DANE lookups.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    },
+    {
+      "finding": "CVE-2026-84786",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libssl3",
+        "package_version": "3.5.9-r1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype 0.119.0 reports fix state unknown for libssl3 3.5.9-r1 (OpenSSL, Alpine 3.24 stable, the current python:3.15-alpine base), and no stable Alpine line ships a fix. Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Not reachable: the flaw is in DANE-enabled TLS clients. CPython's ssl module never enables DANE, and data-olympus makes no DANE lookups.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    },
+    {
+      "finding": "CVE-2026-107493",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcrypto3",
+        "package_version": "3.5.9-r1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype 0.119.0 reports fix state unknown for libcrypto3 3.5.9-r1 (OpenSSL, Alpine 3.24 stable, the current python:3.15-alpine base), and no stable Alpine line ships a fix. Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Low exposure: the flaw needs an application that passes an existing stack to PEM_X509_INFO_read_bio_ex and then reuses it after a failed read. The only PEM input is the image-owned CA bundle and git's SSH or TLS material, none of it attacker supplied.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    },
+    {
+      "finding": "CVE-2026-107493",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libssl3",
+        "package_version": "3.5.9-r1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype 0.119.0 reports fix state unknown for libssl3 3.5.9-r1 (OpenSSL, Alpine 3.24 stable, the current python:3.15-alpine base), and no stable Alpine line ships a fix. Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Low exposure: the flaw needs an application that passes an existing stack to PEM_X509_INFO_read_bio_ex and then reuses it after a failed read. The only PEM input is the image-owned CA bundle and git's SSH or TLS material, none of it attacker supplied.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    },
+    {
+      "finding": "CVE-2026-107494",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcrypto3",
+        "package_version": "3.5.9-r1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype 0.119.0 reports fix state unknown for libcrypto3 3.5.9-r1 (OpenSSL, Alpine 3.24 stable, the current python:3.15-alpine base), and no stable Alpine line ships a fix. Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Not reachable: the flaw is in the OpenSSL QUIC stack. Neither CPython's ssl module nor git uses QUIC.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    },
+    {
+      "finding": "CVE-2026-107494",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libssl3",
+        "package_version": "3.5.9-r1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype 0.119.0 reports fix state unknown for libssl3 3.5.9-r1 (OpenSSL, Alpine 3.24 stable, the current python:3.15-alpine base), and no stable Alpine line ships a fix. Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Not reachable: the flaw is in the OpenSSL QUIC stack. Neither CPython's ssl module nor git uses QUIC.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    },
+    {
+      "finding": "CVE-2026-121482",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcrypto3",
+        "package_version": "3.5.9-r1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype 0.119.0 reports fix state unknown for libcrypto3 3.5.9-r1 (OpenSSL, Alpine 3.24 stable, the current python:3.15-alpine base), and no stable Alpine line ships a fix. Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Not reachable: the flaw needs CMS or PKCS#7 SignedData verification with CRL checks. data-olympus verifies no CMS or PKCS#7 messages.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    },
+    {
+      "finding": "CVE-2026-121482",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libssl3",
+        "package_version": "3.5.9-r1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype 0.119.0 reports fix state unknown for libssl3 3.5.9-r1 (OpenSSL, Alpine 3.24 stable, the current python:3.15-alpine base), and no stable Alpine line ships a fix. Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Not reachable: the flaw needs CMS or PKCS#7 SignedData verification with CRL checks. data-olympus verifies no CMS or PKCS#7 messages.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    },
+    {
+      "finding": "CVE-2026-124709",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libcrypto3",
+        "package_version": "3.5.9-r1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype 0.119.0 reports fix state unknown for libcrypto3 3.5.9-r1 (OpenSSL, Alpine 3.24 stable, the current python:3.15-alpine base), and no stable Alpine line ships a fix. Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Not reachable: the flaw is in an OpenSSL QUIC server. data-olympus serves plain HTTP behind the cluster gateway and runs no QUIC server.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    },
+    {
+      "finding": "CVE-2026-124709",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "libssl3",
+        "package_version": "3.5.9-r1",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fixed version exists: grype 0.119.0 reports fix state unknown for libssl3 3.5.9-r1 (OpenSSL, Alpine 3.24 stable, the current python:3.15-alpine base), and no stable Alpine line ships a fix. Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Not reachable: the flaw is in an OpenSSL QUIC server. data-olympus serves plain HTTP behind the cluster gateway and runs no QUIC server.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    },
+    {
+      "finding": "CVE-2026-119373",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "sqlite-libs",
+        "package_version": "3.53.4-r0",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fix is adoptable: grype 0.119.0 reports fix state unknown for sqlite-libs 3.53.4-r0 on Alpine 3.24 stable; fixed upstream in SQLite 3.54.0, which only Alpine edge ships. Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Not reachable: the overflow needs a detail=none FTS5 table with negative rowids. The index's only FTS5 table uses the default detail=full and rowids SQLite assigns.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    },
+    {
+      "finding": "CVE-2026-119374",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "sqlite-libs",
+        "package_version": "3.53.4-r0",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fix is adoptable: grype 0.119.0 reports fix state unknown for sqlite-libs 3.53.4-r0 on Alpine 3.24 stable; fixed upstream in SQLite 3.54.0, which only Alpine edge ships. Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Not reachable: the overflow needs secure-delete on a corrupted FTS5 index from a crafted database file. data-olympus never enables secure-delete and only opens the index it builds itself from the knowledge base.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    },
+    {
+      "finding": "CVE-2026-119379",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "sqlite-libs",
+        "package_version": "3.53.4-r0",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fix is adoptable: grype 0.119.0 reports fix state unknown for sqlite-libs 3.53.4-r0 on Alpine 3.24 stable; fixed upstream in SQLite 3.54.0, which only Alpine edge ships. Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Not reachable: the overflow is in the session extension (sqlite3changeset_apply). data-olympus applies no changesets.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    },
+    {
+      "finding": "CVE-2026-119586",
+      "scope": {
+        "artifact": "ghcr.io/knaisoma/data-olympus",
+        "package": "sqlite-libs",
+        "package_version": "3.53.4-r0",
+        "platforms": [
+          "linux/amd64",
+          "linux/arm64"
+        ]
+      },
+      "owner": "Antonio J. del Águila (ajdelaguila)",
+      "remediation_constraint": "No fix is adoptable: grype 0.119.0 reports fix state unknown for sqlite-libs 3.53.4-r0 on Alpine 3.24 stable; no upstream fix exists (the advisory covers 3.54.1 and earlier). Covered by the operator's standing rule of 2026-11-21: a High or Unknown finding with no fix on any adoptable line gets a 30 day exception, never a Critical one.",
+      "justification": "Not reachable: the flaw is in the sqlite3 command-line shell's .recover command. The image installs only the library (sqlite-libs), not the shell.",
+      "mitigation": "Runtime hardening on the Hetzner deployment: non-root uid, allowPrivilegeEscalation false, all capabilities dropped, read-only root filesystem, RuntimeDefault seccomp; the service is reachable only over the VPN.",
+      "residual_risk": "Low: the vulnerable code path is not exercised by data-olympus; the exception lapses after 30 days and is renewed only while no adoptable fix exists.",
+      "approved_by": "ajdelaguila",
+      "approved_on": "2026-11-21",
+      "expiry": "2026-12-21",
+      "review_date": "2026-12-05"
+    }
+  ]
 }
