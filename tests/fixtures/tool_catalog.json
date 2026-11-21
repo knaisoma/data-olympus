@@ -1,0 +1,1077 @@
+{
+  "all": {
+    "kb_audit": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional agent_identity filter."
+        },
+        "limit": {
+          "default": 100,
+          "description": "Maximum audit events to return.",
+          "type": "integer"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional Unix timestamp lower bound."
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional audit event status filter."
+        }
+      },
+      "type": "object"
+    },
+    "kb_bootstrap_project": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_identity": {
+          "description": "Human-readable agent identity for audit events.",
+          "type": "string"
+        },
+        "component": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional component key under the workspace."
+        },
+        "component_remote_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional git remote URL used for matching."
+        },
+        "confidence": {
+          "description": "Caller confidence in the proposal, from 0.0 to 1.0.",
+          "type": "number"
+        },
+        "files": {
+          "description": "Bootstrap files, each with target_path and postimage keys.",
+          "items": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "source_session": {
+          "description": "Stable id of the agent session making the call.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Project or workspace key in the KB.",
+          "type": "string"
+        },
+        "workspace_remote_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional git remote URL used for matching."
+        }
+      },
+      "required": [
+        "workspace",
+        "files",
+        "source_session",
+        "agent_identity",
+        "confidence"
+      ],
+      "type": "object"
+    },
+    "kb_cleanup_plan": {
+      "additionalProperties": false,
+      "properties": {
+        "component": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional component key under the workspace."
+        },
+        "jaccard_threshold": {
+          "default": 0.6,
+          "description": "Similarity threshold above which a local doc is treated as duplicate.",
+          "type": "number"
+        },
+        "local_files": {
+          "description": "Local docs to compare, each with path and content keys.",
+          "items": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "workspace": {
+          "description": "Project or workspace key in the KB.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace",
+        "local_files"
+      ],
+      "type": "object"
+    },
+    "kb_compliance": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional agent_identity filter."
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional Unix timestamp lower bound."
+        }
+      },
+      "type": "object"
+    },
+    "kb_consult": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_identity": {
+          "description": "Human-readable agent identity for audit events.",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Natural-language search query.",
+          "type": "string"
+        },
+        "source_session": {
+          "description": "Stable id of the agent session making the call.",
+          "type": "string"
+        },
+        "trigger": {
+          "default": "explicit",
+          "description": "Consult trigger: explicit or prompt_hook.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Project or workspace key in the KB.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace",
+        "intent",
+        "source_session",
+        "agent_identity"
+      ],
+      "type": "object"
+    },
+    "kb_curate": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "default": 50,
+          "description": "Maximum number of results, clamped to 1..100.",
+          "type": "integer"
+        },
+        "verbose": {
+          "default": false,
+          "description": "False returns the compact response; true includes all fields.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "kb_gate_check": {
+      "additionalProperties": false,
+      "properties": {
+        "action_diff": {
+          "default": "",
+          "description": "Short description or diff summary of the pending action.",
+          "type": "string"
+        },
+        "action_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional path or URL affected by the pending action."
+        },
+        "session_id": {
+          "description": "Agent session id checked against consult history.",
+          "type": "string"
+        },
+        "tool_name": {
+          "description": "Name of the tool or command about to run.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Project or workspace key in the KB.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace",
+        "session_id",
+        "tool_name"
+      ],
+      "type": "object"
+    },
+    "kb_get": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Stable KB document id to retrieve.",
+          "type": "string"
+        },
+        "verbose": {
+          "default": false,
+          "description": "False returns the compact response; true includes all fields.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "kb_get_pending": {
+      "additionalProperties": false,
+      "properties": {
+        "pending_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pending_id"
+      ],
+      "type": "object"
+    },
+    "kb_health": {
+      "additionalProperties": false,
+      "properties": {
+        "verbose": {
+          "default": false,
+          "description": "False returns the compact response; true includes all fields.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "kb_list": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional category filter within a tier."
+        },
+        "tier": {
+          "description": "Required tier such as T1, T2, T3, or T4.",
+          "type": "string"
+        },
+        "verbose": {
+          "default": false,
+          "description": "False returns the compact response; true includes all fields.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "tier"
+      ],
+      "type": "object"
+    },
+    "kb_list_pending": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "kb_onboarding_status": {
+      "additionalProperties": false,
+      "properties": {
+        "component": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional component key under the workspace."
+        },
+        "component_remote_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional git remote URL used for matching."
+        },
+        "workspace": {
+          "description": "Project or workspace key in the KB.",
+          "type": "string"
+        },
+        "workspace_remote_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional git remote URL used for matching."
+        }
+      },
+      "required": [
+        "workspace"
+      ],
+      "type": "object"
+    },
+    "kb_outline": {
+      "additionalProperties": false,
+      "properties": {
+        "verbose": {
+          "default": false,
+          "description": "False returns the compact response; true includes all fields.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "kb_propose_edit": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_identity": {
+          "description": "Human-readable agent identity for audit events.",
+          "type": "string"
+        },
+        "base_blob_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional git blob sha for compare-and-swap protection."
+        },
+        "base_commit": {
+          "description": "Git commit the proposal was based on.",
+          "type": "string"
+        },
+        "confidence": {
+          "description": "Caller confidence in the proposal, from 0.0 to 1.0.",
+          "type": "number"
+        },
+        "contest": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional contest declaration with contradicts and optional reason."
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional supporting evidence strings, max 10 items of 500 chars each."
+        },
+        "postimage": {
+          "description": "Complete markdown file content after the proposed edit.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Short reason for the proposed change.",
+          "type": "string"
+        },
+        "source_session": {
+          "description": "Stable id of the agent session making the call.",
+          "type": "string"
+        },
+        "target_file_hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional content hash for compare-and-swap protection."
+        },
+        "target_path": {
+          "description": "KB-relative markdown path to create or edit.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_path",
+        "postimage",
+        "base_commit",
+        "base_blob_sha",
+        "target_file_hash",
+        "reason",
+        "source_session",
+        "agent_identity",
+        "confidence"
+      ],
+      "type": "object"
+    },
+    "kb_propose_memory": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_identity": {
+          "description": "Human-readable agent identity for audit events.",
+          "type": "string"
+        },
+        "capture": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional capture provenance envelope for a memory distilled from a passive capture: capture_source, capture_event_id, source_event_hash (sha256:<64 hex>), transformation and raw_retention (discarded, redacted or retained) are required; capture_session, classification and derived_memory_hash are optional. Identifiers and hashes only, never raw content."
+        },
+        "confidence": {
+          "description": "Caller confidence in the proposal, from 0.0 to 1.0.",
+          "type": "number"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional supporting evidence strings, max 10 items of 500 chars each."
+        },
+        "source_session": {
+          "description": "Stable id of the agent session making the call.",
+          "type": "string"
+        },
+        "tags": {
+          "description": "Short tags for the proposed memory.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "Markdown memory text to propose.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "tags",
+        "source_session",
+        "agent_identity",
+        "confidence"
+      ],
+      "type": "object"
+    },
+    "kb_record_event": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_identity": {
+          "description": "Human-readable agent identity for audit events.",
+          "type": "string"
+        },
+        "event_type": {
+          "description": "Client-reported event type: gate_bypass or gate_degraded.",
+          "type": "string"
+        },
+        "reason": {
+          "default": "",
+          "description": "Short reason for the proposed change.",
+          "type": "string"
+        },
+        "source_session": {
+          "description": "Stable id of the agent session making the call.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Project or workspace key in the KB.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_type",
+        "workspace",
+        "agent_identity",
+        "source_session"
+      ],
+      "type": "object"
+    },
+    "kb_resolve_pending": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_identity": {
+          "default": "operator",
+          "description": "Human-readable agent identity for audit events.",
+          "type": "string"
+        },
+        "decision": {
+          "description": "Resolution decision: approve or reject.",
+          "type": "string"
+        },
+        "edited_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional replacement postimage used when approving."
+        },
+        "override_secret_scan": {
+          "default": false,
+          "description": "Operator override for false-positive secret-scan matches.",
+          "type": "boolean"
+        },
+        "pending_id": {
+          "description": "Pending proposal id to resolve.",
+          "type": "string"
+        },
+        "source_session": {
+          "default": "operator-resolve",
+          "description": "Stable id of the agent session making the call.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pending_id",
+        "decision"
+      ],
+      "type": "object"
+    },
+    "kb_search": {
+      "additionalProperties": false,
+      "properties": {
+        "abstain": {
+          "default": false,
+          "description": "True returns an explicit abstention when the query has no KB signal.",
+          "type": "boolean"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional category filter within a tier."
+        },
+        "doc_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional document type filter."
+        },
+        "in_force": {
+          "default": false,
+          "description": "True returns only currently governing documents.",
+          "type": "boolean"
+        },
+        "include_expired": {
+          "default": false,
+          "description": "True allows expired documents in search results.",
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 20,
+          "description": "Maximum number of results, clamped to 1..100.",
+          "type": "integer"
+        },
+        "query": {
+          "description": "Natural-language search query.",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional frontmatter status filter."
+        },
+        "tier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional tier filter such as T1, T2, T3, or T4."
+        },
+        "validity_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional validity facet: expired, stale, or expiring_within:N."
+        },
+        "verbose": {
+          "default": false,
+          "description": "False returns the compact response; true includes all fields.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "kb_session_recap": {
+      "additionalProperties": false,
+      "properties": {
+        "source_session": {
+          "description": "Stable id of the agent session making the call.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_session"
+      ],
+      "type": "object"
+    },
+    "kb_suggest_skills": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "default": 20,
+          "description": "Maximum number of results, clamped to 1..100.",
+          "type": "integer"
+        },
+        "min_documents": {
+          "default": 3,
+          "type": "integer"
+        },
+        "verbose": {
+          "default": false,
+          "description": "False returns the compact response; true includes all fields.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "search": {
+    "call_tool": {
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Arguments to pass to the tool"
+        },
+        "name": {
+          "description": "The name of the tool to call",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "kb_consult": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_identity": {
+          "description": "Human-readable agent identity for audit events.",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Natural-language search query.",
+          "type": "string"
+        },
+        "source_session": {
+          "description": "Stable id of the agent session making the call.",
+          "type": "string"
+        },
+        "trigger": {
+          "default": "explicit",
+          "description": "Consult trigger: explicit or prompt_hook.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Project or workspace key in the KB.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace",
+        "intent",
+        "source_session",
+        "agent_identity"
+      ],
+      "type": "object"
+    },
+    "kb_gate_check": {
+      "additionalProperties": false,
+      "properties": {
+        "action_diff": {
+          "default": "",
+          "description": "Short description or diff summary of the pending action.",
+          "type": "string"
+        },
+        "action_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional path or URL affected by the pending action."
+        },
+        "session_id": {
+          "description": "Agent session id checked against consult history.",
+          "type": "string"
+        },
+        "tool_name": {
+          "description": "Name of the tool or command about to run.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Project or workspace key in the KB.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace",
+        "session_id",
+        "tool_name"
+      ],
+      "type": "object"
+    },
+    "kb_get": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Stable KB document id to retrieve.",
+          "type": "string"
+        },
+        "verbose": {
+          "default": false,
+          "description": "False returns the compact response; true includes all fields.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "kb_health": {
+      "additionalProperties": false,
+      "properties": {
+        "verbose": {
+          "default": false,
+          "description": "False returns the compact response; true includes all fields.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "kb_record_event": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_identity": {
+          "description": "Human-readable agent identity for audit events.",
+          "type": "string"
+        },
+        "event_type": {
+          "description": "Client-reported event type: gate_bypass or gate_degraded.",
+          "type": "string"
+        },
+        "reason": {
+          "default": "",
+          "description": "Short reason for the proposed change.",
+          "type": "string"
+        },
+        "source_session": {
+          "description": "Stable id of the agent session making the call.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Project or workspace key in the KB.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_type",
+        "workspace",
+        "agent_identity",
+        "source_session"
+      ],
+      "type": "object"
+    },
+    "kb_search": {
+      "additionalProperties": false,
+      "properties": {
+        "abstain": {
+          "default": false,
+          "description": "True returns an explicit abstention when the query has no KB signal.",
+          "type": "boolean"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional category filter within a tier."
+        },
+        "doc_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional document type filter."
+        },
+        "in_force": {
+          "default": false,
+          "description": "True returns only currently governing documents.",
+          "type": "boolean"
+        },
+        "include_expired": {
+          "default": false,
+          "description": "True allows expired documents in search results.",
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 20,
+          "description": "Maximum number of results, clamped to 1..100.",
+          "type": "integer"
+        },
+        "query": {
+          "description": "Natural-language search query.",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional frontmatter status filter."
+        },
+        "tier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional tier filter such as T1, T2, T3, or T4."
+        },
+        "validity_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional validity facet: expired, stale, or expiring_within:N."
+        },
+        "verbose": {
+          "default": false,
+          "description": "False returns the compact response; true includes all fields.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "kb_session_recap": {
+      "additionalProperties": false,
+      "properties": {
+        "source_session": {
+          "description": "Stable id of the agent session making the call.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_session"
+      ],
+      "type": "object"
+    },
+    "tool_search": {
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "description": "Natural language query to search for tools",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  }
+}

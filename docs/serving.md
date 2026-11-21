@@ -858,11 +858,17 @@ GC is conservative and coupled to the push queue:
 
 ## Streamable-http session lifecycle and reaping
 
+Since data-olympus moved to FastMCP 4 and MCP SDK 2, a client speaking the
+2026-07-28 protocol sends requests without a session, so it never creates a
+session table entry: the reaper and `live_sessions` below only cover clients
+on the earlier, session-based protocol, and `live_sessions` no longer counts
+all traffic.
+
 Each session-less `POST /mcp` handshake makes the underlying MCP SDK create a
 transport, register it in an in-memory session table, and start a task that
 blocks waiting for further messages on that session. The SDK removes a session
 on an explicit client `DELETE`, on the session task crashing, on server
-shutdown, and, since MCP SDK 1.30, once the session has had no request in flight
+shutdown, and, since MCP SDK 1.30 (still so in 2.x), once the session has had no request in flight
 for 30 minutes. A request being served or an open `GET` stream holds the
 session. FastMCP builds the SDK's session manager without overriding that
 window, so it applies to this server as a backstop.

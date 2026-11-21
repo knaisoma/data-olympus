@@ -12,7 +12,7 @@ from fastmcp.tools import Tool
 def test_project_requires_fastmcp_with_search_transform() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text())
     dependencies = pyproject["project"]["dependencies"]
-    assert "fastmcp>=3.4.4,<4" in dependencies
+    assert "fastmcp>=4.1.1,<5" in dependencies
 
 
 def test_bm25_search_transform_exposes_required_configuration() -> None:
