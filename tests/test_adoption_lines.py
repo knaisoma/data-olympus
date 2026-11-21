@@ -91,6 +91,90 @@ def test_a_fix_on_an_unlisted_newer_line_blocks():
     assert run([python_match("CVE-2026-0003", "Low", ["3.15.0rc3"])], lines=())["blocked"]
 
 
+def test_an_unlisted_line_below_the_highest_listed_line_blocks():
+    """3.14 is newer than the installed 3.13 but older than the highest listed
+    line (3.15): an unlisted released line there counts as a fix available."""
+    evidence = run([python_match("CVE-2026-0014", "Low", ["3.14.8"])])
+    assert evidence["blocked"]
+    assert {f["reason"] for f in evidence["blocking"]} == {"fix available"}
+    assert evidence["fix_not_yet_adoptable"] == []
+
+
+PY317 = PY315 | {"line": "3.17", "ga_date": "2028-10-01T00:00:00+00:00",
+                 "eligible_from": "2028-11-30T00:00:00+00:00"}
+
+
+@pytest.mark.parametrize(("fix", "blocked"), [
+    ("3.16.1", True), ("3.16.0rc1", False), ("3.16.0a2", False), ("3.16.0b1", False),
+    ("3.16.0.dev3", False)])
+def test_a_pre_release_on_an_unlisted_line_between_listed_lines_is_unavailable(fix, blocked):
+    evidence = run([python_match("CVE-2026-0015", "Low", [fix], installed="3.15.2")],
+                   lines=(PY315, PY317))
+    assert evidence["blocked"] is blocked
+    if not blocked:
+        assert evidence["fix_not_yet_adoptable"][0]["label"] == "unlisted-line-only"
+
+
+def test_a_line_beyond_the_highest_listed_line_is_unlisted_line_only():
+    only = run([python_match("CVE-2026-0003", "Low", ["3.16.1"], installed="3.15.2")])
+    assert not only["blocked"]
+    assert only["fix_not_yet_adoptable"][0]["label"] == "unlisted-line-only"
+    assert only["fix_not_yet_adoptable"][0]["unlisted_line_fixes"] == [
+        {"version": "3.16.1", "line": "3.16"}]
+    assert "3.16.1 (3.16, unlisted)" in gate.summary(only)
+    # Next to a deferred fix on the listed line, the unlisted one is recorded too.
+    mixed = run([python_match("CVE-2026-0003", "Low", ["3.16.1", "3.15.0rc3"])])
+    item = mixed["fix_not_yet_adoptable"][0]
+    assert not mixed["blocked"] and item["label"] == "not-yet-eligible"
+    assert item["unlisted_line_fixes"] == [{"version": "3.16.1", "line": "3.16"}]
+
+
+# The shape grype reported for the python:3.15-alpine image on 2026-11-21:
+# CPython 3.15.2 installed, fixes only in 3.16.0 or 3.16.0a2, 3.16 unlisted.
+@pytest.mark.parametrize("fixes", [["3.16.0"], ["3.16.0a2"], ["3.16.0", "3.16.0a2"]])
+@pytest.mark.parametrize(("severity", "blocked"), [
+    ("Critical", True), ("High", True), ("Unknown", True), ("Medium", False),
+    ("Low", False), ("Negligible", False)])
+@pytest.mark.parametrize("now", [BEFORE, AT])
+def test_python_3_16_only_fix_follows_the_no_fix_rules(fixes, severity, blocked, now):
+    evidence = run([python_match("CVE-2026-0011", severity, fixes, installed="3.15.2")],
+                   now=now)
+    assert evidence["blocked"] is blocked
+    assert all(f["reason"] != "fix available" for f in evidence["blocking"])
+    if blocked:
+        assert {f["reason"] for f in evidence["blocking"]} == {
+            f"{severity} without fix and without exception"}
+    for item in evidence["fix_not_yet_adoptable"]:
+        assert item["label"] == "unlisted-line-only"
+        assert {x["line"] for x in item["unlisted_line_fixes"]} == {"3.16"}
+        assert "eligible_from" not in item
+    assert len(evidence["fix_not_yet_adoptable"]) == len(gate.PLATFORMS)
+
+
+def test_python_3_16_only_high_fix_can_be_covered_by_an_exception():
+    entry = exception("CVE-2026-0011", package="python")
+    entry["scope"]["package_version"] = "3.15.2"
+    evidence = run([python_match("CVE-2026-0011", "High", ["3.16.0"], installed="3.15.2")],
+                   exceptions=[entry])
+    assert not evidence["blocked"] and len(evidence["excepted"]) == len(gate.PLATFORMS)
+
+
+def test_an_installed_line_fix_next_to_an_unlisted_one_still_blocks():
+    evidence = run([python_match("CVE-2026-0012", "Low", ["3.16.0", "3.15.3"],
+                                 installed="3.15.2")])
+    assert evidence["blocked"]
+    assert {f["reason"] for f in evidence["blocking"]} == {"fix available"}
+
+
+def test_listing_the_newer_line_makes_its_fix_count_from_eligible_from():
+    py316 = PY315 | {"line": "3.16", "ga_date": "2027-10-01T00:00:00+00:00",
+                     "eligible_from": "2027-11-30T00:00:00+00:00"}
+    finding = python_match("CVE-2026-0013", "Low", ["3.16.0"], installed="3.15.2")
+    assert not run([finding], lines=(PY315, py316))["blocked"]
+    later = dt.datetime(2027, 11, 30, tzinfo=dt.UTC)
+    assert run([finding], lines=(PY315, py316), now=later)["blocked"]
+
+
 @pytest.mark.parametrize(("severity", "blocked"), [("Medium", False), ("High", True)])
 def test_a_fix_only_on_older_lines_is_no_fix_labelled_older_line_only(severity, blocked):
     finding = python_match("CVE-2026-0004", severity, ["3.10.22", "3.12.15"])

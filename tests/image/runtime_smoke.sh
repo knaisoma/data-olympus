@@ -21,6 +21,9 @@ image=${1:?usage: runtime_smoke.sh <image>}
 expected_python=3.15
 name="do-runtime-smoke-$$"
 attempts=${RUNTIME_SMOKE_ATTEMPTS:-60}
+# Optional platform (e.g. linux/amd64) for checking an emulated image on a host
+# of another architecture; unset, docker runs the host platform as in CI.
+platform=${RUNTIME_SMOKE_PLATFORM:-}
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok: $*"; }
@@ -33,7 +36,7 @@ trap cleanup EXIT INT TERM
 run_once() {
     entrypoint=$1
     shift
-    docker run --rm --network none --cap-drop ALL \
+    docker run --rm ${platform:+--platform "$platform"} --network none --cap-drop ALL \
         --security-opt no-new-privileges --entrypoint "$entrypoint" "$image" "$@"
 }
 
@@ -54,7 +57,7 @@ uid=$(run_once id -u 2>&1 | tr -d '\r' || true)
 pass "container runs as uid 65534"
 
 # Default entrypoint and CMD, no overrides of the application configuration.
-docker run -d --name "$name" --network none --cap-drop ALL \
+docker run -d --name "$name" ${platform:+--platform "$platform"} --network none --cap-drop ALL \
     --security-opt no-new-privileges "$image" >/dev/null
 
 probe='import sys, urllib.request
