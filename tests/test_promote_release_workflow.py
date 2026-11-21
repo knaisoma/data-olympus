@@ -277,6 +277,28 @@ def test_every_setup_python_reference_is_pinned_to_the_v7_1_0_commit():
         assert set(refs) == {SETUP_PYTHON}, name
 
 
+DOCKER_LOGIN = "docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6"
+
+
+def test_every_docker_login_reference_is_pinned_to_the_v4_7_0_commit():
+    found = {}
+    paths = sorted(Path(".github/workflows").glob("*.y*ml"))
+    assert paths
+    for path in paths:
+        data = yaml.safe_load(path.read_text())
+        refs = [
+            step["uses"]
+            for job in (data.get("jobs") or {}).values()
+            for step in job.get("steps", [])
+            if str(step.get("uses", "")).startswith("docker/login-action")
+        ]
+        if refs:
+            found[path.name] = refs
+    assert {"promote-release.yml"} <= set(found)
+    for name, refs in found.items():
+        assert set(refs) == {DOCKER_LOGIN}, name
+
+
 SETUP_UV = "astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e"
 
 
