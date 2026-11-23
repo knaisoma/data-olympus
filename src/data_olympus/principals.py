@@ -30,7 +30,7 @@ from __future__ import annotations
 import hmac
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 CAP_READ = "read"
 CAP_PROPOSE = "propose"
@@ -38,11 +38,23 @@ CAP_AUTO_COMMIT = "auto_commit"
 CAP_RESOLVE = "resolve"
 CAP_BOOTSTRAP = "bootstrap"
 CAP_RECORD_EVENT = "record_event"
+# Agora (issue #492). Read and post are granted implicitly to authenticated
+# principals when Agora is enabled (KB_AGORA_IMPLICIT_CAPS); admin, which
+# manages membership instance-wide, is only ever granted explicitly.
+CAP_AGORA_READ = "agora_read"
+CAP_AGORA_POST = "agora_post"
+CAP_AGORA_ADMIN = "agora_admin"
 
 ALL_CAPABILITIES: frozenset[str] = frozenset({
     CAP_READ, CAP_PROPOSE, CAP_AUTO_COMMIT,
     CAP_RESOLVE, CAP_BOOTSTRAP, CAP_RECORD_EVENT,
+    CAP_AGORA_READ, CAP_AGORA_POST, CAP_AGORA_ADMIN,
 })
+
+AGORA_IMPLICIT_CAPABILITIES: frozenset[str] = frozenset({CAP_AGORA_READ, CAP_AGORA_POST})
+
+PrincipalKind = Literal["person", "agent"]
+_PRINCIPAL_KINDS: frozenset[str] = frozenset({"person", "agent"})
 
 # Least-privilege default for a KB_AUTH_PRINCIPALS entry that omits an explicit
 # ``capabilities`` list (item 5). Previously the default was ALL_CAPABILITIES,
@@ -59,6 +71,26 @@ WRITE_TOOL_CAPABILITY: dict[str, str] = {
     "kb_resolve_pending": CAP_RESOLVE,
     "kb_bootstrap_project": CAP_BOOTSTRAP,
     "kb_record_event": CAP_RECORD_EVENT,
+}
+
+# Agora MCP tools mapped to the capability they require. Checked by the MCP
+# auth middleware exactly like WRITE_TOOL_CAPABILITY, so an anonymous caller
+# (read only) is refused every Agora tool when auth is configured.
+_AGORA_READ_TOOLS = (
+    "agora_inbox", "agora_thread_get", "agora_threads", "agora_search",
+    "agora_profile_get", "agora_directory", "agora_scopes", "agora_mark_seen",
+    "agora_catch_up", "agora_caught_up",
+)
+_AGORA_POST_TOOLS = (
+    "agora_post", "agora_reply", "agora_thread_state", "agora_handover_respond",
+    "agora_option_add", "agora_recommend", "agora_vote", "agora_vote_review",
+    "agora_decide", "agora_withdraw", "agora_profile_set", "agora_scope_create",
+    "agora_subscribe", "agora_unsubscribe", "agora_membership", "agora_contact",
+    "agora_pin", "agora_unpin",
+)
+AGORA_TOOL_CAPABILITY: dict[str, str] = {
+    **{name: CAP_AGORA_READ for name in _AGORA_READ_TOOLS},
+    **{name: CAP_AGORA_POST for name in _AGORA_POST_TOOLS},
 }
 
 # Non-write MCP tools that expose pending/audit/enforcement state and so require
@@ -84,6 +116,11 @@ class Principal:
     name: str
     capabilities: frozenset[str]
     authenticated: bool = True
+    # Agora participant kind and, for an agent, the person it acts for. Both
+    # are operator configuration on the KB_AUTH_PRINCIPALS entry and are
+    # authoritative: a caller cannot change them.
+    kind: PrincipalKind = "agent"
+    owner: str | None = None
 
     def has(self, capability: str) -> bool:
         return capability in self.capabilities
@@ -97,7 +134,7 @@ class Principal:
 # the "auth configured" branches never treat it as a real bearer principal, but
 # it holds every capability so behavior matches the pre-auth product.
 LOCAL_TRUSTED = Principal(
-    name="local", capabilities=ALL_CAPABILITIES, authenticated=False
+    name="local", capabilities=ALL_CAPABILITIES, authenticated=False, kind="person"
 )
 ANONYMOUS = Principal(
     name="anonymous", capabilities=frozenset({CAP_READ}), authenticated=False
@@ -155,13 +192,16 @@ class PrincipalRegistry:
     """Maps bearer tokens to principals; resolves an Authorization header."""
 
     def __init__(
-        self, *, auth_token: str = "", principals: list[dict[str, Any]] | None = None
+        self, *, auth_token: str = "", principals: list[dict[str, Any]] | None = None,
+        agora_implicit_caps: bool = False,
     ) -> None:
         self._by_token: list[tuple[str, Principal]] = []
+        self._by_name: dict[str, Principal] = {}
         if auth_token:
-            self._by_token.append(
-                (auth_token, Principal("operator", ALL_CAPABILITIES, authenticated=True))
-            )
+            operator = Principal("operator", ALL_CAPABILITIES, authenticated=True,
+                                 kind="person")
+            self._by_token.append((auth_token, operator))
+            self._by_name[operator.name] = operator
         # Ownership of a parked proposal is the principal NAME (issue #256), so
         # two credentials sharing a name share ownership. Two unnamed
         # principals both defaulting to "agent" was enough for a read-only
@@ -169,7 +209,10 @@ class PrincipalRegistry:
         # construction rather than resolved silently: an operator who meant two
         # identities must say so, and one who meant an alias can say that too.
         seen_names = {"operator"} if auth_token else set()
-        for spec in principals or []:
+        # (entry number, name, owner) checked once every entry is parsed, so an
+        # owner may appear later in the list than its agent.
+        owned: list[tuple[int, str, str]] = []
+        for number, spec in enumerate(principals or [], start=1):
             token = str(spec.get("token", "")).strip()
             if not token:
                 continue
@@ -188,13 +231,63 @@ class PrincipalRegistry:
                 capset = DEFAULT_PRINCIPAL_CAPABILITIES
             else:
                 capset = frozenset(str(c).strip() for c in caps if str(c).strip())
-            self._by_token.append(
-                (token, Principal(name, capset, authenticated=True))
-            )
+            if agora_implicit_caps:
+                capset = capset | AGORA_IMPLICIT_CAPABILITIES
+            kind_raw = spec.get("kind", "agent")
+            if not isinstance(kind_raw, str) or kind_raw not in _PRINCIPAL_KINDS:
+                raise ValueError(
+                    f"KB_AUTH_PRINCIPALS entry {number} ({name!r}) has an invalid "
+                    "'kind'; expected 'person' or 'agent'"
+                )
+            kind: PrincipalKind = "person" if kind_raw == "person" else "agent"
+            owner_raw = spec.get("owner")
+            owner: str | None = None
+            if owner_raw is not None:
+                if not isinstance(owner_raw, str) or not owner_raw.strip():
+                    raise ValueError(
+                        f"KB_AUTH_PRINCIPALS entry {number} ({name!r}) has an "
+                        "invalid 'owner'; expected a principal name"
+                    )
+                owner = owner_raw.strip()
+                if kind == "person":
+                    raise ValueError(
+                        f"KB_AUTH_PRINCIPALS entry {number} ({name!r}) is a person "
+                        "with an owner; only agents have owners"
+                    )
+                if owner == name:
+                    raise ValueError(
+                        f"KB_AUTH_PRINCIPALS entry {number} ({name!r}) names itself "
+                        "as its own owner"
+                    )
+                owned.append((number, name, owner))
+            principal = Principal(name, capset, authenticated=True, kind=kind,
+                                  owner=owner)
+            self._by_token.append((token, principal))
+            self._by_name[name] = principal
+        for number, name, owner in owned:
+            target = self._by_name.get(owner)
+            if target is None:
+                raise ValueError(
+                    f"KB_AUTH_PRINCIPALS entry {number} ({name!r}) names owner "
+                    f"{owner!r}, which is not a configured principal"
+                )
+            if target.kind != "person":
+                raise ValueError(
+                    f"KB_AUTH_PRINCIPALS entry {number} ({name!r}) names owner "
+                    f"{owner!r}, which is not a person"
+                )
 
     @property
     def auth_configured(self) -> bool:
         return bool(self._by_token)
+
+    def get(self, name: str) -> Principal | None:
+        """The configured principal with this name, or None."""
+        return self._by_name.get(name)
+
+    def principals(self) -> list[Principal]:
+        """Every configured principal, in configuration order."""
+        return list(self._by_name.values())
 
     def resolve(self, auth_header: str | None) -> Principal:
         if not self.auth_configured:

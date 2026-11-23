@@ -47,6 +47,7 @@ from data_olympus.heap import configure_allocator, release_free_heap
 from data_olympus.index import Index, SearchHit, make_status_reranker
 from data_olympus.pending import PendingQueue
 from data_olympus.principals import (
+    AGORA_TOOL_CAPABILITY,
     AUTH_REQUIRED_TOOLS,
     LOCAL_TRUSTED,
     WRITE_TOOL_CAPABILITY,
@@ -292,7 +293,9 @@ class MCPAuthMiddleware(Middleware):
             # the metrics extra.
             from data_olympus.metrics import get_metrics
             get_metrics().tool_calls.labels(tool=name).inc()
-            cap = WRITE_TOOL_CAPABILITY.get(name)
+            # Agora tools (issue #492) are capability-gated like write tools:
+            # with auth configured, anonymous (read only) is refused them all.
+            cap = WRITE_TOOL_CAPABILITY.get(name) or AGORA_TOOL_CAPABILITY.get(name)
             if cap is not None:
                 if not principal.has(cap):
                     raise ToolError(
@@ -410,6 +413,9 @@ class ServerState:
         # is disabled / air-gapped).
         self.latest_version: str | None = None
         self.update_available: bool = False
+        # The Agora services (issue #492) when KB_AGORA_ENABLED is on and this
+        # is not a read-only replica; None otherwise.
+        self.agora: Any = None
 
     @property
     def pending_count(self) -> int:
@@ -1457,8 +1463,29 @@ def build_app(
     # Read from the running config, not this function's own arguments, so the
     # registry that enforces authentication and state.config cannot disagree
     # (issue #291). The registry treats None and [] alike.
-    registry = PrincipalRegistry(auth_token=config.auth_token,
-                                 principals=list(config.auth_principals))
+    registry = PrincipalRegistry(
+        auth_token=config.auth_token,
+        principals=list(config.auth_principals),
+        agora_implicit_caps=config.agora_enabled and config.agora_implicit_caps,
+    )
+    # Agora (issue #492): optional, off by default. Checked against the
+    # effective config (loaded_config may replace this function's arguments).
+    # Never on a read-only replica: Agora writes to its own state.
+    agora = None
+    if config.agora_enabled and not config.read_only:
+        from data_olympus.agora.bundle import build_agora
+        from data_olympus.agora.tools import register_agora_tools
+
+        agora = build_agora(config, idx=idx, registry=registry)
+        agora_limiter = (
+            SlidingWindowLimiter(max_per_hour=config.agora_rate_limit_per_hour)
+            if config.agora_rate_limit_per_hour > 0 else None
+        )
+        register_agora_tools(app, agora, get_principal=_current_principal.get,
+                             limiter=agora_limiter)
+    elif config.agora_enabled:
+        log.warning("KB_AGORA_ENABLED is ignored on read-only replicas")
+    state.agora = agora
     # Outermost: keep submitted tool input out of validation and unknown-tool
     # errors and out of FastMCP's logs (see mcp_sanitize).
     from data_olympus.mcp_sanitize import ArgumentSanitizingMiddleware, install_log_filter
@@ -1473,7 +1500,10 @@ def build_app(
 
     from data_olympus.prompts import register_prompts
     register_prompts(app)
-    configure_tool_discovery(app, config.tool_discovery_mode)
+    configure_tool_discovery(
+        app, config.tool_discovery_mode,
+        extra_visible=("agora_inbox",) if agora is not None else (),
+    )
     # Attach state for lifespan to discover; not used by tests
     app._dolympus_state = state  # type: ignore[attr-defined]
     return app

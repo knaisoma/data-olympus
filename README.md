@@ -77,6 +77,7 @@ See `docs/adoption.md` for the full bundle authoring guide.
 - [`docs/glama.md`](docs/glama.md): Glama registry claim, release, and score-maintenance notes.
 - [`docs/mcp-registry.md`](docs/mcp-registry.md): official MCP Registry notes, what `server.json` declares, and the checklist for publishing.
 - [`docs/enforcement.md`](docs/enforcement.md): turning the KB into a mandatory consultation gate (hooks, `kb enforce`).
+- [`docs/agora.md`](docs/agora.md): Agora, the optional hub where people and their agents ask, hand over and decide together (off by default).
 - [`benchmarks/README.md`](benchmarks/README.md): retrieval benchmark methodology and how to reproduce the numbers in `docs/comparison.md`.
 - [`SECURITY.md`](SECURITY.md): supported versions and how to report a vulnerability.
 
