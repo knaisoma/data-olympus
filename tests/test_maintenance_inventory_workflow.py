@@ -69,6 +69,30 @@ def test_exactly_one_job_runs_for_each_trigger(event, ref, dry_run):
     assert running == {CASES[(event, ref, dry_run)]}
 
 
+def test_only_the_main_job_can_write_issues():
+    jobs = _workflow()["jobs"]
+    writers = {
+        name for name, job in jobs.items()
+        if (job.get("permissions") or {}).get("issues") == "write"
+    }
+    assert writers == {"inventory"}
+    assert jobs["inventory"]["permissions"] == {"contents": "read", "issues": "write"}
+    assert "--dry-run" not in jobs["inventory"]["steps"][-1]["run"]
+
+
+def test_the_dry_run_job_holds_a_read_only_token_from_any_ref():
+    job = _workflow()["jobs"]["dry-run"]
+    assert job["permissions"] == {"contents": "read", "issues": "read"}
+    assert "--dry-run" in job["steps"][-1]["run"]
+
+
+def test_a_write_dispatch_off_main_fails_without_a_token():
+    job = _workflow()["jobs"]["refuse-off-main"]
+    assert job["permissions"] == {}
+    assert all("uses" not in step for step in job["steps"])
+    assert job["steps"][-1]["run"].rstrip().endswith("exit 1")
+
+
 def _guard(job: dict) -> str:
     """The case-sensitive ref check that must be the write job's first step."""
     first = job["steps"][0]
@@ -106,27 +130,3 @@ def test_the_guard_runs_before_any_checkout():
     steps = _workflow()["jobs"]["inventory"]["steps"]
     assert "uses" not in steps[0] and "GITHUB_REF" in steps[0]["run"]
     assert all("uses" in step or "python" not in step.get("run", "") for step in steps[:2])
-
-
-def test_only_the_main_job_can_write_issues():
-    jobs = _workflow()["jobs"]
-    writers = {
-        name for name, job in jobs.items()
-        if (job.get("permissions") or {}).get("issues") == "write"
-    }
-    assert writers == {"inventory"}
-    assert jobs["inventory"]["permissions"] == {"contents": "read", "issues": "write"}
-    assert "--dry-run" not in jobs["inventory"]["steps"][-1]["run"]
-
-
-def test_the_dry_run_job_holds_a_read_only_token_from_any_ref():
-    job = _workflow()["jobs"]["dry-run"]
-    assert job["permissions"] == {"contents": "read", "issues": "read"}
-    assert "--dry-run" in job["steps"][-1]["run"]
-
-
-def test_a_write_dispatch_off_main_fails_without_a_token():
-    job = _workflow()["jobs"]["refuse-off-main"]
-    assert job["permissions"] == {}
-    assert all("uses" not in step for step in job["steps"])
-    assert job["steps"][-1]["run"].rstrip().endswith("exit 1")
