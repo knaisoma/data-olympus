@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from data_olympus.agora.context import body_fields
 from data_olympus.agora.errors import AgoraError
+from data_olympus.agora.highlights import TIMEOUT_SUFFIX, fit_headline
 from data_olympus.agora.models import Message, Vote, new_id
 from data_olympus.agora.safety import validate_text
 from data_olympus.agora.service import short_text
@@ -104,11 +105,12 @@ class DecisionService:
             result: Thread = self.highlights.commit_thread_event(
                 actor, before, after, message=message, action=action, headline=headline)
             return result
-        if message is not None:
-            self.ctx.store.add_message(message)
-            after = replace(after, updated_at=message.created_at)
-        self.ctx.store.update_thread(after)
-        return after
+        res = self.ctx.store.commit_event(thread=after, expected_version=before.version,
+                                          message=message)
+        if not res.ok or res.thread is None:
+            raise AgoraError("conflict", "the thread changed meanwhile; read it again "
+                             "and retry")
+        return res.thread
 
     def _event_message(self, actor: Participant | None, thread: Thread,
                        body: str) -> Message:
@@ -163,16 +165,37 @@ class DecisionService:
         if (thread.kind != "decision" or thread.state != "open"
                 or thread.timeout_at is None or thread.timeout_at > self.ctx.clock()):
             return thread
+        expired = self._expire(thread.id)
+        if expired is not None:
+            return expired
+        fresh = self.ctx.store.get_thread(thread.id)
+        return fresh if fresh is not None else thread
+
+    def _expire(self, thread_id: str) -> Thread | None:
+        """Expire through the store's transactional read-check-write, never a
+        compare-and-swap, so it cannot lose to a racing reply and racing
+        callers record one timeout."""
         if self.highlights is not None:
-            expired: Thread | None = self.highlights.expire(thread.id)
-            if expired is not None:
-                return expired
-            fresh = self.ctx.store.get_thread(thread.id)
-            return fresh if fresh is not None else thread
-        after = replace(thread, state="unresolved_advisory", updated_at=self.ctx.clock())
-        self.ctx.store.update_thread(after)
-        self.ctx.record("decision.timeout", None, thread=thread.id)
-        return after
+            result: Thread | None = self.highlights.expire(thread_id)
+            return result
+
+        def build(fresh: Thread) -> tuple[Message, None]:
+            line = fit_headline(fresh.title, TIMEOUT_SUFFIX)
+            return self._event_message(None, fresh, line), None
+
+        expired = self.ctx.store.expire_if_due(thread_id, self.ctx.clock(), build)
+        if expired is not None:
+            self.ctx.record("decision.timeout", None, thread=thread_id)
+        return expired
+
+    def expire_due(self) -> int:
+        """Expire every overdue open decision; run before every catch-up and
+        count so a timed-out decision shows without anyone opening it."""
+        count = 0
+        for t in self.ctx.store.list_due_decisions(self.ctx.clock()):
+            if self._expire(t.id) is not None:
+                count += 1
+        return count
 
     # --- options and recommendation ----------------------------------------
     def add_option(self, actor: Participant, thread_id: str, option: OptionInput) -> str:
@@ -321,9 +344,7 @@ class DecisionService:
         if thread.state not in allowed:
             raise AgoraError("conflict", f"the thread is {thread.state}")
         after = replace(thread, state="withdrawn", updated_at=self.ctx.clock())
-        headline = line
-        if not headline and self.highlights is not None:
-            headline = self.highlights.fallback(thread.title, ": withdrawn")
+        headline = line or fit_headline(thread.title, ": withdrawn")
         msg = self._event_message(actor, thread, headline) if headline else None
         result = self._commit(actor, thread, after, message=msg, action="withdrawn",
                               headline=headline or None)

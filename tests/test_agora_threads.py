@@ -20,6 +20,7 @@ from tests.agora_world import (  # noqa: F401 - pytest fixtures
     core,
     ctx,
     ds,
+    hs,
     rogue,
     svc,
     ts,
@@ -203,7 +204,8 @@ def test_handover_decline_on_capability_keeps_offered(ts: ThreadService,
     with pytest.raises(AgoraError) as e:
         ts.handover_respond(ben, th.id, "accept")
     assert e.value.code == "conflict"
-    assert ts.get(ana, th.id).messages[-1].body == "busy this week"
+    bodies = [m.body for m in ts.get(ana, th.id).messages]
+    assert bodies[-2:] == ["busy this week", "Deploy: accepted by ben-claude"]
 
 
 def test_handover_direct_decline_and_owner_accepts(ts: ThreadService, ana: Participant,

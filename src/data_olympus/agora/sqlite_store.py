@@ -14,10 +14,13 @@ import json
 import os
 import sqlite3
 import threading
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from data_olympus.agora.models import (
+    CommitResult,
     Contact,
+    Highlight,
     Membership,
     Message,
     Participant,
@@ -31,7 +34,7 @@ from data_olympus.agora.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterator
+    from collections.abc import Callable, Collection, Iterator
 
 SCHEMA_VERSION = 1
 
@@ -64,8 +67,10 @@ CREATE TABLE IF NOT EXISTS threads (
     audience_value TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
     originator TEXT NOT NULL, state TEXT NOT NULL, tickets TEXT NOT NULL,
     payload TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL,
-    timeout_at REAL
+    timeout_at REAL, topics TEXT NOT NULL DEFAULT '[]',
+    version INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS threads_due ON threads(kind, state, timeout_at);
 CREATE INDEX IF NOT EXISTS threads_scope ON threads(scope, updated_at);
 CREATE INDEX IF NOT EXISTS threads_updated ON threads(updated_at);
 CREATE TABLE IF NOT EXISTS messages (
@@ -87,6 +92,16 @@ CREATE TABLE IF NOT EXISTS seen (
 CREATE TABLE IF NOT EXISTS subscriptions (
     participant TEXT NOT NULL, scope TEXT NOT NULL, autonomy TEXT NOT NULL,
     kinds TEXT NOT NULL, PRIMARY KEY (participant, scope)
+);
+CREATE TABLE IF NOT EXISTS highlights (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+    scope TEXT NOT NULL, thread_id TEXT, message_id TEXT, action TEXT NOT NULL,
+    headline TEXT NOT NULL, actor TEXT NOT NULL, topics TEXT NOT NULL,
+    weight INTEGER NOT NULL, pinned_by TEXT, created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS highlights_scope ON highlights(scope, seq);
+CREATE TABLE IF NOT EXISTS catchup (
+    participant TEXT PRIMARY KEY, seq INTEGER NOT NULL
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS text_fts USING fts5(
     thread_id UNINDEXED, scope UNINDEXED, text
@@ -380,6 +395,7 @@ class SQLiteAgoraStore:
             originator=r["originator"], state=r["state"], tickets=tickets,
             payload=json.loads(r["payload"]), created_at=r["created_at"],
             updated_at=r["updated_at"], timeout_at=r["timeout_at"],
+            topics=tuple(json.loads(r["topics"])), version=int(r["version"]),
         )
 
     @staticmethod
@@ -401,36 +417,132 @@ class SQLiteAgoraStore:
             conn.execute("INSERT INTO text_fts (thread_id, scope, text) VALUES (?, ?, ?)",
                          (m.thread_id, scope, m.body))
 
-    def create_thread(self, thread: Thread, first_message: Message | None) -> None:
+    def _insert_thread(self, conn: sqlite3.Connection, thread: Thread) -> None:
+        conn.execute(
+            "INSERT INTO threads (id, scope, audience_type, audience_value, kind, "
+            "title, originator, state, tickets, payload, created_at, updated_at, "
+            "timeout_at, topics, version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (thread.id, thread.scope, thread.audience_type, thread.audience_value,
+             thread.kind, thread.title, thread.originator, thread.state,
+             self._tickets_json(thread), json.dumps(thread.payload),
+             thread.created_at, thread.updated_at, thread.timeout_at,
+             json.dumps(list(thread.topics)), thread.version),
+        )
+        conn.execute("INSERT INTO text_fts (thread_id, scope, text) VALUES (?, ?, ?)",
+                     (thread.id, thread.scope, thread.title))
+
+    @staticmethod
+    def _insert_highlight(conn: sqlite3.Connection, h: Highlight) -> None:
+        conn.execute(
+            "INSERT INTO highlights (id, scope, thread_id, message_id, action, "
+            "headline, actor, topics, weight, pinned_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (h.id, h.scope, h.thread_id, h.message_id, h.action, h.headline, h.actor,
+             json.dumps(list(h.topics)), h.weight, h.pinned_by, h.created_at),
+        )
+
+    def create_thread(self, thread: Thread, first_message: Message | None,
+                      *, highlight: Highlight | None = None) -> None:
+        """Insert a new thread with its first message and, for an opening
+        event, its headline, in one transaction."""
         with self._write() as conn:
-            conn.execute(
-                "INSERT INTO threads (id, scope, audience_type, audience_value, kind, "
-                "title, originator, state, tickets, payload, created_at, updated_at, "
-                "timeout_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (thread.id, thread.scope, thread.audience_type, thread.audience_value,
-                 thread.kind, thread.title, thread.originator, thread.state,
-                 self._tickets_json(thread), json.dumps(thread.payload),
-                 thread.created_at, thread.updated_at, thread.timeout_at),
-            )
-            conn.execute("INSERT INTO text_fts (thread_id, scope, text) VALUES (?, ?, ?)",
-                         (thread.id, thread.scope, thread.title))
+            self._insert_thread(conn, thread)
             if first_message is not None:
                 self._insert_message(conn, first_message, thread.scope)
+            if highlight is not None:
+                self._insert_highlight(conn, highlight)
 
     def get_thread(self, id: str) -> Thread | None:
         with self._read() as conn:
             r = conn.execute("SELECT * FROM threads WHERE id = ?", (id,)).fetchone()
         return self._thread(r) if r else None
 
-    def update_thread(self, thread: Thread) -> None:
+    @staticmethod
+    def _store_thread(conn: sqlite3.Connection, thread: Thread, version: int) -> None:
+        conn.execute(
+            "UPDATE threads SET state = ?, title = ?, tickets = ?, payload = ?, "
+            "updated_at = ?, timeout_at = ?, topics = ?, version = ? WHERE id = ?",
+            (thread.state, thread.title, SQLiteAgoraStore._tickets_json(thread),
+             json.dumps(thread.payload), thread.updated_at, thread.timeout_at,
+             json.dumps(list(thread.topics)), version, thread.id),
+        )
+
+    def commit_event(
+        self, *, thread: Thread | None = None, expected_version: int | None = None,
+        message: Message | None = None, membership: Membership | None = None,
+        highlight: Highlight | None = None,
+    ) -> CommitResult:
+        """One transaction under the write lock: a thread change (only when its
+        stored version still equals ``expected_version``; stored with version
+        + 1), its event message, a membership change (refused when it would
+        leave a project without an active owner) and a headline. On any
+        refusal nothing is written and ``ok`` is False."""
         with self._write() as conn:
-            conn.execute(
-                "UPDATE threads SET state = ?, title = ?, tickets = ?, payload = ?, "
-                "updated_at = ?, timeout_at = ? WHERE id = ?",
-                (thread.state, thread.title, self._tickets_json(thread),
-                 json.dumps(thread.payload), thread.updated_at, thread.timeout_at,
-                 thread.id),
-            )
+            # Every check runs before any write, so a refusal writes nothing.
+            stored: Thread | None = None
+            if thread is not None:
+                r = conn.execute("SELECT version FROM threads WHERE id = ?",
+                                 (thread.id,)).fetchone()
+                if r is None or int(r["version"]) != expected_version:
+                    return CommitResult(False, None)
+                updated_at = message.created_at if message is not None else thread.updated_at
+                stored = replace(thread, version=int(r["version"]) + 1,
+                                 updated_at=max(updated_at, thread.updated_at))
+            if membership is not None and not self._keeps_an_owner(conn, membership):
+                return CommitResult(False, None)
+            if stored is not None:
+                self._store_thread(conn, stored, stored.version)
+            if membership is not None:
+                self._put_membership(conn, membership)
+            if message is not None:
+                scope_row = conn.execute("SELECT scope FROM threads WHERE id = ?",
+                                         (message.thread_id,)).fetchone()
+                if scope_row is None:
+                    raise KeyError(message.thread_id)
+                self._insert_message(conn, message, scope_row["scope"])
+                if thread is None:
+                    conn.execute(
+                        "UPDATE threads SET updated_at = MAX(updated_at, ?), "
+                        "version = version + 1 WHERE id = ?",
+                        (message.created_at, message.thread_id))
+            if highlight is not None:
+                self._insert_highlight(conn, highlight)
+            return CommitResult(True, stored)
+
+    def expire_if_due(
+        self, thread_id: str, now: float,
+        build: Callable[[Thread], tuple[Message, Highlight | None]],
+    ) -> Thread | None:
+        """Read, check and expire in one transaction: an open decision whose
+        timeout has passed becomes unresolved_advisory with the event message
+        and headline ``build`` makes from the fresh thread. None when it is
+        not (or no longer) due, so racing callers expire it once."""
+        with self._write() as conn:
+            r = conn.execute("SELECT * FROM threads WHERE id = ?", (thread_id,)).fetchone()
+            if r is None:
+                return None
+            fresh = self._thread(r)
+            if (fresh.kind != "decision" or fresh.state != "open"
+                    or fresh.timeout_at is None or fresh.timeout_at > now):
+                return None
+            message, highlight = build(fresh)
+            stored = replace(fresh, state="unresolved_advisory",
+                             updated_at=max(now, message.created_at),
+                             version=fresh.version + 1)
+            self._store_thread(conn, stored, stored.version)
+            self._insert_message(conn, message, fresh.scope)
+            if highlight is not None:
+                self._insert_highlight(conn, highlight)
+            return stored
+
+    def list_due_decisions(self, now: float) -> list[Thread]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM threads WHERE kind = 'decision' AND state = 'open' "
+                "AND timeout_at IS NOT NULL AND timeout_at <= ? ORDER BY timeout_at",
+                (now,)).fetchall()
+        return [self._thread(r) for r in rows]
 
     def list_threads(
         self, *, scopes: Collection[str] | None = None,
@@ -469,19 +581,47 @@ class SQLiteAgoraStore:
         return [self._thread(r) for r in rows]
 
     def add_message(self, m: Message) -> None:
+        """A plain reply: stored with the thread's updated_at and version
+        bumped, so a writer holding an older version gets a conflict."""
         with self._write() as conn:
             r = conn.execute("SELECT scope FROM threads WHERE id = ?",
                              (m.thread_id,)).fetchone()
             if r is None:
                 raise KeyError(m.thread_id)
             self._insert_message(conn, m, r["scope"])
-            conn.execute("UPDATE threads SET updated_at = ? WHERE id = ?",
-                         (m.created_at, m.thread_id))
+            conn.execute(
+                "UPDATE threads SET updated_at = MAX(updated_at, ?), version = version + 1 "
+                "WHERE id = ?", (m.created_at, m.thread_id))
 
     @staticmethod
     def _message(r: sqlite3.Row) -> Message:
         return Message(r["id"], r["thread_id"], r["author"], r["via"], r["body"],
                        tuple(json.loads(r["refs"])), r["created_at"])
+
+    def get_message(self, id: str) -> Message | None:
+        with self._read() as conn:
+            r = conn.execute("SELECT * FROM messages WHERE id = ?", (id,)).fetchone()
+        return self._message(r) if r else None
+
+    def list_messages_around(self, thread_id: str, message_id: str, *, before: int,
+                             after: int) -> list[Message]:
+        """The message ``message_id`` with up to ``before`` earlier and
+        ``after`` later messages of the same thread, in order. Empty when the
+        message is not in that thread."""
+        with self._read() as conn:
+            anchor = conn.execute(
+                "SELECT seq FROM messages WHERE id = ? AND thread_id = ?",
+                (message_id, thread_id)).fetchone()
+            if anchor is None:
+                return []
+            seq = int(anchor["seq"])
+            earlier = conn.execute(
+                "SELECT * FROM messages WHERE thread_id = ? AND seq < ? "
+                "ORDER BY seq DESC LIMIT ?", (thread_id, seq, max(0, before))).fetchall()
+            rest = conn.execute(
+                "SELECT * FROM messages WHERE thread_id = ? AND seq >= ? "
+                "ORDER BY seq LIMIT ?", (thread_id, seq, max(0, after) + 1)).fetchall()
+        return [self._message(r) for r in [*reversed(earlier), *rest]]
 
     def list_messages(self, thread_id: str, *, limit: int = 200) -> list[Message]:
         with self._read() as conn:
@@ -556,6 +696,71 @@ class SQLiteAgoraStore:
                 (participant,)).fetchall()
         return [Subscription(r["participant"], r["scope"], r["autonomy"],
                              tuple(json.loads(r["kinds"]))) for r in rows]
+
+    # --- headlines and catch-up markers ------------------------------------
+    @staticmethod
+    def _highlight(r: sqlite3.Row) -> Highlight:
+        return Highlight(r["id"], int(r["seq"]), r["scope"], r["thread_id"],
+                         r["message_id"], r["action"], r["headline"], r["actor"],
+                         tuple(json.loads(r["topics"])), int(r["weight"]),
+                         r["pinned_by"], r["created_at"])
+
+    def get_highlight(self, id: str) -> Highlight | None:
+        with self._read() as conn:
+            r = conn.execute("SELECT * FROM highlights WHERE id = ?", (id,)).fetchone()
+        return self._highlight(r) if r else None
+
+    def update_highlight(self, h: Highlight) -> None:
+        """Change a headline's pin; its position (seq) never changes."""
+        with self._write() as conn:
+            conn.execute("UPDATE highlights SET pinned_by = ? WHERE id = ?",
+                         (h.pinned_by, h.id))
+
+    def max_seq(self) -> int:
+        with self._read() as conn:
+            r = conn.execute("SELECT COALESCE(MAX(seq), 0) AS m FROM highlights").fetchone()
+        return int(r["m"])
+
+    def list_highlights(
+        self, *, after_seq: int, upto_seq: int, scopes: Collection[str],
+        actions: Collection[str] | None = None, topics: Collection[str] | None = None,
+        pinned_only: bool = False, since_ts: float | None = None,
+    ) -> list[Highlight]:
+        scope_list = list(scopes)
+        if not scope_list:
+            return []
+        params: list[Any] = [after_seq, upto_seq]
+        where = ["seq > ?", "seq <= ?", _in("scope", scope_list, params)]
+        if actions:
+            where.append(_in("action", actions, params))
+        if pinned_only:
+            where.append("pinned_by IS NOT NULL")
+        if since_ts is not None:
+            # History browsing by date keeps pinned headlines in view.
+            where.append("(created_at >= ? OR pinned_by IS NOT NULL)")
+            params.append(since_ts)
+        with self._read() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM highlights WHERE {' AND '.join(where)} ORDER BY seq",
+                params).fetchall()
+        out = [self._highlight(r) for r in rows]
+        if topics:
+            wanted = set(topics)
+            out = [h for h in out if wanted & set(h.topics)]
+        return out
+
+    def get_catchup(self, participant: str) -> int:
+        with self._read() as conn:
+            r = conn.execute("SELECT seq FROM catchup WHERE participant = ?",
+                             (participant,)).fetchone()
+        return int(r["seq"]) if r else 0
+
+    def set_catchup(self, participant: str, seq: int) -> None:
+        with self._write() as conn:
+            conn.execute(
+                "INSERT INTO catchup (participant, seq) VALUES (?, ?) "
+                "ON CONFLICT(participant) DO UPDATE SET seq = MAX(catchup.seq, excluded.seq)",
+                (participant, int(seq)))
 
     def search(
         self, fts_query: str, *, scopes: Collection[str], limit: int,

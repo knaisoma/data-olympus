@@ -24,6 +24,7 @@ from tests.agora_world import (  # noqa: F401 - pytest fixtures
     core,
     ctx,
     ds,
+    hs,
     rogue,
     svc,
     ts,

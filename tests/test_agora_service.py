@@ -18,6 +18,7 @@ from tests.agora_world import (  # noqa: F401 - pytest fixtures
     carol,
     core,
     ctx,
+    hs,
     rogue,
     svc,
     svc_no_auth,

@@ -91,8 +91,15 @@ def access(ctx: AgoraContext) -> Access:
 
 
 @pytest.fixture
-def svc(ctx: AgoraContext, access: Access) -> AgoraService:
-    return AgoraService(ctx, access)
+def hs(ctx: AgoraContext, access: Access) -> Any:
+    from data_olympus.agora.highlights import HighlightService
+
+    return HighlightService(ctx, access)
+
+
+@pytest.fixture
+def svc(ctx: AgoraContext, access: Access, hs: Any) -> AgoraService:
+    return AgoraService(ctx, access, highlights=hs)
 
 
 @pytest.fixture
@@ -102,8 +109,11 @@ def core(svc: AgoraService) -> AgoraService:
 
 @pytest.fixture
 def svc_no_auth(tmp_path: Path) -> AgoraService:
+    from data_olympus.agora.highlights import HighlightService
+
     c = make_ctx(tmp_path / "noauth", auth_on=False)
-    return AgoraService(c, Access(c))
+    a = Access(c)
+    return AgoraService(c, a, highlights=HighlightService(c, a))
 
 
 @pytest.fixture
@@ -147,14 +157,14 @@ def local_agent() -> Participant:
 
 
 @pytest.fixture
-def ds(ctx: AgoraContext, access: Access) -> Any:
+def ds(ctx: AgoraContext, access: Access, hs: Any) -> Any:
     from data_olympus.agora.decisions import DecisionService
 
-    return DecisionService(ctx, access)
+    return DecisionService(ctx, access, highlights=hs)
 
 
 @pytest.fixture
-def ts(ctx: AgoraContext, access: Access, core: AgoraService, ds: Any) -> Any:
+def ts(ctx: AgoraContext, access: Access, core: AgoraService, ds: Any, hs: Any) -> Any:
     from data_olympus.agora.threads import ThreadService
 
-    return ThreadService(ctx, access, core, decisions=ds)
+    return ThreadService(ctx, access, core, decisions=ds, highlights=hs)

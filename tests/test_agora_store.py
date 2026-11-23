@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from data_olympus.agora.models import (
     Contact,
+    Highlight,
     Membership,
     Message,
     Participant,
@@ -196,14 +198,151 @@ def test_participants_profiles_scopes_memberships_contacts(tmp_path: Path) -> No
     assert s.list_contacts(sender="ana") == []
 
 
-def test_update_thread_roundtrip(tmp_path: Path) -> None:
+def _hl(hid: str, *, thread: str | None = "th_1", msg: str | None = None,
+        scope: str = "universal", action: str = "decided", topics: tuple[str, ...] = (),
+        pinned: str | None = None, ts: float = 5.0) -> Highlight:
+    return Highlight(hid, 0, scope, thread, msg, action, f"headline {hid}", "ana", topics,
+                     100, pinned, ts)
+
+
+def test_commit_event_is_a_version_cas(tmp_path: Path) -> None:
     s = _store(tmp_path)
     th = _thread("th_1")
     s.create_thread(th, None)
-    from dataclasses import replace
-    s.update_thread(replace(th, state="closed", payload={"x": 1}, updated_at=8.0))
+    stored = s.get_thread("th_1")
+    assert stored is not None and stored.version == 0
+    res = s.commit_event(thread=replace(th, state="closed", payload={"x": 1}),
+                         expected_version=0,
+                         message=_msg("msg_1", "th_1", "Closed it", ts=8.0),
+                         highlight=_hl("hl_1", msg="msg_1"))
+    assert res.ok and res.thread is not None
+    assert res.thread.version == 1 and res.thread.state == "closed"
+    assert res.thread.updated_at == 8.0
+    stale = s.commit_event(thread=replace(th, state="open"), expected_version=0,
+                           message=_msg("msg_2", "th_1", "stale"),
+                           highlight=_hl("hl_2", msg="msg_2"))
+    assert not stale.ok and stale.thread is None
     got = s.get_thread("th_1")
     assert got is not None and got.state == "closed" and got.payload == {"x": 1}
+    assert [m.id for m in s.list_messages("th_1")] == ["msg_1"]
+    assert s.get_highlight("hl_2") is None
+    h = s.get_highlight("hl_1")
+    assert h is not None and h.seq == 1 and h.message_id == "msg_1"
+
+
+def test_commit_event_rolls_back_as_a_unit(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    th = _thread("th_1")
+    s.create_thread(th, None)
+    s.commit_event(highlight=_hl("hl_dup"))
+    import sqlite3
+
+    import pytest
+    with pytest.raises(sqlite3.IntegrityError):
+        s.commit_event(thread=replace(th, state="closed"), expected_version=0,
+                       message=_msg("msg_x", "th_1", "x"), highlight=_hl("hl_dup"))
+    got = s.get_thread("th_1")
+    assert got is not None and got.state == "open" and got.version == 0
+    assert s.list_messages("th_1") == []
+
+
+def test_membership_only_commit(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    res = s.commit_event(membership=Membership("project:p", "ana", "member", "active",
+                                               None, 1.0),
+                         highlight=_hl("hl_m", thread=None, scope="project:p",
+                                       action="membership"))
+    assert res.ok and res.thread is None
+    assert s.get_membership("project:p", "ana") is not None
+    s.put_membership(Membership("project:p", "ana", "owner", "active", None, 1.0))
+    refused = s.commit_event(
+        membership=Membership("project:p", "ana", "member", "removed", None, 2.0),
+        highlight=_hl("hl_m2", thread=None, scope="project:p", action="membership"))
+    assert not refused.ok and s.get_highlight("hl_m2") is None
+
+
+def test_add_message_bumps_version(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    s.create_thread(_thread("th_1"), None)
+    s.add_message(_msg("msg_1", "th_1", "x"))
+    got = s.get_thread("th_1")
+    assert got is not None and got.version == 1
+
+
+def test_create_thread_with_highlight_and_topics(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    th = replace(_thread("th_1"), topics=("db", "infra"))
+    s.create_thread(th, _msg("msg_1", "th_1", "body"), highlight=_hl("hl_1", msg="msg_1"))
+    got = s.get_thread("th_1")
+    assert got is not None and got.topics == ("db", "infra")
+    assert s.max_seq() == 1
+
+
+def test_messages_around_and_get_message(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    s.create_thread(_thread("th_1"), None)
+    for i in range(30):
+        s.add_message(_msg(f"msg_{i}", "th_1", f"m{i}", ts=10.0 + i))
+    around = s.list_messages_around("th_1", "msg_15", before=3, after=2)
+    assert [m.id for m in around] == ["msg_12", "msg_13", "msg_14", "msg_15",
+                                      "msg_16", "msg_17"]
+    assert s.list_messages_around("th_1", "msg_missing", before=3, after=3) == []
+    m = s.get_message("msg_3")
+    assert m is not None and m.body == "m3"
+    assert s.get_message("nope") is None
+
+
+def test_expire_if_due_reads_fresh_state(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    th = replace(_thread("th_d", kind="decision"), timeout_at=50.0)
+    s.create_thread(th, None)
+    s.create_thread(replace(_thread("th_e", kind="decision"), timeout_at=500.0), None)
+    assert [t.id for t in s.list_due_decisions(100.0)] == ["th_d"]
+    s.add_message(_msg("msg_r", "th_d", "racing reply", ts=60.0))  # bumps the version
+
+    def build(fresh: Thread) -> tuple[Message, Highlight | None]:
+        assert fresh.version == 1
+        return (_msg("msg_t", "th_d", "timed out", ts=100.0),
+                _hl("hl_t", thread="th_d", msg="msg_t", action="unresolved"))
+
+    expired = s.expire_if_due("th_d", 100.0, build)
+    assert expired is not None and expired.state == "unresolved_advisory"
+    assert expired.version == 2
+    assert s.expire_if_due("th_d", 100.0, build) is None
+    assert s.expire_if_due("th_e", 100.0, build) is None
+    assert s.list_due_decisions(100.0) == []
+
+
+def test_highlight_listing_and_catchup_marker(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    s.commit_event(highlight=_hl("h1", scope="project:a", topics=("db",), ts=1.0))
+    s.commit_event(highlight=_hl("h2", scope="project:b", action="answered", ts=2.0))
+    s.commit_event(highlight=_hl("h3", scope="project:a", pinned="ana", ts=3.0))
+    assert s.max_seq() == 3
+    ids = [h.id for h in s.list_highlights(after_seq=0, upto_seq=3,
+                                           scopes={"project:a", "project:b"})]
+    assert ids == ["h1", "h2", "h3"]
+    assert [h.id for h in s.list_highlights(after_seq=1, upto_seq=2,
+                                            scopes={"project:a", "project:b"})] == ["h2"]
+    assert [h.id for h in s.list_highlights(after_seq=0, upto_seq=3,
+                                            scopes={"project:a"})] == ["h1", "h3"]
+    assert [h.id for h in s.list_highlights(after_seq=0, upto_seq=3, scopes={"project:a",
+                                            "project:b"}, actions={"answered"})] == ["h2"]
+    assert [h.id for h in s.list_highlights(after_seq=0, upto_seq=3, scopes={"project:a"},
+                                            topics={"db"})] == ["h1"]
+    assert [h.id for h in s.list_highlights(after_seq=0, upto_seq=3, scopes={"project:a"},
+                                            pinned_only=True)] == ["h3"]
+    assert [h.id for h in s.list_highlights(after_seq=0, upto_seq=3,
+                                            scopes={"project:a", "project:b"},
+                                            since_ts=2.0)] == ["h2", "h3"]
+    h1 = s.get_highlight("h1")
+    assert h1 is not None
+    s.update_highlight(replace(h1, pinned_by="ben"))
+    again = s.get_highlight("h1")
+    assert again is not None and again.pinned_by == "ben" and again.seq == 1
+    assert s.get_catchup("ana") == 0
+    s.set_catchup("ana", 2)
+    assert s.get_catchup("ana") == 2
 
 
 def test_create_owned_scope_is_atomic_and_exclusive(tmp_path: Path) -> None:

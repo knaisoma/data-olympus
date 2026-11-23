@@ -200,11 +200,12 @@ class ThreadService:
             result: Thread = self.highlights.commit_thread_event(
                 actor, before, after, message=message, action=action, headline=headline)
             return result
-        if message is not None:
-            self.ctx.store.add_message(message)
-            after = replace(after, updated_at=message.created_at)
-        self.ctx.store.update_thread(after)
-        return after
+        res = self.ctx.store.commit_event(thread=after, expected_version=before.version,
+                                          message=message)
+        if not res.ok or res.thread is None:
+            raise AgoraError("conflict", "the thread changed meanwhile; read it again "
+                             "and retry")
+        return res.thread
 
     def _addressed_to(self, thread: Thread, name: str, skills: Iterable[str]) -> bool:
         if thread.audience_type == "participant":
@@ -276,12 +277,12 @@ class ThreadService:
             audience_value=audience_value, kind=kind,  # type: ignore[arg-type]
             title=clean_title, originator=actor.name, state=state,
             tickets=clean_tickets, payload=payload, created_at=now, updated_at=now,
-            timeout_at=timeout_at,
+            timeout_at=timeout_at, topics=clean_topics,
         )
         first = Message(new_id("msg"), thread.id, actor.name, actor.via, text,
                         clean_refs, now) if text else None
         if self.highlights is not None:
-            thread = self.highlights.commit_new_thread(actor, thread, first, clean_topics)
+            thread = self.highlights.commit_new_thread(actor, thread, first)
         else:
             self.ctx.store.create_thread(thread, first)
         self.ctx.store.mark_seen(actor.name, thread.id, self.ctx.clock())
@@ -423,11 +424,17 @@ class ThreadService:
             after = replace(thread, state="returned", payload=payload, updated_at=now)
             event = "handover_returned"
             headline = line
-        message = self._message(actor, thread.id, text) if text else None
-        result = self._commit(actor, thread, after, message=message, action=event,
-                              headline=headline)
-        if line and self.highlights is None:
-            self.ctx.store.add_message(self._message(actor, thread.id, line))
+        if event is None:
+            # A decline: its note, if any, is the event message; no headline.
+            note_msg = self._message(actor, thread.id, text) if text else None
+            result = self._commit(actor, thread, after, message=note_msg)
+        else:
+            event_msg = self._message(actor, thread.id, headline) if headline else None
+            result = self._commit(actor, thread, after, message=event_msg, action=event,
+                                  headline=headline)
+            if text:
+                # The note follows the event line as an ordinary message.
+                self.ctx.store.add_message(self._message(actor, thread.id, text))
         self.ctx.record(f"handover.{action}", actor, thread=thread.id,
                         **(body_fields(text) if text else {}))
         return result
@@ -439,8 +446,10 @@ class ThreadService:
         store = self.ctx.store
         if around is not None:
             messages = store.list_messages_around(
-                thread.id, around, before=max(0, min(before, 100)),
-                after=max(0, min(after, 100)))
+                thread.id, around, before=max(0, min(int(before), 100)),
+                after=max(0, min(int(after), 100)))
+            if not messages:
+                raise AgoraError("not_found", "no such message in this thread")
         else:
             messages = store.list_messages(thread.id, limit=MAX_MESSAGES)
         votes = store.list_votes(thread.id)
