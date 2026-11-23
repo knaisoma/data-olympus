@@ -158,8 +158,11 @@ AUTOMATION_MARKER = re.compile(AUTOMATION_MARKER_PATTERN)
 def strip_automation_markers(message: str) -> str:
     """The message without its whole-line marker lines (never the subject line).
 
-    Returns the same object when there is none. Every kept line is byte-identical; removing a
-    final marker line that has no line ending after it leaves the message ending in a newline.
+    Returns the same object when there is none. Otherwise the message is split on newlines, each
+    marker line after the first line is dropped, and the remaining lines are joined with newlines.
+    Every kept line is byte-identical and nothing else is added or removed, so a marker line with
+    no line ending after it goes together with the newline before it, and the result then ends
+    wherever its last kept line ends (``"fix: x\\n\\n<marker>"`` gives ``"fix: x\\n"``).
     """
     lines = message.split("\n")
     kept = [
