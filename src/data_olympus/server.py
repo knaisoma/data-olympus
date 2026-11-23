@@ -47,6 +47,7 @@ from data_olympus.heap import configure_allocator, release_free_heap
 from data_olympus.index import Index, SearchHit, make_status_reranker
 from data_olympus.pending import PendingQueue
 from data_olympus.principals import (
+    AGORA_TOOL_CAPABILITY,
     AUTH_REQUIRED_TOOLS,
     LOCAL_TRUSTED,
     WRITE_TOOL_CAPABILITY,
@@ -292,7 +293,9 @@ class MCPAuthMiddleware(Middleware):
             # the metrics extra.
             from data_olympus.metrics import get_metrics
             get_metrics().tool_calls.labels(tool=name).inc()
-            cap = WRITE_TOOL_CAPABILITY.get(name)
+            # Agora tools (issue #492) are capability-gated like write tools:
+            # with auth configured, anonymous (read only) is refused them all.
+            cap = WRITE_TOOL_CAPABILITY.get(name) or AGORA_TOOL_CAPABILITY.get(name)
             if cap is not None:
                 if not principal.has(cap):
                     raise ToolError(
@@ -1457,8 +1460,11 @@ def build_app(
     # Read from the running config, not this function's own arguments, so the
     # registry that enforces authentication and state.config cannot disagree
     # (issue #291). The registry treats None and [] alike.
-    registry = PrincipalRegistry(auth_token=config.auth_token,
-                                 principals=list(config.auth_principals))
+    registry = PrincipalRegistry(
+        auth_token=config.auth_token,
+        principals=list(config.auth_principals),
+        agora_implicit_caps=config.agora_enabled and config.agora_implicit_caps,
+    )
     # Outermost: keep submitted tool input out of validation and unknown-tool
     # errors and out of FastMCP's logs (see mcp_sanitize).
     from data_olympus.mcp_sanitize import ArgumentSanitizingMiddleware, install_log_filter
