@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import itertools
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -30,9 +31,10 @@ def _evaluate(condition: str, event: str, ref: str, dry_run: bool) -> bool:
     """Evaluate the small subset of GitHub expression syntax these conditions use."""
     allowed = re.fullmatch(r"[\w.' ()!=&|/-]+", condition)
     assert allowed, condition
-    python = (condition.replace("&&", " and ").replace("||", " or ")
+    # GitHub compares strings without case: model it by folding every value and literal.
+    python = (condition.lower().replace("&&", " and ").replace("||", " or ")
               .replace("!=", " __NE__ ").replace("!", " not ").replace("__NE__", "!="))
-    names = {"github": type("G", (), {"event_name": event, "ref": ref}),
+    names = {"github": type("G", (), {"event_name": event.lower(), "ref": ref.lower()}),
              "inputs": type("I", (), {"dry_run": dry_run})}
     return bool(eval(python, {"__builtins__": {}}, names))  # noqa: S307 - fixed, checked input
 
@@ -67,13 +69,43 @@ def test_exactly_one_job_runs_for_each_trigger(event, ref, dry_run):
     assert running == {CASES[(event, ref, dry_run)]}
 
 
+def _guard(job: dict) -> str:
+    """The case-sensitive ref check that must be the write job's first step."""
+    first = job["steps"][0]
+    assert "uses" not in first
+    return first["run"]
+
+
+def _guard_passes(job: dict, ref: str) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", _guard(job)], env={"GITHUB_REF": ref, "PATH": "/usr/bin:/bin"},
+        capture_output=True, text=True, check=False,
+    )
+    return result.returncode == 0
+
+
 def test_no_combination_gives_a_write_token_off_main_or_to_a_dry_run():
     job = _workflow()["jobs"]["inventory"]
     for event, ref, dry_run in itertools.product(
             ["schedule", "workflow_dispatch", "push"],
-            ["refs/heads/main", "refs/heads/feature", "refs/tags/v1"], [True, False]):
-        if _evaluate(job["if"], event, ref, dry_run):
+            ["refs/heads/main", "refs/heads/Main", "refs/heads/MAIN", "refs/heads/feature",
+             "refs/tags/v1"], [True, False]):
+        if _evaluate(job["if"], event, ref, dry_run) and _guard_passes(job, ref):
             assert ref == "refs/heads/main" and not (event == "workflow_dispatch" and dry_run)
+
+
+@pytest.mark.parametrize("ref", ["refs/heads/Main", "refs/heads/MAIN", "refs/heads/mAin"])
+def test_a_case_variant_of_main_passes_the_expression_but_fails_the_guard(ref):
+    job = _workflow()["jobs"]["inventory"]
+    assert _evaluate(job["if"], "workflow_dispatch", ref, False)  # GitHub ignores case here
+    assert not _guard_passes(job, ref)
+    assert _guard_passes(job, "refs/heads/main")
+
+
+def test_the_guard_runs_before_any_checkout():
+    steps = _workflow()["jobs"]["inventory"]["steps"]
+    assert "uses" not in steps[0] and "GITHUB_REF" in steps[0]["run"]
+    assert all("uses" in step or "python" not in step.get("run", "") for step in steps[:2])
 
 
 def test_only_the_main_job_can_write_issues():
