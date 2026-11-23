@@ -2,9 +2,10 @@
 
 Every text field another participant wrote (titles, bodies, options,
 recommendations and vote rationales, hand-over fields, profile text, contact
-notes, headlines and search snippets) is wrapped by ``quote_untrusted`` with a
-per-response nonce. Names, ids, states, timestamps, tags and ticket refs are
-plain values.
+notes, ticket titles, headlines and search snippets) is wrapped by
+``quote_untrusted`` with a per-response nonce. Names, ids, states, timestamps,
+tags, ticket keys and URLs, and message refs are plain values; the last three
+are held at input to formats without whitespace or fence characters.
 """
 from __future__ import annotations
 
@@ -102,7 +103,9 @@ def render_thread(thread: Thread, nonce: str) -> dict[str, Any]:
         "title": _q(thread.title, author=thread.originator, scope=thread.scope,
                     nonce=nonce),
         "topics": list(thread.topics),
-        "tickets": [{"system": t.system, "key": t.key, "url": t.url, "title": t.title}
+        "tickets": [{"system": t.system, "key": t.key, "url": t.url,
+                     "title": _q(t.title, author=thread.originator, scope=thread.scope,
+                                 nonce=nonce)}
                     for t in thread.tickets],
         "payload": _payload(thread, nonce),
         "created_at": thread.created_at, "updated_at": thread.updated_at,

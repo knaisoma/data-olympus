@@ -6,6 +6,7 @@ is checked with ``Access.can_read_thread`` before any limit is applied.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -35,6 +36,11 @@ MAX_REFS = 20
 REF_MAX_CHARS = 500
 MAX_TICKETS = 10
 TICKET_SYSTEMS = ("jira", "github", "gitlab", "other")
+# Ticket keys, URLs and refs are returned as plain values, so they are held to
+# formats that cannot carry prose: no whitespace and no fence characters.
+TICKET_KEY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/#:@-]{0,99}")
+REF_PATTERN = re.compile(r"[A-Za-z0-9._/#:@?=&%+~,-]{1,500}")
+URL_PATTERN = re.compile(r"https?://[A-Za-z0-9._/#:@?=&%+~,!$'()*;-]{1,490}")
 MAX_MESSAGES = 200
 _FETCH = 200
 _FETCH_CAP = 5000
@@ -146,11 +152,18 @@ def _tickets(tickets: Sequence[TicketRef | dict[str, Any]]) -> tuple[TicketRef, 
         if system not in TICKET_SYSTEMS:
             raise AgoraError("invalid", f"ticket system must be one of "
                              f"{', '.join(TICKET_SYSTEMS)}")
+        key = str(data.get("key", "")).strip()
+        if not TICKET_KEY_PATTERN.fullmatch(key):
+            raise AgoraError("invalid", "a ticket key is an id such as PROJ-123 or "
+                             "owner/repo#45, without spaces")
+        url = str(data.get("url", "")).strip()
+        if url and not URL_PATTERN.fullmatch(url):
+            raise AgoraError("invalid", "a ticket url must be an http(s) URL without "
+                             "spaces")
         out.append(TicketRef(
             system,  # type: ignore[arg-type]
-            short_text(str(data.get("key", "")), field="ticket key", max_chars=100,
-                       required=True),
-            short_text(str(data.get("url", "")), field="ticket url", max_chars=REF_MAX_CHARS),
+            short_text(key, field="ticket key", max_chars=100, required=True),
+            short_text(url, field="ticket url", max_chars=REF_MAX_CHARS),
             short_text(str(data.get("title", "")), field="ticket title",
                        max_chars=SHORT_TEXT_MAX_CHARS),
         ))
@@ -160,8 +173,14 @@ def _tickets(tickets: Sequence[TicketRef | dict[str, Any]]) -> tuple[TicketRef, 
 def _refs(refs: Sequence[str]) -> tuple[str, ...]:
     if isinstance(refs, str) or len(refs) > MAX_REFS:
         raise AgoraError("invalid", f"refs must be a list of at most {MAX_REFS}")
-    return tuple(short_text(str(r), field="ref", max_chars=REF_MAX_CHARS, required=True)
-                 for r in refs)
+    out = []
+    for raw in refs:
+        ref = str(raw).strip()
+        if not REF_PATTERN.fullmatch(ref):
+            raise AgoraError("invalid", "a ref is a KB id, ticket ref, repo-relative "
+                             "path or URL, without spaces")
+        out.append(short_text(ref, field="ref", max_chars=REF_MAX_CHARS, required=True))
+    return tuple(out)
 
 
 class ThreadService:
