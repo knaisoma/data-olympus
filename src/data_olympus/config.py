@@ -245,7 +245,8 @@ class Config:
 
 # Agora participant names (principal names, self-declared agent identities and
 # the local person). Shared with data_olympus.agora so the two cannot drift.
-AGORA_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$")
+# Always used with fullmatch, so a trailing newline never passes as `$` would allow.
+AGORA_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,63}")
 AGORA_MIN_DECISION_TIMEOUT_SEC = 3600
 AGORA_MAX_DECISION_TIMEOUT_SEC = 7776000
 AGORA_MIN_BODY_BYTES = 1024
@@ -268,7 +269,7 @@ def _default_local_person() -> str:
         name = getpass.getuser()
     except Exception:  # noqa: BLE001 - any failure means "no usable OS user"
         return "local"
-    if not isinstance(name, str) or not AGORA_NAME_PATTERN.match(name):
+    if not isinstance(name, str) or not AGORA_NAME_PATTERN.fullmatch(name):
         return "local"
     return name
 
@@ -284,7 +285,7 @@ def _load_agora_settings(confidence_threshold: float) -> dict[str, Any]:
     )
     raw_person = os.getenv("KB_AGORA_LOCAL_PERSON", "").strip()
     if raw_person:
-        if not AGORA_NAME_PATTERN.match(raw_person):
+        if not AGORA_NAME_PATTERN.fullmatch(raw_person):
             raise ValueError(
                 "KB_AGORA_LOCAL_PERSON must match "
                 f"{AGORA_NAME_PATTERN.pattern}; got {raw_person!r}"

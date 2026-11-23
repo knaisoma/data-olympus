@@ -61,6 +61,13 @@ def test_agora_local_person_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     assert load_config().agora_local_person == "local"
 
 
+def test_agora_local_person_trailing_newline_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("getpass.getuser", lambda: "aj\n")
+    assert load_config().agora_local_person == "local"
+
+
 def test_agora_local_person_falls_back_when_getuser_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -85,6 +92,7 @@ def test_agora_local_person_uses_os_user(monkeypatch: pytest.MonkeyPatch) -> Non
     ("KB_AGORA_MAX_BODY_BYTES", "100"),
     ("KB_AGORA_MAX_BODY_BYTES", "lots"),
     ("KB_AGORA_LOCAL_PERSON", "has space"),
+    ("KB_AGORA_LOCAL_PERSON", "-dash"),
     ("KB_AGORA_DECISION_TIMEOUT_SEC", "60"),
     ("KB_AGORA_DECISION_TIMEOUT_SEC", "7776001"),
     ("KB_AGORA_RATE_LIMIT_PER_HOUR", "-1"),

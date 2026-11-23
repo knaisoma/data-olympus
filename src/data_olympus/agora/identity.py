@@ -17,7 +17,7 @@ VIA_MAX = 64
 
 
 def valid_name(name: str) -> bool:
-    return isinstance(name, str) and bool(AGORA_NAME_PATTERN.match(name))
+    return isinstance(name, str) and bool(AGORA_NAME_PATTERN.fullmatch(name))
 
 
 def resolve_participant(

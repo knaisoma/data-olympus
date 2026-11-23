@@ -26,7 +26,8 @@ def test_parse_scope(raw: str, tier: str, project: str | None,
 @pytest.mark.parametrize("raw", [
     "", "project:", "project:a/b", "component:a", "stack:../x", "team:x",
     "project:" + "a" * 65, "component:a/", "component:/b", "Universal",
-    " project:a", "project:-a", "stack:a b",
+    " project:a", "project:-a", "stack:a b", "project:a\n", "component:a/b\n",
+    "stack:py\n",
 ])
 def test_parse_scope_rejects(raw: str) -> None:
     with pytest.raises(AgoraError) as e:
@@ -80,10 +81,11 @@ def test_resolve_no_auth_local_person_and_agent() -> None:
         "claude", "agent", "aj", False, False)
 
 
-def test_resolve_no_auth_rejects_bad_identity() -> None:
+@pytest.mark.parametrize("identity", ["bad name!", "bo\nt", "-bot"])
+def test_resolve_no_auth_rejects_bad_identity(identity: str) -> None:
     with pytest.raises(AgoraError) as e:
-        resolve_participant(LOCAL_TRUSTED, agent_identity="bad name!", auth_on=False,
-                            local_person="aj")
+        resolve_participant(LOCAL_TRUSTED, agent_identity=identity,
+                            auth_on=False, local_person="aj")
     assert e.value.code == "invalid"
 
 

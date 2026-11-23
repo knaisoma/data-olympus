@@ -9,7 +9,8 @@ from typing import Literal
 
 from data_olympus.agora.errors import AgoraError
 
-SEGMENT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+# Always used with fullmatch, so a trailing newline never passes as `$` would allow.
+SEGMENT_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 ScopeTier = Literal["T1", "T2", "T3", "T4"]
 
@@ -26,7 +27,7 @@ class ScopeRef:
 def _segment(value: str, raw: str) -> str:
     # A segment never contains '/', so '..' cannot climb anywhere, but it is
     # refused anyway: a scope id is never a path and should not look like one.
-    if not SEGMENT_PATTERN.match(value) or ".." in value:
+    if not SEGMENT_PATTERN.fullmatch(value) or ".." in value:
         raise AgoraError("invalid", f"invalid scope {raw[:80]!r}")
     return value
 
