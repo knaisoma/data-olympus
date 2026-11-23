@@ -44,6 +44,7 @@ URL_PATTERN = re.compile(r"https?://[A-Za-z0-9._/#:@?=&%+~,!$'()*;-]{1,490}")
 MAX_MESSAGES = 200
 _FETCH = 200
 _FETCH_CAP = 5000
+_PAGE = 500
 
 INBOX_PRIORITY = (
     "decision_to_decide",
@@ -57,6 +58,7 @@ INBOX_PRIORITY = (
 )
 _ACTION_REASONS = frozenset(INBOX_PRIORITY) - {"activity"}
 _ACTIONABLE_STATES = frozenset({"open", "offered", "unresolved_advisory"})
+_ACTIONABLE_KINDS = frozenset({"question", "handover", "decision"})
 _DECISION_OPEN_STATES = frozenset({"open", "unresolved_advisory"})
 
 
@@ -561,29 +563,48 @@ class ThreadService:
         threads: dict[str, Thread] = {}
         direct_for = self.access.direct_for(actor)
         subs = {s.scope: s for s in store.list_subscriptions(name)}
-        scopes = set(subs) | self.core.implicit_scopes(name)
+        # Only scopes both the participant and the reader can read right now:
+        # a subscription to a scope whose access was revoked, or traffic in
+        # it, can never crowd readable work out of the inbox.
+        readable = {s.id for s in self.core.scopes(who)}
+        if who.name != actor.name:
+            readable &= {s.id for s in self.core.scopes(actor)}
+        followed = (set(subs) | self.core.implicit_scopes(name)) & readable
         addressed_queries: builtins.list[dict[str, Any]] = [
             {"audiences": {("participant", name)}}]
         if skills:
             addressed_queries.append({"audiences": {("capability", s) for s in skills}})
-        # Action items are read in full (only threads in states that can still
-        # need someone) before the newest-first activity window, so routine
-        # traffic cannot push outstanding work out of the inbox.
+        # Action items: only kinds and states that can still need someone, read
+        # page by page until exhausted (no cap), before the newest-first
+        # activity window, so routine traffic cannot hide outstanding work.
         action_queries: builtins.list[dict[str, Any]] = [
-            {**q, "states": _ACTIONABLE_STATES} for q in addressed_queries]
+            {**q, "kinds": _ACTIONABLE_KINDS, "states": _ACTIONABLE_STATES}
+            for q in addressed_queries]
         action_queries.append({"originators": {name}, "kinds": {"decision"},
                                "states": _DECISION_OPEN_STATES})
         activity_queries: builtins.list[dict[str, Any]] = [
             *addressed_queries, {"originators": {name}}]
-        if scopes:
-            action_queries.append({"scopes": scopes, "audiences": {("everyone", "")},
+        if followed:
+            action_queries.append({"scopes": followed, "audiences": {("everyone", "")},
                                    "kinds": {"decision"}, "states": {"open"}})
-            activity_queries.append({"scopes": scopes, "audiences": {("everyone", "")}})
+            activity_queries.append({"scopes": followed,
+                                     "audiences": {("everyone", "")}})
+        if not readable:
+            action_queries, activity_queries = [], []
         for q in action_queries:
-            for t in store.list_threads(limit=_FETCH_CAP, direct_for=direct_for, **q):
-                threads.setdefault(t.id, t)
+            query = {"scopes": readable, **q}  # a query's own scopes are readable
+            offset = 0
+            while True:
+                page = store.list_threads(direct_for=direct_for, limit=_PAGE,
+                                          offset=offset, **query)
+                for t in page:
+                    threads.setdefault(t.id, t)
+                if len(page) < _PAGE:
+                    break
+                offset += _PAGE
         for q in activity_queries:
-            for t in store.list_threads(limit=_FETCH, direct_for=direct_for, **q):
+            query = {"scopes": readable, **q}
+            for t in store.list_threads(limit=_FETCH, direct_for=direct_for, **query):
                 threads.setdefault(t.id, t)
         if self.decisions is not None:
             threads = {tid: self.decisions.apply_timeout(t) for tid, t in threads.items()}

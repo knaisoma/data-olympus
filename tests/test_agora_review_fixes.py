@@ -282,3 +282,47 @@ def test_blocked_owner_agent_cannot_post_or_read(ts: ThreadService, core: AgoraS
             call()
         assert e.value.code == "forbidden"
 
+
+
+# --- B2, second pass: inbox action items are never truncated away ------------
+def test_revoked_subscription_cannot_hide_readable_decision(
+    ts: ThreadService, core: AgoraService, ana: Participant, ben: Participant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import data_olympus.agora.threads as threads_mod
+
+    monkeypatch.setattr(threads_mod, "_PAGE", 5)
+    monkeypatch.setattr(threads_mod, "_FETCH", 5)
+    monkeypatch.setattr(threads_mod, "_FETCH_CAP", 5)
+    core.access.resolve_scope(ben, "project:alpha", claim=True)
+    core.membership(ben, action="invite", project="project:alpha", participant="ana")
+    core.membership(ana, action="accept", project="project:alpha", participant="ana")
+    core.subscribe(ana, scope="project:alpha")
+    core.subscribe(ana, scope="universal")
+    universal, _ = _decision(ts, ben, recommend=True)
+    for i in range(20):
+        ts.post(ben, scope="project:alpha", audience="everyone", kind="decision",
+                title=f"Alpha {i}", decision=DecisionInput(
+                    question="?", options=[OptionInput("A"), OptionInput("B")]))
+    core.membership(ben, action="block", project="project:alpha", participant="ana")
+    reasons = {(i.reason, i.thread_id) for i in ts.inbox(ana)}
+    assert ("decision_vote_requested", universal.id) in reasons
+    assert all(i.scope != "project:alpha" for i in ts.inbox(ana) if i.thread_id)
+
+
+def test_routine_direct_traffic_cannot_hide_a_question(
+    ts: ThreadService, core: AgoraService, ana: Participant, ben: Participant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import data_olympus.agora.threads as threads_mod
+
+    monkeypatch.setattr(threads_mod, "_PAGE", 5)
+    monkeypatch.setattr(threads_mod, "_FETCH", 5)
+    monkeypatch.setattr(threads_mod, "_FETCH_CAP", 5)
+    core.contact(ana, action="accept", other="ben")
+    q = ts.post(ben, scope="universal", audience="participant:ana", kind="question",
+                title="Which port?", body="?")
+    for i in range(20):
+        ts.post(ben, scope="universal", audience="participant:ana", kind="discussion",
+                title=f"fyi {i}", body="x")
+    assert ("question_to_you", q.id) in {(i.reason, i.thread_id) for i in ts.inbox(ana)}

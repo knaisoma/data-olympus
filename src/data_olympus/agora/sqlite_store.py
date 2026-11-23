@@ -594,7 +594,7 @@ class SQLiteAgoraStore:
         audiences: Collection[tuple[str, str]] | None = None,
         originators: Collection[str] | None = None,
         updated_after: float | None = None, limit: int = 100,
-        direct_for: Collection[str] | None = None,
+        direct_for: Collection[str] | None = None, offset: int = 0,
     ) -> list[Thread]:
         where: list[str] = []
         params: list[Any] = []
@@ -621,8 +621,8 @@ class SQLiteAgoraStore:
         sql = "SELECT * FROM threads"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY updated_at DESC, id LIMIT ?"
-        params.append(max(0, int(limit)))
+        sql += " ORDER BY updated_at DESC, id LIMIT ? OFFSET ?"
+        params.extend((max(0, int(limit)), max(0, int(offset))))
         with self._read() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._thread(r) for r in rows]
