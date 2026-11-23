@@ -95,7 +95,9 @@ planned issues in the run summary and opens nothing. Issues are opened only by
 the schedule or by a dispatch from `main` with the dry run turned off. The dry
 run is its own job with a read-only token, so a dry run dispatched from any
 branch never receives a token that can write issues; only the job that opens
-issues holds `issues: write`, and it runs only on `main`. Locally:
+issues holds `issues: write`, and it runs only on `main` (its first step
+checks the exact ref `refs/heads/main` case-sensitively, because GitHub
+expressions ignore case). Locally:
 
 ```bash
 python -m scripts.maintenance_inventory --repo knaisoma/data-olympus --dry-run
