@@ -433,3 +433,19 @@ def test_search_scan_is_bounded(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) 
     s.create_thread(_thread("th_b"), _msg("mb", "th_b", "a note on kafka among words"))
     # The scan stops after 4 rows, all from th_a, so th_b is not reached.
     assert [t for t, _ in s.search('"kafka"', scopes={"universal"}, limit=2)] == ["th_a"]
+
+
+def test_blocked_person_and_agent_get_no_headline_counts(
+    ts: ThreadService, ds: DecisionService, hs: Any, core: AgoraService,
+    admin: Participant, ana: Participant, ana_claude: Participant, ben: Participant,
+) -> None:
+    for i in range(3):
+        th = ts.post(ben, scope="universal", audience="everyone", kind="question",
+                     title=f"Q{i}", body="?", topics=["db"])
+        ts.set_state(ben, th.id, "answered", outcome=f"A{i}")
+    core.membership(admin, action="block", project="*", participant="ana")
+    for who in (ana, ana_claude):
+        cu = hs.catch_up(who, threads=ts, decisions=ds)
+        assert (cu.total, cu.topics, cu.complete) == (0, {}, True)
+        assert hs.catch_up(who, threads=ts, decisions=ds, topics=["db"]).total == 0
+        assert hs.count_since(who, ds) == 0

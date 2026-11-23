@@ -260,7 +260,13 @@ class HighlightService:
             self.access.require(self.access.can_read_scope(actor, record),
                                 "you cannot read this scope")
             return {record.id}
-        out = {"universal"}
+        # universal goes through the same check as every other scope: an
+        # instance-blocked participant, or the agent of one, reads none of it,
+        # and so must not be counted any of its headlines either.
+        out: set[str] = set()
+        universal = self.access.scope_record("universal")
+        if self.access.can_read_scope(actor, universal):
+            out.add(universal.id)
         for s in self.ctx.store.list_scopes():
             if self.access.can_read_scope(actor, s):
                 out.add(s.id)
