@@ -5,6 +5,10 @@ name: Maintenance inventory
 # assessment issue per application, dependency and upgrade step, never a
 # duplicate (open or closed). It never changes code, branches or dependencies.
 # See docs/maintenance.md. Dispatch defaults to a dry run that opens nothing.
+#
+# Only the write job holds an issues: write token, and it runs only on main
+# (the schedule, or a dispatch from main with dry_run off). A dry run, from any
+# ref, runs with a read-only token, so branch code never receives a write token.
 
 on:
   schedule:
@@ -16,18 +20,52 @@ on:
         type: boolean
         default: true
 
-permissions:
-  contents: read
-  issues: write
+permissions: {}
 
 concurrency:
   group: maintenance-inventory
   cancel-in-progress: false
 
 jobs:
-  inventory:
+  dry-run:
+    if: github.event_name == 'workflow_dispatch' && inputs.dry_run
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+      - name: Inventory plan (dry run, read-only token)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          python -m scripts.maintenance_inventory --repo "$GITHUB_REPOSITORY" --dry-run | tee -a "$GITHUB_STEP_SUMMARY"
+
+  refuse-off-main:
+    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Issues are opened only from main
+        run: |
+          echo "::error::issues are opened only from main; dispatch with dry_run elsewhere"
+          exit 1
+
+  inventory:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -38,14 +76,6 @@ jobs:
       - name: Inventory and open assessment issues
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
           set -o pipefail
-          args=(--repo "$GITHUB_REPOSITORY")
-          if [[ "$DRY_RUN" == true ]]; then
-            args+=(--dry-run)
-          elif [[ "$GITHUB_REF" != refs/heads/main ]]; then
-            echo "::error::issues are opened only from main; dispatch with dry_run elsewhere"
-            exit 1
-          fi
-          python -m scripts.maintenance_inventory "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          python -m scripts.maintenance_inventory --repo "$GITHUB_REPOSITORY" | tee -a "$GITHUB_STEP_SUMMARY"
