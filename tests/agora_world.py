@@ -144,3 +144,10 @@ def admin() -> Participant:
 @pytest.fixture
 def local_agent() -> Participant:
     return local("claude")
+
+
+@pytest.fixture
+def ts(ctx: AgoraContext, access: Access, core: AgoraService) -> Any:
+    from data_olympus.agora.threads import ThreadService
+
+    return ThreadService(ctx, access, core)
