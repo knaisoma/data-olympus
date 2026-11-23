@@ -232,15 +232,59 @@ class SQLiteAgoraStore:
             return cur.rowcount == 1
 
     def claim_project(self, scope_id: str, owner: str, membership: Membership) -> bool:
-        """Make ``owner`` the owner of an unowned project, in one transaction
-        with its owner membership. False when someone already owns it."""
+        """Make ``owner`` the owner of a never-owned project, in one transaction
+        with its owner membership. False when it has, or ever had, an owner:
+        an orphaned project is reassigned by an admin, never re-claimed."""
         with self._write() as conn:
             cur = conn.execute(
-                "UPDATE scopes SET owner = ? WHERE id = ? AND owner IS NULL",
-                (owner, scope_id))
+                "UPDATE scopes SET owner = ? WHERE id = ? AND owner IS NULL AND NOT "
+                "EXISTS (SELECT 1 FROM memberships WHERE project = ? AND role = 'owner')",
+                (owner, scope_id, scope_id))
             if cur.rowcount != 1:
                 return False
             self._put_membership(conn, membership)
+            return True
+
+    def create_owned_scope(self, scope: Scope, membership: Membership) -> bool:
+        """Insert a new scope and its owner membership as one unit. False,
+        writing nothing, when the id already exists."""
+        with self._write() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO scopes (id, tier, owner, created_by, remote_url, "
+                "has_kb_docs, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (scope.id, scope.tier, scope.owner, scope.created_by, scope.remote_url,
+                 int(scope.has_kb_docs), scope.created_at),
+            )
+            if cur.rowcount != 1:
+                return False
+            self._put_membership(conn, membership)
+            return True
+
+    @staticmethod
+    def _keeps_an_owner(conn: sqlite3.Connection, m: Membership) -> bool:
+        """False when writing ``m`` would take the project's last active owner
+        away (remove, block or demote). Read inside the write transaction, so
+        two owners removing each other cannot both pass."""
+        if m.project == "*" or (m.role == "owner" and m.state == "active"):
+            return True
+        row = conn.execute(
+            "SELECT role, state FROM memberships WHERE project = ? AND participant = ?",
+            (m.project, m.participant)).fetchone()
+        if row is None or row["role"] != "owner" or row["state"] != "active":
+            return True
+        others = conn.execute(
+            "SELECT COUNT(*) AS n FROM memberships WHERE project = ? AND role = 'owner' "
+            "AND state = 'active' AND participant != ?",
+            (m.project, m.participant)).fetchone()
+        return int(others["n"]) > 0
+
+    def update_membership(self, m: Membership) -> bool:
+        """Write ``m`` unless it would leave the project without an active
+        owner; False (nothing written) in that case."""
+        with self._write() as conn:
+            if not self._keeps_an_owner(conn, m):
+                return False
+            self._put_membership(conn, m)
             return True
 
     def list_scopes(self) -> list[Scope]:

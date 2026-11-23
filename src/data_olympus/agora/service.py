@@ -164,17 +164,20 @@ class AgoraService:
                 self.access.require(self.access.is_project_owner(actor, project.id),
                                     "only the project owner may add a component")
             else:
-                store.insert_scope(Scope(pid, "T3", actor.name, actor.name, "", False, now))
-                store.put_membership(Membership(pid, actor.name, "owner", "active", None, now))
+                created = store.create_owned_scope(
+                    Scope(pid, "T3", actor.name, actor.name, "", False, now),
+                    Membership(pid, actor.name, "owner", "active", None, now))
+                if not created:
+                    raise AgoraError("conflict", f"scope {pid!r} was just created; retry")
                 self.ctx.record("scope.create", actor, scope=pid)
             scope = Scope(ref.id, "T4", None, actor.name, url, False, now)
             if not store.insert_scope(scope):
                 raise AgoraError("conflict", f"scope {ref.id!r} already exists")
         elif ref.tier == "T3":
             scope = Scope(ref.id, "T3", actor.name, actor.name, url, False, now)
-            if not store.insert_scope(scope):
+            if not store.create_owned_scope(
+                    scope, Membership(ref.id, actor.name, "owner", "active", None, now)):
                 raise AgoraError("conflict", f"scope {ref.id!r} already exists")
-            store.put_membership(Membership(ref.id, actor.name, "owner", "active", None, now))
         else:
             scope = Scope(ref.id, "T2", None, actor.name, url, False, now)
             if not store.insert_scope(scope):
@@ -204,11 +207,17 @@ class AgoraService:
             if m.role == "owner" and m.state == "active" and m.participant != excluding
         )
 
-    def _emit_membership(self, actor: Participant, m: Membership, verb: str) -> None:
-        if self.highlights is not None:
-            self.highlights.commit_membership(actor, m, verb)
+    def _write_membership(self, actor: Participant, m: Membership,
+                          verb: str | None) -> None:
+        """Store a membership change; the store refuses one that would leave
+        the project without an active owner, checked in the same transaction."""
+        if verb is not None and self.highlights is not None:
+            ok = bool(self.highlights.commit_membership(actor, m, verb))
         else:
-            self.ctx.store.put_membership(m)
+            ok = self.ctx.store.update_membership(m)
+        if not ok:
+            raise AgoraError("conflict", "the last owner cannot be removed, blocked "
+                             "or demoted")
 
     def membership(
         self, actor: Participant, *, action: MembershipAction, project: str,
@@ -226,10 +235,7 @@ class AgoraService:
             state: Literal["blocked", "removed"] = (
                 "blocked" if action == "block" else "removed")
             m = Membership(INSTANCE, participant, "member", state, actor.name, now)
-            if action == "block":
-                self._emit_membership(actor, m, "blocked")
-            else:
-                store.put_membership(m)
+            self._write_membership(actor, m, "blocked" if action == "block" else None)
             self.ctx.record(f"membership.{action}", actor, project=INSTANCE,
                             participant=participant)
             return m
@@ -303,10 +309,7 @@ class AgoraService:
         else:
             raise AgoraError("invalid", f"unknown membership action {action!r}")
 
-        if verb is not None:
-            self._emit_membership(actor, result, verb)
-        else:
-            store.put_membership(result)
+        self._write_membership(actor, result, verb)
         self._sync_scope_owner(pid)
         self.ctx.record(f"membership.{action}", actor, project=pid,
                         participant=participant, role=result.role, state=result.state)

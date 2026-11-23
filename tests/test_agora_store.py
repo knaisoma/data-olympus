@@ -204,3 +204,46 @@ def test_update_thread_roundtrip(tmp_path: Path) -> None:
     s.update_thread(replace(th, state="closed", payload={"x": 1}, updated_at=8.0))
     got = s.get_thread("th_1")
     assert got is not None and got.state == "closed" and got.payload == {"x": 1}
+
+
+def test_create_owned_scope_is_atomic_and_exclusive(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    first = s.create_owned_scope(
+        Scope("project:p", "T3", "ana", "ana", "", False, 1.0),
+        Membership("project:p", "ana", "owner", "active", None, 1.0))
+    second = s.create_owned_scope(
+        Scope("project:p", "T3", "ben", "ben", "", False, 2.0),
+        Membership("project:p", "ben", "owner", "active", None, 2.0))
+    assert first is True and second is False
+    assert s.get_membership("project:p", "ben") is None
+    scope = s.get_scope("project:p")
+    assert scope is not None and scope.owner == "ana"
+
+
+def test_update_membership_keeps_an_owner(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    s.put_scope(Scope("project:p", "T3", "ana", "ana", "", False, 1.0))
+    s.put_membership(Membership("project:p", "ana", "owner", "active", None, 1.0))
+    s.put_membership(Membership("project:p", "ben", "owner", "active", None, 1.0))
+    # Two owners each remove the other from stale state: only one may succeed.
+    assert s.update_membership(Membership("project:p", "ana", "owner", "removed", "ben", 2.0))
+    assert not s.update_membership(Membership("project:p", "ben", "owner", "removed", "ana", 2.0))
+    assert not s.update_membership(Membership("project:p", "ben", "member", "active", "x", 3.0))
+    assert not s.update_membership(Membership("project:p", "ben", "member", "blocked", "x", 3.0))
+    ben = s.get_membership("project:p", "ben")
+    assert ben is not None and ben.role == "owner" and ben.state == "active"
+    # Changes that leave an owner in place go through.
+    assert s.update_membership(Membership("project:p", "cat", "member", "invited", "ben", 4.0))
+
+
+def test_claim_refused_once_a_project_had_an_owner(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    s.put_scope(Scope("project:p", "T3", None, None, "", True, 1.0))
+    s.put_membership(Membership("project:p", "ana", "owner", "removed", None, 1.0))
+    assert not s.claim_project(
+        "project:p", "ben", Membership("project:p", "ben", "owner", "active", None, 2.0))
+    s.put_scope(Scope("project:q", "T3", None, None, "", True, 1.0))
+    assert s.claim_project(
+        "project:q", "ben", Membership("project:q", "ben", "owner", "active", None, 2.0))
+    assert not s.claim_project(
+        "project:q", "ana", Membership("project:q", "ana", "owner", "active", None, 3.0))
