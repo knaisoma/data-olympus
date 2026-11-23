@@ -47,12 +47,20 @@ if [[ "$MODE" != "resolve-workspace" ]]; then
   PAYLOAD="$(cat || true)"
 fi
 
+# The user-prompt consult intent is capped like the pre-tool action_diff: the
+# prompt can be a whole review patch (hundreds of KiB), which the server would
+# otherwise classify and search in full, and which on Linux also overflows the
+# per-argument limit of the python3 call that builds the consult body.
+PROMPT_MAX_CHARS=4000
+
 json_field() {
-  # json_field <dotted.path> ; reads $PAYLOAD, prints value or empty.
+  # json_field <dotted.path> [max_chars] ; reads $PAYLOAD, prints value or empty.
   # JSON null and missing keys BOTH emit an empty string (never the literal
   # "None"): a null session_id must not become the ledger key "None".
+  # A positive max_chars truncates the printed value to that many characters.
   python3 -c 'import json,sys
 p=sys.argv[1].split(".")
+m=int(sys.argv[2]) if len(sys.argv)>2 and sys.argv[2] else 0
 try:
     d=json.loads(sys.stdin.read() or "{}")
     for k in p:
@@ -60,9 +68,10 @@ try:
     if d is None:
         print("")
     else:
-        print(d if isinstance(d,str) else json.dumps(d))
+        v=d if isinstance(d,str) else json.dumps(d)
+        print(v[:m] if m>0 else v)
 except Exception:
-    print("")' "$1" <<<"$PAYLOAD"
+    print("")' "$@" <<<"$PAYLOAD"
 }
 
 json_field_from() {
@@ -259,7 +268,7 @@ case "$MODE" in
   user-prompt)
     SESSION="$(json_field session_id)"
     CWD="$(json_field cwd)"
-    PROMPT="$(json_field prompt)"
+    PROMPT="$(json_field prompt "$PROMPT_MAX_CHARS")"
     WS="$(resolve_workspace "$CWD")"
     # trigger=prompt_hook: this consult is the installer's per-prompt auto-consult
     # (UserPromptSubmit / Gemini BeforeAgent), NOT a deliberate agent kb_consult.

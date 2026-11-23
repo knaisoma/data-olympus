@@ -167,9 +167,19 @@ _DEFAULT_BM25_WEIGHTS: tuple[float, ...] = (0.0, 10.0, 5.0, 10.0, 4.0, 1.0)
 # asked for so the reranker can promote a relevant doc sitting just outside the
 # top-N window, then truncate back to the requested limit. Bounded so a small
 # limit still gets a useful pool and a large one cannot drag in the whole corpus.
+# kb_suggest_skills reads at most this many characters of one document body, so
+# a single very large document cannot cost unbounded memory or parsing time.
+SUGGEST_BODY_CHARS = 262144
 _RERANK_OVERFETCH_FACTOR = 5
 _RERANK_MIN_POOL = 50
 _RERANK_MAX_POOL = 200
+
+# Most distinct whitespace terms one search() turns into FTS5 MATCH phrases.
+# Every term is one OR'd phrase in a single bm25 MATCH, whose cost grows with
+# the term count (16k terms took 17.7 s and 308 MB) and cannot be cancelled
+# once started. A consult intent can be a whole review prompt, so the terms are
+# deduped (order-preserving) and capped before the MATCH is built.
+MAX_QUERY_TERMS = 64
 
 # Cap on the characters embedded per doc at build time (issue #42). The head of
 # a doc carries its topical signal; bounding it keeps a very long doc from
@@ -1477,9 +1487,15 @@ class Index:
         # terms into the primary MATCH would let a doc matching only a derived
         # term outrank a doc matching the term the user typed. Splitting the
         # passes makes the "expansion is down-weighted" contract actually true.
-        primary_terms = query.split()
+        # Dedupe (order-preserving) then cap at MAX_QUERY_TERMS, so an oversized
+        # query (a whole prompt posted as a consult intent) cannot build an
+        # unbounded MATCH. ``capped_query`` feeds every later pass that splits
+        # the query again (the trigram fallback), so none of them sees the
+        # uncapped text either.
+        primary_terms = list(dict.fromkeys(query.split()))[:MAX_QUERY_TERMS]
         if not primary_terms:
             return []
+        capped_query = " ".join(primary_terms)
         expansion_terms: list[str] = []
         if self.query_expander is not None:
             expanded = list(self.query_expander(primary_terms))
@@ -1547,7 +1563,7 @@ class Index:
             ):
                 hits = self._trigram_backfill(
                     conn,
-                    query,
+                    capped_query,
                     primary_hits=hits,
                     base_where=base_where,
                     base_params=base_params,
@@ -2403,6 +2419,40 @@ class Index:
                     COALESCE(docs.recheck_by, '') AS recheck_by,
                     COALESCE(docs.last_verified, '') AS last_verified
                 FROM docs
+                WHERE {' AND '.join(where)}
+                ORDER BY docs.id ASC
+            """
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.Error:
+            return []
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
+
+    def suggest_candidates(self, *, today: str) -> builtins.list[dict[str, object]]:
+        """id/path/body for every IN-FORCE document (issue #34,
+        kb_suggest_skills' candidate set).
+
+        Uses the same single-sourced in-force predicate as
+        :meth:`curate_candidates`, so only documents that currently govern are
+        scanned: never a draft, retired, expired or memory-inbox document.
+        Each body is cut to ``SUGGEST_BODY_CHARS`` characters in SQL, so one very
+        large document cannot cost an unbounded amount of memory or parsing time.
+        Returns ``[]`` when the index file or a needed table does not exist."""
+        if not self._db_path.exists():
+            return []
+        conn = self._connect()
+        try:
+            where, params = self._facet_filters(
+                tier=None, category=None, status=None, in_force=True,
+                doc_type=None, today=today,
+            )
+            params = [SUGGEST_BODY_CHARS, *params]
+            sql = f"""
+                SELECT docs.id AS id, docs.path AS path,
+                       substr(COALESCE(fts.body, ''), 1, ?) AS body
+                FROM docs
+                JOIN fts ON fts.id = docs.id
                 WHERE {' AND '.join(where)}
                 ORDER BY docs.id ASC
             """

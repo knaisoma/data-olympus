@@ -236,10 +236,10 @@ def test_both_digest_checks_are_present():
 
 PINNED = {
     "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "astral-sh/setup-uv": "11f9893b081a58869d3b5fccaea48c9e9e46f990",
-    "actions/create-github-app-token": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
+    "astral-sh/setup-uv": "07a047e608db84b3d8c06cd9a7c7dcc9c355c18e",
+    "actions/create-github-app-token": "64ab729a6294000f5aa4a4bc0b73d1f32bc45510",
     "actions/attest-build-provenance": "4d101475d8b20a2381f78447822ac1eab6504dd8",
-    "pypa/gh-action-pypi-publish": "dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+    "pypa/gh-action-pypi-publish": "7245906fb61fa33a13554f9d5fb856fe61758086",
 }
 
 
@@ -253,6 +253,81 @@ def test_privileged_actions_are_pinned_by_full_commit_sha():
                 assert ref == PINNED[action], action
     assert {"actions/checkout", "astral-sh/setup-uv", "actions/create-github-app-token",
             "pypa/gh-action-pypi-publish"} <= seen
+
+
+SETUP_PYTHON = "actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0"
+
+
+def test_every_setup_python_reference_is_pinned_to_the_v7_1_0_commit():
+    found = {}
+    paths = sorted(Path(".github/workflows").glob("*.y*ml"))
+    assert paths
+    for path in paths:
+        data = yaml.safe_load(path.read_text())
+        refs = [
+            step["uses"]
+            for job in (data.get("jobs") or {}).values()
+            for step in job.get("steps", [])
+            if str(step.get("uses", "")).startswith("actions/setup-python")
+        ]
+        if refs:
+            found[path.name] = refs
+    assert {"maintenance-inventory.yml", "promote-release.yml"} <= set(found)
+    for name, refs in found.items():
+        assert set(refs) == {SETUP_PYTHON}, name
+
+
+DOCKER_LOGIN = "docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6"
+
+
+def test_every_docker_login_reference_is_pinned_to_the_v4_7_0_commit():
+    found = {}
+    paths = sorted(Path(".github/workflows").glob("*.y*ml"))
+    assert paths
+    for path in paths:
+        data = yaml.safe_load(path.read_text())
+        refs = [
+            step["uses"]
+            for job in (data.get("jobs") or {}).values()
+            for step in job.get("steps", [])
+            if str(step.get("uses", "")).startswith("docker/login-action")
+        ]
+        if refs:
+            found[path.name] = refs
+    assert {"promote-release.yml"} <= set(found)
+    for name, refs in found.items():
+        assert set(refs) == {DOCKER_LOGIN}, name
+
+
+SETUP_UV = "astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e"
+
+
+def test_every_setup_uv_reference_is_pinned_to_the_v10_3_2_commit():
+    found = {}
+    paths = sorted(Path(".github/workflows").glob("*.y*ml"))
+    assert paths
+    for path in paths:
+        data = yaml.safe_load(path.read_text())
+        refs = [
+            step["uses"]
+            for job in (data.get("jobs") or {}).values()
+            for step in job.get("steps", [])
+            if str(step.get("uses", "")).startswith("astral-sh/setup-uv")
+        ]
+        if refs:
+            found[path.name] = refs
+    assert {
+        "ci.yaml",
+        "hotfix-cut.yml",
+        "pr-title-lint.yml",
+        "promote-release.yml",
+        "publish-python-build.yml",
+        "rc-build.yml",
+        "rc-publish-stage.yml",
+        "recut-release-branch.yml",
+    } <= set(found)
+    for name, refs in found.items():
+        assert set(refs) == {SETUP_UV}, name
 
 
 SIGNER = "knaisoma/data-olympus/.github/workflows/rc-publish-stage.yml"

@@ -46,6 +46,12 @@ Each explicit consult records a coverage set computed from its `intent` text:
   intent, computed by the same path matcher the gate applies to `action_path`.
   A quoted span counts as one token, so a path containing spaces can be named.
 
+A consult uses at most the first 4000 characters of `intent` for
+classification, coverage and rule retrieval; the rest is ignored. The prompt
+hook (`kb-enforce-hook user-prompt`) also posts at most the first 4000
+characters of the prompt. Name the paths, commands and topics a consult must
+cover at the start of the intent.
+
 Coverage accumulates per `(session_id, workspace)`: several fresh consults on
 different topics all count, and each signal expires on its own TTL. A
 prompt-hook consult never adds coverage. A governed action is allowed when

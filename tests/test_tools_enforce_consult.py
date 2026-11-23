@@ -123,3 +123,47 @@ def test_consult_audit_event_records_empty_coverage(tmp_path) -> None:
     )
     (ev,) = [e for e in al.iter_filtered() if e["event_type"] == "consult"]
     assert ev["coverage"] == []
+
+
+# ---------------------------------------------------------------------------
+# Intent length cap: the prompt hook posts whole prompts (review prompts carry
+# patches up to 600 KiB) as the intent. kb_consult_fn truncates the intent to
+# MAX_CONSULT_INTENT_CHARS before classify, coverage and search, so one consult
+# cannot drive an unbounded classifier pass or FTS MATCH.
+# ---------------------------------------------------------------------------
+
+
+def test_consult_truncates_a_600_kib_intent() -> None:
+    from data_olympus.tools_enforce import MAX_CONSULT_INTENT_CHARS
+
+    assert MAX_CONSULT_INTENT_CHARS == 4000
+    seen: dict[str, list[str]] = {"classify": [], "coverage": [], "search": []}
+
+    class _SpyClassifier(IntentClassifier):
+        def classify(self, *, intent="", **kwargs):  # type: ignore[override]
+            seen["classify"].append(intent)
+            return super().classify(intent=intent, **kwargs)
+
+        def coverage(self, intent):  # type: ignore[override]
+            seen["coverage"].append(intent)
+            return super().coverage(intent)
+
+    class _SpyIndex(_FakeIndex):
+        def search(self, query, *args, **kwargs):  # type: ignore[override]  # noqa: ARG002
+            seen["search"].append(query)
+            return []
+
+    head = "add a new caching library "
+    intent = head + ("x" * (600 * 1024))
+    resp = kb_consult_fn(
+        idx=_SpyIndex(), classifier=_SpyClassifier(), ledger=ConsultationLedger(),
+        workspace="proj", intent=intent,
+        source_session="s1", agent_identity="codex",
+        ttl_sec=300.0, now=1000.0, audit_log=None,
+    )
+    assert resp.is_governed_decision is True
+    for name in ("classify", "coverage", "search"):
+        assert seen[name], f"{name} was not called"
+        for value in seen[name]:
+            assert len(value) == MAX_CONSULT_INTENT_CHARS, name
+            assert value == intent[:MAX_CONSULT_INTENT_CHARS], name

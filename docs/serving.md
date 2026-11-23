@@ -160,7 +160,7 @@ cannot make a write tool available when the replica did not register it.
 
 Set `KB_READ_ONLY=true` to run an instance as a read-only replica. In this mode
 the server registers only the read tools (`kb_search`, `kb_get`, `kb_list`,
-`kb_outline`, `kb_curate`, `kb_health`) and the read REST routes; the write and
+`kb_outline`, `kb_curate`, `kb_suggest_skills`, `kb_health`) and the read REST routes; the write and
 enforcement-write tools and routes (`propose`, `resolve`, `bootstrap`,
 `consult`, `gate`, `record-event`, and their observability mirrors) are not
 registered at all and return 404. The write pipeline (worktrees, push queue,
@@ -858,11 +858,17 @@ GC is conservative and coupled to the push queue:
 
 ## Streamable-http session lifecycle and reaping
 
+Since data-olympus moved to FastMCP 4 and MCP SDK 2, a client speaking the
+2026-07-28 protocol sends requests without a session, so it never creates a
+session table entry: the reaper and `live_sessions` below only cover clients
+on the earlier, session-based protocol, and `live_sessions` no longer counts
+all traffic.
+
 Each session-less `POST /mcp` handshake makes the underlying MCP SDK create a
 transport, register it in an in-memory session table, and start a task that
 blocks waiting for further messages on that session. The SDK removes a session
 on an explicit client `DELETE`, on the session task crashing, on server
-shutdown, and, since MCP SDK 1.30, once the session has had no request in flight
+shutdown, and, since MCP SDK 1.30 (still so in 2.x), once the session has had no request in flight
 for 30 minutes. A request being served or an open `GET` stream holds the
 session. FastMCP builds the SDK's session manager without overriding that
 window, so it applies to this server as a backstop.
@@ -918,6 +924,13 @@ That is the leak it bounds, and it is why a five minute default window does not
 disturb a connected client.
 
 ## Search ranking
+
+A query is split on whitespace, duplicate terms are dropped (the first
+occurrence keeps its place), and at most the first 64 distinct terms are
+matched; the trigram fallback uses the same 64 terms. Every term is one phrase
+of a single BM25 MATCH, whose cost grows with the term count, so a whole prompt
+or patch passed as a query would otherwise take seconds to minutes and hundreds
+of megabytes per request. Put the distinctive terms first in a long query.
 
 `kb_search` orders hits by BM25 relevance and then applies a **status-aware
 rerank on top of that score, enabled by default**. The rerank exists so a
@@ -1138,6 +1151,30 @@ reusing the default search path's own expired-exclusion.
 The `data-olympus validity-report` CLI subcommand lists expired and
 soon-to-expire docs from a bundle directory.
 
+## `kb_suggest_skills`: instructions repeated across documents (issue #34)
+
+`kb_suggest_skills` (MCP tool, read-only) lists instructions that repeat across
+in-force documents, most repeated first, so a maintainer can consider capturing
+them once as a reusable skill or workflow. It is advisory only, with no
+write-pipeline dependency at all: it never proposes, edits, rewrites, promotes
+or demotes anything. To act on a suggestion, read the documents with `kb_get`
+and change them through `kb_propose_edit` as a separate, deliberate step.
+
+Documents are parsed as CommonMark. An instruction is a line of paragraph or
+list-item text of at least six words; code (fenced or indented, in any quote or
+list), HTML blocks and headings are never read. Lines are compared after normalising case,
+markdown markers, spacing and punctuation, and each document counts once however
+often it repeats a line; at most 2000 instructions, and only the first 262144 characters, are taken from one document. Every call scans the in-force corpus again (there is no cache), so its cost grows with the corpus (issue #474). Only documents that currently govern are scanned (the
+same in-force set as `kb_search(in_force=True)`), so drafts, retired, expired and
+memory-inbox documents are never reported. `min_documents` (default 3, clamped
+to 2..100) sets how many distinct documents must repeat a line, and `limit`
+(default 20, clamped to 1..100) caps the list. Each entry carries `instruction`,
+`documents`, `paths` (at most ten) and `suggestion`.
+
+The consultation telemetry named in issue #34 (issue #32) is not implemented in
+this release and this tool does not use it: repetition across the corpus is the
+only signal.
+
 ## `kb_curate`: which in-force documents are review-due (issue #142)
 
 `kb_curate` (MCP tool, `GET /api/v1/curate`) aggregates the same
@@ -1330,7 +1367,10 @@ uv sync --extra embeddings   # or: pip install 'data-olympus[embeddings]'
 ```
 
 The extra pulls in `fastembed`, which bundles `onnxruntime` (there is no torch
-dependency). The default model ships as a ~33 MB quantised ONNX file that is
+dependency). The extra is marked for Python below 3.15 because
+`onnxruntime` publishes no Python 3.15 wheels yet; on 3.15 it installs nothing
+and enabling the feature fails startup as described below. The marker is
+dropped once those wheels exist. The default model ships as a ~33 MB quantised ONNX file that is
 fetched once when the feature is first enabled and cached locally; after that
 there is no network access. If `KB_EMBEDDINGS_MODE=on` but the extra or the model
 is unavailable, **startup fails loudly** with an actionable message rather than

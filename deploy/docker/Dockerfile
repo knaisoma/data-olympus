@@ -1,48 +1,43 @@
 # syntax=docker/dockerfile:1.7
 
 # Digest-pinned base for reproducible, tamper-resistant builds. This is the
-# multi-arch (linux/amd64, arm64, ...) OCI index digest for python:3.13-slim.
-# To roll the pin forward: resolve the current tag's index digest and replace
-# BOTH the tag comment and the @sha256 below, e.g.
-#   docker buildx imagetools inspect python:3.13-slim   # shows the index digest
+# multi-arch (linux/amd64, arm64, ...) OCI index digest for python:3.15-alpine
+# (Python 3.15.2 on Alpine Linux, musl libc; every locked runtime dependency
+# ships a musllinux wheel, so nothing is compiled in the image).
+# The build and runtime stages use this same pinned base. To roll the pin
+# forward: resolve the current tag's index digest and replace the tag and the
+# @sha256 on BOTH FROM lines below, e.g.
+#   docker buildx imagetools inspect python:3.15-alpine   # shows the index digest
 # or via the registry API (no docker needed):
 #   TOKEN=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/python:pull" | jq -r .token)
 #   curl -sI -H "Authorization: Bearer $TOKEN" \
 #     -H "Accept: application/vnd.oci.image.index.v1+json" \
-#     https://registry-1.docker.io/v2/library/python/manifests/3.13-slim \
+#     https://registry-1.docker.io/v2/library/python/manifests/3.15-alpine \
 #     | grep -i docker-content-digest
-FROM python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f AS runtime
+FROM python:3.15-alpine@sha256:0f9552bb28711333da16915ec146f5e6bb44a7fdac9ced15dc17c2e0206346dd AS build
 
-# SSH host to trust for git over SSH. Defaults to github.com; override at build
-# time (--build-arg KB_SSH_KEYSCAN_HOST=git.example.com) for a non-GitHub remote.
-# The runtime KB_SSH_KEYSCAN_HOST env var (see entrypoint.sh) can add another host
-# at boot without a rebuild.
-ARG KB_SSH_KEYSCAN_HOST=github.com
-
-# Install git + ssh + ca-certs. gosu is intentionally NOT installed: the image
-# runs entirely as the non-root uid 65534 (see USER below), so there is no
-# root->non-root privilege drop to perform. The deploy-key permission fix and the
-# first-boot /kb-main clone that the old root entrypoint did are now handled by a
-# non-root k8s initContainer (see deploy/k8s/statefulset.yaml) writing to shared
-# volumes with an fsGroup, so the runtime container never needs root or gosu.
-# curl is intentionally NOT installed either: nothing in the image calls it (the
-# probes are httpGet/tcpSocket and the entrypoint and initContainer do not use
-# it), and each copy of libcurl adds its own scanner findings. The bin/kb client
-# scripts that use curl run on operator machines, not inside this container.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        git openssh-client ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
+# Build stage: uv and the dependency sync live here only. The runtime stage
+# below copies /app (the virtual environment and the project) and carries no
+# uv or uvx, so neither the binaries nor the Rust crates compiled into them are
+# part of the shipped image. Both stages use the same pinned base, so the
+# venv's interpreter symlink (/app/.venv/bin/python -> /usr/local/bin/python3)
+# resolves identically in the runtime stage.
+#
 # Install uv, pinned by content: the static uv and uvx binaries from astral's
-# official image, by its multi-arch OCI index digest, into /usr/local/bin
-# (where the former pip install put them). Roll forward deliberately; 0.11.15
-# is the minimum that carries the fixes for the uv scanner findings. To move
-# the pin, replace BOTH the tag and the digest, after checking that the index
-# digest carries astral's build provenance:
+# official image, by its multi-arch OCI index digest. Roll forward
+# deliberately; 0.11.15 is the minimum that carries the fixes for the uv
+# scanner findings. To move the pin, replace BOTH the tag and the digest, after
+# checking that the index digest carries astral's build provenance:
 #   docker buildx imagetools inspect ghcr.io/astral-sh/uv:<version>
 #   gh attestation verify oci://ghcr.io/astral-sh/uv@<index digest> --owner astral-sh
 # (signer: astral-sh/uv .github/workflows/publish-docker-image.yml).
 COPY --from=ghcr.io/astral-sh/uv:0.12.23@sha256:61d393e44e249f2e4b526b6c7ddcecce245946826e608e11c93ad4f5bba55b21 /uv /uvx /usr/local/bin/
+
+# Use the base image's interpreter, never a downloaded one, so the venv points
+# at the path the runtime stage also has; copy files out of the uv cache rather
+# than hard-linking them, since the cache does not travel to the runtime stage.
+ENV UV_PYTHON_DOWNLOADS=never \
+    UV_LINK_MODE=copy
 
 WORKDIR /app
 
@@ -63,9 +58,34 @@ COPY bin/ ./bin/
 COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
-# uv cache (writable to nonroot user)
-RUN mkdir -p /tmp/uv-cache && chmod 0777 /tmp/uv-cache
-ENV UV_CACHE_DIR=/tmp/uv-cache
+FROM python:3.15-alpine@sha256:0f9552bb28711333da16915ec146f5e6bb44a7fdac9ced15dc17c2e0206346dd AS runtime
+
+# SSH host to trust for git over SSH. Defaults to github.com; override at build
+# time (--build-arg KB_SSH_KEYSCAN_HOST=git.example.com) for a non-GitHub remote.
+# The runtime KB_SSH_KEYSCAN_HOST env var (see entrypoint.sh) can add another host
+# at boot without a rebuild.
+ARG KB_SSH_KEYSCAN_HOST=github.com
+
+# Install git + ssh + ca-certs. gosu is intentionally NOT installed: the image
+# runs entirely as the non-root uid 65534 (see USER below), so there is no
+# root->non-root privilege drop to perform. The deploy-key permission fix and the
+# first-boot /kb-main clone that the old root entrypoint did are now handled by a
+# non-root k8s initContainer (see deploy/k8s/statefulset.yaml) writing to shared
+# volumes with an fsGroup, so the runtime container never needs root or gosu.
+# curl is intentionally NOT installed either: nothing in the image calls it (the
+# probes are httpGet/tcpSocket and the entrypoint and initContainer do not use
+# it), and each copy of libcurl adds its own scanner findings. The bin/kb client
+# scripts that use curl run on operator machines, not inside this container.
+# `apk upgrade` first: the pinned base can lag the Alpine security updates (at
+# the time of the move, the zlib and OpenSSL fixes the scanner reported were
+# already published for 3.24 but not yet in the base image). The base stays
+# pinned by digest; only packages from the Alpine repository move forward.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache git openssh-client ca-certificates
+
+# The virtual environment and the project, built in the build stage. No uv.
+COPY --from=build /app /app
+WORKDIR /app
 
 # Glama and other public catalog sandboxes need a safe, populated corpus so
 # tool calls exercise real results without exposing an operator KB.
@@ -89,7 +109,7 @@ RUN ssh-keyscan -t ed25519,rsa "${KB_SSH_KEYSCAN_HOST}" > /etc/ssh/known_hosts \
 
 # Close git's libcurl transports. The server reaches its KB remote over SSH
 # (and local paths in tests); it never needs git over http, https, ftp or ftps.
-# The Debian git package still installs libcurl and the git-remote-http(s)/ftp(s)
+# The Alpine git package still installs libcurl and the git-remote-http(s)/ftp(s)
 # helpers, so refuse those protocols in the system gitconfig (/etc/gitconfig):
 # git then stops with "transport '<name>' not allowed" before it starts a
 # libcurl helper. ssh and file keep their defaults. This is a default, not a
@@ -121,4 +141,5 @@ EXPOSE 8080
 USER 65534:65534
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["uv", "run", "--no-sync", "data-olympus-mcp"]
+# The console script of the venv, run directly; the entrypoint execs "$@".
+CMD ["/app/.venv/bin/data-olympus-mcp"]

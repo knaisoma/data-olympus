@@ -287,3 +287,30 @@ assert "workspace=" in reason and "source_session=" in reason
   [ "$status" -eq 0 ]
   [ "$output" = "${BATS_TEST_TMPDIR}" ]
 }
+
+@test "user-prompt caps a 600 KiB prompt at 4000 chars before posting the consult" {
+  # Review prompts carry whole patches. Posting them uncapped as the consult
+  # intent drove an unbounded FTS MATCH on the server (OOMKills), and on Linux a
+  # prompt over 128 KiB also overflows the per-argument limit of the python3
+  # call that builds the body, so the hook posted nothing at all.
+  CAP="${BATS_TEST_TMPDIR}/consult-body.json"
+  PAYLOAD_FILE="${BATS_TEST_TMPDIR}/payload.json"
+  kill "$MOCK_PID" 2>/dev/null || true
+  wait "$MOCK_PID" 2>/dev/null || true
+  KB_MOCK_CAPTURE_FILE="$CAP" python3 "${FIXTURE_DIR}/enforce-mock-server.py" "$PORT" &
+  MOCK_PID=$!
+  for _ in $(seq 1 30); do
+    if curl --silent --max-time 0.2 "http://127.0.0.1:${PORT}/api/v1/compliance" >/dev/null 2>&1; then break; fi
+    sleep 0.1
+  done
+  python3 -c 'import json,sys
+json.dump({"session_id":"s1","cwd":"/tmp/proj","prompt":"review this patch "+"y"*(600*1024)}, open(sys.argv[1],"w"))' "$PAYLOAD_FILE"
+
+  run bash -c '"'"$HOOK"'" user-prompt < "'"$PAYLOAD_FILE"'"'
+  [ "$status" -eq 0 ]
+  [ -f "$CAP" ]
+  run python3 -c 'import json,sys
+b=json.loads(open(sys.argv[1]).readline())
+print(len(b["intent"]), b["intent"].startswith("review this patch "))' "$CAP"
+  [ "$output" = "4000 True" ]
+}

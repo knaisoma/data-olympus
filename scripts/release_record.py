@@ -144,10 +144,41 @@ def validate_candidate(provenance: dict, *, head: str, candidate_tag: str) -> Ca
     return identity
 
 
-def render_notes(*, target: str, messages: list[str]) -> str:
-    """Pure deterministic notes, retaining commit bodies and migration details."""
+# Some commits keep a hidden HTML marker comment on a line of its own in their body, left by an
+# earlier automated merge path that stripped it only when it merged the change itself. It means
+# nothing to a reader of the notes, so the notes drop exactly those whole lines. The release PR
+# body, the squash and the promotion proof all compute the notes with this function, so they stay
+# byte-identical on the normalized text.
+AUTOMATION_MARKER_PATTERN = (
+    r"<!-- lane-develop repo=knaisoma/data-olympus cycle=[0-9]{4}-W[0-9]{2} item=[1-9][0-9]* -->"
+)
+AUTOMATION_MARKER = re.compile(AUTOMATION_MARKER_PATTERN)
+
+
+def strip_automation_markers(message: str) -> str:
+    """The message without its whole-line marker lines (never the subject line).
+
+    Returns the same object when there is none. Every kept line is byte-identical; removing a
+    final marker line that has no line ending after it leaves the message ending in a newline.
+    """
+    lines = message.split("\n")
+    kept = [
+        line
+        for index, line in enumerate(lines)
+        if index == 0 or not AUTOMATION_MARKER.fullmatch(line)
+    ]
+    return message if len(kept) == len(lines) else "\n".join(kept)
+
+
+def render_notes(*, target: str, messages: list[str], normalize: bool = True) -> str:
+    """Pure deterministic notes, retaining commit bodies and migration details.
+
+    Marker lines are removed (strip_automation_markers). ``normalize=False`` renders the commit
+    bodies as they are, which is what a comparison with notes published before the normalizer
+    existed needs (the 0.11.4 notes carry four markers).
+    """
     sections: dict[int, list[str]] = {3: [], 2: [], 1: [], 0: []}
-    for message in messages:
+    for message in map(strip_automation_markers, messages) if normalize else messages:
         impact = _impact(message)
         lines = message.rstrip("\n").splitlines()
         entry = "- " + lines[0]

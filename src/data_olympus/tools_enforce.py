@@ -29,6 +29,12 @@ if TYPE_CHECKING:
     from data_olympus.index import Index
     from data_olympus.pending import PendingQueue
 
+# Longest intent kb_consult_fn classifies and searches. The prompt hook posts
+# whole user prompts (review prompts carry patches of hundreds of KiB) as the
+# intent; the head of a prompt carries its topic, and an uncapped intent made
+# every consult an unbounded classifier pass and FTS MATCH.
+MAX_CONSULT_INTENT_CHARS = 4000
+
 ENFORCE_EVENT_TYPES = (
     "consult", "gate_allow", "gate_block", "gate_bypass", "gate_degraded",
 )
@@ -124,6 +130,9 @@ def kb_consult_fn(
     corpus.
     """
     trigger = trigger if trigger in _TRIGGERS else EXPLICIT_TRIGGER
+    # Bound the work one consult can cause: classify, coverage and the search
+    # below all scale with the intent, which can be a whole review prompt.
+    intent = intent[:MAX_CONSULT_INTENT_CHARS]
     result = classifier.classify(intent=intent)
     # Issue #296: what this consult covers, which the gate compares an action's
     # signals against under intent clearance. Wider than ``result.signals``: it

@@ -18,7 +18,9 @@ holds:
 - ``build_trigram_match_expr``: turn a raw query into a safe OR-of-trigrams
   ``MATCH`` expression (each trigram is a quoted phrase so user input cannot
   inject FTS operators). Returns ``None`` when the query has no trigram (i.e. is
-  shorter than 3 chars), so the caller safely no-ops the fallback.
+  shorter than 3 chars), so the caller safely no-ops the fallback. The expression is
+  bounded: each query token contributes at most its first ``MAX_TRIGRAM_TOKEN_CHARS``
+  characters and the whole expression at most ``MAX_TRIGRAM_PHRASES`` phrases.
 - ``trigram_fallback_enabled`` / ``trigram_fallback_threshold``: env config,
   mirroring ``cooccurrence.py``. The fallback is OFF by default so existing
   search behaviour is unchanged; it only backfills when the PRIMARY FTS query
@@ -61,6 +63,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts_trigram USING fts5(
 # and the fallback safely no-ops (an empty MATCH would otherwise error on FTS5).
 _TRIGRAM_LEN = 3
 
+# Bounds on what one query may expand into. Every distinct 3-character window of a
+# token becomes one OR'd phrase in a single MATCH that cannot be cancelled once it
+# starts, so a very long token (an encoded blob, a hash list with no spaces) used to
+# build thousands of phrases. A token contributes at most its first
+# MAX_TRIGRAM_TOKEN_CHARS characters and the whole expression at most
+# MAX_TRIGRAM_PHRASES phrases, kept in first-seen order. Ordinary queries stay far
+# below both, so their expression is unchanged.
+MAX_TRIGRAM_TOKEN_CHARS = 64
+MAX_TRIGRAM_PHRASES = 256
+
 # Default number of hits at or below which the primary query is considered "few"
 # and the trigram fallback fires to backfill.
 DEFAULT_FALLBACK_THRESHOLD = 3
@@ -71,16 +83,21 @@ def _query_trigrams(query: str) -> list[str]:
 
     Whitespace runs are collapsed so trigrams do not straddle a space (matching
     how the FTS5 trigram tokenizer treats the stored text: it emits trigrams
-    within token boundaries). Order-stable and de-duplicated.
+    within token boundaries). Order-stable and de-duplicated. Bounded: each token
+    contributes only its first ``MAX_TRIGRAM_TOKEN_CHARS`` characters and the
+    result holds at most ``MAX_TRIGRAM_PHRASES`` trigrams, in first-seen order.
     """
     grams: list[str] = []
     seen: set[str] = set()
     for word in query.lower().split():
+        word = word[:MAX_TRIGRAM_TOKEN_CHARS]
         for i in range(len(word) - _TRIGRAM_LEN + 1):
             g = word[i : i + _TRIGRAM_LEN]
             if g not in seen:
                 seen.add(g)
                 grams.append(g)
+                if len(grams) >= MAX_TRIGRAM_PHRASES:
+                    return grams
     return grams
 
 

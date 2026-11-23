@@ -25,7 +25,9 @@ from data_olympus.server import build_app
 if TYPE_CHECKING:
     from pathlib import Path
 
-READ_TOOLS = {"kb_search", "kb_get", "kb_list", "kb_outline", "kb_curate", "kb_health"}
+READ_TOOLS = {
+    "kb_search", "kb_get", "kb_list", "kb_outline", "kb_curate", "kb_suggest_skills", "kb_health",
+}
 WRITE_OR_ENFORCE_TOOLS = {
     "kb_propose_memory",
     "kb_propose_edit",
@@ -109,6 +111,16 @@ async def test_read_only_kb_curate_round_trips(tmp_kb: Path, tmp_path: Path) -> 
         result = await client.call_tool("kb_curate", {})
     assert result.data["entries"] == []
     assert result.data["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_read_only_kb_suggest_skills_round_trips(tmp_kb: Path, tmp_path: Path) -> None:
+    """kb_suggest_skills (issue #34) has no write-pipeline dependency and must
+    be reachable in a read-only replica like the other read tools."""
+    app = _read_only_app(tmp_kb, tmp_path)
+    async with Client(app) as client:
+        result = await client.call_tool("kb_suggest_skills", {})
+    assert result.data["total"] == len(result.data["suggestions"])
 
 
 @pytest.mark.asyncio
