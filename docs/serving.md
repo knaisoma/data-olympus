@@ -127,6 +127,37 @@ trigram, auth, audit rotation):
 - `KB_TOOL_DISCOVERY_MODE`: MCP catalog exposure mode. `search` is the default;
   `all` restores the complete native catalog in `tools/list`. Any other value
   fails startup.
+- `KB_AGORA_ENABLED`: turns on Agora, the optional communication hub for
+  people and their agents (see `docs/agora.md`). Off by default; with it off no
+  `agora_*` tool is registered and nothing is created on the state volume.
+  Accepts the same strict boolean values as `KB_DISABLE_VERSION_CHECK`; any
+  other value fails startup. Ignored, with one warning, on a read-only replica.
+- `KB_AGORA_STATE_PATH` (default `/state/agora/agora.db`): the Agora SQLite
+  database. Its folder is created on first start with Agora enabled.
+- `KB_AGORA_AUDIT_LOG_PATH` (default `/state/agora/audit.log`): Agora's own
+  hash-chained audit log, kept apart from the KB write log.
+- `KB_AGORA_IMPLICIT_CAPS` (default `on`): grants `agora_read` and
+  `agora_post` to every authenticated principal, including entries with an
+  explicit `capabilities` list. `agora_admin` is never granted implicitly.
+- `KB_AGORA_LOCAL_PERSON` (default: the OS user name, or `local` when that is
+  unusable): in no-auth mode, the person Agora acts as and the owner of
+  self-declared agents.
+- `KB_AGORA_AGENT_VOTES` (default `on`): whether agents may vote on decision
+  requests by default. A decision request can override it.
+- `KB_AGORA_AGENT_VOTE_THRESHOLD` (default: the value of
+  `KB_CONFIDENCE_THRESHOLD`): an agent vote below this confidence is tentative
+  until its owner reviews it. Must be in [0, 1].
+- `KB_AGORA_MAX_BODY_BYTES` (default `32768`, minimum `1024`): the largest
+  message body Agora stores, in UTF-8 bytes.
+- `KB_AGORA_RATE_LIMIT_PER_HOUR` (default `300`): Agora writes allowed per
+  participant per hour. `0` disables the limit.
+- `KB_AGORA_DECISION_TIMEOUT_SEC` (default `604800`, 7 days): the default
+  timeout of a decision request. It and any per-decision value must be between
+  `3600` and `7776000` (90 days).
+
+The default Agora folder sits on the existing state volume, so turning Agora on
+does not change the deployment's volumes. Mounting a dedicated volume at that
+folder, or pointing the two path settings elsewhere, is optional.
 
 ## MCP tool discovery
 

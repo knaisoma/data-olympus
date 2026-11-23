@@ -226,6 +226,117 @@ class Config:
     # path would freeze the event loop for the timeout and stall readiness).
     disable_version_check: bool = False
     version_check_interval_sec: int = 86400
+    # Agora (issue #492): an optional communication hub for people and their
+    # agents. Off by default; with it off no agora_* tool is registered and
+    # nothing is created on the state volume. The default folder sits on the
+    # existing state volume, so enabling it never changes a StatefulSet's
+    # volumes; a deployment may mount a dedicated volume there instead.
+    agora_enabled: bool = False
+    agora_state_path: str = "/state/agora/agora.db"
+    agora_audit_log_path: str = "/state/agora/audit.log"
+    agora_implicit_caps: bool = True
+    agora_local_person: str = "local"
+    agora_agent_votes: bool = True
+    agora_agent_vote_threshold: float = 0.85
+    agora_max_body_bytes: int = 32768
+    agora_rate_limit_per_hour: int = 300
+    agora_decision_timeout_sec: int = 604800
+
+
+# Agora participant names (principal names, self-declared agent identities and
+# the local person). Shared with data_olympus.agora so the two cannot drift.
+AGORA_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$")
+AGORA_MIN_DECISION_TIMEOUT_SEC = 3600
+AGORA_MAX_DECISION_TIMEOUT_SEC = 7776000
+AGORA_MIN_BODY_BYTES = 1024
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer; got {raw!r}") from None
+
+
+def _default_local_person() -> str:
+    import getpass
+
+    try:
+        name = getpass.getuser()
+    except Exception:  # noqa: BLE001 - any failure means "no usable OS user"
+        return "local"
+    if not isinstance(name, str) or not AGORA_NAME_PATTERN.match(name):
+        return "local"
+    return name
+
+
+def _load_agora_settings(confidence_threshold: float) -> dict[str, Any]:
+    """Parse the KB_AGORA_* settings. Every error names its setting."""
+    enabled = _env_bool_strict("KB_AGORA_ENABLED", default=False)
+    implicit_caps = _env_bool_strict("KB_AGORA_IMPLICIT_CAPS", default=True)
+    agent_votes = _env_bool_strict("KB_AGORA_AGENT_VOTES", default=True)
+    state_path = os.getenv("KB_AGORA_STATE_PATH", "").strip() or "/state/agora/agora.db"
+    audit_path = (
+        os.getenv("KB_AGORA_AUDIT_LOG_PATH", "").strip() or "/state/agora/audit.log"
+    )
+    raw_person = os.getenv("KB_AGORA_LOCAL_PERSON", "").strip()
+    if raw_person:
+        if not AGORA_NAME_PATTERN.match(raw_person):
+            raise ValueError(
+                "KB_AGORA_LOCAL_PERSON must match "
+                f"{AGORA_NAME_PATTERN.pattern}; got {raw_person!r}"
+            )
+        local_person = raw_person
+    else:
+        local_person = _default_local_person()
+    raw_threshold = os.getenv("KB_AGORA_AGENT_VOTE_THRESHOLD", "").strip()
+    if raw_threshold:
+        try:
+            vote_threshold = float(raw_threshold)
+        except ValueError:
+            raise ValueError(
+                f"KB_AGORA_AGENT_VOTE_THRESHOLD must be a number in [0, 1]; "
+                f"got {raw_threshold!r}"
+            ) from None
+    else:
+        vote_threshold = confidence_threshold
+    if not 0.0 <= vote_threshold <= 1.0:
+        raise ValueError(
+            f"KB_AGORA_AGENT_VOTE_THRESHOLD must be in [0, 1]; got {vote_threshold}"
+        )
+    max_body = _env_int("KB_AGORA_MAX_BODY_BYTES", 32768)
+    if max_body < AGORA_MIN_BODY_BYTES:
+        raise ValueError(
+            f"KB_AGORA_MAX_BODY_BYTES must be at least {AGORA_MIN_BODY_BYTES}; "
+            f"got {max_body}"
+        )
+    rate = _env_int("KB_AGORA_RATE_LIMIT_PER_HOUR", 300)
+    if rate < 0:
+        raise ValueError(
+            f"KB_AGORA_RATE_LIMIT_PER_HOUR must be 0 (off) or positive; got {rate}"
+        )
+    timeout = _env_int("KB_AGORA_DECISION_TIMEOUT_SEC", 604800)
+    if not AGORA_MIN_DECISION_TIMEOUT_SEC <= timeout <= AGORA_MAX_DECISION_TIMEOUT_SEC:
+        raise ValueError(
+            "KB_AGORA_DECISION_TIMEOUT_SEC must be between "
+            f"{AGORA_MIN_DECISION_TIMEOUT_SEC} and {AGORA_MAX_DECISION_TIMEOUT_SEC}; "
+            f"got {timeout}"
+        )
+    return {
+        "agora_enabled": enabled,
+        "agora_state_path": state_path,
+        "agora_audit_log_path": audit_path,
+        "agora_implicit_caps": implicit_caps,
+        "agora_local_person": local_person,
+        "agora_agent_votes": agent_votes,
+        "agora_agent_vote_threshold": vote_threshold,
+        "agora_max_body_bytes": max_body,
+        "agora_rate_limit_per_hour": rate,
+        "agora_decision_timeout_sec": timeout,
+    }
 
 
 def _split_csv(raw: str) -> list[str]:
@@ -615,6 +726,7 @@ def load_config() -> Config:
     version_check_interval_sec = int(
         os.getenv("KB_VERSION_CHECK_INTERVAL_SEC", "86400")
     )
+    agora = _load_agora_settings(threshold)
     kb_main_path, kb_main_path_source = _env_path("KB_MAIN_PATH", "/kb-main")
     kb_index_path, kb_index_path_source = _env_path(
         "KB_INDEX_PATH", "/index/kb.db"
@@ -688,4 +800,5 @@ def load_config() -> Config:
         public_hostnames=public_hostnames,
         disable_version_check=disable_version_check,
         version_check_interval_sec=version_check_interval_sec,
+        **agora,
     )
