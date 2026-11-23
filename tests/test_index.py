@@ -315,6 +315,19 @@ def test_schema_less_index_read_methods_degrade(tmp_index_path: Path) -> None:
 
     assert idx.list_by_prefix("projects/example-project/") == []
     assert idx.list_with_remote_url() == []
+    assert idx.list_categories() == set()
+
+
+def test_list_categories_returns_scope_categories(
+    tmp_kb: Path, tmp_index_path: Path,
+) -> None:
+    idx = Index(tmp_index_path)
+    idx.build(tmp_kb, source_commit="test")
+    assert idx.list_categories() == {
+        "stack:backend-nestjs",
+        "project:example-project",
+        "component:example-project/payment-service",
+    }
 
 
 def test_list_filters_by_tier(tmp_kb: Path, tmp_index_path: Path) -> None:

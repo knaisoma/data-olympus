@@ -2578,6 +2578,21 @@ class Index:
             })
         return out
 
+    def list_categories(self) -> set[str]:
+        """Distinct scope-shaped categories (``project:``, ``stack:``,
+        ``component:``). Agora seeds its scope registry from them."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT category FROM docs WHERE category LIKE 'project:%' "
+                "OR category LIKE 'stack:%' OR category LIKE 'component:%'"
+            ).fetchall()
+        except sqlite3.Error:
+            return set()
+        finally:
+            conn.close()
+        return {r["category"] for r in rows if r["category"]}
+
     def list_with_remote_url(self) -> builtins.list[dict[str, Any]]:
         """Return all docs that have a non-null git_remote_url."""
         conn = self._connect()

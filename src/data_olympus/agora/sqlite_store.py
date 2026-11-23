@@ -219,6 +219,30 @@ class SQLiteAgoraStore:
                  int(scope.has_kb_docs), scope.created_at),
             )
 
+    def insert_scope(self, scope: Scope) -> bool:
+        """Store ``scope`` only if its id is new; never overwrites (a seeding
+        reader must not undo a concurrent claim). True when it was inserted."""
+        with self._write() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO scopes (id, tier, owner, created_by, remote_url, "
+                "has_kb_docs, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (scope.id, scope.tier, scope.owner, scope.created_by, scope.remote_url,
+                 int(scope.has_kb_docs), scope.created_at),
+            )
+            return cur.rowcount == 1
+
+    def claim_project(self, scope_id: str, owner: str, membership: Membership) -> bool:
+        """Make ``owner`` the owner of an unowned project, in one transaction
+        with its owner membership. False when someone already owns it."""
+        with self._write() as conn:
+            cur = conn.execute(
+                "UPDATE scopes SET owner = ? WHERE id = ? AND owner IS NULL",
+                (owner, scope_id))
+            if cur.rowcount != 1:
+                return False
+            self._put_membership(conn, membership)
+            return True
+
     def list_scopes(self) -> list[Scope]:
         with self._read() as conn:
             rows = conn.execute("SELECT * FROM scopes ORDER BY id").fetchall()
