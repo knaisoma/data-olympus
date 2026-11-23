@@ -177,9 +177,11 @@ class HighlightService:
         return result.thread
 
     def commit_membership(self, actor: Participant, m: Membership,
-                          verb: Literal["joined", "blocked", "removed"]) -> bool:
+                          verb: Literal["joined", "blocked", "removed"], *,
+                          expected: Membership | None) -> bool:
         highlight = None if m.project == INSTANCE else self.make_membership(actor, m, verb)
-        return self.ctx.store.commit_event(membership=m, highlight=highlight).ok
+        return self.ctx.store.commit_event(membership=m, highlight=highlight,
+                                           expected_membership=expected).ok
 
     def expire(self, thread_id: str) -> Thread | None:
         """Expire an overdue decision through the store's transactional

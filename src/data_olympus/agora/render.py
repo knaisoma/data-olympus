@@ -114,7 +114,9 @@ def render_thread(thread: Thread, nonce: str) -> dict[str, Any]:
 
 
 def render_message(m: Message, scope: str, nonce: str) -> dict[str, Any]:
-    return {"id": m.id, "author": m.author, "via": m.via, "created_at": m.created_at,
+    return {"id": m.id, "author": m.author,
+            "via": _q(m.via, author=m.author, scope=scope, nonce=nonce),
+            "created_at": m.created_at,
             "refs": list(m.refs), "body": _q(m.body, author=m.author, scope=scope,
                                               nonce=nonce)}
 

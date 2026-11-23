@@ -156,6 +156,18 @@ class Access:
                 allowed.add(rec.owner)
         return actor.name in allowed
 
+    def direct_for(self, actor: Participant) -> set[str] | None:
+        """The names whose direct conversations ``actor`` may read: itself and,
+        for a person, its agents (the person owns one end). None for an admin,
+        who reads them all. Stores apply it in SQL so visibility comes before
+        any limit; ``can_read_thread`` stays the final check."""
+        if actor.admin:
+            return None
+        names = {actor.name}
+        if actor.kind == "person":
+            names |= set(self.ctx.agents_of(actor.name))
+        return names
+
     @staticmethod
     def require(cond: bool, message: str) -> None:
         if not cond:

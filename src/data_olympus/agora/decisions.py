@@ -256,7 +256,10 @@ class DecisionService:
                     and not needs_human)
             v = Vote(thread.id, actor.name, "agent", option_id, text, float(confidence),
                      "cast" if cast else "tentative", None, now)
-        self.ctx.store.put_vote(v)
+        # Re-checked inside the write: a vote racing a decision, withdrawal or
+        # timeout is refused rather than counted after it.
+        if not self.ctx.store.put_vote(v, thread_state="open"):
+            raise AgoraError("conflict", "the decision is no longer open")
         self.ctx.record("decision.vote", actor, thread=thread.id, option=option_id,
                         status=v.status, confidence=v.confidence, **body_fields(text))
         return v
@@ -286,7 +289,10 @@ class DecisionService:
                 chosen = str(option_id)
             v = replace(current, option_id=chosen, status="confirmed",
                         reviewed_by=actor.name, updated_at=now)
-        self.ctx.store.put_vote(v)
+        # The vote must still be the tentative one reviewed: an agent's
+        # re-vote in between makes this review stale.
+        if not self.ctx.store.put_vote(v, thread_state="open", expected=current):
+            raise AgoraError("conflict", "the vote changed meanwhile; review it again")
         self.ctx.record("decision.vote_review", actor, thread=thread.id, agent=agent,
                         review=action, option=v.option_id)
         return v

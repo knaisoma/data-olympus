@@ -12,6 +12,7 @@ from data_olympus.agora.service import AgoraService
 from data_olympus.agora.sqlite_store import SQLiteAgoraStore
 from data_olympus.agora.threads import ThreadService
 from data_olympus.audit_log import AuditLog
+from data_olympus.config import AGORA_NAME_PATTERN
 
 if TYPE_CHECKING:
     from data_olympus.config import Config
@@ -32,6 +33,17 @@ class Agora:
 def build_agora(config: Config, *, idx: Index, registry: PrincipalRegistry) -> Agora:
     """Create the store (its folder and database on first start; nothing else
     on the state volume is touched) and wire every service together."""
+    # Every configured principal must be addressable as participant:<name>.
+    # Refused before anything is created; the message names the principal,
+    # never its token.
+    for principal in registry.principals():
+        if not AGORA_NAME_PATTERN.fullmatch(principal.name):
+            raise ValueError(
+                f"KB_AGORA_ENABLED: principal name {principal.name!r} is not a valid "
+                "Agora participant name (letters, digits, '.', '_', '@', '-'; at most "
+                "64 characters, starting with a letter or digit). Rename it in "
+                "KB_AUTH_PRINCIPALS, or leave Agora off."
+            )
     store = SQLiteAgoraStore(config.agora_state_path)
     store.initialize()
     audit = AuditLog(log_path=config.agora_audit_log_path,

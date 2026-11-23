@@ -56,6 +56,8 @@ INBOX_PRIORITY = (
     "activity",
 )
 _ACTION_REASONS = frozenset(INBOX_PRIORITY) - {"activity"}
+_ACTIONABLE_STATES = frozenset({"open", "offered", "unresolved_advisory"})
+_DECISION_OPEN_STATES = frozenset({"open", "unresolved_advisory"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,7 +247,8 @@ class ThreadService:
         visibility is applied before the limit."""
         fetch = max(_FETCH, limit * 4)
         while True:
-            rows = self.ctx.store.list_threads(limit=fetch, **query)
+            rows = self.ctx.store.list_threads(
+                limit=fetch, direct_for=self.access.direct_for(actor), **query)
             visible = [t for t in rows if self.access.can_read_thread(actor, t)]
             if len(visible) >= limit or len(rows) < fetch or fetch >= _FETCH_CAP:
                 return visible[:limit]
@@ -341,7 +344,10 @@ class ThreadService:
             raise AgoraError("conflict", f"the thread is {thread.state}")
         msg = Message(new_id("msg"), thread.id, actor.name, actor.via, text, clean_refs,
                       self.ctx.clock())
-        self.ctx.store.add_message(msg)
+        # The state is checked again inside the write, so a reply racing a
+        # close or a withdrawal is refused rather than stored after it.
+        if not self.ctx.store.add_message(msg, refuse_states=("closed", "withdrawn")):
+            raise AgoraError("conflict", "the thread was closed meanwhile")
         self.ctx.store.mark_seen(actor.name, thread.id, self.ctx.clock())
         self.ctx.record("thread.reply", actor, thread=thread.id, message=msg.id,
                         **body_fields(text))
@@ -500,7 +506,8 @@ class ThreadService:
         else:
             scopes = {s.id for s in self.core.scopes(actor)}
         out: builtins.list[SearchResult] = []
-        for thread_id, snippet in self.ctx.store.search(q, scopes=scopes, limit=limit * 5):
+        for thread_id, snippet in self.ctx.store.search(
+                q, scopes=scopes, limit=limit, direct_for=self.access.direct_for(actor)):
             thread = self.ctx.store.get_thread(thread_id)
             if thread is None or not self.access.can_read_thread(actor, thread):
                 continue
@@ -552,18 +559,31 @@ class ThreadService:
         name = who.name
         skills = self._skills(name)
         threads: dict[str, Thread] = {}
-        queries: builtins.list[dict[str, Any]] = [
-            {"audiences": {("participant", name)}},
-            {"originators": {name}},
-        ]
-        if skills:
-            queries.append({"audiences": {("capability", s) for s in skills}})
+        direct_for = self.access.direct_for(actor)
         subs = {s.scope: s for s in store.list_subscriptions(name)}
         scopes = set(subs) | self.core.implicit_scopes(name)
+        addressed_queries: builtins.list[dict[str, Any]] = [
+            {"audiences": {("participant", name)}}]
+        if skills:
+            addressed_queries.append({"audiences": {("capability", s) for s in skills}})
+        # Action items are read in full (only threads in states that can still
+        # need someone) before the newest-first activity window, so routine
+        # traffic cannot push outstanding work out of the inbox.
+        action_queries: builtins.list[dict[str, Any]] = [
+            {**q, "states": _ACTIONABLE_STATES} for q in addressed_queries]
+        action_queries.append({"originators": {name}, "kinds": {"decision"},
+                               "states": _DECISION_OPEN_STATES})
+        activity_queries: builtins.list[dict[str, Any]] = [
+            *addressed_queries, {"originators": {name}}]
         if scopes:
-            queries.append({"scopes": scopes, "audiences": {("everyone", "")}})
-        for q in queries:
-            for t in store.list_threads(limit=_FETCH, **q):
+            action_queries.append({"scopes": scopes, "audiences": {("everyone", "")},
+                                   "kinds": {"decision"}, "states": {"open"}})
+            activity_queries.append({"scopes": scopes, "audiences": {("everyone", "")}})
+        for q in action_queries:
+            for t in store.list_threads(limit=_FETCH_CAP, direct_for=direct_for, **q):
+                threads.setdefault(t.id, t)
+        for q in activity_queries:
+            for t in store.list_threads(limit=_FETCH, direct_for=direct_for, **q):
                 threads.setdefault(t.id, t)
         if self.decisions is not None:
             threads = {tid: self.decisions.apply_timeout(t) for tid, t in threads.items()}
@@ -576,9 +596,9 @@ class ThreadService:
             seen = {k: max(seen.get(k, 0.0), mine.get(k, 0.0)) for k in set(seen) | set(mine)}
         out: builtins.list[InboxItem] = []
 
-        def item(t: Thread, reason: str) -> InboxItem:
+        def item(t: Thread, reason: str, for_participant: str | None = None) -> InboxItem:
             return InboxItem(reason, t.id, t.kind, t.scope, t.title, t.state, t.updated_at,
-                             t.updated_at > seen.get(t.id, 0.0), name,
+                             t.updated_at > seen.get(t.id, 0.0), for_participant or name,
                              author=t.originator)
 
         action_ids: set[str] = set()
@@ -594,13 +614,16 @@ class ThreadService:
                 out.append(item(t, "question_to_you"))
                 action_ids.add(t.id)
         if self.decisions is not None:
+            # Decide and review reasons are evaluated for the person over their
+            # agents' threads too, so an agent-originated decision or an
+            # agent's tentative vote reaches its owner. An agent's vote request
+            # does not need its owner; the agent sees it in its own inbox.
             for t, reason, for_participant in self.decisions.inbox_reasons(
-                    {name}, person if name == actor.name else None, visible):
-                # An agent's vote request does not need its owner; the agent
-                # sees it in its own inbox.
-                if for_participant == name and not (
-                        reason == "decision_vote_requested" and name != actor.name):
-                    out.append(item(t, reason))
+                    {name}, person, visible):
+                if reason == "decision_vote_requested" and name != actor.name:
+                    continue
+                if for_participant in (name, person):
+                    out.append(item(t, reason, for_participant))
                     action_ids.add(t.id)
         # A person's inbox carries their agents' action items, not their
         # agents' general activity, which the person already sees as their own.

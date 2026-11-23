@@ -38,6 +38,30 @@ if TYPE_CHECKING:
 
 SCHEMA_VERSION = 1
 
+
+class _Unset:
+    """Marker for "do not compare" in the expected-value parameters."""
+
+
+UNSET: Any = _Unset()
+
+
+def _direct_clause(direct_for: Collection[str] | None, params: list[Any],
+                   prefix: str = "") -> str | None:
+    """SQL for the direct-conversation rule: a participant-audience thread is
+    visible only when one of its ends is in ``direct_for`` (the reader and,
+    for a person, their agents). None means no restriction."""
+    if direct_for is None:
+        return None
+    names = list(direct_for)
+    if not names:
+        return f"{prefix}audience_type != 'participant'"
+    ends = ", ".join("?" for _ in names)
+    params.extend(names)
+    params.extend(names)
+    return (f"({prefix}audience_type != 'participant' OR {prefix}originator IN ({ends}) "
+            f"OR {prefix}audience_value IN ({ends}))")
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS participants (
@@ -293,10 +317,25 @@ class SQLiteAgoraStore:
             (m.project, m.participant)).fetchone()
         return int(others["n"]) > 0
 
-    def update_membership(self, m: Membership) -> bool:
+    @staticmethod
+    def _membership_matches(conn: sqlite3.Connection, m: Membership,
+                            expected: Membership | None) -> bool:
+        """True when the stored row is still the one the caller decided on
+        (absent when ``expected`` is None)."""
+        row = conn.execute(
+            "SELECT * FROM memberships WHERE project = ? AND participant = ?",
+            (m.project, m.participant)).fetchone()
+        if expected is None:
+            return row is None
+        return row is not None and SQLiteAgoraStore._membership(row) == expected
+
+    def update_membership(self, m: Membership, *, expected: Any = UNSET) -> bool:
         """Write ``m`` unless it would leave the project without an active
-        owner; False (nothing written) in that case."""
+        owner, or, when ``expected`` is given, unless the stored row has
+        changed since the caller read it. False (nothing written) otherwise."""
         with self._write() as conn:
+            if expected is not UNSET and not self._membership_matches(conn, m, expected):
+                return False
             if not self._keeps_an_owner(conn, m):
                 return False
             self._put_membership(conn, m)
@@ -471,7 +510,7 @@ class SQLiteAgoraStore:
     def commit_event(
         self, *, thread: Thread | None = None, expected_version: int | None = None,
         message: Message | None = None, membership: Membership | None = None,
-        highlight: Highlight | None = None,
+        highlight: Highlight | None = None, expected_membership: Any = UNSET,
     ) -> CommitResult:
         """One transaction under the write lock: a thread change (only when its
         stored version still equals ``expected_version``; stored with version
@@ -489,8 +528,12 @@ class SQLiteAgoraStore:
                 updated_at = message.created_at if message is not None else thread.updated_at
                 stored = replace(thread, version=int(r["version"]) + 1,
                                  updated_at=max(updated_at, thread.updated_at))
-            if membership is not None and not self._keeps_an_owner(conn, membership):
-                return CommitResult(False, None)
+            if membership is not None:
+                if (expected_membership is not UNSET and not self._membership_matches(
+                        conn, membership, expected_membership)):
+                    return CommitResult(False, None)
+                if not self._keeps_an_owner(conn, membership):
+                    return CommitResult(False, None)
             if stored is not None:
                 self._store_thread(conn, stored, stored.version)
             if membership is not None:
@@ -551,9 +594,13 @@ class SQLiteAgoraStore:
         audiences: Collection[tuple[str, str]] | None = None,
         originators: Collection[str] | None = None,
         updated_after: float | None = None, limit: int = 100,
+        direct_for: Collection[str] | None = None,
     ) -> list[Thread]:
         where: list[str] = []
         params: list[Any] = []
+        direct = _direct_clause(direct_for, params)
+        if direct is not None:
+            where.append(direct)
         for column, values in (("scope", scopes), ("kind", kinds), ("state", states),
                                ("originator", originators)):
             if values is not None:
@@ -580,18 +627,23 @@ class SQLiteAgoraStore:
             rows = conn.execute(sql, params).fetchall()
         return [self._thread(r) for r in rows]
 
-    def add_message(self, m: Message) -> None:
+    def add_message(self, m: Message, *, refuse_states: Collection[str] = ()) -> bool:
         """A plain reply: stored with the thread's updated_at and version
-        bumped, so a writer holding an older version gets a conflict."""
+        bumped, so a writer holding an older version gets a conflict. False,
+        writing nothing, when the thread's current state is in
+        ``refuse_states`` (checked inside the write)."""
         with self._write() as conn:
-            r = conn.execute("SELECT scope FROM threads WHERE id = ?",
+            r = conn.execute("SELECT scope, state FROM threads WHERE id = ?",
                              (m.thread_id,)).fetchone()
             if r is None:
                 raise KeyError(m.thread_id)
+            if r["state"] in set(refuse_states):
+                return False
             self._insert_message(conn, m, r["scope"])
             conn.execute(
                 "UPDATE threads SET updated_at = MAX(updated_at, ?), version = version + 1 "
                 "WHERE id = ?", (m.created_at, m.thread_id))
+            return True
 
     @staticmethod
     def _message(r: sqlite3.Row) -> Message:
@@ -631,8 +683,25 @@ class SQLiteAgoraStore:
         return [self._message(r) for r in rows]
 
     # --- votes, seen, subscriptions, search --------------------------------
-    def put_vote(self, v: Vote) -> None:
+    def put_vote(self, v: Vote, *, thread_state: str | None = None,
+                 expected: Any = UNSET) -> bool:
+        """Store a vote (one per voter). Inside the write it is refused, with
+        nothing written, when the thread is no longer in ``thread_state`` or,
+        when ``expected`` is given, when the stored vote has changed since the
+        caller read it (None: there must be no vote yet)."""
         with self._write() as conn:
+            if thread_state is not None:
+                r = conn.execute("SELECT state FROM threads WHERE id = ?",
+                                 (v.thread_id,)).fetchone()
+                if r is None or r["state"] != thread_state:
+                    return False
+            if expected is not UNSET:
+                row = conn.execute(
+                    "SELECT * FROM votes WHERE thread_id = ? AND voter = ?",
+                    (v.thread_id, v.voter)).fetchone()
+                current = None if row is None else self._vote(row)
+                if current != expected:
+                    return False
             conn.execute(
                 "INSERT OR REPLACE INTO votes (thread_id, voter, voter_kind, option_id, "
                 "rationale, confidence, status, reviewed_by, updated_at) "
@@ -640,15 +709,20 @@ class SQLiteAgoraStore:
                 (v.thread_id, v.voter, v.voter_kind, v.option_id, v.rationale,
                  v.confidence, v.status, v.reviewed_by, v.updated_at),
             )
+            return True
+
+    @staticmethod
+    def _vote(r: sqlite3.Row) -> Vote:
+        return Vote(r["thread_id"], r["voter"], r["voter_kind"], r["option_id"],
+                    r["rationale"], r["confidence"], r["status"], r["reviewed_by"],
+                    r["updated_at"])
 
     def list_votes(self, thread_id: str) -> list[Vote]:
         with self._read() as conn:
             rows = conn.execute(
                 "SELECT * FROM votes WHERE thread_id = ? ORDER BY updated_at, voter",
                 (thread_id,)).fetchall()
-        return [Vote(r["thread_id"], r["voter"], r["voter_kind"], r["option_id"],
-                     r["rationale"], r["confidence"], r["status"], r["reviewed_by"],
-                     r["updated_at"]) for r in rows]
+        return [self._vote(r) for r in rows]
 
     def mark_seen(self, participant: str, thread_id: str, ts: float) -> None:
         with self._write() as conn:
@@ -764,27 +838,43 @@ class SQLiteAgoraStore:
 
     def search(
         self, fts_query: str, *, scopes: Collection[str], limit: int,
+        direct_for: Collection[str] | None = None,
     ) -> list[tuple[str, str]]:
+        """Up to ``limit`` distinct threads, best match first. Scope and the
+        direct-conversation rule are applied in SQL, before the limit; pages
+        are read until ``limit`` distinct threads are found or matches run out."""
         scope_list = list(scopes)
         if not scope_list or limit <= 0:
             return []
-        params: list[Any] = [fts_query]
-        clause = _in("scope", scope_list, params)
-        params.append(int(limit) * 5)
-        with self._read() as conn:
-            rows = conn.execute(
-                "SELECT thread_id, snippet(text_fts, 2, '[', ']', '...', 16) AS snip "
-                f"FROM text_fts WHERE text_fts MATCH ? AND {clause} "
-                "ORDER BY rank LIMIT ?",
-                params,
-            ).fetchall()
         out: list[tuple[str, str]] = []
         seen: set[str] = set()
-        for r in rows:
-            if r["thread_id"] in seen:
-                continue
-            seen.add(r["thread_id"])
-            out.append((r["thread_id"], r["snip"]))
-            if len(out) >= limit:
-                break
+        page = 200
+        offset = 0
+        with self._read() as conn:
+            while len(out) < limit:
+                params: list[Any] = [fts_query]
+                clause = _in("scope", scope_list, params)
+                sub_params: list[Any] = []
+                direct = _direct_clause(direct_for, sub_params)
+                extra = ""
+                if direct is not None:
+                    extra = f" AND thread_id IN (SELECT id FROM threads WHERE {direct})"
+                    params.extend(sub_params)
+                params.extend((page, offset))
+                rows = conn.execute(
+                    "SELECT thread_id, snippet(text_fts, 2, '[', ']', '...', 16) AS snip "
+                    f"FROM text_fts WHERE text_fts MATCH ? AND {clause}{extra} "
+                    "ORDER BY rank LIMIT ? OFFSET ?",
+                    params,
+                ).fetchall()
+                for r in rows:
+                    if r["thread_id"] in seen:
+                        continue
+                    seen.add(r["thread_id"])
+                    out.append((r["thread_id"], r["snip"]))
+                    if len(out) >= limit:
+                        break
+                if len(rows) < page:
+                    break
+                offset += page
         return out

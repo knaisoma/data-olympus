@@ -12,6 +12,7 @@ from data_olympus.agora.errors import AgoraError
 from data_olympus.agora.models import Participant
 from data_olympus.config import AGORA_NAME_PATTERN
 from data_olympus.principals import CAP_AGORA_ADMIN, Principal
+from data_olympus.write_gate import scan_postimage_for_secrets
 
 VIA_MAX = 64
 
@@ -24,6 +25,13 @@ def resolve_participant(
     principal: Principal, *, agent_identity: str, auth_on: bool, local_person: str,
 ) -> Participant:
     identity = (agent_identity or "").strip()
+    if identity:
+        # The label is stored with messages and in the audit log: never a
+        # secret, and never echoed back when it looks like one.
+        scan = scan_postimage_for_secrets(postimage=identity)
+        if not scan.ok:
+            raise AgoraError("secret_detected", "agent_identity looks like it "
+                             "contains a secret; it was not used")
     if auth_on:
         if not principal.authenticated:
             raise AgoraError("forbidden", "authentication required")

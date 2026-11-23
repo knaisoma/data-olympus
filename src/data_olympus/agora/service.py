@@ -36,6 +36,9 @@ SHORT_TEXT_MAX_CHARS = 200
 NOTE_MAX_CHARS = 500
 REMOTE_URL_MAX_CHARS = 500
 AUTONOMY_LEVELS = ("notify", "reply", "act")
+# A git remote (git@host:org/repo.git, ssh://, https://) returned as a plain
+# value, so it may not carry spaces or fence characters.
+REMOTE_URL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@:/~+%=#-]{0,499}")
 THREAD_KINDS = ("discussion", "question", "decision", "handover")
 
 MembershipAction = Literal[
@@ -155,6 +158,9 @@ class AgoraService:
         if self.access.exists(ref.id):
             raise AgoraError("conflict", f"scope {ref.id!r} already exists")
         url = short_text(remote_url, field="remote_url", max_chars=REMOTE_URL_MAX_CHARS)
+        if url and not REMOTE_URL_PATTERN.fullmatch(url):
+            raise AgoraError("invalid", "remote_url must be a git or http(s) URL "
+                             "without spaces")
         now = self.ctx.clock()
         store = self.ctx.store
         if ref.tier == "T4":
@@ -208,16 +214,20 @@ class AgoraService:
         )
 
     def _write_membership(self, actor: Participant, m: Membership,
-                          verb: str | None) -> None:
-        """Store a membership change; the store refuses one that would leave
-        the project without an active owner, checked in the same transaction."""
+                          verb: str | None, expected: Membership | None) -> None:
+        """Store a membership change. Inside the same transaction the store
+        refuses it when the row is no longer ``expected`` (the state this
+        decision was made on), so a stale accept cannot undo a block, and when
+        it would leave the project without an active owner."""
         if verb is not None and self.highlights is not None:
-            ok = bool(self.highlights.commit_membership(actor, m, verb))
+            ok = bool(self.highlights.commit_membership(actor, m, verb,
+                                                        expected=expected))
         else:
-            ok = self.ctx.store.update_membership(m)
+            ok = self.ctx.store.update_membership(m, expected=expected)
         if not ok:
-            raise AgoraError("conflict", "the last owner cannot be removed, blocked "
-                             "or demoted")
+            raise AgoraError("conflict", "the membership changed meanwhile, or the "
+                             "change would leave the project without an owner; "
+                             "read it again")
 
     def membership(
         self, actor: Participant, *, action: MembershipAction, project: str,
@@ -235,7 +245,8 @@ class AgoraService:
             state: Literal["blocked", "removed"] = (
                 "blocked" if action == "block" else "removed")
             m = Membership(INSTANCE, participant, "member", state, actor.name, now)
-            self._write_membership(actor, m, "blocked" if action == "block" else None)
+            self._write_membership(actor, m, "blocked" if action == "block" else None,
+                                   store.get_membership(INSTANCE, participant))
             self.ctx.record(f"membership.{action}", actor, project=INSTANCE,
                             participant=participant)
             return m
@@ -309,7 +320,7 @@ class AgoraService:
         else:
             raise AgoraError("invalid", f"unknown membership action {action!r}")
 
-        self._write_membership(actor, result, verb)
+        self._write_membership(actor, result, verb, current)
         self._sync_scope_owner(pid)
         self.ctx.record(f"membership.{action}", actor, project=pid,
                         participant=participant, role=result.role, state=result.state)
