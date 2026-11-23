@@ -19,6 +19,7 @@ from tests.agora_world import (  # noqa: F401 - pytest fixtures
     carol,
     core,
     ctx,
+    ds,
     rogue,
     svc,
     ts,
@@ -75,7 +76,7 @@ def test_post_validation(ts: ThreadService, ana: Participant) -> None:
     assert e3.value.code == "not_found"
     with pytest.raises(AgoraError) as e4:
         ts.post(ana, scope="universal", audience="everyone", kind="decision", title="D")
-    assert e4.value.code == "invalid"  # no decision service yet
+    assert e4.value.code == "invalid"  # a decision needs its DecisionInput
 
 
 def test_reply_refused_when_closed(ts: ThreadService, ana: Participant) -> None:

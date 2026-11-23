@@ -147,7 +147,14 @@ def local_agent() -> Participant:
 
 
 @pytest.fixture
-def ts(ctx: AgoraContext, access: Access, core: AgoraService) -> Any:
+def ds(ctx: AgoraContext, access: Access) -> Any:
+    from data_olympus.agora.decisions import DecisionService
+
+    return DecisionService(ctx, access)
+
+
+@pytest.fixture
+def ts(ctx: AgoraContext, access: Access, core: AgoraService, ds: Any) -> Any:
     from data_olympus.agora.threads import ThreadService
 
-    return ThreadService(ctx, access, core)
+    return ThreadService(ctx, access, core, decisions=ds)

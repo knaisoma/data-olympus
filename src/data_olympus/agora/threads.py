@@ -565,7 +565,10 @@ class ThreadService:
         if self.decisions is not None:
             for t, reason, for_participant in self.decisions.inbox_reasons(
                     {name}, person if name == actor.name else None, visible):
-                if for_participant == name:
+                # An agent's vote request does not need its owner; the agent
+                # sees it in its own inbox.
+                if for_participant == name and not (
+                        reason == "decision_vote_requested" and name != actor.name):
                     out.append(item(t, reason))
                     action_ids.add(t.id)
         # A person's inbox carries their agents' action items, not their
