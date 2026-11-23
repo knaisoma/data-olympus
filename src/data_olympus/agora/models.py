@@ -1,0 +1,171 @@
+"""Agora records. Plain frozen dataclasses; the store persists them."""
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from data_olympus.principals import PrincipalKind
+
+AudienceType = Literal["everyone", "capability", "participant"]
+ThreadKind = Literal["discussion", "question", "decision", "handover"]
+Role = Literal["owner", "member"]
+MembershipState = Literal["invited", "active", "blocked", "removed"]
+ContactState = Literal["requested", "accepted", "revoked"]
+VoteStatus = Literal["cast", "tentative", "confirmed", "dropped"]
+Autonomy = Literal["notify", "reply", "act"]
+TicketSystem = Literal["jira", "github", "gitlab", "other"]
+
+# The project id used for an instance-wide block in the memberships table.
+INSTANCE = "*"
+
+
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:24]}"
+
+
+@dataclass(frozen=True, slots=True)
+class Participant:
+    """The resolved caller of one Agora operation."""
+
+    name: str
+    kind: PrincipalKind
+    owner: str | None
+    verified: bool
+    via: str = ""
+    admin: bool = False
+
+    @property
+    def is_autonomous(self) -> bool:
+        return self.kind == "agent" and self.owner is None
+
+    @property
+    def accountable(self) -> str:
+        """The person answerable for this participant (itself if a person or
+        an autonomous agent)."""
+        return self.owner or self.name
+
+
+@dataclass(frozen=True, slots=True)
+class ParticipantRecord:
+    name: str
+    kind: PrincipalKind
+    owner: str | None
+    verified: bool
+    first_seen: float
+    last_seen: float
+
+
+@dataclass(frozen=True, slots=True)
+class Profile:
+    name: str
+    description: str = ""
+    skills: tuple[str, ...] = ()
+    tool: str = ""
+    availability: str = ""
+    updated_at: float = 0.0
+
+    def to_agent_card(
+        self, record: ParticipantRecord, autonomy: dict[str, str],
+    ) -> dict[str, Any]:
+        """The profile in A2A Agent Card shape, Agora fields under ``x-agora``."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "skills": [{"id": s, "name": s, "tags": [s]} for s in self.skills],
+            "x-agora": {
+                "kind": record.kind,
+                "owner": record.owner,
+                "tool": self.tool,
+                "availability": self.availability,
+                "autonomy": dict(autonomy),
+            },
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Scope:
+    id: str
+    tier: Literal["T1", "T2", "T3", "T4"]
+    owner: str | None
+    created_by: str | None
+    remote_url: str
+    has_kb_docs: bool
+    created_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class Membership:
+    project: str
+    participant: str
+    role: Role
+    state: MembershipState
+    invited_by: str | None
+    updated_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class Contact:
+    recipient: str
+    sender: str
+    state: ContactState
+    note: str
+    updated_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class TicketRef:
+    system: TicketSystem
+    key: str
+    url: str = ""
+    title: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class Thread:
+    id: str
+    scope: str
+    audience_type: AudienceType
+    audience_value: str
+    kind: ThreadKind
+    title: str
+    originator: str
+    state: str
+    tickets: tuple[TicketRef, ...]
+    payload: dict[str, Any]
+    created_at: float
+    updated_at: float
+    timeout_at: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class Message:
+    id: str
+    thread_id: str
+    author: str
+    via: str
+    body: str
+    refs: tuple[str, ...]
+    created_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class Vote:
+    thread_id: str
+    voter: str
+    voter_kind: PrincipalKind
+    option_id: str
+    rationale: str
+    confidence: float | None
+    status: VoteStatus
+    reviewed_by: str | None
+    updated_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class Subscription:
+    participant: str
+    scope: str
+    autonomy: Autonomy
+    kinds: tuple[str, ...] = field(default_factory=tuple)
