@@ -235,6 +235,7 @@ async def test_catch_up_over_mcp(tmp_kb: Path, tmp_index_path: Path, tmp_path: P
         assert (await _call(client, "agora_inbox", {}))["new_headlines"] == 1
         cu = await _call(client, "agora_catch_up", {})
         assert cu["ok"] and cu["total"] == 1 and cu["complete"] is True
+        assert cu["needs_you_truncated"] is False
         [group] = cu["groups"]
         [item] = group["items"]
         assert item["headline"].startswith("<<agora-untrusted ")

@@ -89,6 +89,9 @@ class CatchUp:
     needs_you: list[InboxItem]
     groups: list[HighlightGroup]
     topics: dict[str, int] = field(default_factory=dict)
+    # True when the inbox scan behind needs_you reached its bound, so the
+    # oldest outstanding items may be missing from needs_you.
+    needs_you_truncated: bool = False
 
 
 class HighlightService:
@@ -327,9 +330,11 @@ class HighlightService:
         for h in taken:
             for t in h.topics:
                 tally[t] = tally.get(t, 0) + 1
-        needs_you = [i for i in threads.inbox(actor) if i.reason != "activity"]
+        inbox, inbox_truncated = threads.inbox_page(actor)
+        needs_you = [i for i in inbox if i.reason != "activity"]
         return CatchUp(start, last_seq, complete, ack, len(visible), needs_you,
-                       self._group(taken, group_by), tally)
+                       self._group(taken, group_by), tally,
+                       needs_you_truncated=inbox_truncated)
 
     def mark_caught_up(self, actor: Participant, ack: int) -> int:
         """Move the caller's own marker forward to ``ack``, clamped to the

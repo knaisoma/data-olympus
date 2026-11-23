@@ -347,3 +347,23 @@ def test_inbox_scan_is_bounded_and_reports_truncation(
     assert truncated is True
     # Rows read are bounded: the action cap plus the activity window.
     assert 0 < len([i for i in items if i.reason == "decision_vote_requested"]) <= 6 + 2
+
+
+def test_catch_up_reports_needs_you_truncation(
+    ts: ThreadService, ds: DecisionService, hs: Any, core: AgoraService,
+    ana: Participant, ben: Participant, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import data_olympus.agora.threads as threads_mod
+
+    monkeypatch.setattr(threads_mod, "_PAGE", 3)
+    monkeypatch.setattr(threads_mod, "_ACTION_SCAN_CAP", 6)
+    monkeypatch.setattr(threads_mod, "_FETCH", 2)
+    core.contact(ana, action="accept", other="ben")
+    assert hs.catch_up(ana, threads=ts, decisions=ds).needs_you_truncated is False
+    for i in range(9):
+        ts.post(ben, scope="universal", audience="participant:ana", kind="question",
+                title=f"Q{i}", body="?")
+    cu = hs.catch_up(ana, threads=ts, decisions=ds)
+    assert cu.needs_you_truncated is True
+    from data_olympus.agora.render import render_catch_up
+    assert render_catch_up(cu, "0123456789abcdef")["needs_you_truncated"] is True

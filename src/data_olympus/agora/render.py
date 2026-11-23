@@ -182,6 +182,7 @@ def render_catch_up(c: CatchUp, nonce: str) -> dict[str, Any]:
         "after_seq": c.after_seq, "last_seq": c.last_seq, "complete": c.complete,
         "ack": c.ack, "total": c.total, "topics": dict(c.topics),
         "needs_you": render_inbox(c.needs_you, nonce),
+        "needs_you_truncated": c.needs_you_truncated,
         "groups": [{"key": g.key, "items": [render_highlight(h, nonce) for h in g.items]}
                    for g in c.groups],
     }

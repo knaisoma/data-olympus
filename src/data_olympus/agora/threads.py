@@ -45,9 +45,10 @@ MAX_MESSAGES = 200
 _FETCH = 200
 _FETCH_CAP = 5000
 _PAGE = 500
-# Upper bound on actionable rows one inbox query reads. Reaching it is
-# reported (``truncated``), never silent; the rate limit and the decision
-# timeout keep real inboxes far below it.
+# Upper bound on actionable rows one inbox query reads, so one call has a
+# bounded cost. A busy scope can reach it within days (300 writes an hour is
+# about 33 hours to 10000), so reaching it is always reported (``truncated``
+# on agora_inbox, ``needs_you_truncated`` on agora_catch_up), never silent.
 _ACTION_SCAN_CAP = 10000
 
 INBOX_PRIORITY = (
