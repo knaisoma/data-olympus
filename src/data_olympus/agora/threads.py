@@ -106,6 +106,9 @@ class InboxItem:
     unseen: bool
     for_participant: str
     subject: str | None = None
+    # Who wrote the title (the thread's originator; the sender of a contact
+    # request; whoever sent an invite), so it can be quoted with an author.
+    author: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -505,24 +508,23 @@ class ThreadService:
         names = [actor.name]
         if actor.kind == "person":
             names += [n for n in self.ctx.agents_of(actor.name) if n != actor.name]
-        best: dict[tuple[str, str], InboxItem] = {}
-
-        def offer(item: InboxItem) -> None:
-            key = (item.thread_id or f"{item.reason}:{item.subject}", item.for_participant)
-            current = best.get(key)
-            if current is None or (INBOX_PRIORITY.index(item.reason)
-                                   < INBOX_PRIORITY.index(current.reason)):
-                best[key] = item
-
+        # One item per (thread or subject, participant, reason): a thread can
+        # need a person for two reasons (decide it, review an agent's vote).
+        found: dict[tuple[str, str, str], InboxItem] = {}
         person = actor.name if actor.kind == "person" else None
         for name in names:
             who = actor if name == actor.name else self.ctx.participant_for(name)
             if who is None:
                 continue
             for item in self._inbox_for(actor, who, person):
-                offer(item)
-        items = sorted(best.values(),
-                       key=lambda i: (INBOX_PRIORITY.index(i.reason), -i.updated_at))
+                key = (item.thread_id or str(item.subject), item.for_participant,
+                       item.reason)
+                found.setdefault(key, item)
+        acted = {(i.thread_id, i.for_participant) for i in found.values()
+                 if i.reason in _ACTION_REASONS and i.thread_id is not None}
+        items = [i for i in found.values()
+                 if i.reason != "activity" or (i.thread_id, i.for_participant) not in acted]
+        items.sort(key=lambda i: (INBOX_PRIORITY.index(i.reason), -i.updated_at))
         return items[:limit]
 
     def _inbox_for(self, actor: Participant, who: Participant,
@@ -557,7 +559,8 @@ class ThreadService:
 
         def item(t: Thread, reason: str) -> InboxItem:
             return InboxItem(reason, t.id, t.kind, t.scope, t.title, t.state, t.updated_at,
-                             t.updated_at > seen.get(t.id, 0.0), name)
+                             t.updated_at > seen.get(t.id, 0.0), name,
+                             author=t.originator)
 
         action_ids: set[str] = set()
         for t in visible:
@@ -593,10 +596,12 @@ class ThreadService:
         for c in store.list_contacts(recipient=name, state="requested"):
             out.append(InboxItem("contact_request", None, None, None,
                                  f"contact request from {c.sender}", c.state,
-                                 c.updated_at, True, name, subject=c.sender))
+                                 c.updated_at, True, name, subject=c.sender,
+                                 author=c.sender))
         for m in store.list_memberships(participant=name):
             if m.state == "invited":
                 out.append(InboxItem("membership_invite", None, None, m.project,
                                      f"invitation to {m.project}", m.state,
-                                     m.updated_at, True, name, subject=m.project))
+                                     m.updated_at, True, name, subject=m.project,
+                                     author=m.invited_by))
         return out

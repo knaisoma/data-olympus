@@ -14,7 +14,7 @@ headline's thread before any limit applies.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from data_olympus.agora.errors import AgoraError
 from data_olympus.agora.models import INSTANCE, Highlight, Message, new_id
@@ -347,9 +347,3 @@ class HighlightService:
         bound = self.ctx.store.max_seq()
         marker = self.ctx.store.get_catchup(actor.name)
         return len(self._visible_since(actor, after_seq=marker, bound=bound))
-
-    def describe(self, h: Highlight) -> dict[str, Any]:
-        return {"id": h.id, "seq": h.seq, "scope": h.scope, "thread_id": h.thread_id,
-                "message_id": h.message_id, "action": h.action, "actor": h.actor,
-                "topics": list(h.topics), "weight": h.weight, "pinned_by": h.pinned_by,
-                "created_at": h.created_at}
