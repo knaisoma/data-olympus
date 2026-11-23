@@ -79,7 +79,8 @@ class AgoraStore(Protocol):
         audiences: Collection[tuple[str, str]] | None = None,
         originators: Collection[str] | None = None,
         updated_after: float | None = None, limit: int = 100,
-        direct_for: Collection[str] | None = None, offset: int = 0,
+        direct_for: Collection[str] | None = None,
+        before: tuple[float, str] | None = None,
     ) -> list[Thread]: ...
     def add_message(self, m: Message, *, refuse_states: Collection[str] = ()) -> bool: ...
     def list_messages(self, thread_id: str, *, limit: int = 200) -> list[Message]: ...

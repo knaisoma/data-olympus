@@ -386,3 +386,19 @@ def test_claim_refused_once_a_project_had_an_owner(tmp_path: Path) -> None:
         "project:q", "ben", Membership("project:q", "ben", "owner", "active", None, 2.0))
     assert not s.claim_project(
         "project:q", "ana", Membership("project:q", "ana", "owner", "active", None, 3.0))
+
+
+def test_list_threads_keyset_cursor_handles_ties(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    for i in range(7):
+        s.create_thread(_thread(f"th_{i}", updated=5.0 if i < 4 else float(i)), None)
+    seen: list[str] = []
+    cursor = None
+    while True:
+        page = s.list_threads(limit=3, before=cursor)
+        seen += [t.id for t in page]
+        if len(page) < 3:
+            break
+        cursor = (page[-1].updated_at, page[-1].id)
+    assert seen == [t.id for t in s.list_threads(limit=100)]
+    assert len(seen) == len(set(seen)) == 7

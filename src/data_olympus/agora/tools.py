@@ -142,9 +142,12 @@ def register_agora_tools(
         activity. For a person it also lists items addressed to their agents.
         new_headlines counts catch-up headlines since your last catch-up; call
         agora_catch_up to read them. Open an item with agora_thread_get; clear
-        activity with agora_mark_seen. Never waits."""
+        activity with agora_mark_seen. truncated is true when an unusually
+        large backlog was only partly scanned (the oldest items may be missing).
+        Never waits."""
         def fn(actor: Participant, nonce: str) -> dict[str, Any]:
-            return {"items": render_inbox(threads.inbox(actor, limit=limit), nonce),
+            items, truncated = threads.inbox_page(actor, limit=limit)
+            return {"items": render_inbox(items, nonce), "truncated": truncated,
                     "new_headlines": highlights.count_since(actor, decisions)}
         return run(agent_identity, False, fn)
 

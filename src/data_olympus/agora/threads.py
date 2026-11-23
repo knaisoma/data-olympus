@@ -45,6 +45,10 @@ MAX_MESSAGES = 200
 _FETCH = 200
 _FETCH_CAP = 5000
 _PAGE = 500
+# Upper bound on actionable rows one inbox query reads. Reaching it is
+# reported (``truncated``), never silent; the rate limit and the decision
+# timeout keep real inboxes far below it.
+_ACTION_SCAN_CAP = 10000
 
 INBOX_PRIORITY = (
     "decision_to_decide",
@@ -532,6 +536,12 @@ class ThreadService:
 
     # --- inbox --------------------------------------------------------------
     def inbox(self, actor: Participant, *, limit: int = 50) -> builtins.list[InboxItem]:
+        return self.inbox_page(actor, limit=limit)[0]
+
+    def inbox_page(self, actor: Participant, *,
+                   limit: int = 50) -> tuple[builtins.list[InboxItem], bool]:
+        """The inbox and whether an action query hit its scan bound (then the
+        oldest outstanding items may be missing, and the caller is told so)."""
         limit = max(1, min(int(limit), 200))
         names = [actor.name]
         if actor.kind == "person":
@@ -540,11 +550,14 @@ class ThreadService:
         # need a person for two reasons (decide it, review an agent's vote).
         found: dict[tuple[str, str, str], InboxItem] = {}
         person = actor.name if actor.kind == "person" else None
+        truncated = False
         for name in names:
             who = actor if name == actor.name else self.ctx.participant_for(name)
             if who is None:
                 continue
-            for item in self._inbox_for(actor, who, person):
+            part, cut = self._inbox_for(actor, who, person)
+            truncated = truncated or cut
+            for item in part:
                 key = (item.thread_id or str(item.subject), item.for_participant,
                        item.reason)
                 found.setdefault(key, item)
@@ -553,10 +566,10 @@ class ThreadService:
         items = [i for i in found.values()
                  if i.reason != "activity" or (i.thread_id, i.for_participant) not in acted]
         items.sort(key=lambda i: (INBOX_PRIORITY.index(i.reason), -i.updated_at))
-        return items[:limit]
+        return items[:limit], truncated
 
     def _inbox_for(self, actor: Participant, who: Participant,
-                   person: str | None) -> builtins.list[InboxItem]:
+                   person: str | None) -> tuple[builtins.list[InboxItem], bool]:
         store = self.ctx.store
         name = who.name
         skills = self._skills(name)
@@ -591,17 +604,23 @@ class ThreadService:
                                      "audiences": {("everyone", "")}})
         if not readable:
             action_queries, activity_queries = [], []
+        truncated = False
         for q in action_queries:
             query = {"scopes": readable, **q}  # a query's own scopes are readable
-            offset = 0
+            cursor: tuple[float, str] | None = None
+            read = 0
             while True:
                 page = store.list_threads(direct_for=direct_for, limit=_PAGE,
-                                          offset=offset, **query)
+                                          before=cursor, **query)
                 for t in page:
                     threads.setdefault(t.id, t)
+                read += len(page)
                 if len(page) < _PAGE:
                     break
-                offset += _PAGE
+                if read >= _ACTION_SCAN_CAP:
+                    truncated = True
+                    break
+                cursor = (page[-1].updated_at, page[-1].id)
         for q in activity_queries:
             query = {"scopes": readable, **q}
             for t in store.list_threads(limit=_FETCH, direct_for=direct_for, **query):
@@ -667,4 +686,4 @@ class ThreadService:
                                      f"invitation to {m.project}", m.state,
                                      m.updated_at, True, name, subject=m.project,
                                      author=m.invited_by))
-        return out
+        return out, truncated

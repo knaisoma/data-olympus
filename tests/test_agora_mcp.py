@@ -128,6 +128,7 @@ async def test_post_then_inbox_quotes_body(tmp_kb: Path, tmp_index_path: Path,
         tid = posted["thread"]["id"]
         inbox = await _call(client, "agora_inbox", {})
         assert inbox["ok"] and inbox["untrusted_notice"] == UNTRUSTED_NOTICE
+        assert inbox["truncated"] is False
         item = next(i for i in inbox["items"] if i["thread_id"] == tid)
         assert item["title"].startswith("<<agora-untrusted ")
         res = await _call(client, "agora_thread_get", {"thread_id": tid})

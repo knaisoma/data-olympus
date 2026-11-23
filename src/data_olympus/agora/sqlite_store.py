@@ -594,8 +594,11 @@ class SQLiteAgoraStore:
         audiences: Collection[tuple[str, str]] | None = None,
         originators: Collection[str] | None = None,
         updated_after: float | None = None, limit: int = 100,
-        direct_for: Collection[str] | None = None, offset: int = 0,
+        direct_for: Collection[str] | None = None,
+        before: tuple[float, str] | None = None,
     ) -> list[Thread]:
+        """Threads newest first (ties by id). ``before`` is a keyset cursor,
+        the (updated_at, id) of the last row of the previous page."""
         where: list[str] = []
         params: list[Any] = []
         direct = _direct_clause(direct_for, params)
@@ -618,11 +621,14 @@ class SQLiteAgoraStore:
         if updated_after is not None:
             where.append("updated_at > ?")
             params.append(updated_after)
+        if before is not None:
+            where.append("(updated_at < ? OR (updated_at = ? AND id > ?))")
+            params.extend((before[0], before[0], before[1]))
         sql = "SELECT * FROM threads"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY updated_at DESC, id LIMIT ? OFFSET ?"
-        params.extend((max(0, int(limit)), max(0, int(offset))))
+        sql += " ORDER BY updated_at DESC, id LIMIT ?"
+        params.append(max(0, int(limit)))
         with self._read() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._thread(r) for r in rows]

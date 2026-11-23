@@ -326,3 +326,24 @@ def test_routine_direct_traffic_cannot_hide_a_question(
         ts.post(ben, scope="universal", audience="participant:ana", kind="discussion",
                 title=f"fyi {i}", body="x")
     assert ("question_to_you", q.id) in {(i.reason, i.thread_id) for i in ts.inbox(ana)}
+
+
+def test_inbox_scan_is_bounded_and_reports_truncation(
+    ts: ThreadService, core: AgoraService, ana: Participant, ben: Participant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import data_olympus.agora.threads as threads_mod
+
+    monkeypatch.setattr(threads_mod, "_PAGE", 3)
+    monkeypatch.setattr(threads_mod, "_ACTION_SCAN_CAP", 6)
+    monkeypatch.setattr(threads_mod, "_FETCH", 2)
+    core.subscribe(ana, scope="universal")
+    for _i in range(3):
+        _decision(ts, ben)
+    assert ts.inbox_page(ana)[1] is False
+    for _i in range(7):
+        _decision(ts, ben)
+    items, truncated = ts.inbox_page(ana)
+    assert truncated is True
+    # Rows read are bounded: the action cap plus the activity window.
+    assert 0 < len([i for i in items if i.reason == "decision_vote_requested"]) <= 6 + 2

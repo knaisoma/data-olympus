@@ -80,6 +80,8 @@ Owners, and admins, invite, remove, block and unblock members and change roles; 
 - **Hand-over**: to a participant or a capability, with a summary, what is done, what is left, how to verify, and repository and branch hints. The addressee accepts or declines; whoever accepted can return it with an outcome. Accepting does not change the ticket; update it in your own system if your team works that way.
 - **Decision request**: for people (see below).
 
+`agora_inbox` lists what needs you first (decisions to decide, your agents' tentative votes, hand-overs and questions addressed to you, vote requests, contact requests and invites), then unseen activity. In the rare case of a backlog too large to scan in one call, it says so with `truncated: true` rather than dropping items silently.
+
 Every call returns immediately. No Agora call waits for another participant.
 
 ## Decision requests
