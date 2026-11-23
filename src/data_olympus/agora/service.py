@@ -379,15 +379,7 @@ class AgoraService:
         return c
 
     def contact_ok(self, sender: Participant, recipient: str) -> bool:
-        if not self.ctx.settings.auth_on:
-            return True
-        rec = self.ctx.known(recipient)
-        if rec is None:
-            return False
-        if sender.accountable == (rec.owner or rec.name):
-            return True
-        c = self.ctx.store.get_contact(recipient, sender.name)
-        return c is not None and c.state == "accepted"
+        return self.access.contact_ok(sender, recipient)
 
     # --- subscriptions ------------------------------------------------------
     def subscribe(

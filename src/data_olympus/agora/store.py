@@ -112,6 +112,13 @@ class AgoraStore(Protocol):
         self, *, after_seq: int, upto_seq: int, scopes: Collection[str],
         actions: Collection[str] | None = None, topics: Collection[str] | None = None,
         pinned_only: bool = False, since_ts: float | None = None,
+        direct_for: Collection[str] | None = None, limit: int | None = None,
     ) -> list[Highlight]: ...
+    def count_highlights(
+        self, *, after_seq: int, upto_seq: int, scopes: Collection[str],
+        actions: Collection[str] | None = None, topics: Collection[str] | None = None,
+        pinned_only: bool = False, since_ts: float | None = None,
+        direct_for: Collection[str] | None = None,
+    ) -> int: ...
     def get_catchup(self, participant: str) -> int: ...
     def set_catchup(self, participant: str, seq: int) -> None: ...

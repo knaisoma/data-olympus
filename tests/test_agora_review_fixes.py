@@ -367,3 +367,69 @@ def test_catch_up_reports_needs_you_truncation(
     assert cu.needs_you_truncated is True
     from data_olympus.agora.render import render_catch_up
     assert render_catch_up(cu, "0123456789abcdef")["needs_you_truncated"] is True
+
+
+# --- push review: bounded catch-up, contact revocation, bounded search ------
+def test_catch_up_cost_does_not_grow_with_backlog(
+    ts: ThreadService, ds: DecisionService, hs: Any, ana: Participant, ben: Participant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for i in range(40):
+        th = ts.post(ana, scope="universal", audience="everyone", kind="question",
+                     title=f"Q{i}", body="?")
+        ts.set_state(ana, th.id, "answered", outcome=f"A{i}")
+    store = hs.ctx.store
+    real = store.get_thread
+    calls = {"n": 0}
+
+    def counting(tid: str) -> Any:
+        calls["n"] += 1
+        return real(tid)
+
+    monkeypatch.setattr(store, "get_thread", counting)
+    cu = hs.catch_up(ben, threads=ts, decisions=ds, limit=5)
+    assert cu.total == 40 and len({h.id for g in cu.groups for h in g.items}) == 5
+    assert not cu.complete and cu.ack is not None
+    headline_reads = calls["n"]
+    calls["n"] = 0
+    assert hs.count_since(ben, ds) == 40
+    assert calls["n"] <= 1  # counting reads no threads one by one
+    # Only the page is checked row by row, never the whole backlog. The inbox
+    # inside catch_up reads threads too, so allow for it but stay well below 40.
+    assert headline_reads < 40
+
+
+def test_revoked_contact_cannot_keep_writing_into_direct_thread(
+    ts: ThreadService, ds: DecisionService, core: AgoraService, ana: Participant,
+    ben: Participant,
+) -> None:
+    core.contact(ana, action="accept", other="ben")
+    q = ts.post(ben, scope="universal", audience="participant:ana", kind="question",
+                title="Q", body="?")
+    th, opt = _decision(ts, ben, audience="participant:ana")
+    core.contact(ana, action="revoke", other="ben")
+    for call in (lambda: ts.reply(ben, q.id, "one more"),
+                 lambda: ds.vote(ben, th.id, opt),
+                 lambda: ds.add_option(ben, th.id, OptionInput("C")),
+                 lambda: ds.recommend(ben, th.id, opt, "pick A")):
+        with pytest.raises(AgoraError) as e:
+            call()
+        assert e.value.code == "contact_required"
+    # The recipient can still answer, and the originator can still close.
+    assert ts.reply(ana, q.id, "please stop").author == "ana"
+    assert ds.withdraw(ben, th.id).state == "withdrawn"
+
+
+def test_search_scan_is_bounded(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    import data_olympus.agora.sqlite_store as store_mod
+    from tests.test_agora_store import _msg, _store, _thread
+
+    monkeypatch.setattr(store_mod, "_SEARCH_PAGE", 2)
+    monkeypatch.setattr(store_mod, "_SEARCH_SCAN_CAP", 4)
+    s = _store(tmp_path)
+    s.create_thread(_thread("th_a"), None)
+    for i in range(10):
+        s.add_message(_msg(f"m{i}", "th_a", "kafka kafka kafka"))
+    s.create_thread(_thread("th_b"), _msg("mb", "th_b", "a note on kafka among words"))
+    # The scan stops after 4 rows, all from th_a, so th_b is not reached.
+    assert [t for t, _ in s.search('"kafka"', scopes={"universal"}, limit=2)] == ["th_a"]

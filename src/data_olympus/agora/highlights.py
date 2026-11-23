@@ -14,7 +14,7 @@ headline's thread before any limit applies.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from data_olympus.agora.errors import AgoraError
 from data_olympus.agora.models import INSTANCE, Highlight, Message, new_id
@@ -266,17 +266,19 @@ class HighlightService:
                 out.add(s.id)
         return out
 
-    def _visible_since(self, actor: Participant, *, after_seq: int, bound: int,
-                       scope: str | None = None, topics: Sequence[str] = (),
-                       actions: Sequence[str] = (), pinned_only: bool = False,
-                       since_ts: float | None = None) -> list[Highlight]:
-        rows = self.ctx.store.list_highlights(
-            after_seq=after_seq, upto_seq=bound,
-            scopes=self._readable_scopes(actor, scope),
-            actions=set(actions) or None, topics=set(topics) or None,
-            pinned_only=pinned_only, since_ts=since_ts,
-        )
-        return [h for h in rows if self.visible(actor, h)]
+    def _query(self, actor: Participant, *, after_seq: int, bound: int,
+               scope: str | None = None, topics: Sequence[str] = (),
+               actions: Sequence[str] = (), pinned_only: bool = False,
+               since_ts: float | None = None) -> dict[str, Any]:
+        """The store filter for what ``actor`` may see: readable scopes and the
+        direct-conversation rule, applied in SQL before any limit or count."""
+        return {
+            "after_seq": after_seq, "upto_seq": bound,
+            "scopes": self._readable_scopes(actor, scope),
+            "actions": set(actions) or None, "topics": set(topics) or None,
+            "pinned_only": pinned_only, "since_ts": since_ts,
+            "direct_for": self.access.direct_for(actor),
+        }
 
     @staticmethod
     def _order_key(h: Highlight) -> tuple[int, int, int]:
@@ -316,13 +318,16 @@ class HighlightService:
         bound = self.ctx.store.max_seq()
         marker = self.ctx.store.get_catchup(actor.name)
         start = marker if after_seq is None else after_seq
-        visible = self._visible_since(actor, after_seq=start, bound=bound, scope=scope,
-                                      topics=topics, actions=actions,
-                                      pinned_only=pinned_only, since_ts=since_ts)
+        query = self._query(actor, after_seq=start, bound=bound, scope=scope,
+                            topics=topics, actions=actions, pinned_only=pinned_only,
+                            since_ts=since_ts)
         cap = max(1, min(int(limit), MAX_SNAPSHOT))
-        taken = visible[:cap]
-        complete = len(visible) <= cap
-        last_seq = bound if complete else taken[-1].seq
+        total = self.ctx.store.count_highlights(**query)
+        # Only the page is read; each row is checked again as a last guard.
+        page = self.ctx.store.list_highlights(**query, limit=cap)
+        taken = [h for h in page if self.visible(actor, h)]
+        complete = total <= cap
+        last_seq = bound if complete or not page else page[-1].seq
         filtered = bool(scope or topics or actions or pinned_only or since_ts is not None)
         from_marker = after_seq is None or after_seq == marker
         ack = last_seq if (not filtered and from_marker) else None
@@ -332,7 +337,7 @@ class HighlightService:
                 tally[t] = tally.get(t, 0) + 1
         inbox, inbox_truncated = threads.inbox_page(actor)
         needs_you = [i for i in inbox if i.reason != "activity"]
-        return CatchUp(start, last_seq, complete, ack, len(visible), needs_you,
+        return CatchUp(start, last_seq, complete, ack, total, needs_you,
                        self._group(taken, group_by), tally,
                        needs_you_truncated=inbox_truncated)
 
@@ -353,4 +358,5 @@ class HighlightService:
         decisions.expire_due()
         bound = self.ctx.store.max_seq()
         marker = self.ctx.store.get_catchup(actor.name)
-        return len(self._visible_since(actor, after_seq=marker, bound=bound))
+        return self.ctx.store.count_highlights(
+            **self._query(actor, after_seq=marker, bound=bound))

@@ -156,6 +156,35 @@ class Access:
                 allowed.add(rec.owner)
         return actor.name in allowed
 
+    def contact_ok(self, sender: Participant, recipient: str) -> bool:
+        """True when auth is off, when both answer to the same person, or when
+        the recipient has accepted the sender and not revoked it."""
+        if not self.ctx.settings.auth_on:
+            return True
+        rec = self.ctx.known(recipient)
+        if rec is None:
+            return False
+        if sender.accountable == (rec.owner or rec.name):
+            return True
+        c = self.ctx.store.get_contact(recipient, sender.name)
+        return c is not None and c.state == "accepted"
+
+    def require_direct_write(self, actor: Participant, thread: Thread) -> None:
+        """In a direct conversation, the originator's side keeps writing only
+        while the recipient's contact stands: revoking a contact stops new
+        replies, options, recommendations and votes from that side. The
+        recipient's side (the addressee or its owner) can always answer, and
+        closing your own thread (decide, withdraw, state) stays allowed."""
+        if thread.audience_type != "participant" or actor.admin:
+            return
+        recipient = thread.audience_value
+        rec = self.ctx.known(recipient)
+        if actor.name == recipient or (rec is not None and rec.owner == actor.name):
+            return
+        if not self.contact_ok(actor, recipient):
+            raise AgoraError("contact_required",
+                             f"{recipient} no longer accepts you as a contact")
+
     def direct_for(self, actor: Participant) -> set[str] | None:
         """The names whose direct conversations ``actor`` may read: itself and,
         for a person, its agents (the person owns one end). None for an admin,

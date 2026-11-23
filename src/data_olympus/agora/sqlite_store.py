@@ -37,6 +37,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterator
 
 SCHEMA_VERSION = 1
+# Search reads FTS rows in pages until it has enough distinct threads, but
+# never more than this many rows in one call.
+_SEARCH_PAGE = 200
+_SEARCH_SCAN_CAP = 5000
 
 
 class _Unset:
@@ -801,33 +805,79 @@ class SQLiteAgoraStore:
             r = conn.execute("SELECT COALESCE(MAX(seq), 0) AS m FROM highlights").fetchone()
         return int(r["m"])
 
-    def list_highlights(
-        self, *, after_seq: int, upto_seq: int, scopes: Collection[str],
-        actions: Collection[str] | None = None, topics: Collection[str] | None = None,
-        pinned_only: bool = False, since_ts: float | None = None,
-    ) -> list[Highlight]:
+    @staticmethod
+    def _highlight_where(
+        *, after_seq: int, upto_seq: int, scopes: Collection[str],
+        actions: Collection[str] | None, topics: Collection[str] | None,
+        pinned_only: bool, since_ts: float | None, direct_for: Collection[str] | None,
+    ) -> tuple[str, list[Any]] | None:
+        """WHERE clause for the headlines a reader may see. Scope and the
+        direct-conversation rule of the headline's thread are applied here,
+        so limits and counts are exact without reading threads one by one."""
         scope_list = list(scopes)
         if not scope_list:
-            return []
+            return None
         params: list[Any] = [after_seq, upto_seq]
         where = ["seq > ?", "seq <= ?", _in("scope", scope_list, params)]
         if actions:
             where.append(_in("action", actions, params))
+        if topics:
+            where.append("EXISTS (SELECT 1 FROM json_each(highlights.topics) WHERE "
+                         + _in("json_each.value", topics, params) + ")")
         if pinned_only:
             where.append("pinned_by IS NOT NULL")
         if since_ts is not None:
             # History browsing by date keeps pinned headlines in view.
             where.append("(created_at >= ? OR pinned_by IS NOT NULL)")
             params.append(since_ts)
+        sub: list[Any] = []
+        direct = _direct_clause(direct_for, sub)
+        if direct is not None:
+            where.append("(thread_id IS NULL OR thread_id IN "
+                         f"(SELECT id FROM threads WHERE {direct}))")
+            params.extend(sub)
+        return " AND ".join(where), params
+
+    def list_highlights(
+        self, *, after_seq: int, upto_seq: int, scopes: Collection[str],
+        actions: Collection[str] | None = None, topics: Collection[str] | None = None,
+        pinned_only: bool = False, since_ts: float | None = None,
+        direct_for: Collection[str] | None = None, limit: int | None = None,
+    ) -> list[Highlight]:
+        """Visible headlines in ``seq`` order, at most ``limit`` of them."""
+        built = self._highlight_where(
+            after_seq=after_seq, upto_seq=upto_seq, scopes=scopes, actions=actions,
+            topics=topics, pinned_only=pinned_only, since_ts=since_ts,
+            direct_for=direct_for)
+        if built is None:
+            return []
+        where, params = built
+        sql = f"SELECT * FROM highlights WHERE {where} ORDER BY seq"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(max(0, int(limit)))
         with self._read() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM highlights WHERE {' AND '.join(where)} ORDER BY seq",
-                params).fetchall()
-        out = [self._highlight(r) for r in rows]
-        if topics:
-            wanted = set(topics)
-            out = [h for h in out if wanted & set(h.topics)]
-        return out
+            rows = conn.execute(sql, params).fetchall()
+        return [self._highlight(r) for r in rows]
+
+    def count_highlights(
+        self, *, after_seq: int, upto_seq: int, scopes: Collection[str],
+        actions: Collection[str] | None = None, topics: Collection[str] | None = None,
+        pinned_only: bool = False, since_ts: float | None = None,
+        direct_for: Collection[str] | None = None,
+    ) -> int:
+        """How many headlines list_highlights would return, counted in SQL."""
+        built = self._highlight_where(
+            after_seq=after_seq, upto_seq=upto_seq, scopes=scopes, actions=actions,
+            topics=topics, pinned_only=pinned_only, since_ts=since_ts,
+            direct_for=direct_for)
+        if built is None:
+            return 0
+        where, params = built
+        with self._read() as conn:
+            r = conn.execute(f"SELECT COUNT(*) AS n FROM highlights WHERE {where}",
+                             params).fetchone()
+        return int(r["n"])
 
     def get_catchup(self, participant: str) -> int:
         with self._read() as conn:
@@ -854,10 +904,10 @@ class SQLiteAgoraStore:
             return []
         out: list[tuple[str, str]] = []
         seen: set[str] = set()
-        page = 200
+        page = _SEARCH_PAGE
         offset = 0
         with self._read() as conn:
-            while len(out) < limit:
+            while len(out) < limit and offset < _SEARCH_SCAN_CAP:
                 params: list[Any] = [fts_query]
                 clause = _in("scope", scope_list, params)
                 sub_params: list[Any] = []

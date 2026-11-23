@@ -349,6 +349,7 @@ class ThreadService:
         thread = self.load(actor, thread_id)
         if thread.state in ("closed", "withdrawn"):
             raise AgoraError("conflict", f"the thread is {thread.state}")
+        self.access.require_direct_write(actor, thread)
         msg = Message(new_id("msg"), thread.id, actor.name, actor.via, text, clean_refs,
                       self.ctx.clock())
         # The state is checked again inside the write, so a reply racing a

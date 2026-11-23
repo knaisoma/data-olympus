@@ -202,6 +202,7 @@ class DecisionService:
         thread = self._load(actor, thread_id)
         if thread.state != "open":
             raise AgoraError("conflict", f"the decision is {thread.state}")
+        self.access.require_direct_write(actor, thread)
         options = list(thread.payload.get("options") or [])
         if len(options) >= MAX_OPTIONS:
             raise AgoraError("invalid", f"at most {MAX_OPTIONS} options")
@@ -218,6 +219,7 @@ class DecisionService:
         thread = self._load(actor, thread_id)
         if thread.state != "open":
             raise AgoraError("conflict", f"the decision is {thread.state}")
+        self.access.require_direct_write(actor, thread)
         if option_id not in self._option_ids(thread):
             raise AgoraError("invalid", "no such option")
         payload = {**thread.payload, "recommendation": {
@@ -237,6 +239,7 @@ class DecisionService:
             raise AgoraError("conflict", f"the decision is {thread.state}")
         if not thread.payload.get("voting"):
             raise AgoraError("invalid", "voting is off for this decision")
+        self.access.require_direct_write(actor, thread)
         if option_id not in self._option_ids(thread):
             raise AgoraError("invalid", "no such option")
         now = self.ctx.clock()
