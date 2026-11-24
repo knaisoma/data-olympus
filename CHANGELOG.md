@@ -131,8 +131,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   into place.
 
 * Let the STD-U-821 adoption record name the highest stable tag as its base,
-  as authorized by STD-U-821 amendment 1.5 (ratified 2026-10-10,
-  company-knowledge #236, vendored at
+  as authorized by STD-U-821 amendment 1.5 (ratified 2026-10-10, vendored at
   `docs/releases/std-u-821-amendment-1.5.md`). The version engine accepted the
   record only with base `0.11.0`, so once `v0.11.1` existed and `main` had
   advanced past it (#358 to #365) the next cycle could be cut neither at
