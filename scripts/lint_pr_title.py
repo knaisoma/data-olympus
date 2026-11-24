@@ -39,6 +39,10 @@ _RELEASE_SUBJECT = re.compile(r"release: (0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1
 _RELEASE_BASE = "main"
 _RELEASE_HEADS = frozenset({"release/new", "hotfix/new"})
 _BREAKING_FOOTER = re.compile(r"^BREAKING[ -]CHANGE: \S", re.MULTILINE)
+# The release notes keep each commit body indented by two spaces under its
+# bullet (release_record.render_notes), so in a release squash body the
+# preserved footer is found at exactly that indentation.
+_RELEASE_NOTES_FOOTER = re.compile(r"^(?:  )?BREAKING[ -]CHANGE: \S", re.MULTILINE)
 _IMPACTS = ("other", "fix", "feat", "breaking")
 
 
@@ -118,7 +122,8 @@ def lint_range(
             )
     except ValueError as exc:
         errors.append(f"Invalid PR title: {exc}")
-    if has_breaking_footer and not _BREAKING_FOOTER.search(body):
+    footer = _RELEASE_NOTES_FOOTER if release_squash and _RELEASE_SUBJECT.fullmatch(title) else _BREAKING_FOOTER
+    if has_breaking_footer and not footer.search(body):
         errors.append(
             "Proposed squash body must preserve a nonempty breaking-change footer "
             "(BREAKING CHANGE: or BREAKING-CHANGE:); '!' alone is insufficient."

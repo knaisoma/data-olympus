@@ -12,6 +12,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+* The pull request title check accepts the breaking-change footer of a release pull request where the release notes put it: the notes keep each commit body indented by two spaces under its entry, so `lint-title` failed on every release that contains a breaking change (it failed on the 0.12.0 release pull request). Only a `release: X.Y.Z` pull request from `release/new` or `hotfix/new` into `main` accepts that indentation; every other pull request still needs the footer at the start of a line.
+
 ## [0.12.0] - 2026-11-23
 
 ### Upgrading
