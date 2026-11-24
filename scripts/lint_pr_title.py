@@ -122,7 +122,8 @@ def lint_range(
             )
     except ValueError as exc:
         errors.append(f"Invalid PR title: {exc}")
-    footer = _RELEASE_NOTES_FOOTER if release_squash and _RELEASE_SUBJECT.fullmatch(title) else _BREAKING_FOOTER
+    release = release_squash and _RELEASE_SUBJECT.fullmatch(title)
+    footer = _RELEASE_NOTES_FOOTER if release else _BREAKING_FOOTER
     if has_breaking_footer and not footer.search(body):
         errors.append(
             "Proposed squash body must preserve a nonempty breaking-change footer "
