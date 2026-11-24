@@ -12,9 +12,61 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-23
+
 ### Upgrading
 
 * This release has breaking changes for image users and for environments that pin FastMCP or the MCP SDK: the image is based on `python:3.15-alpine`, the container command is `/app/.venv/bin/data-olympus-mcp` without `uv`, and the server requires FastMCP 4 and MCP SDK 2. Read [docs/releases/upgrade-0.12.md](docs/releases/upgrade-0.12.md) before you deploy.
+
+### Security
+
+* Container image: the base moves from `python:3.15-slim` (Debian trixie) to `python:3.15-alpine` (Alpine 3.24, musl libc), pinned by its multi-arch index digest (`sha256:0f9552bb...`, Python 3.15.2). The runtime packages `git`, `openssh-client` and `ca-certificates` come from `apk add --no-cache`, after an `apk upgrade --no-cache` that takes in the published Alpine fixes the pinned base does not carry yet (OpenSSL 3.5.9-r0 to 3.5.9-r1 and zlib 1.3.2-r1 to 1.4-r0). Every locked runtime dependency ships a musllinux wheel for Python 3.15 on amd64 and arm64, so nothing is compiled in the image and the lock is unchanged. The git transport policy still lives in `/etc/gitconfig`, the image still runs as uid 65534 and the entrypoint runs unchanged under busybox `sh`. All 106 entries of `release/exceptions.json` are removed: each was scoped to a Debian package version, so none can match the Alpine image (104 had expired on 2026-11-17 and the other two expire on 2026-11-24). In their place, 14 exceptions expiring on 2026-12-21 cover the High findings that no stable Alpine line fixes yet: five OpenSSL CVEs in `libcrypto3` and `libssl3` 3.5.9-r1, and four SQLite CVEs in `sqlite-libs` 3.53.4-r0 (three fixed only in SQLite 3.54 on Alpine edge, one with no fix anywhere). They follow the operator's standing exception rule of 2026-11-21, documented in `docs/releases/vulnerability-gate.md`, and each records why data-olympus does not reach the vulnerable code (no QUIC, DANE or CMS use; no FTS5 table with detail=none, no secure-delete, session extension or sqlite shell). `tests/image/runtime_smoke.sh` accepts an optional `RUNTIME_SMOKE_PLATFORM` to check an emulated image on a host of another architecture. Breaking for anyone who extends the image with `apt-get`: use `apk` instead.
+
+* Container image: uv is no longer in the runtime image. A build stage on the same pinned base holds the pinned `uv` and `uvx` binaries and runs both `uv sync --frozen --no-dev` steps; the runtime stage copies only `/app` (the virtual environment and the project), and the command is the console script `/app/.venv/bin/data-olympus-mcp`, still started through the entrypoint's `exec "$@"`. This removes the scanner findings on the Rust crates compiled into uv (rustls 0.23.45). `UV_CACHE_DIR` and `/tmp/uv-cache` are gone with it. Breaking for anyone who overrides the container command with `uv run`: run `/app/.venv/bin/data-olympus-mcp` instead.
+
+* Maintenance inventory workflow: only the job that opens issues holds an `issues: write` token, and it runs only on `main` (the weekly schedule, or a dispatch from `main` with the dry run off). A dry run, from any branch, runs in its own job with a read-only token, so code from a dispatched branch never receives a write token; a dispatch with the dry run off from another branch fails in a job that holds no token. The workflow sets no permissions at the top level. Because GitHub compares expressions without case, the write job also checks the exact ref `refs/heads/main` in a case-sensitive shell step before it checks out any code, so a branch named `Main` cannot receive the write token.
+
+* Vulnerability gate: a match with an empty or missing fix state, which grype emits for some CPE matches, is read as fix state `unknown` and follows the no-fix rules (Critical, High and Unknown block unless an exception covers them), instead of refusing the whole report as malformed (an explicit `versions: null` beside it reads as no versions); an empty state that still lists fix versions is refused as contradictory. An exception may limit itself to some severities with the optional `scope.severities`, so one approved for a High finding never covers it once rated Critical. A fix version on a line newer than both the installed line and the highest line listed in `release/adoption-lines.json`, or a pre-release (`a`, `b`, `rc`, `.dev`) on an unlisted newer line, no longer counts as an available fix (operator decision of 2026-11-21): the finding follows the no-fix rules and is listed under `fix_not_yet_adoptable` with the label `unlisted-line-only`, for example a CPython 3.15.2 finding fixed only in 3.16.0 or 3.16.0a2. A fix on the installed line, on an unlisted released line at or below the highest listed line, or on a listed line from its `eligible_from` still blocks; a fix only on an older line keeps the `older-line-only` rule. See `docs/releases/vulnerability-gate.md`.
+
+* Dependencies: the locked `dnspython` moves from 2.8.0 to 2.9.2, which clears the published advisories on 2.8.0 and 2.9.1 (GHSA-45c3-73f7-pv4m, fixed in 2.9.0, and GHSA-vvf4-9x63-8xvv, a memory and CPU exhaustion in WKS record parsing, fixed in 2.9.2). dnspython is pulled in through `email-validator`; data-olympus does not call it directly, so no application code changes. Only the `dnspython` stanza of `uv.lock` and this entry change.
+
+* Dependencies: the locked `authlib` moves from 1.8.0 to 1.9.5, which clears the published advisories on 1.8.0 and 1.9.1 (among them GHSA-f3fg-34g9-v7jx, fixed in 1.9.2, and GHSA-f7j6-p4qx-gq99, fixed in 1.9.5). authlib is on the MCP server's authentication dependency path. data-olympus calls none of the affected JOSE or ID-JAG APIs directly, so no application code changes; only the `authlib` stanza of `uv.lock` and this entry change.
+
+* Dependencies: the locked `joserfc` moves from 1.7.5 to 1.8.0, the latest release, which clears the published advisory on 1.7.5 (GHSA-9pg5-8c7x-5hfx, fixed in 1.7.6). joserfc is a dependency of `authlib`, which sits on the MCP server's authentication path; data-olympus does not call it directly, so no application code changes. Only the `joserfc` stanza of `uv.lock` and this entry change.
+
+* Dependencies: the locked `opentelemetry-api` moves from 1.45.1 to 1.45.2, which clears the published advisory on 1.45.1 (GHSA-mf5v-w3w3-f6cg, a denial of service through quadratic-time `traceparent` parsing, fixed in 1.45.2). opentelemetry-api is pulled in through `fastmcp`; data-olympus does not call it directly, so no application code changes. Only the `opentelemetry-api` stanza of `uv.lock` and this entry change.
+
+* Release workflows: `pypa/gh-action-pypi-publish` moves from 1.14.2 to 1.14.3 in `promote-release.yml` and `rc-publish-stage.yml` (pinned by commit `7245906fb61fa33a13554f9d5fb856fe61758086`, the v1.14.3 tag). The release includes the fix for GHSA-5xjx-3w67-w9x9.
+
+### Changed
+
+* Dependencies: data-olympus moves to FastMCP 4 and MCP SDK 2 (`fastmcp>=4.1.1,<5`, locked 4.2.4; `mcp>=2.3.0,<3`, locked 2.3.0). FastMCP 4 requires MCP SDK 2, so both move together. Tool names, arguments and responses are unchanged for clients. An unknown tool called through the search-mode `call_tool` proxy still answers only "Unknown tool", without echoing the requested name, now that FastMCP 4 wraps the lookup error. The argument-validation warning again names the failing rule types from FastMCP 4's summarized error. `httpx` is now a declared dependency: `data-olympus verify` uses it, and MCP SDK 2 no longer installs it. Clients on the 2026-07-28 protocol send requests without a session, so `health` `live_sessions` and the idle session reaper only cover clients on the earlier session-based protocol (see docs/serving.md).
+
+* Python 3.15 support. CI gains a `test-python-3-15` job that runs ruff, mypy (against the 3.13 floor target and against 3.15), the unit suite and the installed wheel and sdist smoke tests on Python 3.15; the 3.13 `test` job is unchanged and still runs the full suite, including the embeddings tests. `scripts/smoke_installed_wheel.py` takes a `--python` option (default 3.13, which the release workflows keep) and checks that the isolated install runs on the requested interpreter; the smoke test passes the interpreter running the suite, so the 3.14 and 3.15 jobs now cover installation on their own Python. The container image moves from `python:3.13-slim` to `python:3.15-slim` (index digest `sha256:65a65fc7...`, Python 3.15.2 on Debian trixie). The locked `beartype`, pulled in through `fastmcp`, moves from 0.22.9 to 0.23.1, because 0.22.9 fails to import on 3.15. The locked `pyyaml` moves from 6.0.3 to 6.0.4 and `pydantic` from 2.13.5 to 2.14.4 (with its exact `pydantic-core` pin, 2.46.5 to 2.50.5), because the older releases publish no Python 3.15 wheels and the slim image has no compiler to build them from source. A new `tests/image/runtime_smoke.sh` step in the `image-git-protocols` job checks that the built image runs Python 3.15 as uid 65534 and that, with its default entrypoint and command on the example bundle, `/readyz` answers 200. The classifiers list Python 3.13, 3.14 and 3.15; `requires-python` stays `>=3.13`. The `embeddings` extra and the `fastembed` entry of the dev extra are now marked `python_version < "3.15"`, because `onnxruntime` publishes no 3.15 wheels: on 3.15 the extra installs nothing and the embeddings tests skip. The marker is dropped once those wheels exist.
+
+* Workflows: `astral-sh/setup-uv` moves from 8.3.2 to 10.3.2 (pinned by commit `07a047e608db84b3d8c06cd9a7c7dcc9c355c18e`, the v10.3.2 tag). With the default cache setting the action now leaves its cache off for `workflow_run` and `release` events, which covers the release candidate publish stage, and it no longer prunes its cache by default. No workflow sets a cache or uv version input, so nothing else changes.
+
+### Added
+
+* `kb_suggest_skills` (issue #474) reads at most the first 262144 characters of each document (cut in SQL, so memory and parsing time per document are bounded), and each call scans the in-force corpus again without a cache.
+
+* New `kb_suggest_skills` tool (issue #34): lists instructions that repeat across in-force documents, most repeated first, so a maintainer can consider capturing them once as a reusable skill or workflow. Advisory and read-only: it never proposes, edits or rewrites anything, and it does not use consultation telemetry (issue #32), which is not implemented. It reads documents with `markdown-it-py`, now a declared dependency (already in the lock as a transitive one).
+
+### Fixed
+
+* The trigram fuzzy fallback no longer builds an unbounded search expression from one very long token. Each query token now contributes at most its first 64 characters and the expression at most 256 trigram phrases, kept in first-seen order, so a pasted blob or a hash list without spaces can no longer make a search slow or memory hungry. Ordinary queries build exactly the expression they always did. The fallback stays off unless `KB_TRIGRAM_MODE=on`.
+
+* Release notes: the generated notes, the release pull request body, the squash commit and the promotion proof now drop whole lines that are automation marker comments (an HTML comment naming the repository, a weekly cycle and an item number) from commit bodies, so a change merged by hand with such a line no longer publishes it. Only exact whole lines are removed; the subject line and look-alike text are kept. `render_notes` takes `normalize=False` to render bodies unchanged, which a comparison with notes published earlier (the 0.11.4 notes carry four of these lines) needs.
+
+* Search and consult are bounded for oversized queries. A whole prompt posted as a consult intent (review prompts carry patches of hundreds of KiB) used to turn every whitespace token into one phrase of a single bm25 MATCH: 16k terms took 17.7 s and 308 MB per request, and the worker threads could not be cancelled, so the server ran out of memory. `Index.search` now dedupes the query terms in order and keeps at most 64 (`MAX_QUERY_TERMS`), for the primary MATCH and the trigram fallback alike. `kb_consult` classifies and searches at most the first 4000 characters of the intent (`MAX_CONSULT_INTENT_CHARS`). The `kb-enforce-hook user-prompt` hook caps the prompt at 4000 characters before posting it, as it already capped the pre-tool `action_diff`; on Linux this also stops a prompt over 128 KiB from overflowing the argument limit and skipping the consult. A query longer than 64 distinct terms now matches on its first 64.
+
+## [0.11.4] - 2026-10-25
+
+### Security
+
+* Dependencies: the 2026-W44 Pillow remediation (issue #426, items 1 and 3) updates the locked `pillow` from 12.3.0 to 13.0.0. Pillow 13 needs fastembed 0.9.1, the first release that allows it, so the `embeddings` extra and the dev extra now require `fastembed>=0.9.1,<0.10` (locked 0.8.1 to 0.9.1). data-olympus calls only `TextEmbedding(model_name=...).embed(...)`, which fastembed 0.9 keeps. Upgrade note for the `embeddings` extra: fastembed 0.9 downloads built-in models from Hugging Face only, without the Google Cloud Storage fallback; a model cached by an older fastembed still loads, with a `FutureWarning`. The lock is regenerated with the pinned uv 0.12.23, which writes lock revision 5. The container image installs neither extra, so its contents are unchanged.
+
+## [0.11.3] - 2026-10-19
 
 ### Removed
 
@@ -22,114 +74,34 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
-* Container image: the base moves from `python:3.15-slim` (Debian trixie) to `python:3.15-alpine` (Alpine 3.24, musl libc), pinned by its multi-arch index digest (`sha256:0f9552bb...`, Python 3.15.2). The runtime packages `git`, `openssh-client` and `ca-certificates` come from `apk add --no-cache`, after an `apk upgrade --no-cache` that takes in the published Alpine fixes the pinned base does not carry yet (OpenSSL 3.5.9-r0 to 3.5.9-r1 and zlib 1.3.2-r1 to 1.4-r0). Every locked runtime dependency ships a musllinux wheel for Python 3.15 on amd64 and arm64, so nothing is compiled in the image and the lock is unchanged. The git transport policy still lives in `/etc/gitconfig`, the image still runs as uid 65534 and the entrypoint runs unchanged under busybox `sh`. All 106 entries of `release/exceptions.json` are removed: each was scoped to a Debian package version, so none can match the Alpine image (104 had expired on 2026-11-17 and the other two expire on 2026-11-24). In their place, 14 exceptions expiring on 2026-12-21 cover the High findings that no stable Alpine line fixes yet: five OpenSSL CVEs in `libcrypto3` and `libssl3` 3.5.9-r1, and four SQLite CVEs in `sqlite-libs` 3.53.4-r0 (three fixed only in SQLite 3.54 on Alpine edge, one with no fix anywhere). They follow the operator's standing exception rule of 2026-11-21, documented in `docs/releases/vulnerability-gate.md`, and each records why data-olympus does not reach the vulnerable code (no QUIC, DANE or CMS use; no FTS5 table with detail=none, no secure-delete, session extension or sqlite shell). `tests/image/runtime_smoke.sh` accepts an optional `RUNTIME_SMOKE_PLATFORM` to check an emulated image on a host of another architecture. Breaking for anyone who extends the image with `apt-get`: use `apk` instead.
-* Container image: uv is no longer in the runtime image. A build stage on the same pinned base holds the pinned `uv` and `uvx` binaries and runs both `uv sync --frozen --no-dev` steps; the runtime stage copies only `/app` (the virtual environment and the project), and the command is the console script `/app/.venv/bin/data-olympus-mcp`, still started through the entrypoint's `exec "$@"`. This removes the scanner findings on the Rust crates compiled into uv (rustls 0.23.45). `UV_CACHE_DIR` and `/tmp/uv-cache` are gone with it. Breaking for anyone who overrides the container command with `uv run`: run `/app/.venv/bin/data-olympus-mcp` instead.
-* Maintenance inventory workflow: only the job that opens issues holds an `issues: write` token, and it runs only on `main` (the weekly schedule, or a dispatch from `main` with the dry run off). A dry run, from any branch, runs in its own job with a read-only token, so code from a dispatched branch never receives a write token; a dispatch with the dry run off from another branch fails in a job that holds no token. The workflow sets no permissions at the top level. Because GitHub compares expressions without case, the write job also checks the exact ref `refs/heads/main` in a case-sensitive shell step before it checks out any code, so a branch named `Main` cannot receive the write token.
-* Vulnerability gate: a match with an empty or missing fix state, which grype emits for some CPE matches, is read as fix state `unknown` and follows the no-fix rules (Critical, High and Unknown block unless an exception covers them), instead of refusing the whole report as malformed (an explicit `versions: null` beside it reads as no versions); an empty state that still lists fix versions is refused as contradictory. An exception may limit itself to some severities with the optional `scope.severities`, so one approved for a High finding never covers it once rated Critical. A fix version on a line newer than both the installed line and the highest line listed in `release/adoption-lines.json`, or a pre-release (`a`, `b`, `rc`, `.dev`) on an unlisted newer line, no longer counts as an available fix (operator decision of 2026-11-21): the finding follows the no-fix rules and is listed under `fix_not_yet_adoptable` with the label `unlisted-line-only`, for example a CPython 3.15.2 finding fixed only in 3.16.0 or 3.16.0a2. A fix on the installed line, on an unlisted released line at or below the highest listed line, or on a listed line from its `eligible_from` still blocks; a fix only on an older line keeps the `older-line-only` rule. See `docs/releases/vulnerability-gate.md`.
-* Dependencies: the locked `dnspython` moves from 2.8.0 to 2.9.2, which clears the published advisories on 2.8.0 and 2.9.1 (GHSA-45c3-73f7-pv4m, fixed in 2.9.0, and GHSA-vvf4-9x63-8xvv, a memory and CPU exhaustion in WKS record parsing, fixed in 2.9.2). dnspython is pulled in through `email-validator`; data-olympus does not call it directly, so no application code changes. Only the `dnspython` stanza of `uv.lock` and this entry change.
-* Dependencies: the locked `authlib` moves from 1.8.0 to 1.9.5, which clears the published advisories on 1.8.0 and 1.9.1 (among them GHSA-f3fg-34g9-v7jx, fixed in 1.9.2, and GHSA-f7j6-p4qx-gq99, fixed in 1.9.5). authlib is on the MCP server's authentication dependency path. data-olympus calls none of the affected JOSE or ID-JAG APIs directly, so no application code changes; only the `authlib` stanza of `uv.lock` and this entry change.
-* Dependencies: the 2026-W44 Pillow remediation (issue #426, items 1 and 3) updates the locked `pillow` from 12.3.0 to 13.0.0. Pillow 13 needs fastembed 0.9.1, the first release that allows it, so the `embeddings` extra and the dev extra now require `fastembed>=0.9.1,<0.10` (locked 0.8.1 to 0.9.1). data-olympus calls only `TextEmbedding(model_name=...).embed(...)`, which fastembed 0.9 keeps. Upgrade note for the `embeddings` extra: fastembed 0.9 downloads built-in models from Hugging Face only, without the Google Cloud Storage fallback; a model cached by an older fastembed still loads, with a `FutureWarning`. The lock is regenerated with the pinned uv 0.12.23, which writes lock revision 5. The container image installs neither extra, so its contents are unchanged.
 * Container image: git refuses the `http`, `https`, `ftp` and `ftps` transports. The image's system gitconfig sets `protocol.<name>.allow=never` for each, so git stops with "transport 'https' not allowed" before it starts a libcurl remote helper. SSH and local remotes are unchanged; the server's KB clone, fetch and push run over SSH. Breaking for image users whose `KB_REMOTE_URL` or `KB_GIT_REMOTE_URL` is an HTTPS URL: switch to an SSH remote. A server installed from PyPI keeps the host's git configuration. The `libcurl3t64-gnutls` package stays installed as a git dependency, so its scanner findings remain. A new CI job builds the image and runs `tests/image/git_protocol_policy.sh` inside it.
+
 * Container image: uv is pinned by content. The image copies the static `uv` and `uvx` 0.12.23 binaries from astral's official `ghcr.io/astral-sh/uv:0.12.23` image by its multi-arch index digest (`sha256:61d393e4...`, which carries astral's signed build provenance from `astral-sh/uv`'s `publish-docker-image.yml`) into `/usr/local/bin`, instead of `pip install uv==0.12.23`, which checked the version but not the bytes. The uv version is unchanged; the binary is now the musl build, and uv is no longer a Python package in the image's system site-packages.
-* Container image: rebuild on the current `python:3.13-slim` index digest (`sha256:70729b46...`, Python 3.13.16 on Debian trixie with current security updates), raise the pinned uv from `0.5.4` to `0.12.23`, and stop installing `curl`, which nothing in the image uses (probes are `httpGet`/`tcpSocket`; the `bin/kb` client scripts that call curl run on operator machines). On the release candidate assessment this takes the blocking vulnerability-gate matches from 358 to 106 per platform; the rest are findings without a fix or with a fix only on Python 3.15. git still pulls in `libcurl3t64-gnutls` for its http helpers. Anyone who ran `curl` inside the container by hand needs another tool, such as `python -c` with `urllib.request`.
-* Dependencies: the locked `joserfc` moves from 1.7.5 to 1.8.0, the latest release, which clears the published advisory on 1.7.5 (GHSA-9pg5-8c7x-5hfx, fixed in 1.7.6). joserfc is a dependency of `authlib`, which sits on the MCP server's authentication path; data-olympus does not call it directly, so no application code changes. Only the `joserfc` stanza of `uv.lock` and this entry change.
-* Dependencies: the locked `opentelemetry-api` moves from 1.45.1 to 1.45.2, which clears the published advisory on 1.45.1 (GHSA-mf5v-w3w3-f6cg, a denial of service through quadratic-time `traceparent` parsing, fixed in 1.45.2). opentelemetry-api is pulled in through `fastmcp`; data-olympus does not call it directly, so no application code changes. Only the `opentelemetry-api` stanza of `uv.lock` and this entry change.
-* Release workflows: `pypa/gh-action-pypi-publish` moves from 1.14.2 to 1.14.3 in `promote-release.yml` and `rc-publish-stage.yml` (pinned by commit `7245906fb61fa33a13554f9d5fb856fe61758086`, the v1.14.3 tag). The release includes the fix for GHSA-5xjx-3w67-w9x9.
 
-### Changed
-
-* Dependencies: data-olympus moves to FastMCP 4 and MCP SDK 2 (`fastmcp>=4.1.1,<5`, locked 4.2.4; `mcp>=2.3.0,<3`, locked 2.3.0). FastMCP 4 requires MCP SDK 2, so both move together. Tool names, arguments and responses are unchanged for clients. An unknown tool called through the search-mode `call_tool` proxy still answers only "Unknown tool", without echoing the requested name, now that FastMCP 4 wraps the lookup error. The argument-validation warning again names the failing rule types from FastMCP 4's summarized error. `httpx` is now a declared dependency: `data-olympus verify` uses it, and MCP SDK 2 no longer installs it. Clients on the 2026-07-28 protocol send requests without a session, so `health` `live_sessions` and the idle session reaper only cover clients on the earlier session-based protocol (see docs/serving.md).
-* Python 3.15 support. CI gains a `test-python-3-15` job that runs ruff, mypy (against the 3.13 floor target and against 3.15), the unit suite and the installed wheel and sdist smoke tests on Python 3.15; the 3.13 `test` job is unchanged and still runs the full suite, including the embeddings tests. `scripts/smoke_installed_wheel.py` takes a `--python` option (default 3.13, which the release workflows keep) and checks that the isolated install runs on the requested interpreter; the smoke test passes the interpreter running the suite, so the 3.14 and 3.15 jobs now cover installation on their own Python. The container image moves from `python:3.13-slim` to `python:3.15-slim` (index digest `sha256:65a65fc7...`, Python 3.15.2 on Debian trixie). The locked `beartype`, pulled in through `fastmcp`, moves from 0.22.9 to 0.23.1, because 0.22.9 fails to import on 3.15. The locked `pyyaml` moves from 6.0.3 to 6.0.4 and `pydantic` from 2.13.5 to 2.14.4 (with its exact `pydantic-core` pin, 2.46.5 to 2.50.5), because the older releases publish no Python 3.15 wheels and the slim image has no compiler to build them from source. A new `tests/image/runtime_smoke.sh` step in the `image-git-protocols` job checks that the built image runs Python 3.15 as uid 65534 and that, with its default entrypoint and command on the example bundle, `/readyz` answers 200. The classifiers list Python 3.13, 3.14 and 3.15; `requires-python` stays `>=3.13`. The `embeddings` extra and the `fastembed` entry of the dev extra are now marked `python_version < "3.15"`, because `onnxruntime` publishes no 3.15 wheels: on 3.15 the extra installs nothing and the embeddings tests skip. The marker is dropped once those wheels exist.
-* Workflows: `astral-sh/setup-uv` moves from 8.3.2 to 10.3.2 (pinned by commit `07a047e608db84b3d8c06cd9a7c7dcc9c355c18e`, the v10.3.2 tag). With the default cache setting the action now leaves its cache off for `workflow_run` and `release` events, which covers the release candidate publish stage, and it no longer prunes its cache by default. No workflow sets a cache or uv version input, so nothing else changes.
-* The old-path `set-channel.yml` and `tag-release.yml` workflows now take the shared `data-olympus-promotion` concurrency group (unconditional, `cancel-in-progress: false`), so they cannot run at the same time as `promote-release.yml`, `rc-publish-stage.yml`, `recut-release-branch.yml` or `hotfix-cut.yml`. `tag-release.yml` enters the lock only when dispatched from `main` and drops its per-candidate group, so two different candidates now serialise. Recorded as an R9 deviation (operator follow-up decision of 2026-10-10). GitHub keeps one pending run per group and a newer pending run cancels an older pending one: dispatch again if that happens.
-
-### Added
-
-* `kb_suggest_skills` (issue #474) reads at most the first 262144 characters of each document (cut in SQL, so memory and parsing time per document are bounded), and each call scans the in-force corpus again without a cache.
-* New `kb_suggest_skills` tool (issue #34): lists instructions that repeat across in-force documents, most repeated first, so a maintainer can consider capturing them once as a reusable skill or workflow. Advisory and read-only: it never proposes, edits or rewrites anything, and it does not use consultation telemetry (issue #32), which is not implemented. It reads documents with `markdown-it-py`, now a declared dependency (already in the lock as a transitive one).
-* The vulnerability gate judges fix availability by release line (operator ruling, SDLC section 13.2). A fix counts when it is on the installed line or on a newer line eligible for adoption. `release/adoption-lines.json` lists newer lines not yet eligible (Python 3.15: general availability 2026-10-09, eligible from 2026-12-08); a finding whose fixes are only on such a line follows the no-fix rules until that date and is listed with its fix versions and `eligible_from` in the evidence and job output, then blocks as fixable. Unlisted newer lines count (fail closed). The release record names the file's Git blob at S. See `docs/releases/vulnerability-gate.md`.
-* Vulnerability gate for promotion (SDLC section 12, rulings of 2026-10-18). A new `vulnerability-gate` job in `promote-release.yml` (read-only, no secrets) scans the candidate image by digest on both platforms with grype `0.119.0` (download checked against its published SHA-256) and a fresh database, records the scanner version and database build time as evidence, and blocks promotion on any finding with a fix available, on Critical, High or Unknown severity findings without a fix unless a scoped, approved, unexpired exception in the new `release/exceptions.json` covers them, and on expired exceptions. Medium, Low and Negligible findings without a fix are recorded. Malformed scanner output, a report naming another database, or a database built more than five days before the run refuses the gate. `scripts/vulnerability_gate.py validate` checks the exception file. The `security_alerts.py` gate is unchanged. See `docs/releases/vulnerability-gate.md`.
-* Per-artifact SBOMs for release candidates (SDLC section 9). `rc-build.yml` generates one SPDX 2.3 document per wheel, sdist and image platform with syft `1.52.0` (download checked against its published SHA-256); stage two binds each document to the artifact it verified, stores it as a candidate release asset and signs it with `actions/attest` (predicate `https://spdx.dev/Document/v2.3`) on the wheel or sdist hash or the platform manifest digest; `promote-release.yml` refuses a candidate unless every SBOM attestation verifies with the stage-two signer and carries the stored document. `release-record.json` gains an optional `sboms` list (schema version unchanged). See `docs/releases/sbom.md`.
-* Add `docs/releases/repository-settings.md`, a checklist of the GitHub repository and organization settings the release pipeline requires (immutable releases, variables, environments, Trusted Publishers, rulesets, code scanning, Dependabot, the GitHub App and the Actions policy), each with a read-only `gh api` read-back.
-* This is the first release cut under the STD-U-821 branch model (`release/new`, content-derived versions, reviewed promotion). Candidates are built unprivileged and published by a separate trusted stage; releases are drafted, filled with assets and published last, which GitHub immutable releases require. Candidate `0.11.1-rc.2` of the first live run is burned.
-* Add a disabled-by-default trusted RC publication stage (`rc-publish-stage.yml`)
-  that runs only `main` scripts, recomputes the candidate version from `H`'s
-  history as data, verifies package hashes and the OCI digest, splits
-  reservation, PyPI OIDC upload and image push into least-privilege jobs,
-  refuses duplicate identities, reuses same-`H` objects on retry, attests the
-  published image digest and Python files for promotion to verify, and records
-  branch-based staging selection with hotfix priority. Credentials may only be
-  environment secrets on `main`-only environments. Only admitted runs take the
-  shared promotion lock, signing runs in a separate job that never parses the
-  candidate archives, and the `rc` channel moves only once
-  `SDLC_RC_CHANNEL=enabled` is set after the first new-model release.
-* Add disabled-by-default promotion of reviewed release squashes, with exact
-  parent, tree, version and release-note proofs. Compare stable Python files
-  with both candidate payloads and reuse the RC image digest with provenance
-  mapping the reviewed head, squash and stable tag.
-
-* Build normal and hotfix release candidates with read-only permissions,
-  injected Python versions, an OCI archive, and provenance. Cut builds and
-  dry runs build and verify artifacts without allowing promotion.
-* Wire the ratified STD-U-821 adoption record into candidate builds, the
-  trusted publication stage and promotion. Builds of an adoption cut take the
-  pinned ratification and vendored amendment from `main`'s Git blobs rather
-  than the candidate tree, the publication stage uses its own `main` checkout,
-  promotion reads them from the candidate's recorded `main`, and only dispatched
-  dry runs evaluate the record unratified. The engine now refuses a
-  ratification passed without the standard file, and the build parser refuses
-  any binding of the pinned names other than one top-level literal.
-  The cut build stays unpromotable and promotion still refuses while the
-  record exists at the reviewed head. Add the adoption cut runbook
-  (`docs/releases/adoption-cut-runbook.md`).
-* Plan verified release branch recuts and stable hotfix cuts, preserve pending
-  commits on a backup branch, and refuse stale or unreconciled state, including
-  stray stable tags and active old-path release runs. The new workflows share
-  the promotion lock, apply only from a main-restricted environment with a
-  per-run GitHub App token, and remain disabled until W9 bot activation.
-  See [branch recut and hotfix cuts](docs/releases/branch-recut.md).
-
-### Changed
-
-* Pin the build backend to `hatchling==1.32.4` in `[build-system] requires`, the exact version recorded in the published 0.11.1 wheel (`Generator: hatchling 1.32.4`), so release artifacts are rebuilt reproducibly. A test fails if the requirement floats again.
-* Record that the `pypi` and `pypi-rc` environments have no required reviewers by operator decision of 2026-10-09, with the consequence for promotion dispatches and the read-back commands.
-
-* Record the lessons of the first adoption cut in the adoption cut runbook, including the main-first ordering, the burned candidates and the minimum commit count on `release/new`.
-* `scripts/sdlc_recut.py --apply` now replaces `release/new` by deleting it
-  and creating it again at the new base, instead of one atomic
-  `--force-with-lease` update. The protected-branch rulesets require pull
-  requests for updates and no App holds a bypass, while creation and deletion
-  stay permitted. The old head is backed up to its preservation ref first,
-  each single-ref push is guarded by remote reads before and after it, each
-  deletion is a compare-and-swap push leased on the planned old head,
-  creations carry no lease, no push uses a plain force, a `+` refspec or
-  `--atomic`, and a verified `hotfix/new` is deleted only after the
-  recreation. If recreation fails after the deletion, one recovery push
-  restores the old head, also when the remote cannot be read, and the error
-  names the old head, the backup ref and the exact recovery command. `docs/releases/branch-recut.md` documents the leased
-  deletion, the explicit decision any plain-delete fallback would need, and
-  the controller's ruleset toggle.
+## [0.11.2] - 2026-10-19
 
 ### Security
 
-* Promotion now verifies the stage-two GitHub artifact attestations of the
-  candidate wheel, sdist and image digest (`gh attestation verify` with the
-  `rc-publish-stage.yml` signer workflow and `refs/heads/main` source ref) in
-  the `prove` job, before any publication. The exact-source check gate moves
-  into `release_record.py checks`: the reviewed head needs `test`, and the
-  squash, whose tree the proof shows equal to the head's, needs `test`,
-  `CodeQL` and every configured analysis, since `release/new` heads are not
-  guaranteed CodeQL while the squash on `main` is. Only a completed run with
-  conclusion `success` counts.
-* Validate manual publication identities and reject collisions, bind Python
-  builds to validated commit SHAs, and move image channels by verified digest.
-  Remove tag-triggered rebuild publication and OIDC grants from PR packaging builds.
+* Container image: rebuild on the current `python:3.13-slim` index digest (`sha256:70729b46...`, Python 3.13.16 on Debian trixie with current security updates), raise the pinned uv from `0.5.4` to `0.12.23`, and stop installing `curl`, which nothing in the image uses (probes are `httpGet`/`tcpSocket`; the `bin/kb` client scripts that call curl run on operator machines). On the release candidate assessment this takes the blocking vulnerability-gate matches from 358 to 106 per platform; the rest are findings without a fix or with a fix only on Python 3.15. git still pulls in `libcurl3t64-gnutls` for its http helpers. Anyone who ran `curl` inside the container by hand needs another tool, such as `python -c` with `urllib.request`.
+
+### Changed
+
+* The old-path `set-channel.yml` and `tag-release.yml` workflows now take the shared `data-olympus-promotion` concurrency group (unconditional, `cancel-in-progress: false`), so they cannot run at the same time as `promote-release.yml`, `rc-publish-stage.yml`, `recut-release-branch.yml` or `hotfix-cut.yml`. `tag-release.yml` enters the lock only when dispatched from `main` and drops its per-candidate group, so two different candidates now serialise. Recorded as an R9 deviation (operator follow-up decision of 2026-10-10). GitHub keeps one pending run per group and a newer pending run cancels an older pending one: dispatch again if that happens.
+
+* Pin the build backend to `hatchling==1.32.4` in `[build-system] requires`, the exact version recorded in the published 0.11.1 wheel (`Generator: hatchling 1.32.4`), so release artifacts are rebuilt reproducibly. A test fails if the requirement floats again.
+
+* Record that the `pypi` and `pypi-rc` environments have no required reviewers by operator decision of 2026-10-09, with the consequence for promotion dispatches and the read-back commands.
+
+### Added
+
+* The vulnerability gate judges fix availability by release line (operator ruling, SDLC section 13.2). A fix counts when it is on the installed line or on a newer line eligible for adoption. `release/adoption-lines.json` lists newer lines not yet eligible (Python 3.15: general availability 2026-10-09, eligible from 2026-12-08); a finding whose fixes are only on such a line follows the no-fix rules until that date and is listed with its fix versions and `eligible_from` in the evidence and job output, then blocks as fixable. Unlisted newer lines count (fail closed). The release record names the file's Git blob at S. See `docs/releases/vulnerability-gate.md`.
+
+* Vulnerability gate for promotion (SDLC section 12, rulings of 2026-10-18). A new `vulnerability-gate` job in `promote-release.yml` (read-only, no secrets) scans the candidate image by digest on both platforms with grype `0.119.0` (download checked against its published SHA-256) and a fresh database, records the scanner version and database build time as evidence, and blocks promotion on any finding with a fix available, on Critical, High or Unknown severity findings without a fix unless a scoped, approved, unexpired exception in the new `release/exceptions.json` covers them, and on expired exceptions. Medium, Low and Negligible findings without a fix are recorded. Malformed scanner output, a report naming another database, or a database built more than five days before the run refuses the gate. `scripts/vulnerability_gate.py validate` checks the exception file. The `security_alerts.py` gate is unchanged. See `docs/releases/vulnerability-gate.md`.
+
+* Per-artifact SBOMs for release candidates (SDLC section 9). `rc-build.yml` generates one SPDX 2.3 document per wheel, sdist and image platform with syft `1.52.0` (download checked against its published SHA-256); stage two binds each document to the artifact it verified, stores it as a candidate release asset and signs it with `actions/attest` (predicate `https://spdx.dev/Document/v2.3`) on the wheel or sdist hash or the platform manifest digest; `promote-release.yml` refuses a candidate unless every SBOM attestation verifies with the stage-two signer and carries the stored document. `release-record.json` gains an optional `sboms` list (schema version unchanged). See `docs/releases/sbom.md`.
 
 ### Fixed
 
-* The trigram fuzzy fallback no longer builds an unbounded search expression from one very long token. Each query token now contributes at most its first 64 characters and the expression at most 256 trigram phrases, kept in first-seen order, so a pasted blob or a hash list without spaces can no longer make a search slow or memory hungry. Ordinary queries build exactly the expression they always did. The fallback stays off unless `KB_TRIGRAM_MODE=on`.
-* Release notes: the generated notes, the release pull request body, the squash commit and the promotion proof now drop whole lines that are automation marker comments (an HTML comment naming the repository, a weekly cycle and an item number) from commit bodies, so a change merged by hand with such a line no longer publishes it. Only exact whole lines are removed; the subject line and look-alike text are kept. `render_notes` takes `normalize=False` to render bodies unchanged, which a comparison with notes published earlier (the 0.11.4 notes carry four of these lines) needs.
-* Search and consult are bounded for oversized queries. A whole prompt posted as a consult intent (review prompts carry patches of hundreds of KiB) used to turn every whitespace token into one phrase of a single bm25 MATCH: 16k terms took 17.7 s and 308 MB per request, and the worker threads could not be cancelled, so the server ran out of memory. `Index.search` now dedupes the query terms in order and keeps at most 64 (`MAX_QUERY_TERMS`), for the primary MATCH and the trigram fallback alike. `kb_consult` classifies and searches at most the first 4000 characters of the intent (`MAX_CONSULT_INTENT_CHARS`). The `kb-enforce-hook user-prompt` hook caps the prompt at 4000 characters before posting it, as it already capped the pre-tool `action_diff`; on Linux this also stops a prompt over 128 KiB from overflowing the argument limit and skipping the consult. A query longer than 64 distinct terms now matches on its first 64.
 * The release record `notes` command requires `--output` and no longer prints the rendered notes to standard output, which removes the log sink that code scanning flagged (a false positive carried through the ratification inputs).
 
 * Release an onboarding bootstrap in-flight marker only for the claim that
@@ -143,6 +115,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   release returns `False` and does not raise. A marker written by an earlier
   version has no token and is never released; it holds the slot until its
   recorded expiry and is then reclaimed, the same bound a crashed claimer has.
+
 * Make the onboarding bootstrap in-flight claim single-winner. The claim took
   a lock-free `O_CREAT|O_EXCL` fast path and locked only the reclaim of a stale
   marker, and the two paths did not exclude each other. A marker created but
@@ -156,6 +129,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   if the holder dies, so a crash no longer leaves a `.reclaim` lock file that
   blocks reclaim forever. The marker is written to a temporary file and renamed
   into place.
+
 * Let the STD-U-821 adoption record name the highest stable tag as its base,
   as authorized by STD-U-821 amendment 1.5 (ratified 2026-10-10,
   company-knowledge #236, vendored at
@@ -182,6 +156,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   operator or lead at cut time: (a) revert them on `main` and re-land through
   `release/new`, or (b) a recorded exception in the issue. Nothing is blocked
   now because there is no release to cut.
+
 * Continue a `promote-release.yml` promotion after its stable tag exists. The
   engine counted the new `vX.Y.Z` on `S` as a released version, so the
   recheck after tagging recomputed the release against a stable tag above its
@@ -201,6 +176,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a published release. `create-tag` stays idempotent. Any other tag fails
   closed. The docs no longer claim a ruleset restricts `v*` tag creation; the
   control is content equality with the generated tag.
+
 * Verify the stable PyPI upload of `promote-release.yml` without the
   attestation files. The PyPI publish action writes a
   `<file>.publish.attestation` next to each uploaded file, and the inline
@@ -217,6 +193,92 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   absent, then skips only the upload while keeping the `pypi` approval. A
   draft release is probably invisible to that read-only token; the `release`
   job refuses a foreign draft.
+
+## [0.11.1] - 2026-10-09
+
+### Added
+
+* Add `docs/releases/repository-settings.md`, a checklist of the GitHub repository and organization settings the release pipeline requires (immutable releases, variables, environments, Trusted Publishers, rulesets, code scanning, Dependabot, the GitHub App and the Actions policy), each with a read-only `gh api` read-back.
+
+* This is the first release cut under the STD-U-821 branch model (`release/new`, content-derived versions, reviewed promotion). Candidates are built unprivileged and published by a separate trusted stage; releases are drafted, filled with assets and published last, which GitHub immutable releases require. Candidate `0.11.1-rc.2` of the first live run is burned.
+
+* Add a disabled-by-default trusted RC publication stage (`rc-publish-stage.yml`)
+  that runs only `main` scripts, recomputes the candidate version from `H`'s
+  history as data, verifies package hashes and the OCI digest, splits
+  reservation, PyPI OIDC upload and image push into least-privilege jobs,
+  refuses duplicate identities, reuses same-`H` objects on retry, attests the
+  published image digest and Python files for promotion to verify, and records
+  branch-based staging selection with hotfix priority. Credentials may only be
+  environment secrets on `main`-only environments. Only admitted runs take the
+  shared promotion lock, signing runs in a separate job that never parses the
+  candidate archives, and the `rc` channel moves only once
+  `SDLC_RC_CHANNEL=enabled` is set after the first new-model release.
+
+* Add disabled-by-default promotion of reviewed release squashes, with exact
+  parent, tree, version and release-note proofs. Compare stable Python files
+  with both candidate payloads and reuse the RC image digest with provenance
+  mapping the reviewed head, squash and stable tag.
+
+* Build normal and hotfix release candidates with read-only permissions,
+  injected Python versions, an OCI archive, and provenance. Cut builds and
+  dry runs build and verify artifacts without allowing promotion.
+
+* Wire the ratified STD-U-821 adoption record into candidate builds, the
+  trusted publication stage and promotion. Builds of an adoption cut take the
+  pinned ratification and vendored amendment from `main`'s Git blobs rather
+  than the candidate tree, the publication stage uses its own `main` checkout,
+  promotion reads them from the candidate's recorded `main`, and only dispatched
+  dry runs evaluate the record unratified. The engine now refuses a
+  ratification passed without the standard file, and the build parser refuses
+  any binding of the pinned names other than one top-level literal.
+  The cut build stays unpromotable and promotion still refuses while the
+  record exists at the reviewed head. Add the adoption cut runbook
+  (`docs/releases/adoption-cut-runbook.md`).
+
+* Plan verified release branch recuts and stable hotfix cuts, preserve pending
+  commits on a backup branch, and refuse stale or unreconciled state, including
+  stray stable tags and active old-path release runs. The new workflows share
+  the promotion lock, apply only from a main-restricted environment with a
+  per-run GitHub App token, and remain disabled until W9 bot activation.
+  See [branch recut and hotfix cuts](docs/releases/branch-recut.md).
+
+### Changed
+
+* Record the lessons of the first adoption cut in the adoption cut runbook, including the main-first ordering, the burned candidates and the minimum commit count on `release/new`.
+
+* `scripts/sdlc_recut.py --apply` now replaces `release/new` by deleting it
+  and creating it again at the new base, instead of one atomic
+  `--force-with-lease` update. The protected-branch rulesets require pull
+  requests for updates and no App holds a bypass, while creation and deletion
+  stay permitted. The old head is backed up to its preservation ref first,
+  each single-ref push is guarded by remote reads before and after it, each
+  deletion is a compare-and-swap push leased on the planned old head,
+  creations carry no lease, no push uses a plain force, a `+` refspec or
+  `--atomic`, and a verified `hotfix/new` is deleted only after the
+  recreation. If recreation fails after the deletion, one recovery push
+  restores the old head, also when the remote cannot be read, and the error
+  names the old head, the backup ref and the exact recovery command. `docs/releases/branch-recut.md` documents the leased
+  deletion, the explicit decision any plain-delete fallback would need, and
+  the controller's ruleset toggle.
+
+### Security
+
+* Promotion now verifies the stage-two GitHub artifact attestations of the
+  candidate wheel, sdist and image digest (`gh attestation verify` with the
+  `rc-publish-stage.yml` signer workflow and `refs/heads/main` source ref) in
+  the `prove` job, before any publication. The exact-source check gate moves
+  into `release_record.py checks`: the reviewed head needs `test`, and the
+  squash, whose tree the proof shows equal to the head's, needs `test`,
+  `CodeQL` and every configured analysis, since `release/new` heads are not
+  guaranteed CodeQL while the squash on `main` is. Only a completed run with
+  conclusion `success` counts.
+
+* Validate manual publication identities and reject collisions, bind Python
+  builds to validated commit SHAs, and move image channels by verified digest.
+  Remove tag-triggered rebuild publication and OIDC grants from PR packaging builds.
+
+### Fixed
+
 * Make the promotion check gate (`release_record.py checks`) ask each commit
   for the evidence GitHub produces there. The aggregate `CodeQL` check run
   exists only on pull request heads, so it was never present on the squash
@@ -228,6 +290,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `SDLC_REQUIRED_CODEQL_CHECKS`. The proof that the trees of `S` and `H` are
   equal ties the two results to the same code. All other rules stay fail
   closed.
+
 * Accept the subject `release: X.Y.Z` (STD-U-821) in the PR title lint, only for
   a same-repository pull request from `release/new` or `hotfix/new` into `main`;
   every other base or head still rejects the `release` type, and malformed
@@ -237,10 +300,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and repositories as environment variables. The workflow runs the base-ref
   copy of the linter, so this change applies to pull requests only after it
   lands on the base branch they target.
+
 * Tolerate GitHub release listing lag after creating a draft and after
   uploading assets, in stage 2 `reserve` and in the stable release step: the
   read is repeated with bounded backoff (about 60 seconds) and then fails
   closed as before.
+
 * Publish candidate and stable GitHub releases draft first, for immutable
   releases. Stage 2 `reserve` now creates a draft prerelease, uploads and reads
   back every asset, and a new last `finalize` job publishes the draft only
@@ -252,7 +317,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The candidate tag message now binds every asset's SHA-256 so the read-only
   jobs check bytes, `reserve` refuses a created release that is not a draft,
   and `attest` and `finalize` still run when `pypi` is skipped.
+
 * Show a sanitized, single-line, redacted stderr excerpt of at most 300 characters when a stage-two `gh` or `skopeo` command fails, never stdout or arguments.
+
 * Accept the documented `0.0.0+unreleased` placeholder package version only
   where the engine-managed cycle puts it. `version-free-guard` skips it with an
   explicit message on pull requests into `release/new` and `hotfix/new`, and
@@ -264,6 +331,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   requiring a concrete stable entry. The rule lives in
   `scripts/placeholder_version.py` and is described in
   `docs/releases/placeholder-version.md`.
+
 * Accept the ratified Amendment 1.3 heading for adoption verification while
   retaining the proposed heading form. Include the ratified amendment and
   pinned verification arguments so CI can verify it without private KB access.
@@ -3021,7 +3089,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docs/adoption.md`: bring-your-own-KB guide (author, lint, index, serve, wire an agent).
 - `docs/comparison.md`: how data-olympus relates to OKF, enterprise catalogs, markdown KB tools, agent-context conventions, RAG, and ADR tooling.
 
-[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/knaisoma/data-olympus/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/knaisoma/data-olympus/compare/v0.11.4...v0.12.0
+[0.11.4]: https://github.com/knaisoma/data-olympus/compare/v0.11.3...v0.11.4
+[0.11.3]: https://github.com/knaisoma/data-olympus/compare/v0.11.2...v0.11.3
+[0.11.2]: https://github.com/knaisoma/data-olympus/compare/v0.11.1...v0.11.2
+[0.11.1]: https://github.com/knaisoma/data-olympus/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/knaisoma/data-olympus/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/knaisoma/data-olympus/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/knaisoma/data-olympus/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/knaisoma/data-olympus/compare/v0.8.1...v0.8.2
