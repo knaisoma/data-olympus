@@ -306,6 +306,10 @@ def test_release_subject_accepts_the_footer_as_the_notes_indent_it(history) -> N
     # Outside a release squash the footer must still start its line.
     assert run_release(repo, base, "fix!: export", body="  BREAKING CHANGE: remove API",
                        head_ref="feature/x").returncode == 1
+    # On the release branches into main, only a release subject accepts the indented footer.
+    other = run_release(repo, base, "fix!: export", body="  BREAKING CHANGE: remove API")
+    assert other.returncode == 1
+    assert "breaking-change footer" in other.stderr + other.stdout
 
 
 @pytest.mark.parametrize("kwargs", [
