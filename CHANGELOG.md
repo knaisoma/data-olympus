@@ -64,9 +64,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
-* Dependencies: the 2026-W44 Pillow remediation (issue #426, items 1 and 3) updates the locked `pillow` from 12.3.0 to 13.0.0. Pillow 13 needs fastembed 0.9.1, the first release that allows it, so the `embeddings` extra and the dev extra now require `fastembed>=0.9.1,<0.10` (locked 0.8.1 to 0.9.1). data-olympus calls only `TextEmbedding(model_name=...).embed(...)`, which fastembed 0.9 keeps. Upgrade note for the `embeddings` extra: fastembed 0.9 downloads built-in models from Hugging Face only, without the Google Cloud Storage fallback; a model cached by an older fastembed still loads, with a `FutureWarning`. The lock is regenerated with the pinned uv 0.12.23, which writes lock revision 5. The container image installs neither extra, so its contents are unchanged.
+* Dependencies: the Pillow remediation (issue #426) updates the locked `pillow` from 12.3.0 to 13.0.0. Pillow 13 needs fastembed 0.9.1, the first release that allows it, so the `embeddings` extra and the dev extra now require `fastembed>=0.9.1,<0.10` (locked 0.8.1 to 0.9.1). data-olympus calls only `TextEmbedding(model_name=...).embed(...)`, which fastembed 0.9 keeps. Upgrade note for the `embeddings` extra: fastembed 0.9 downloads built-in models from Hugging Face only, without the Google Cloud Storage fallback; a model cached by an older fastembed still loads, with a `FutureWarning`. The lock is regenerated with the pinned uv 0.12.23, which writes lock revision 5. The container image installs neither extra, so its contents are unchanged.
 
-## [0.11.3] - 2026-10-19
+## [0.11.3] - 2026-10-20
 
 ### Removed
 
@@ -86,7 +86,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-* The old-path `set-channel.yml` and `tag-release.yml` workflows now take the shared `data-olympus-promotion` concurrency group (unconditional, `cancel-in-progress: false`), so they cannot run at the same time as `promote-release.yml`, `rc-publish-stage.yml`, `recut-release-branch.yml` or `hotfix-cut.yml`. `tag-release.yml` enters the lock only when dispatched from `main` and drops its per-candidate group, so two different candidates now serialise. Recorded as an R9 deviation (operator follow-up decision of 2026-10-10). GitHub keeps one pending run per group and a newer pending run cancels an older pending one: dispatch again if that happens.
+* The old-path `set-channel.yml` and `tag-release.yml` workflows now take the shared `data-olympus-promotion` concurrency group (unconditional, `cancel-in-progress: false`), so they cannot run at the same time as `promote-release.yml`, `rc-publish-stage.yml`, `recut-release-branch.yml` or `hotfix-cut.yml`. `tag-release.yml` enters the lock only when dispatched from `main` and drops its per-candidate group, so two different candidates now serialise. Recorded as a deviation from the release design (decision of 2026-10-10). GitHub keeps one pending run per group and a newer pending run cancels an older pending one: dispatch again if that happens.
 
 * Pin the build backend to `hatchling==1.32.4` in `[build-system] requires`, the exact version recorded in the published 0.11.1 wheel (`Generator: hatchling 1.32.4`), so release artifacts are rebuilt reproducibly. A test fails if the requirement floats again.
 
@@ -239,7 +239,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   commits on a backup branch, and refuse stale or unreconciled state, including
   stray stable tags and active old-path release runs. The new workflows share
   the promotion lock, apply only from a main-restricted environment with a
-  per-run GitHub App token, and remain disabled until W9 bot activation.
+  per-run GitHub App token, and remain disabled until the release bot is activated.
   See [branch recut and hotfix cuts](docs/releases/branch-recut.md).
 
 ### Changed
