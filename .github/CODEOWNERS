@@ -2,11 +2,25 @@
 # CODEOWNERS precedence: the LAST matching pattern wins, so the admin-only
 # overrides are listed after the wildcard default.
 #
-# Default owner: all paths require admin approval.
-# Once @knaisoma/kn-data-olympus-maintainers has members, broaden the wildcard
-# to that team and keep admin ownership only for the security-sensitive paths
-# listed below.
+# Default owner: every path requires admin approval, except the documentation
+# and tests listed without an owner below.
 *                                          @knaisoma/kn-data-olympus-admins
+
+# Documentation and tests carry no code owner: a change there runs only in
+# unprivileged CI, and no release-path workflow restores a shared cache CI
+# could write (tests/test_publish_workflows.py), so it is merged on the
+# regular review and required checks.
+# The release documents and two protected test files (the vendored OKF
+# reference the pin workflow reads, and the release-verification test) are
+# owned again just below, and the security-sensitive paths after
+# that, because the last matching pattern wins.
+/docs/
+/tests/
+/CHANGELOG.md
+/README.md
+/docs/releases/                            @knaisoma/kn-data-olympus-admins
+/tests/okf/reference.json                  @knaisoma/kn-data-olympus-admins
+/tests/test_rc_verify_and_publish.py       @knaisoma/kn-data-olympus-admins
 
 # Security-sensitive paths: format spec, server, write pipeline, auth, deploy,
 # and CI configuration. These always require admin review regardless of the

@@ -12,6 +12,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+* Repository: documentation (`docs/`, except `docs/releases/`), tests (`tests/`, except the vendored `tests/okf/reference.json` that the pin workflow reads and the release-verification test `tests/test_rc_verify_and_publish.py`), `CHANGELOG.md` and `README.md` no longer need a code owner review. Every other path keeps the admins team as its code owner, and a test checks the effective ownership with last-match-wins semantics. The release-path workflows (candidate build and publication, promotion, recut and hotfix cut) no longer restore a shared cache: every setup-uv step sets `enable-cache: false`, the QEMU step sets `cache-image: false` and every Buildx step sets `cache-binary: false`, so a cache written on `main` by CI, which runs the unowned tests, can never reach a job that builds a candidate or holds a release credential. A test lists every action those workflows use and requires each cache that is on by default to be turned off explicitly.
+
 ### Fixed
 
 * The pull request title check accepts the breaking-change footer of a release pull request where the release notes put it: the notes keep each commit body indented by two spaces under its entry, so `lint-title` failed on every release whose source commits carry a breaking-change footer (it failed on the 0.12.0 release pull request). Only a `release: X.Y.Z` pull request from `release/new` or `hotfix/new` into `main` accepts that indentation; every other pull request still needs the footer at the start of a line.
