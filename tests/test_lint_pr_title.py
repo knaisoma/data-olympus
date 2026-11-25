@@ -291,6 +291,27 @@ def test_release_subject_still_requires_breaking_footer_in_body(history) -> None
     assert run_release(repo, base, "release: 10.0.0").returncode == 1
 
 
+def test_release_subject_accepts_the_footer_as_the_notes_indent_it(history) -> None:
+    # 0.12.0: the release notes keep commit bodies indented by two spaces, so the
+    # preserved footer of a breaking commit is indented in the release body.
+    repo, base = history
+    git(repo, "commit", "--allow-empty", "-m", "fix: export\n\nBREAKING CHANGE: remove API")
+    notes = ("# Release 10.0.0\n\n## Breaking changes\n\n- fix: export\n\n"
+             "  BREAKING CHANGE: remove API")
+    assert run_release(repo, base, "release: 10.0.0", body=notes).returncode == 0
+    for body in ("- fix: export\n\n    BREAKING CHANGE: remove API",
+                 "\tBREAKING CHANGE: remove API",
+                 "  BREAKING CHANGE: ", "  Discuss BREAKING CHANGE: removal"):
+        assert run_release(repo, base, "release: 10.0.0", body=body).returncode == 1, body
+    # Outside a release squash the footer must still start its line.
+    assert run_release(repo, base, "fix!: export", body="  BREAKING CHANGE: remove API",
+                       head_ref="feature/x").returncode == 1
+    # On the release branches into main, only a release subject accepts the indented footer.
+    other = run_release(repo, base, "fix!: export", body="  BREAKING CHANGE: remove API")
+    assert other.returncode == 1
+    assert "breaking-change footer" in other.stderr + other.stdout
+
+
 @pytest.mark.parametrize("kwargs", [
     {"head_ref": "feature/x"},
     {"head_ref": "release/new2"},

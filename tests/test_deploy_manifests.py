@@ -142,8 +142,40 @@ def test_image_tag_supports_readyz_and_rootless_flow() -> None:
 
 def test_dockerfile_is_digest_pinned_and_rootless() -> None:
     text = (DOCKER_DIR / "Dockerfile").read_text()
-    # Digest-pinned base on the 3.15 runtime line (a full 64-hex index digest).
-    assert re.search(r"^FROM python:3\.15-slim@sha256:[0-9a-f]{64} ", text, re.M), text
+    # Two stages, build then runtime, on the same digest-pinned Alpine base of
+    # the 3.15 line (a full 64-hex index digest), so the venv's interpreter
+    # symlink resolves identically in the runtime stage.
+    froms = [line for line in text.splitlines() if line.startswith("FROM ")]
+    assert len(froms) == 2, froms
+    pattern = r"FROM (python:3\.15-alpine@sha256:[0-9a-f]{64}) AS (build|runtime)"
+    parsed = [re.fullmatch(pattern, line) for line in froms]
+    assert all(parsed), froms
+    assert [m.group(2) for m in parsed if m] == ["build", "runtime"], froms
+    assert len({m.group(1) for m in parsed if m}) == 1, froms
+    build, runtime = text.split(froms[1], 1)
+    # uv lives in the build stage only: the runtime stage neither copies the uv
+    # or uvx binaries nor runs uv, and it takes /app from the build stage.
+    runtime_directives = "\n".join(
+        line.strip() for line in runtime.splitlines()
+        if line.strip() and not line.strip().startswith("#"))
+    assert "ghcr.io/astral-sh/uv" in build and "uv sync --frozen --no-dev" in build
+    assert "astral-sh/uv" not in runtime_directives
+    assert not re.search(r"\buvx?\b", runtime_directives), runtime_directives
+    assert "UV_CACHE_DIR" not in text and "uv-cache" not in text
+    assert "COPY --from=build /app /app" in runtime_directives
+    assert runtime_directives.splitlines()[-1] == 'CMD ["/app/.venv/bin/data-olympus-mcp"]'
+    # Alpine packages: security updates first, then the runtime set, no cache
+    # left behind; no Debian tooling.
+    directives = [line.strip() for line in text.splitlines()
+                  if line.strip() and not line.strip().startswith("#")]
+    joined = "\n".join(directives)
+    assert "apk upgrade --no-cache" in runtime_directives
+    assert "apk add --no-cache git openssh-client ca-certificates" in runtime_directives
+    # The CMD reaches the server only through the entrypoint's final exec.
+    entrypoint = (DOCKER_DIR / "entrypoint.sh").read_text().rstrip().splitlines()
+    assert entrypoint[-1] == 'exec "$@"'
+    assert joined.index("apk upgrade --no-cache") < joined.index("apk add --no-cache")
+    assert "apt-get" not in joined
     assert "USER 65534:65534" in text          # runs non-root
     assert "KB_SSH_KEYSCAN_HOST" in text       # keyscan host configurable
     # gosu must not be installed or exec'd (a comment may mention it by name to

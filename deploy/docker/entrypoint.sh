@@ -21,12 +21,6 @@ export GIT_AUTHOR_EMAIL="$GIT_EMAIL"
 export GIT_COMMITTER_NAME="$GIT_NAME"
 export GIT_COMMITTER_EMAIL="$GIT_EMAIL"
 
-# --- Writable scratch under a read-only root filesystem ----------------------
-# When the container runs with readOnlyRootFilesystem, /tmp is an emptyDir mount
-# that starts empty (masking the image's pre-created /tmp/uv-cache). Recreate the
-# uv cache dir; we already run as the runtime user, so no chown is needed.
-mkdir -p "${UV_CACHE_DIR:-/tmp/uv-cache}"
-
 # --- known_hosts (user-writable copy) ----------------------------------------
 # The image bakes /etc/ssh/known_hosts, but /etc is not writable to the non-root
 # user under a read-only root FS, so we cannot append a runtime host there.
