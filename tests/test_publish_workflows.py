@@ -172,21 +172,52 @@ RELEASE_PATH_WORKFLOWS = (
 )
 
 
+# Every action a release-path workflow uses is listed here, so a new action has
+# to be classified before it can run there. The value is the input that turns the
+# action's own cache on by default; it must be set to false explicitly. None means
+# the action has no cache of its own that is on by default.
+RELEASE_PATH_ACTIONS: dict[str, str | None] = {
+    "astral-sh/setup-uv": "enable-cache",
+    "docker/setup-qemu-action": "cache-image",
+    "docker/setup-buildx-action": "cache-binary",
+    "actions/setup-python": None,
+    "actions/checkout": None,
+    "actions/create-github-app-token": None,
+    "actions/upload-artifact": None,
+    "actions/download-artifact": None,
+    "actions/attest-build-provenance": None,
+    "actions/attest": None,
+    "docker/login-action": None,
+    "pypa/gh-action-pypi-publish": None,
+}
+
+
+def _release_path_steps(name: str) -> list[dict]:
+    data = yaml.safe_load((_WF / name).read_text())
+    return [s for job in data["jobs"].values() for s in job.get("steps", [])]
+
+
 def test_release_path_workflows_never_restore_a_shared_cache() -> None:
     """Caches written by workflows on main (CI runs the unowned tests there) are
     shared with every workflow on the branch. A release-path job that restored one
-    could run code a test planted, so no setup-uv step there enables caching and no
-    other cache action is used."""
+    could run code a test planted, so every action there that caches by default
+    has that cache turned off explicitly, setup-python is given no package cache,
+    and no cache action or build cache backend is used."""
     for name in RELEASE_PATH_WORKFLOWS:
-        path = Path(".github/workflows") / name
-        text = path.read_text()
+        text = (_WF / name).read_text()
         assert "actions/cache" not in text, name
-        data = yaml.safe_load(text)
-        steps = [s for job in data["jobs"].values() for s in job.get("steps", [])]
-        uv_steps = [s for s in steps if str(s.get("uses", "")).startswith("astral-sh/setup-uv@")]
-        assert uv_steps, name
-        for step in uv_steps:
-            assert (step.get("with") or {}).get("enable-cache") is False, name
+        assert "type=gha" not in text, name
+        steps = _release_path_steps(name)
+        assert any(str(s.get("uses", "")).startswith("astral-sh/setup-uv@") for s in steps), name
         for step in steps:
-            cache = (step.get("with") or {}).get("cache")
-            assert cache in (None, False, "false", ""), name
+            uses = str(step.get("uses", ""))
+            if not uses:
+                continue
+            action = uses.split("@", 1)[0]
+            assert action in RELEASE_PATH_ACTIONS, (name, action)
+            inputs = step.get("with") or {}
+            cache_input = RELEASE_PATH_ACTIONS[action]
+            if cache_input is not None:
+                assert inputs.get(cache_input) is False, (name, action, cache_input)
+            assert inputs.get("cache") in (None, False, "false", ""), (name, action)
+
