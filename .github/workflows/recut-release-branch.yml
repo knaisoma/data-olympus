@@ -79,6 +79,8 @@ jobs:
           persist-credentials: false
       - name: Set up uv
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: false
       - name: Install Python
         run: uv python install 3.13
       - name: Plan recut and list open pull requests
@@ -143,6 +145,8 @@ jobs:
           persist-credentials: false
       - name: Set up uv
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: false
       - name: Install Python
         run: uv python install 3.13
       # Read-only snapshots and interpreter lookup run before the bot token

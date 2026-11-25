@@ -32,6 +32,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
+          enable-cache: false
           python-version: '3.13'
       - name: Fetch current heads and require exact source
         run: |
@@ -86,7 +87,11 @@ jobs:
               --artifact "$artifact" --expected-version "$PYPI_VERSION"
           done
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+        with:
+          cache-image: false
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          cache-binary: false
       - name: Build OCI archive with injected package version
         run: |
           set -euo pipefail

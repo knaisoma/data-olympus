@@ -160,3 +160,64 @@ def test_image_job_smoke_tests_the_runtime_of_the_built_image() -> None:
     assert joined.index("git_protocol_policy.sh") < joined.index("runtime_smoke.sh")
     assert "--privileged" not in joined
     assert (_ROOT / "tests" / "image" / "runtime_smoke.sh").is_file()
+
+
+RELEASE_PATH_WORKFLOWS = (
+    "hotfix-cut.yml",
+    "recut-release-branch.yml",
+    "promote-release.yml",
+    "rc-publish-stage.yml",
+    "publish-python-build.yml",
+    "rc-build.yml",
+)
+
+
+# Every action a release-path workflow uses is listed here, so a new action has
+# to be classified before it can run there. The value is the input that turns the
+# action's own cache on by default; it must be set to false explicitly. None means
+# the action has no cache of its own that is on by default.
+RELEASE_PATH_ACTIONS: dict[str, str | None] = {
+    "astral-sh/setup-uv": "enable-cache",
+    "docker/setup-qemu-action": "cache-image",
+    "docker/setup-buildx-action": "cache-binary",
+    "actions/setup-python": None,
+    "actions/checkout": None,
+    "actions/create-github-app-token": None,
+    "actions/upload-artifact": None,
+    "actions/download-artifact": None,
+    "actions/attest-build-provenance": None,
+    "actions/attest": None,
+    "docker/login-action": None,
+    "pypa/gh-action-pypi-publish": None,
+}
+
+
+def _release_path_steps(name: str) -> list[dict]:
+    data = yaml.safe_load((_WF / name).read_text())
+    return [s for job in data["jobs"].values() for s in job.get("steps", [])]
+
+
+def test_release_path_workflows_never_restore_a_shared_cache() -> None:
+    """Caches written by workflows on main (CI runs the unowned tests there) are
+    shared with every workflow on the branch. A release-path job that restored one
+    could run code a test planted, so every action there that caches by default
+    has that cache turned off explicitly, setup-python is given no package cache,
+    and no cache action or build cache backend is used."""
+    for name in RELEASE_PATH_WORKFLOWS:
+        text = (_WF / name).read_text()
+        assert "actions/cache" not in text, name
+        assert "type=gha" not in text, name
+        steps = _release_path_steps(name)
+        assert any(str(s.get("uses", "")).startswith("astral-sh/setup-uv@") for s in steps), name
+        for step in steps:
+            uses = str(step.get("uses", ""))
+            if not uses:
+                continue
+            action = uses.split("@", 1)[0]
+            assert action in RELEASE_PATH_ACTIONS, (name, action)
+            inputs = step.get("with") or {}
+            cache_input = RELEASE_PATH_ACTIONS[action]
+            if cache_input is not None:
+                assert inputs.get(cache_input) is False, (name, action, cache_input)
+            assert inputs.get("cache") in (None, False, "false", ""), (name, action)
+
