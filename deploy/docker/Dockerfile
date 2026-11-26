@@ -81,7 +81,7 @@ ARG KB_SSH_KEYSCAN_HOST=github.com
 # already published for 3.24 but not yet in the base image). The base stays
 # pinned by digest; only packages from the Alpine repository move forward.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache git openssh-client ca-certificates
+    && apk add --no-cache git openssh-client ca-certificates tini
 
 # The virtual environment and the project, built in the build stage. No uv.
 COPY --from=build /app /app
@@ -126,6 +126,15 @@ RUN git config --system protocol.http.allow never \
 COPY deploy/docker/entrypoint.sh /entrypoint.sh
 RUN chmod 0755 /entrypoint.sh
 
+# tini is PID 1 so orphaned processes are reaped. The server spawns git, and
+# git's own helpers/detached descendants that outlive their parent reparent to
+# PID 1; the Python server never wait()s on them, so they stay zombies for the
+# life of the container (~1,400/day observed in production; see knaisoma/
+# data-olympus#434). The tini package installs /sbin/tini (Alpine community,
+# 0.19.0). tini passes its arguments through as the child and forwards signals
+# to it, so the entrypoint chain below still receives SIGTERM/SIGINT as before.
+# tests/image/zombie_reaping.sh proves the reaping inside the built image.
+
 ENV KB_MAIN_PATH=/example-bundle \
     KB_INDEX_PATH=/index/kb.db \
     KB_PENDING_ROOT=/state/pending \
@@ -140,6 +149,6 @@ EXPOSE 8080
 # the manifest pass the restricted PodSecurity standard.
 USER 65534:65534
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/sbin/tini", "--", "/entrypoint.sh"]
 # The console script of the venv, run directly; the entrypoint execs "$@".
 CMD ["/app/.venv/bin/data-olympus-mcp"]

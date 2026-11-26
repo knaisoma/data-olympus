@@ -170,7 +170,10 @@ def test_dockerfile_is_digest_pinned_and_rootless() -> None:
                   if line.strip() and not line.strip().startswith("#")]
     joined = "\n".join(directives)
     assert "apk upgrade --no-cache" in runtime_directives
-    assert "apk add --no-cache git openssh-client ca-certificates" in runtime_directives
+    assert "apk add --no-cache git openssh-client ca-certificates tini" in runtime_directives
+    # PID 1 must be a reaping init: tini wraps the entrypoint so orphaned git
+    # descendants are reaped instead of leaking as zombies (issue #434).
+    assert 'ENTRYPOINT ["/sbin/tini", "--", "/entrypoint.sh"]' in runtime_directives
     # The CMD reaches the server only through the entrypoint's final exec.
     entrypoint = (DOCKER_DIR / "entrypoint.sh").read_text().rstrip().splitlines()
     assert entrypoint[-1] == 'exec "$@"'

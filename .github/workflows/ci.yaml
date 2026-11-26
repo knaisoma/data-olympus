@@ -214,3 +214,11 @@ jobs:
             data-olympus:git-protocols -s < tests/image/git_protocol_policy.sh
       - name: Check the image runtime (Python 3.15, non-root, ready on the example bundle)
         run: sh tests/image/runtime_smoke.sh data-olympus:git-protocols
+      # The default entrypoint chain (tini as PID 1, then the entrypoint, then
+      # this script as the CMD) is what the reaping test needs under test, so
+      # it runs with NO --entrypoint override (issue #434: orphaned git
+      # descendants reparent to PID 1 and must be reaped, not leak as zombies).
+      - name: Check the image reaps orphaned processes (tini as PID 1)
+        run: |
+          docker run --rm -i --network none \
+            data-olympus:git-protocols sh -s < tests/image/zombie_reaping.sh

@@ -19,6 +19,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 * The pull request title check accepts the breaking-change footer of a release pull request where the release notes put it: the notes keep each commit body indented by two spaces under its entry, so `lint-title` failed on every release whose source commits carry a breaking-change footer (it failed on the 0.12.0 release pull request). Only a `release: X.Y.Z` pull request from `release/new` or `hotfix/new` into `main` accepts that indentation; every other pull request still needs the footer at the start of a line.
+* Container image: PID 1 is `/sbin/tini`, not the entrypoint shell. The server spawns git, and git's own helpers and detached descendants that outlive their parent are reparented to PID 1; nothing waited on them, so they stayed zombies for the life of the container (8,167 observed after 5 days, about 1,400 per day). `tini` is added to the runtime `apk add` set and wraps the entrypoint (`ENTRYPOINT ["/sbin/tini", "--", "/entrypoint.sh"]`), so orphans are reaped and SIGTERM still reaches the server. `tests/image/zombie_reaping.sh` checks both inside the built image through the default entrypoint chain, and the image CI job runs it. Fixes knaisoma/data-olympus#434.
 
 ## [0.12.0] - 2026-11-23
 
