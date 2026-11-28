@@ -189,9 +189,13 @@ Google OKF v0.2 commit `ad30107c31c06aec8a7d5636e0d1058118604e6f` in
 imports as nine lint-clean governed drafts, all nine are indexed, and search
 plus retrieval complete successfully. The importer keeps a source's OKF v0.2
 `generated` record and legacy `timestamp` as written, and stamps `generated`
-naming the data-olympus tool only when a document records neither. The reverse check runs Google's
-reference visualization consumer over every concept in `example-bundle`. To
-repeat both checks from a source checkout:
+naming the data-olympus tool only when a document records neither. The reverse
+check runs Google's reference visualization consumer over every concept in
+`example-bundle`. That consumer parses each document and never calls
+`validate()`, so the check shows that every concept parses and is walked at the
+pinned revision; it is not evidence that each document carries the
+specification's required frontmatter keys. To repeat both checks from a source
+checkout:
 
 ```bash
 uv run python scripts/okf_conformance.py verify-pin
