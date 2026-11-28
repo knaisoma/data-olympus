@@ -18,6 +18,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+* `parse_frontmatter` now closes the block only on a `---` line at column zero. An indented `---` is YAML content, not a closer: `yaml.safe_dump` renders a value containing a newline followed by `---` (reachable through the server-rendered free-text fields `created_by`, `tags`, `evidence`, and `capture` values) as a quoted scalar whose continuation lines are indented, so the old `strip()` comparison ended the block inside the value and the document was refused as `invalid_frontmatter` for a reason the caller could not see. Trailing spaces and carriage returns on the closer stay tolerated, matching the pre-existing CRLF handling (issue #317).
 * The pull request title check accepts the breaking-change footer of a release pull request where the release notes put it: the notes keep each commit body indented by two spaces under its entry, so `lint-title` failed on every release whose source commits carry a breaking-change footer (it failed on the 0.12.0 release pull request). Only a `release: X.Y.Z` pull request from `release/new` or `hotfix/new` into `main` accepts that indentation; every other pull request still needs the footer at the start of a line.
 
 ## [0.12.0] - 2026-11-23

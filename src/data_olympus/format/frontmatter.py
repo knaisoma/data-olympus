@@ -17,12 +17,21 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     Raises ValueError if a block is opened but never closed, or if the block
     does not parse to a mapping. CRLF input is not normalized; body lines
     retain their trailing carriage return.
+
+    The closing delimiter must sit at column zero: a '---' line that is
+    indented is YAML content, not the end of the block. Folded scalars make
+    this reachable: ``yaml.safe_dump`` renders a value containing a newline
+    followed by '---' (e.g. a free-text ``created_by``) as a quoted scalar
+    whose continuation lines are indented, and an indented ``---`` line
+    inside such a value would otherwise end the block early (issue #317).
+    Trailing whitespace and carriage returns on the closer are tolerated,
+    matching the pre-existing handling of CRLF input.
     """
     lines = text.split("\n")
     if not lines or lines[0].strip() != _DELIM:
         return {}, text
     for i in range(1, len(lines)):
-        if lines[i].strip() == _DELIM:
+        if lines[i].rstrip() == _DELIM:
             raw = "\n".join(lines[1:i])
             body = "\n".join(lines[i + 1:])
             try:
